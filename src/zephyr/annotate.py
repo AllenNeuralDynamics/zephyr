@@ -632,7 +632,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Choose a downsample target and hand-place a crop box per session."
     )
-    parser.add_argument("--packaged-root", type=Path, default=Path("data/packaged"))
+    parser.add_argument("--packaged-root", type=Path, default=Path("data"))
     parser.add_argument("--camera", default="face", choices=["face", "side"])
     parser.add_argument(
         "--width", type=int, help="Downsample target width (default: native)"
