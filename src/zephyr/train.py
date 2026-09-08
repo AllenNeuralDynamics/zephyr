@@ -167,7 +167,7 @@ def main() -> None:
     parser.add_argument(
         "--holdout-json",
         type=Path,
-        default=Path("artifacts/holdout_sessions.json"),
+        default=Path("baseline-cnn-tcn/artifacts/holdout_sessions.json"),
         help="Where the reserved test sessions live.  Drawn on first use, then "
         "reused verbatim -- delete it only if you mean to invalidate every "
         "result measured against it.",
