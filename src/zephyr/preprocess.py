@@ -186,7 +186,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Decode and channelise clips into uint8 feature arrays."
     )
-    parser.add_argument("--packaged-root", type=Path, default=Path("data/packaged"))
+    parser.add_argument("--packaged-root", type=Path, default=Path("data"))
     parser.add_argument("--split", default=PUBLIC_SPLIT)
     parser.add_argument("--camera", default="face", choices=["face", "side"])
     parser.add_argument(
