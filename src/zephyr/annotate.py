@@ -661,7 +661,9 @@ def main() -> None:
             prepare_frames(args.packaged_root, split, args.camera, args.frame_dir)
         return
 
-    out_path = args.out or Path(f"baseline-cnn-tcn/artifacts/session_boxes_{args.camera}.json")
+    out_path = args.out or Path(
+        f"baseline-cnn-tcn/artifacts/session_boxes_{args.camera}.json"
+    )
     sessions = discover_sessions(
         args.packaged_root,
         args.splits,
