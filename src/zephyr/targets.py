@@ -54,8 +54,7 @@ class Target:
 
 
 def load_target(clip: ClipRef, times: np.ndarray) -> Target:
-    """Build the training target for *clip*, sampled at *times*.
-    """
+    """Build the training target for *clip*, sampled at *times*."""
 
     frame = pd.read_parquet(clip.thermistor_path())
     t = frame[THERMISTOR_TIME_COLUMN].to_numpy(dtype=float)

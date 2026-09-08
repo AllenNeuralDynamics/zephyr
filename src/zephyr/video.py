@@ -22,7 +22,6 @@ from pathlib import Path
 
 import numpy as np
 
-
 Box = tuple[int, int, int, int]
 """Crop box in full-resolution pixels, as ``(x, y, width, height)``."""
 

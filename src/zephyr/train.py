@@ -315,7 +315,9 @@ def main() -> None:
     # Cheap, but the failure it guards against is expensive and invisible: a
     # reserved session leaking into training makes every number measured against
     # the holdout meaningless, with no symptom.
-    leaked = {e.session_idx for e in [*train_entries, *val_entries]} & set(test_sessions)
+    leaked = {e.session_idx for e in [*train_entries, *val_entries]} & set(
+        test_sessions
+    )
     if leaked:
         raise SystemExit(f"reserved test sessions leaked into training: {leaked}")
 
@@ -446,7 +448,9 @@ def main() -> None:
         # Resume the most recently started run that has a checkpoint, rather
         # than a run directory named for this invocation's arguments.
         existing = sorted(p for p in runs_root.glob("*") if (p / "last.pt").exists())
-        run_dir = existing[-1] if existing else runs_root / time.strftime("%Y%m%d-%H%M%S")
+        run_dir = (
+            existing[-1] if existing else runs_root / time.strftime("%Y%m%d-%H%M%S")
+        )
     else:
         run_dir = runs_root / time.strftime("%Y%m%d-%H%M%S")
     run_dir.mkdir(parents=True, exist_ok=True)
