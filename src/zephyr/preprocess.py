@@ -43,9 +43,12 @@ CLI
 
 import argparse
 import json
+import threading
 import time as time_module
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
+import cv2
 import numpy as np
 import pandas as pd
 
@@ -228,6 +231,16 @@ def main() -> None:
         "are merged into the existing manifest and the rest are left alone, so "
         "re-annotating one session costs one clip's decode instead of 32.",
     )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=8,
+        help="Clips to process concurrently. Each clip's decode already runs "
+        "in its own ffmpeg subprocess, and DIS flow releases the GIL while it "
+        "computes, so threads -- not just processes -- give real parallelism "
+        "here without Windows' expensive per-worker interpreter relaunch. "
+        "1 disables concurrency.",
+    )
     args = parser.parse_args()
 
     data = json.loads(args.boxes_json.read_text())
@@ -279,33 +292,62 @@ def main() -> None:
         f"{len(clips)} clips | native {frame_w}x{frame_h} -> "
         f"downsample {target_size[0]}x{target_size[1]} "
         f"({frame_w / target_size[0]:.2f}x) -> crop {box_w}x{box_h} | "
-        f"{n_distinct} distinct box(es) | stride {args.stride}"
+        f"{n_distinct} distinct box(es) | stride {args.stride} | "
+        f"{args.workers} worker(s)"
     )
 
+    # Each worker's flow_estimator is created fresh inside preprocess_clip, so
+    # there is no shared OpenCV state across threads -- but cv2 also
+    # multithreads its own ops by default, which would oversubscribe cores on
+    # top of our thread pool. Force it single-threaded per call so all the
+    # parallelism comes from --workers.
+    cv2.setNumThreads(1)
+
     entries = []
-    for i, clip in enumerate(clips, start=1):
-        box = boxes[clip.clip_id]
-        entry = preprocess_clip(
-            clip,
-            args.camera,
-            target_size,
-            box,
-            args.out_dir,
-            stride=args.stride,
-            flow_scale_px=args.flow_scale_px,
-            flow_clip_px=args.flow_clip_px,
-            onset_sigma_s=args.onset_sigma_s,
-        )
-        entries.append(entry)
-        print(
-            f"  [{i}/{len(clips)}] {entry['clip_id']:16s} session {entry['session_idx']:>2d}  "
-            f"T={entry['n_frames']}  {entry['output_fs_hz']:.2f} Hz  "
-            f"rate={entry.get('breathing_rate_hz', float('nan')):.2f} Hz  "
-            f"sat diff={entry['diff_saturated_frac']:.2e} "
-            f"flow={entry['flow_saturated_frac']:.2e}  "
-            f"{entry['elapsed_s']:.0f}s",
-            flush=True,
-        )
+    completed = 0
+    print_lock = threading.Lock()
+    with ThreadPoolExecutor(max_workers=args.workers) as executor:
+        futures = {
+            executor.submit(
+                preprocess_clip,
+                clip,
+                args.camera,
+                target_size,
+                boxes[clip.clip_id],
+                args.out_dir,
+                stride=args.stride,
+                flow_scale_px=args.flow_scale_px,
+                flow_clip_px=args.flow_clip_px,
+                onset_sigma_s=args.onset_sigma_s,
+            ): clip
+            for clip in clips
+        }
+        try:
+            for future in as_completed(futures):
+                entry = future.result()
+                entries.append(entry)
+                with print_lock:
+                    completed += 1
+                    print(
+                        f"  [{completed}/{len(clips)}] {entry['clip_id']:16s} session {entry['session_idx']:>2d}  "
+                        f"T={entry['n_frames']}  {entry['output_fs_hz']:.2f} Hz  "
+                        f"rate={entry.get('breathing_rate_hz', float('nan')):.2f} Hz  "
+                        f"sat diff={entry['diff_saturated_frac']:.2e} "
+                        f"flow={entry['flow_saturated_frac']:.2e}  "
+                        f"{entry['elapsed_s']:.0f}s",
+                        flush=True,
+                    )
+        except BaseException:
+            # Don't wait out every already-submitted clip before reporting a
+            # failure -- drop whatever hasn't started yet and re-raise.
+            for pending in futures:
+                pending.cancel()
+            raise
+
+    # Completion order follows whichever worker finishes first, not clip
+    # order -- restore it so the manifest is identical regardless of
+    # --workers or scheduling.
+    entries.sort(key=lambda e: (e["session_idx"], e["part"]))
 
     manifest = {
         "config": {
