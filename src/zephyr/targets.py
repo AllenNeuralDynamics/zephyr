@@ -12,12 +12,14 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 from scipy.interpolate import interp1d
-from scoring.processing import detect_inhalation_events, filter_sniff_signal
+from scoring.processing import (
+    BREATHING_SIGNAL_COLUMN,
+    TIME_COLUMN,
+    detect_inhalation_events,
+    filter_sniff_signal,
+)
 
 from .clips import ClipRef
-
-THERMISTOR_TIME_COLUMN = "Time"
-THERMISTOR_SIGNAL_COLUMN = "Signal"
 
 
 @dataclass
@@ -57,8 +59,8 @@ def load_target(clip: ClipRef, times: np.ndarray) -> Target:
     """Build the training target for *clip*, sampled at *times*."""
 
     frame = pd.read_parquet(clip.thermistor_path())
-    t = frame[THERMISTOR_TIME_COLUMN].to_numpy(dtype=float)
-    v = frame[THERMISTOR_SIGNAL_COLUMN].to_numpy(dtype=float)
+    t = frame[TIME_COLUMN].to_numpy(dtype=float)
+    v = frame[BREATHING_SIGNAL_COLUMN].to_numpy(dtype=float)
 
     native_fs = 1.0 / float(np.median(np.diff(t)))
 

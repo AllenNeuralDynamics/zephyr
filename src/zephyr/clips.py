@@ -67,6 +67,8 @@ def discover_clips(
 ) -> list[ClipRef]:
     """Enumerate clips in ``{packaged_root}/{split}``, sorted by session then part.
 
+    Falls back to ``video_{camera}_*.mp4`` when no thermistor parquets exist
+    for the split (e.g. private/test).
     """
     clips_dir = packaged_root / split
     paths = sorted(clips_dir.glob("thermistor_*.parquet"))
