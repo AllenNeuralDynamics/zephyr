@@ -259,7 +259,7 @@ def main() -> None:
         )
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
-    clips = discover_clips(args.packaged_root, args.split)
+    clips = discover_clips(args.packaged_root, args.split, camera=args.camera)
     clips = [c for c in clips if c.exists(args.camera)]
 
     dropped = [c.clip_id for c in clips if c.session_idx in set(args.drop_sessions)]
