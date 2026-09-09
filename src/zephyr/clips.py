@@ -58,16 +58,30 @@ class ClipRef:
         return self.video(camera).exists() and self.frame_times_path(camera).exists()
 
 
-def discover_clips(packaged_root: Path, split: str = PUBLIC_SPLIT) -> list[ClipRef]:
+def _video_clip_re(camera: str) -> re.Pattern[str]:
+    return re.compile(rf"^video_{re.escape(camera)}_(\d+)_part_(\d+)\.mp4$")
+
+
+def discover_clips(
+    packaged_root: Path, split: str = PUBLIC_SPLIT, *, camera: str | None = None
+) -> list[ClipRef]:
     """Enumerate clips in ``{packaged_root}/{split}``, sorted by session then part.
 
-    Clips are found by their thermistor parquet, so an unlabelled split
-    enumerates as empty -- which is what stops a private directory being
-    preprocessed into targetless features that then fail obscurely in training.
+    Falls back to ``video_{camera}_*.mp4`` when no thermistor parquets exist
+    for the split (e.g. private/test).
     """
+    clips_dir = packaged_root / split
+    paths = sorted(clips_dir.glob("thermistor_*.parquet"))
+    pattern = _CLIP_RE
+    if not paths:
+        if camera is None:
+            return []
+        pattern = _video_clip_re(camera)
+        paths = sorted(clips_dir.glob(f"video_{camera}_*.mp4"))
+
     clips: list[ClipRef] = []
-    for path in sorted((packaged_root / split).glob("thermistor_*.parquet")):
-        match = _CLIP_RE.match(path.name)
+    for path in paths:
+        match = pattern.match(path.name)
         if match is None:
             continue
         clips.append(
@@ -129,14 +143,16 @@ def discover_sessions(
         Splits to enumerate, in the order they should be presented.
     camera:
         When given, only clips having video for this camera are included, and
-        sessions left with no clips are dropped.
+        sessions left with no clips are dropped. Also the fallback discovery
+        key for a split with no thermistor parquet (e.g. private/test) --
+        see :func:`discover_clips`.
     """
     sessions: list[SessionRef] = []
     for split in splits:
         if not (packaged_root / split).is_dir():
             continue
         by_index: dict[int, list[ClipRef]] = {}
-        for clip in discover_clips(packaged_root, split):
+        for clip in discover_clips(packaged_root, split, camera=camera):
             if camera is not None and not clip.exists(camera):
                 continue
             by_index.setdefault(clip.session_idx, []).append(clip)
