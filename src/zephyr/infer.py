@@ -48,6 +48,9 @@ def predict_clip(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Predict the full trace for one clip.
 
+    *mean* and *std* cover every stored channel; both they and the stored array
+    are sliced to ``model.channels`` here.
+
     Returns
     -------
     (signal, onset_prob)
@@ -59,6 +62,7 @@ def predict_clip(
     if margin is None:
         margin = model.receptive_field // 2
 
+    channels = model.channels
     array = np.load(entry.features, mmap_mode="r")
     n_frames = len(array)
     window = min(window, n_frames)
@@ -66,8 +70,9 @@ def predict_clip(
     margin = min(margin, (window - 1) // 2)
     hop = max(1, window - 2 * margin)
 
-    mean_t = torch.from_numpy(np.asarray(mean, np.float32)).view(1, -1, 1, 1)
-    std_t = torch.from_numpy(np.asarray(std, np.float32)).view(1, -1, 1, 1)
+    selected_mean, selected_std = channels.take_stats(mean, std)
+    mean_t = torch.from_numpy(np.asarray(selected_mean, np.float32)).view(1, -1, 1, 1)
+    std_t = torch.from_numpy(np.asarray(selected_std, np.float32)).view(1, -1, 1, 1)
 
     signal = np.zeros(n_frames, np.float32)
     onset = np.zeros(n_frames, np.float32)
@@ -77,7 +82,9 @@ def predict_clip(
         stop = start + window
         # Cast in numpy: the memmap slice is read-only, and torch.from_numpy
         # warns on non-writable storage.  The cast has to copy anyway.
-        block = torch.from_numpy(np.asarray(array[start:stop]).astype(np.float32))
+        block = torch.from_numpy(
+            channels.take(np.asarray(array[start:stop])).astype(np.float32)
+        )
         block = ((block - mean_t) / std_t).unsqueeze(0).to(device, non_blocking=True)
 
         if amp_dtype is not None:

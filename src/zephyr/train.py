@@ -31,6 +31,7 @@ from torch.optim.swa_utils import AveragedModel, get_ema_multi_avg_fn
 from torch.utils.data import DataLoader
 
 from .augment import AugmentConfig
+from .channels import CHANNEL_NAMES, ChannelSet
 from .dataset import (
     STATS_FILENAME,
     ClipEntry,
@@ -180,6 +181,16 @@ def main() -> None:
         help="Continue from last.pt in the run directory if one exists.",
     )
 
+    parser.add_argument(
+        "--channels",
+        default="gray+diff+flow",
+        help="Channels to train on, '+'- or ','-separated.  Names are gray, "
+        "diff, flow_x, flow_y, plus the groups flow (both flow planes) and "
+        "all.  Preprocessing always stores every channel, so this selects "
+        "without reprocessing: 'gray' and 'gray+diff+flow' read byte-identical "
+        "crops and share one channel_stats.json.  Order does not matter.",
+    )
+
     parser.add_argument("--window", type=int, default=512)
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--epochs", type=int, default=200)
@@ -294,6 +305,17 @@ def main() -> None:
             "only the public split can be trained on."
         )
 
+    stored = tuple(config["channel_names"])
+    if stored != CHANNEL_NAMES:
+        raise SystemExit(
+            f"{args.features_dir} stores channels {list(stored)} but this "
+            f"version expects {list(CHANNEL_NAMES)} -- re-run preprocess."
+        )
+    try:
+        channel_set = ChannelSet.parse(args.channels)
+    except ValueError as exc:
+        raise SystemExit(f"--channels: {exc}") from exc
+
     mean, std = channel_stats(labelled, args.features_dir / STATS_FILENAME)
 
     test_sessions = reserve_test_sessions(
@@ -336,7 +358,12 @@ def main() -> None:
         f"{len({e.session_idx for e in train_entries})} sessions  |  {tail}",
         flush=True,
     )
-    print(f"channel mean {np.round(mean, 2)}  std {np.round(std, 2)}", flush=True)
+    selected_mean, selected_std = channel_set.take_stats(mean, std)
+    print(
+        f"channels {channel_set} ({len(channel_set)} of {len(stored)} stored)  "
+        f"mean {np.round(selected_mean, 2)}  std {np.round(selected_std, 2)}",
+        flush=True,
+    )
 
     augment = AugmentConfig(
         time_stretch=args.time_stretch,
@@ -363,6 +390,7 @@ def main() -> None:
         seed=args.seed,
         augment=augment,
         span=train_span,
+        channels=channel_set,
     )
     # Gridded and non-overlapping, so the windowed number is comparable epoch to
     # epoch; capped because a full grid over every held-out clip is more forward
@@ -375,6 +403,7 @@ def main() -> None:
             std=std,
             stride=args.window,
             span=val_span,
+            channels=channel_set,
         )
         if scoring
         else None
@@ -397,9 +426,7 @@ def main() -> None:
         else None
     )
 
-    model = BreathingNet(
-        in_channels=len(config["channel_names"]), dropout=args.dropout
-    ).to(device)
+    model = BreathingNet(channels=channel_set, dropout=args.dropout).to(device)
     criterion = BreathingLoss(args.w_corr, args.w_onset, tuple(args.scales))
     optimiser = torch.optim.AdamW(
         model.parameters(), lr=args.lr, weight_decay=args.weight_decay
@@ -444,15 +471,17 @@ def main() -> None:
     )
 
     runs_root = args.out_dir / "baseline-cnn-tcn"
+    # The channel selection is in the directory name so a sweep over channel
+    # sets is legible without opening args.json.  The timestamp still leads, so
+    # --resume's "most recent" ordering is unchanged.
+    fresh_dir = runs_root / f"{time.strftime('%Y%m%d-%H%M%S')}-{channel_set.slug}"
     if args.resume:
         # Resume the most recently started run that has a checkpoint, rather
         # than a run directory named for this invocation's arguments.
         existing = sorted(p for p in runs_root.glob("*") if (p / "last.pt").exists())
-        run_dir = (
-            existing[-1] if existing else runs_root / time.strftime("%Y%m%d-%H%M%S")
-        )
+        run_dir = existing[-1] if existing else fresh_dir
     else:
-        run_dir = runs_root / time.strftime("%Y%m%d-%H%M%S")
+        run_dir = fresh_dir
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "args.json").write_text(
         json.dumps({k: str(v) for k, v in vars(args).items()}, indent=2)
@@ -487,6 +516,13 @@ def main() -> None:
                 "since_best": since_best,
                 "history": history,
                 "test_sessions": test_sessions,
+                # Not part of state_dict, but the weights are unusable without
+                # it: it fixes the first conv's input width and which planes of
+                # the stored array to feed it.
+                "channels": list(channel_set.names),
+                # Full-width, over every stored channel, so checkpoints trained
+                # on different selections stay comparable.  Consumers slice with
+                # ChannelSet.take_stats.
                 "mean": mean,
                 "std": std,
                 "args": vars(args)
@@ -510,6 +546,15 @@ def main() -> None:
             raise SystemExit(
                 f"{last_path} reserved {state['test_sessions']} but this run "
                 f"reserves {test_sessions} -- refusing to mix holdouts."
+            )
+        resumed_channels = tuple(
+            state.get("channels") or state["feature_config"]["channel_names"]
+        )
+        if resumed_channels != channel_set.names:
+            raise SystemExit(
+                f"{last_path} was trained on channels {list(resumed_channels)} "
+                f"but this run asks for {list(channel_set.names)} -- the first "
+                "convolution has a different shape, so it cannot be resumed."
             )
         model.load_state_dict(state.get("model_live") or state["model"])
         if ema is not None and state.get("ema") is not None:
