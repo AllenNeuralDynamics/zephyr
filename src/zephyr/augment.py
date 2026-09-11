@@ -3,13 +3,16 @@ from dataclasses import dataclass
 import numpy as np
 from scipy.signal import find_peaks
 
-from .channels import CHANNEL_NAMES
+from .channels import ChannelSet
 
-GRAY = CHANNEL_NAMES.index("gray")
-DIFF = CHANNEL_NAMES.index("diff")
-FLOW_X = CHANNEL_NAMES.index("flow_x")
-FLOW_Y = CHANNEL_NAMES.index("flow_y")
-MOTION = (DIFF, FLOW_X, FLOW_Y)
+MOTION_CHANNELS = ("diff", "flow_x", "flow_y")
+"""Channels that measure motion between frames rather than appearance."""
+
+# Every function here is handed the block a model actually sees, which holds
+# only the selected channels -- so a channel is addressed by
+# ``ChannelSet.position``, its index *within that selection*, and never by its
+# position in the stored array.  An augmentation whose channel is not selected
+# is simply skipped.
 
 
 @dataclass(frozen=True)
@@ -32,21 +35,27 @@ class AugmentConfig:
         Rescale the motion channels by the stretch factor.  ``diff`` is
         ``I(t) - I(t-dt)``, proportional to ``dt`` for small intervals, so
         changing the effective frame interval must scale it or a stretched
-        sample pairs a slow rhythm with fast-rhythm motion magnitudes.
+        sample pairs a slow rhythm with fast-rhythm motion magnitudes.  A no-op
+        when no motion channel is selected.
     shift_px:
         Maximum spatial translation in pixels, drawn uniformly per axis.  Guards
         against the model keying on the crop's absolute position.
     brightness / contrast:
         Applied to the ``gray`` channel only, as fractional deviations from 1.0.
         The motion channels are differences and are already invariant to a
-        constant offset.
+        constant offset.  A no-op when ``gray`` is not selected.
     noise:
         Standard deviation of additive Gaussian noise, in uint8 code units,
         applied to every channel before standardisation.
     flip:
         Horizontal mirror probability.  Mirroring must negate ``flow_x``,
-        otherwise the flow field contradicts the image.  Off by default when a
-        camera only ever views one side of the subject.
+        otherwise the flow field contradicts the image -- skipped when
+        ``flow_x`` is not selected, since then there is nothing to contradict.
+        Off by default when a camera only ever views one side of the subject.
+
+    Note that these do not all apply to every channel, so two models trained on
+    different channel sets are not regularised quite equally: a ``gray``-only
+    model sees no motion scaling, a motion-only model no photometric jitter.
     """
 
     time_stretch: float = 1.0
@@ -126,13 +135,18 @@ def rate_targeted_stretch(
     return float(np.clip(desired / rate, 1.0 / bound, bound))
 
 
-def scale_motion_channels(block: np.ndarray, stretch: float) -> np.ndarray:
-    """Scale the motion channels about their 128 centre by *stretch*."""
+def scale_motion_channels(
+    block: np.ndarray, stretch: float, channels: ChannelSet
+) -> np.ndarray:
+    """Scale whichever motion channels are selected about their 128 centre."""
     if stretch == 1.0:
         return block
-    for channel in MOTION:
-        block[:, channel] = np.clip(
-            (block[:, channel] - 128.0) * stretch + 128.0, 0.0, 255.0
+    for name in MOTION_CHANNELS:
+        position = channels.position(name)
+        if position is None:
+            continue
+        block[:, position] = np.clip(
+            (block[:, position] - 128.0) * stretch + 128.0, 0.0, 255.0
         )
     return block
 
@@ -154,9 +168,15 @@ def resample_time(x: np.ndarray, n_out: int) -> np.ndarray:
 
 
 def apply_spatial(
-    block: np.ndarray, rng: np.random.Generator, config: AugmentConfig
+    block: np.ndarray,
+    rng: np.random.Generator,
+    config: AugmentConfig,
+    channels: ChannelSet,
 ) -> np.ndarray:
-    """Shift, flip, and photometrically jitter a ``(T, C, H, W)`` float block."""
+    """Shift, flip, and photometrically jitter a ``(T, C, H, W)`` float block.
+
+    *block* holds only the channels in *channels*, in that order.
+    """
     if config.shift_px > 0:
         dy = int(rng.integers(-config.shift_px, config.shift_px + 1))
         dx = int(rng.integers(-config.shift_px, config.shift_px + 1))
@@ -182,13 +202,19 @@ def apply_spatial(
         block = block[:, :, :, ::-1].copy()
         # A mirrored frame reverses horizontal motion, so the encoded flow_x must
         # be reflected about its 128 centre or it would disagree with the image.
-        block[:, FLOW_X] = 255.0 - block[:, FLOW_X]
+        flow_x = channels.position("flow_x")
+        if flow_x is not None:
+            block[:, flow_x] = 255.0 - block[:, flow_x]
 
     if config.brightness > 0 or config.contrast > 0:
-        gain = 1.0 + rng.uniform(-config.contrast, config.contrast)
-        offset = 255.0 * rng.uniform(-config.brightness, config.brightness)
-        gray = block[:, GRAY]
-        block[:, GRAY] = np.clip((gray - 128.0) * gain + 128.0 + offset, 0.0, 255.0)
+        gray_channel = channels.position("gray")
+        if gray_channel is not None:
+            gain = 1.0 + rng.uniform(-config.contrast, config.contrast)
+            offset = 255.0 * rng.uniform(-config.brightness, config.brightness)
+            gray = block[:, gray_channel]
+            block[:, gray_channel] = np.clip(
+                (gray - 128.0) * gain + 128.0 + offset, 0.0, 255.0
+            )
 
     if config.noise > 0:
         block = block + rng.normal(0.0, config.noise, block.shape).astype(np.float32)

@@ -27,7 +27,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from .channels import N_CHANNELS
+from .channels import ALL_CHANNELS, ChannelSet
 
 
 class FrameEncoder(nn.Module):
@@ -41,7 +41,7 @@ class FrameEncoder(nn.Module):
 
     def __init__(
         self,
-        in_channels: int = N_CHANNELS,
+        in_channels: int,
         widths: tuple[int, ...] = (32, 64, 96, 128),
         embed: int = 128,
         pool: int = 2,
@@ -144,11 +144,17 @@ class TemporalNet(nn.Module):
 
 
 class BreathingNet(nn.Module):
-    """The full model: per-frame CNN, then TCN over the frame sequence."""
+    """The full model: per-frame CNN, then TCN over the frame sequence.
+
+    ``channels`` names the stored channels this model consumes, in order, and
+    sets the encoder's input width.  :func:`~.infer.predict_clip` reads it to
+    slice the stored array and its per-channel statistics; :mod:`.train`
+    records it in the checkpoint.
+    """
 
     def __init__(
         self,
-        in_channels: int = N_CHANNELS,
+        channels: ChannelSet = ALL_CHANNELS,
         widths: tuple[int, ...] = (32, 64, 96, 128),
         embed: int = 128,
         tcn_channels: int = 128,
@@ -157,8 +163,9 @@ class BreathingNet(nn.Module):
         encoder_dropout: float = 0.0,
     ) -> None:
         super().__init__()
+        self.channels = channels
         self.encoder = FrameEncoder(
-            in_channels, widths, embed=embed, dropout=encoder_dropout
+            len(channels), widths, embed=embed, dropout=encoder_dropout
         )
         self.temporal = TemporalNet(
             embed, channels=tcn_channels, dilations=dilations, dropout=dropout

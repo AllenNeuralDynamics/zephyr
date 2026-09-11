@@ -23,6 +23,14 @@ sub-pixel displacement rather than giving up at a coarser level.
 ``stride`` should match the decimation stride used elsewhere, so the motion
 channels describe exactly the interval between consecutive *stored* frames.
 
+Storing every channel, training on a subset
+-------------------------------------------
+Preprocessing always writes all four channels.  Which of them a model is
+actually *trained* on is a separate, training-time choice, expressed as a
+:class:`ChannelSet` -- so comparing a 1-channel model against a 4-channel one
+needs no second preprocessing pass, and every variant reads byte-identical
+crops and shares one set of normalisation statistics.
+
 Quantisation
 ------------
 Every channel is stored as uint8 to keep one compact array per clip:
@@ -42,6 +50,10 @@ resolves both at once -- linear near zero and logarithmic beyond it -- giving
 fine steps close to zero while still representing large excursions.
 """
 
+import re
+from collections.abc import Iterable
+from dataclasses import dataclass
+
 import cv2
 import numpy as np
 
@@ -60,6 +72,145 @@ Below this the encoding is effectively linear.
 FLOW_CLIP_PX = 16.0
 """Flow bound in pixels.  With companding this is large enough that saturation
 is negligible, so it functions as a range limit rather than a lossy clip."""
+
+CHANNEL_GROUPS: dict[str, tuple[str, ...]] = {
+    "gray": ("gray",),
+    "diff": ("diff",),
+    "flow": ("flow_x", "flow_y"),
+    "all": CHANNEL_NAMES,
+}
+"""Names accepted when selecting channels, beyond the raw channel names.
+
+``flow`` names both flow planes at once: they are one estimator's two outputs,
+and keeping them together is what lets a horizontal flip stay coherent -- a
+mirrored frame has to negate ``flow_x``, which is meaningless if only ``flow_y``
+is present.
+"""
+
+
+@dataclass(frozen=True)
+class ChannelSet:
+    """The channels one model is trained on, and where they sit in the array.
+
+    Preprocessing writes all of :data:`CHANNEL_NAMES`; this holds the subset a
+    model consumes, always ordered as stored.  Two index spaces, which differ:
+
+    :attr:`indices`
+        Positions in the stored ``(T, 4, H, W)`` array.
+    :meth:`position`
+        Position within the selection -- the block a model actually sees, and
+        what :mod:`.augment` indexes by.
+    """
+
+    names: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if not self.names:
+            raise ValueError("a ChannelSet needs at least one channel")
+        unknown = [n for n in self.names if n not in CHANNEL_NAMES]
+        if unknown:
+            raise ValueError(
+                f"unknown channel(s) {unknown}; stored channels are "
+                f"{list(CHANNEL_NAMES)}"
+            )
+        if list(self.names) != [n for n in CHANNEL_NAMES if n in set(self.names)]:
+            raise ValueError(
+                f"channels must be in stored order {list(CHANNEL_NAMES)}, "
+                f"got {list(self.names)} -- use ChannelSet.parse, which sorts"
+            )
+
+    @classmethod
+    def parse(cls, spec: str | Iterable[str]) -> "ChannelSet":
+        """Build from ``"gray+diff+flow"``, ``"gray,diff"``, or a list of names.
+
+        Group names from :data:`CHANNEL_GROUPS` are expanded, duplicates
+        collapse, and the result is always ordered as stored -- so the same
+        selection written two ways gives the same object, and the same slug.
+        """
+        tokens = (
+            [t for t in re.split(r"[+,\s]+", spec.strip()) if t]
+            if isinstance(spec, str)
+            else [str(t) for t in spec]
+        )
+        if not tokens:
+            raise ValueError(f"no channels named in {spec!r}")
+        wanted: set[str] = set()
+        for token in tokens:
+            expanded = CHANNEL_GROUPS.get(token)
+            if expanded is None:
+                if token not in CHANNEL_NAMES:
+                    raise ValueError(
+                        f"unknown channel {token!r}; choose from "
+                        f"{sorted(set(CHANNEL_NAMES) | set(CHANNEL_GROUPS))}"
+                    )
+                expanded = (token,)
+            wanted.update(expanded)
+        return cls(tuple(n for n in CHANNEL_NAMES if n in wanted))
+
+    def __len__(self) -> int:
+        return len(self.names)
+
+    def __str__(self) -> str:
+        return "+".join(self._folded())
+
+    @property
+    def is_complete(self) -> bool:
+        return self.names == CHANNEL_NAMES
+
+    @property
+    def indices(self) -> tuple[int, ...]:
+        """Positions of these channels in the stored array."""
+        return tuple(CHANNEL_NAMES.index(n) for n in self.names)
+
+    def _folded(self) -> list[str]:
+        """Channel names with the complete flow pair folded back to ``flow``.
+
+        So a selection is echoed the way it was asked for -- ``gray+diff+flow``
+        rather than ``gray+diff+flow_x+flow_y``.  A lone flow plane, which no
+        group can name, is left spelled out.
+        """
+        flow = ("flow_x", "flow_y")
+        parts = [n for n in self.names if n not in flow]
+        if all(f in self.names for f in flow):
+            parts.append("flow")
+        else:
+            parts.extend(f for f in flow if f in self.names)
+        return parts
+
+    @property
+    def slug(self) -> str:
+        """Filesystem-safe name for this selection, for run directories."""
+        return "_".join(self._folded())
+
+    def position(self, name: str) -> int | None:
+        """Index of *name* within the selection, or ``None`` if not selected."""
+        return self.names.index(name) if name in self.names else None
+
+    def take(self, block: np.ndarray) -> np.ndarray:
+        """Slice the channel axis of a ``(T, C, H, W)`` stored block.
+
+        Returned unchanged for the complete set, so the default path costs
+        nothing and stays byte-identical to reading the array directly.
+        """
+        if self.is_complete:
+            return block
+        return block[:, self.indices]
+
+    def take_stats(
+        self, mean: np.ndarray, std: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Slice per-channel statistics measured over *all* stored channels.
+
+        Statistics are always measured and cached for the full stored set, so
+        one cache serves every selection and no two runs can disagree about
+        what a channel's mean is.
+        """
+        index = list(self.indices)
+        return np.asarray(mean)[index], np.asarray(std)[index]
+
+
+ALL_CHANNELS = ChannelSet(CHANNEL_NAMES)
+"""Every stored channel -- what preprocessing writes, and the training default."""
 
 
 def _flow_gain(scale_px: float, clip_px: float) -> float:
