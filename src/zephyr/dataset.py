@@ -50,7 +50,7 @@ from .augment import (
     resample_time,
     scale_motion_channels,
 )
-from .channels import CHANNEL_NAMES, N_CHANNELS
+from .channels import ALL_CHANNELS, CHANNEL_NAMES, N_CHANNELS, ChannelSet
 
 STATS_FILENAME = "channel_stats.json"
 
@@ -109,6 +109,11 @@ def channel_stats(
     Sampled rather than exhaustive: *frames_per_clip* frames spread evenly over
     each clip is enough to pin the mean well under a count.  Cached to
     *cache_path* so training and inference cannot disagree.
+
+    Always measured over every stored channel, whatever subset a run trains on
+    -- so one cache serves every :class:`~.channels.ChannelSet` with no
+    recompute, and two runs can never disagree about a channel's mean.  Slice
+    the result with :meth:`~.channels.ChannelSet.take_stats`.
     """
     if cache_path.exists():
         cached = json.loads(cache_path.read_text())
@@ -165,7 +170,13 @@ class WindowDataset(Dataset):
     window:
         Window length in output frames (60 Hz).
     mean, std:
-        Per-channel standardisation constants from :func:`channel_stats`.
+        Per-channel standardisation constants from :func:`channel_stats`, over
+        *all* stored channels.  Sliced here to match *channels*, so callers
+        pass the full-width arrays and cannot mismatch them.
+    channels:
+        Which stored channels this dataset yields, and in what order.  The
+        stored array always holds every channel; this selects the subset a
+        model is trained on.
     stride:
         When given, windows are laid out on a fixed grid with this hop and the
         dataset is deterministic -- the validation mode.  When ``None``, each
@@ -197,6 +208,7 @@ class WindowDataset(Dataset):
         seed: int = 0,
         augment: AugmentConfig | None = None,
         span: tuple[float, float] = (0.0, 1.0),
+        channels: ChannelSet = ALL_CHANNELS,
     ) -> None:
         missing = [e.clip_id for e in entries if not e.has_target]
         if missing:
@@ -213,9 +225,15 @@ class WindowDataset(Dataset):
             # reported number drift with the augmentation strength rather than
             # with the model.
             raise ValueError("augmentation must not be enabled on gridded windows")
+        self.channels = channels
+        selected_mean, selected_std = channels.take_stats(mean, std)
         # (1, C, 1, 1) so broadcasting hits the channel axis of a (T, C, H, W) window.
-        self.mean = torch.from_numpy(np.asarray(mean, np.float32)).view(1, -1, 1, 1)
-        self.std = torch.from_numpy(np.asarray(std, np.float32)).view(1, -1, 1, 1)
+        self.mean = torch.from_numpy(np.asarray(selected_mean, np.float32)).view(
+            1, -1, 1, 1
+        )
+        self.std = torch.from_numpy(np.asarray(selected_std, np.float32)).view(
+            1, -1, 1, 1
+        )
 
         self._arrays: dict[str, np.ndarray] = {}
         self._targets: dict[str, tuple[np.ndarray, np.ndarray]] = {}
@@ -321,7 +339,11 @@ class WindowDataset(Dataset):
             n_source = window
 
         stop = start + n_source
-        block = np.asarray(self._array(entry)[start:stop])  # (T, C, H, W) uint8
+        # Select before resampling and augmenting, so neither pays for channels
+        # this model will never see.
+        block = self.channels.take(
+            np.asarray(self._array(entry)[start:stop])
+        )  # (T, C, H, W) uint8
         signal = signal_all[start:stop]
         heatmap = heatmap_all[start:stop]
 
@@ -338,8 +360,8 @@ class WindowDataset(Dataset):
 
         if rng is not None and self.augment.enabled:
             if self.augment.scale_motion:
-                block = scale_motion_channels(block, stretch)
-            block = apply_spatial(block, rng, self.augment)
+                block = scale_motion_channels(block, stretch, self.channels)
+            block = apply_spatial(block, rng, self.augment, self.channels)
 
         features = torch.from_numpy(np.ascontiguousarray(block, dtype=np.float32))
         features = (features - self.mean) / self.std
