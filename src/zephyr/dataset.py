@@ -60,7 +60,6 @@ from torch.utils.data import Dataset, Sampler
 
 from .augment import (
     AugmentConfig,
-    add_motion_noise,
     apply_spatial,
     gather_positions,
     jitter_positions,
@@ -476,7 +475,6 @@ class WindowDataset(Dataset):
                 block = scale_motion_channels(
                     block, self.motion_scale(stretch), self.channels
                 )
-            block = add_motion_noise(block, rng, self.augment, self.channels)
             block = apply_spatial(block, rng, self.augment, self.channels)
 
         features = torch.from_numpy(np.ascontiguousarray(block, dtype=np.float32))
