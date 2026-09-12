@@ -9,13 +9,22 @@ butt-joining would stamp a visible artefact into the trace every window.  With
 the margin trimmed, every output sample comes from a fully-populated receptive
 field, and the stitched trace is identical to what an unbounded forward pass
 would produce.
+
+Windows are laid out on the **output** grid -- what the receptive field, the
+margin and the returned trace are all counted in -- and each reads whichever
+selection frames cover its time span.  Time-stretch is training-only, so the
+input positions are a plain contiguous slice.
 """
 
 import numpy as np
 import torch
 
-from .dataset import ClipEntry
+from .dataset import INTERP_MARGIN, ClipEntry
 from .model import BreathingNet
+
+INPUT_MARGIN = INTERP_MARGIN
+"""The same slack the training windows keep, so the embedding interpolation
+brackets its targets rather than clamping."""
 
 
 def window_starts(n_frames: int, window: int, hop: int) -> list[int]:
@@ -54,9 +63,10 @@ def predict_clip(
     Returns
     -------
     (signal, onset_prob)
-        Both length ``entry.n_frames``.  *signal* is z-scored over the clip --
-        the scorer's ``max_xcorr`` is amplitude-invariant, and a per-clip z-score
-        is the closest thing to a canonical choice.
+        Both aligned with ``np.load(entry.times)``, the clip's 60 Hz output
+        grid.  *signal* is z-scored over the clip -- the scorer's ``max_xcorr``
+        is amplitude-invariant, and a per-clip z-score is the closest thing to
+        a canonical choice.
     """
     model.eval()
     if margin is None:
@@ -64,8 +74,10 @@ def predict_clip(
 
     channels = model.channels
     array = np.load(entry.features, mmap_mode="r")
-    n_frames = len(array)
-    window = min(window, n_frames)
+    frame_times = np.load(entry.frame_times)
+    grid = np.load(entry.times)
+    n_out = len(grid)
+    window = min(window, n_out)
     # A margin at or past half the window would leave no interior to keep.
     margin = min(margin, (window - 1) // 2)
     hop = max(1, window - 2 * margin)
@@ -74,24 +86,44 @@ def predict_clip(
     mean_t = torch.from_numpy(np.asarray(selected_mean, np.float32)).view(1, -1, 1, 1)
     std_t = torch.from_numpy(np.asarray(selected_std, np.float32)).view(1, -1, 1, 1)
 
-    signal = np.zeros(n_frames, np.float32)
-    onset = np.zeros(n_frames, np.float32)
-    filled = np.zeros(n_frames, bool)
+    signal = np.zeros(n_out, np.float32)
+    onset = np.zeros(n_out, np.float32)
+    filled = np.zeros(n_out, bool)
 
-    for start in window_starts(n_frames, window, hop):
+    for start in window_starts(n_out, window, hop):
         stop = start + window
+        out_times = grid[start:stop]
+        # Whichever selection frames cover this window's span, plus slack.
+        first = max(0, int(np.searchsorted(frame_times, out_times[0])) - INPUT_MARGIN)
+        last = min(
+            len(frame_times),
+            int(np.searchsorted(frame_times, out_times[-1])) + 1 + INPUT_MARGIN,
+        )
+
         # Cast in numpy: the memmap slice is read-only, and torch.from_numpy
         # warns on non-writable storage.  The cast has to copy anyway.
         block = torch.from_numpy(
-            channels.take(np.asarray(array[start:stop])).astype(np.float32)
+            channels.take(np.asarray(array[first:last])).astype(np.float32)
         )
         block = ((block - mean_t) / std_t).unsqueeze(0).to(device, non_blocking=True)
 
+        origin = out_times[0]
+        t_in = (
+            torch.from_numpy((frame_times[first:last] - origin).astype(np.float32))
+            .unsqueeze(0)
+            .to(device, non_blocking=True)
+        )
+        t_out = (
+            torch.from_numpy((out_times - origin).astype(np.float32))
+            .unsqueeze(0)
+            .to(device, non_blocking=True)
+        )
+
         if amp_dtype is not None:
             with torch.autocast(device_type=torch.device(device).type, dtype=amp_dtype):
-                pred_signal, pred_onset = model(block, chunk=frame_chunk)
+                pred_signal, pred_onset = model(block, t_in, t_out, chunk=frame_chunk)
         else:
-            pred_signal, pred_onset = model(block, chunk=frame_chunk)
+            pred_signal, pred_onset = model(block, t_in, t_out, chunk=frame_chunk)
 
         pred_signal = pred_signal.float().squeeze(0).cpu().numpy()
         pred_onset = torch.sigmoid(pred_onset.float()).squeeze(0).cpu().numpy()
@@ -99,14 +131,14 @@ def predict_clip(
         # Trim the padding-contaminated edges, except where the window sits
         # against the true start or end of the clip -- there the padding is real.
         lo = start + (margin if start > 0 else 0)
-        hi = stop - (margin if stop < n_frames else 0)
+        hi = stop - (margin if stop < n_out else 0)
         signal[lo:hi] = pred_signal[lo - start : hi - start]
         onset[lo:hi] = pred_onset[lo - start : hi - start]
         filled[lo:hi] = True
 
     if not filled.all():
         raise RuntimeError(
-            f"{entry.clip_id}: {int((~filled).sum())} frames were never predicted "
+            f"{entry.clip_id}: {int((~filled).sum())} samples were never predicted "
             f"(window={window}, margin={margin}, hop={hop})"
         )
 

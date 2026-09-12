@@ -11,6 +11,21 @@ effective sample count is every valid offset in a clip rather than one
 window per receptive-field-length. Validation windows *are* gridded and
 non-overlapping, so the reported number is stable between epochs.
 
+A window is two sequences, not one
+----------------------------------
+``window`` counts *output* samples at 60 Hz; the frames fed to the CNN live on
+the *selection* grid.  The two are joined inside the model
+(:func:`~.model.resample_embeddings`), so every item carries ``t_in`` and
+``t_out`` alongside the pixels, both relative to the window's own start.
+
+Input frames are read at **fractional** selection positions spaced ``stretch``
+apart, which is what keeps time-stretch free: a 3x stretch spans three times as
+much clip but hands the CNN the same number of frames.  Unstretched on a 60 Hz
+selection grid the positions are integers and the read is a contiguous slice.
+
+The start position is a *float*, so the output grid's phase relative to the
+native video frames is continuous rather than locked to the selection grid.
+
 The draw is keyed on the dataset index alone, never on a mutable epoch counter.
 DataLoader workers are spawned on Windows and hold a frozen copy of the dataset,
 so an epoch attribute set in the parent would never reach them and every epoch
@@ -45,27 +60,48 @@ from torch.utils.data import Dataset, Sampler
 
 from .augment import (
     AugmentConfig,
+    add_motion_noise,
     apply_spatial,
+    gather_positions,
+    jitter_positions,
     rate_targeted_stretch,
-    resample_time,
     scale_motion_channels,
 )
 from .channels import ALL_CHANNELS, CHANNEL_NAMES, N_CHANNELS, ChannelSet
+from .targets import onset_heatmap
 
 STATS_FILENAME = "channel_stats.json"
+
+INTERP_MARGIN = 2
+"""Extra input frames kept either side of a window's output span.
+
+The selection grid is only *nearly* uniform (each anchor sits within half a
+native frame period of its tick) while the output grid is exactly uniform.  Two
+frames is far more slack than that jitter can consume, which keeps every output
+sample inside the input span so the interpolation never clamps.
+"""
 
 
 @dataclass(frozen=True)
 class ClipEntry:
-    """One preprocessed clip: where its arrays live and which session it is."""
+    """One preprocessed clip: where its arrays live and which session it is.
+
+    Two lengths because a clip lives on two grids: *n_frames* on the selection
+    grid (``features`` / ``frame_times``) and *n_output* on the 60 Hz output
+    grid (``times`` / ``target``).
+    """
 
     clip_id: str
     session_idx: int
     part: int
     n_frames: int
+    n_output: int
     features: Path
+    frame_times: Path
+    baselines: Path
     times: Path
     target: Path | None
+    events: Path | None
 
     @property
     def has_target(self) -> bool:
@@ -88,9 +124,13 @@ def load_manifest(
             session_idx=c["session_idx"],
             part=c["part"],
             n_frames=c["n_frames"],
+            n_output=c["n_output"],
             features=features_dir / c["features"],
+            frame_times=features_dir / c["frame_times"],
+            baselines=features_dir / c["baselines"],
             times=features_dir / c["times"],
             target=features_dir / c["target"] if c.get("target") else None,
+            events=features_dir / c["events"] if c.get("events") else None,
         )
         for c in manifest["clips"]
     ]
@@ -152,11 +192,22 @@ def channel_stats(
     return mean.astype(np.float32), std.astype(np.float32)
 
 
-def _load_target_frame(entry: ClipEntry) -> tuple[np.ndarray, np.ndarray]:
+def _load_target_frame(
+    entry: ClipEntry,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Output-grid times, the target signal on them, and the onset times.
+
+    The stored ``onset_heatmap`` column is deliberately unused: a window lands
+    on its own output grid, and rebuilding from onset *times* places each bump
+    exactly, where resampling an already-discretised heatmap would smear a
+    sigma=20 ms bump that is barely one sample wide.
+    """
     frame = pd.read_parquet(entry.target)
+    onsets = np.load(entry.events)["onset_times"]
     return (
+        frame["time"].to_numpy(np.float64),
         frame["signal"].to_numpy(np.float32),
-        frame["onset_heatmap"].to_numpy(np.float32),
+        onsets.astype(np.float64),
     )
 
 
@@ -168,7 +219,12 @@ class WindowDataset(Dataset):
     entries:
         Clips to draw from.  All must carry a target.
     window:
-        Window length in output frames (60 Hz).
+        Window length in *output* samples.  How many frames the CNN reads for
+        it follows from *select_fs* and the drawn stretch.
+    select_fs, output_fs, motion_tau_s, onset_sigma_s:
+        From the preprocessing manifest's ``config``, never defaulted: a cache
+        built at one selection rate read as if it were another would mis-scale
+        every motion channel with no visible symptom.
     mean, std:
         Per-channel standardisation constants from :func:`channel_stats`, over
         *all* stored channels.  Sliced here to match *channels*, so callers
@@ -203,6 +259,10 @@ class WindowDataset(Dataset):
         window: int,
         mean: np.ndarray,
         std: np.ndarray,
+        select_fs: float,
+        output_fs: float,
+        motion_tau_s: float,
+        onset_sigma_s: float = 0.020,
         stride: int | None = None,
         length: int | None = None,
         seed: int = 0,
@@ -220,6 +280,17 @@ class WindowDataset(Dataset):
         self.window = window
         self.seed = seed
         self.augment = augment or AugmentConfig()
+        self.select_fs = select_fs
+        self.output_fs = output_fs
+        self.motion_tau_s = motion_tau_s
+        self.onset_sigma_s = onset_sigma_s
+
+        # Input positions are spaced `stretch` apart, so `n_core` of them span
+        # exactly as much clip as the window's output samples do.
+        self.step_base = select_fs / output_fs
+        self.margin = INTERP_MARGIN
+        self.n_core = round((window - 1) * self.step_base) + 1
+        self.n_in = self.n_core + 2 * self.margin
         if stride is not None and self.augment.enabled:
             # Gridded mode is the validation path; augmenting it would make the
             # reported number drift with the augmentation strength rather than
@@ -236,11 +307,12 @@ class WindowDataset(Dataset):
         )
 
         self._arrays: dict[str, np.ndarray] = {}
-        self._targets: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+        self._targets: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
+        self._frame_time_cache: dict[str, np.ndarray] = {}
 
-        # A stretch factor above 1 reads more source frames than it returns, so
-        # a clip must be long enough for the widest draw, not just the window.
-        self.max_source = int(np.ceil(window * self.augment.max_source_frames))
+        # A stretch factor above 1 spans more of the clip than it returns, so a
+        # clip must be long enough for the widest draw, not just the window.
+        self.max_source = int(np.ceil(self.extent(self.augment.max_source_frames))) + 1
         if not 0.0 <= span[0] < span[1] <= 1.0:
             raise ValueError(f"span must satisfy 0 <= start < stop <= 1, got {span}")
         self.span = span
@@ -255,19 +327,22 @@ class WindowDataset(Dataset):
         ]
         if not usable:
             raise ValueError(
-                f"no clip has {self.max_source} frames inside span {span} "
-                f"(longest clip is {max(e.n_frames for e in entries)} frames)"
+                f"no clip has {self.max_source} selection frames inside span "
+                f"{span} (longest clip is {max(e.n_frames for e in entries)})"
             )
         self.usable = usable
 
         if stride is not None:
-            self.index: list[tuple[int, int]] = [
-                (i, start)
+            # Gridded mode never stretches, so the span of one window is fixed.
+            extent = self.extent(1.0)
+            hop = max(1.0, stride * self.step_base)
+            self.index: list[tuple[int, float]] = [
+                (i, float(start))
                 for i, entry in enumerate(usable)
-                for start in range(
+                for start in np.arange(
                     self.bounds[entry.clip_id][0],
-                    self.bounds[entry.clip_id][1] - window + 1,
-                    stride,
+                    self.bounds[entry.clip_id][1] - extent,
+                    hop,
                 )
             ]
             self.random = False
@@ -289,6 +364,19 @@ class WindowDataset(Dataset):
             self.weights = offsets / offsets.sum()
             self.length = length if length is not None else 8 * len(usable)
 
+    def extent(self, stretch: float) -> float:
+        """Selection-grid span one window covers at *stretch*, including margin."""
+        return (self.n_in - 1) * stretch
+
+    def motion_scale(self, stretch: float) -> float:
+        """Factor the motion channels need at *stretch*.
+
+        Stored values are displacement per ``motion_tau_s``, but a stretched
+        window makes one output sample cover ``stretch / output_fs`` seconds.
+        Equals *stretch* exactly at the default 60 Hz / 16.67 ms pairing.
+        """
+        return (stretch / self.output_fs) / self.motion_tau_s
+
     def __len__(self) -> int:
         return len(self.index) if not self.random else self.length
 
@@ -301,12 +389,26 @@ class WindowDataset(Dataset):
             self._arrays[entry.clip_id] = array
         return array
 
-    def _target(self, entry: ClipEntry) -> tuple[np.ndarray, np.ndarray]:
+    def _target(self, entry: ClipEntry) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         target = self._targets.get(entry.clip_id)
         if target is None:
             target = _load_target_frame(entry)
             self._targets[entry.clip_id] = target
         return target
+
+    def _frame_times(self, entry: ClipEntry) -> np.ndarray:
+        times = self._frame_time_cache.get(entry.clip_id)
+        if times is None:
+            times = np.load(entry.frame_times)
+            self._frame_time_cache[entry.clip_id] = times
+        return times
+
+    def _draw_start(
+        self, rng: np.random.Generator, lo: int, hi: int, stretch: float
+    ) -> float:
+        """Uniform float start position leaving room for the whole window."""
+        top = hi - 1 - self.extent(stretch)
+        return float(rng.uniform(lo, top)) if top > lo else float(lo)
 
     def __getitem__(self, i: int) -> dict[str, torch.Tensor]:
         window = self.window
@@ -315,63 +417,81 @@ class WindowDataset(Dataset):
             rng = np.random.default_rng((self.seed, i))
             clip_i = int(rng.choice(len(self.usable), p=self.weights))
             entry = self.usable[clip_i]
-            signal_all, heatmap_all = self._target(entry)
-
             lo, hi = self.bounds[entry.clip_id]
-            start = int(rng.integers(lo, hi - window + 1))
+            target_times, signal_all, onset_times = self._target(entry)
+            frame_times = self._frame_times(entry)
+
+            start = self._draw_start(rng, lo, hi, 1.0)
             if self.augment.time_stretch > 1.0:
-                # Measure the rate on a provisional window first, then choose the
-                # stretch: the target is already in memory, so this costs a peak
-                # count and nothing else.
-                stretch = rate_targeted_stretch(
-                    signal_all[start : start + window], rng, self.augment
+                # Measure the rate on a provisional window first, then choose
+                # the stretch: the target is already in memory, so this costs a
+                # peak count and nothing else.
+                probe_t = float(frame_times[int(start)])
+                probe = int(
+                    np.clip(
+                        round((probe_t - target_times[0]) * self.output_fs),
+                        0,
+                        max(0, len(signal_all) - window),
+                    )
                 )
-            # Read `n_source` real frames and resample them to `window`: more
-            # than the window compresses time (faster rhythm), fewer stretches
-            # it (slower).
-            n_source = max(2, min(round(window * stretch), hi - lo))
-            start = min(start, hi - n_source)
+                stretch = rate_targeted_stretch(
+                    signal_all[probe : probe + window],
+                    rng,
+                    self.augment,
+                    self.output_fs,
+                )
+                start = self._draw_start(rng, lo, hi, stretch)
         else:
             rng = None
             clip_i, start = self.index[i]
             entry = self.usable[clip_i]
-            signal_all, heatmap_all = self._target(entry)
-            n_source = window
+            target_times, signal_all, onset_times = self._target(entry)
+            frame_times = self._frame_times(entry)
 
-        stop = start + n_source
-        # Select before resampling and augmenting, so neither pays for channels
-        # this model will never see.
-        block = self.channels.take(
-            np.asarray(self._array(entry)[start:stop])
-        )  # (T, C, H, W) uint8
-        signal = signal_all[start:stop]
-        heatmap = heatmap_all[start:stop]
+        # `stretch` selection-steps apart, so a stretched window reaches
+        # further into the clip while the CNN still sees exactly `n_in` frames.
+        positions = start + np.arange(self.n_in) * stretch
+        if rng is not None and self.augment.select_jitter > 0:
+            positions = jitter_positions(positions, rng, self.augment.select_jitter)
+        positions = np.clip(positions, 0.0, entry.n_frames - 1)
 
-        if n_source != window:
-            block = resample_time(block, window)
-            signal = resample_time(signal, window)
-            heatmap = resample_time(heatmap, window)
-        else:
-            # The uint8 -> float32 cast has to copy anyway, and `block` is a
-            # read-only memmap view that torch.from_numpy would warn about.
-            block = block.astype(np.float32)
-            signal = signal.copy()
-            heatmap = heatmap.copy()
+        # One contiguous slab covers every position; channels are selected
+        # first, so nothing pays to cast planes this model never sees.
+        first = int(np.floor(positions[0]))
+        last = int(np.ceil(positions[-1]))
+        slab = self.channels.take(np.asarray(self._array(entry)[first : last + 1]))
+        block = gather_positions(slab, positions - first)
+
+        in_times = gather_positions(frame_times, positions, dtype=np.float64)
+        # Anchoring at the first non-margin input frame keeps the window's
+        # output span inside its input span.
+        origin = float(in_times[self.margin])
+        out_times = origin + np.arange(window) * (stretch / self.output_fs)
+
+        signal = np.interp(out_times, target_times, signal_all).astype(np.float32)
+        heatmap = onset_heatmap(out_times, onset_times, sigma_s=self.onset_sigma_s)
 
         if rng is not None and self.augment.enabled:
             if self.augment.scale_motion:
-                block = scale_motion_channels(block, stretch, self.channels)
+                block = scale_motion_channels(
+                    block, self.motion_scale(stretch), self.channels
+                )
+            block = add_motion_noise(block, rng, self.augment, self.channels)
             block = apply_spatial(block, rng, self.augment, self.channels)
 
         features = torch.from_numpy(np.ascontiguousarray(block, dtype=np.float32))
         features = (features - self.mean) / self.std
 
         return {
-            "features": features,  # (T, C, H, W) float32
-            "signal": torch.from_numpy(signal.astype(np.float32)),  # (T,)
-            "onset": torch.from_numpy(heatmap.astype(np.float32)),  # (T,)
+            "features": features,  # (T_in, C, H, W) float32
+            # Window-relative, never absolute clip time -- float32 could not
+            # resolve the interpolation weight otherwise.
+            "t_in": torch.from_numpy((in_times - origin).astype(np.float32)),
+            "t_out": torch.from_numpy((out_times - origin).astype(np.float32)),
+            "signal": torch.from_numpy(signal),  # (T_out,)
+            "onset": torch.from_numpy(heatmap.astype(np.float32)),  # (T_out,)
             "clip_index": torch.tensor(clip_i),
-            "start": torch.tensor(start),
+            "start": torch.tensor(start, dtype=torch.float32),
         }
 
 
