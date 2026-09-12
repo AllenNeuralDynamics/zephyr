@@ -201,7 +201,11 @@ def prepare_frames(packaged_root: Path, split: str, camera: str, out_dir: Path) 
     a live choice in the UI rather than something baked into the cache.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
-    clips = [c for c in discover_clips(packaged_root, split) if c.exists(camera)]
+    clips = [
+        c
+        for c in discover_clips(packaged_root, split, camera=camera)
+        if c.exists(camera)
+    ]
     print(f"caching frames for {len(clips)} {split}/{camera} clips -> {out_dir}")
 
     for i, clip in enumerate(clips, start=1):

@@ -62,16 +62,18 @@ def validate_windows(
     parts: list[dict] = []
     for batch in loader:
         features = batch["features"].to(device, non_blocking=True)
+        t_in = batch["t_in"].to(device, non_blocking=True)
+        t_out = batch["t_out"].to(device, non_blocking=True)
         signal = batch["signal"].to(device, non_blocking=True)
         onset = batch["onset"].to(device, non_blocking=True)
         if amp_dtype is not None:
             with torch.autocast(device_type=device.type, dtype=amp_dtype):
-                pred_signal, pred_onset = model(features)
+                pred_signal, pred_onset = model(features, t_in, t_out)
                 _, stats = criterion(
                     pred_signal.float(), pred_onset.float(), signal, onset
                 )
         else:
-            pred_signal, pred_onset = model(features)
+            pred_signal, pred_onset = model(features, t_in, t_out)
             _, stats = criterion(pred_signal, pred_onset, signal, onset)
         parts.append(stats)
     return {f"val_{k}": _mean(parts, k) for k in ("loss", "corr", "onset")}
@@ -236,6 +238,25 @@ def main() -> None:
         "because a stretched window otherwise pairs a slow rhythm with "
         "fast-rhythm motion magnitudes.",
     )
+    parser.add_argument(
+        "--select-jitter",
+        type=float,
+        default=0.25,
+        help="How far each input frame's position may wander, in selection-"
+        "grid units, with its timestamp moving with it -- so the model learns "
+        "to read the timestamps rather than assume a uniform cadence.  The "
+        "default is one native frame at 240 fps, i.e. 'it could have picked "
+        "the neighbour'.  0 disables it.",
+    )
+    parser.add_argument(
+        "--motion-noise",
+        type=float,
+        default=2.0,
+        help="Extra noise on the motion channels only, in uint8 code units, at "
+        "a level drawn per window.  Covers the estimator noise that per-tau "
+        "normalisation amplifies when the achieved baseline is shorter than "
+        "tau.  0 disables it.",
+    )
     parser.add_argument("--shift-px", type=int, default=4)
     parser.add_argument("--brightness", type=float, default=0.15)
     parser.add_argument("--contrast", type=float, default=0.2)
@@ -369,6 +390,8 @@ def main() -> None:
         time_stretch=args.time_stretch,
         rate_range=tuple(args.rate_range) if args.rate_range else None,
         scale_motion=not args.no_scale_motion,
+        select_jitter=args.select_jitter,
+        motion_noise=args.motion_noise,
         shift_px=args.shift_px,
         brightness=args.brightness,
         contrast=args.contrast,
@@ -381,6 +404,12 @@ def main() -> None:
     )
 
     horizon = args.epochs * args.steps_per_epoch * args.batch_size
+    grids = dict(
+        select_fs=config["select_fs_hz"],
+        output_fs=config["output_fs_hz"],
+        motion_tau_s=config["motion_tau_s"],
+        onset_sigma_s=config["onset_sigma_s"],
+    )
     train_set = WindowDataset(
         train_entries,
         window=args.window,
@@ -391,6 +420,7 @@ def main() -> None:
         augment=augment,
         span=train_span,
         channels=channel_set,
+        **grids,
     )
     # Gridded and non-overlapping, so the windowed number is comparable epoch to
     # epoch; capped because a full grid over every held-out clip is more forward
@@ -404,6 +434,7 @@ def main() -> None:
             stride=args.window,
             span=val_span,
             channels=channel_set,
+            **grids,
         )
         if scoring
         else None
@@ -579,13 +610,15 @@ def main() -> None:
         parts: list[dict] = []
         for batch in train_loader:
             features = batch["features"].to(device, non_blocking=True)
+            t_in = batch["t_in"].to(device, non_blocking=True)
+            t_out = batch["t_out"].to(device, non_blocking=True)
             signal = batch["signal"].to(device, non_blocking=True)
             onset = batch["onset"].to(device, non_blocking=True)
 
             optimiser.zero_grad(set_to_none=True)
             if amp_dtype is not None:
                 with torch.autocast(device_type=device.type, dtype=amp_dtype):
-                    pred_signal, pred_onset = model(features)
+                    pred_signal, pred_onset = model(features, t_in, t_out)
                 # Losses in fp32: the correlation term normalises by a sum of
                 # squares over 512 samples, which is exactly the kind of
                 # reduction that loses precision in half.
@@ -593,7 +626,7 @@ def main() -> None:
                     pred_signal.float(), pred_onset.float(), signal, onset
                 )
             else:
-                pred_signal, pred_onset = model(features)
+                pred_signal, pred_onset = model(features, t_in, t_out)
                 loss, stats = criterion(pred_signal, pred_onset, signal, onset)
 
             scaler.scale(loss).backward()

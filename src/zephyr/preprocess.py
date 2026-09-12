@@ -5,22 +5,38 @@ loop would cap iteration speed at the video codec rather than the GPU. Done
 once up front, a whole clip becomes a memory-mappable array that many epochs
 can stream cheaply.
 
-Rates
------
-Source video and target signal are decimated/resampled to a shared output rate
-(see ``--stride``).  Motion channels are computed across that same stride, so
-no motion falls between stored frames.
+Three grids
+-----------
+Kept distinct so that nothing downstream of the CNN knows the camera's frame
+rate:
 
-Anchor ``i`` of the stored array corresponds to source frame ``i * stride``,
-and therefore to row ``i * stride`` of the clip's timestamp file -- which is
-why frames are decoded from the start of the file with no seeking.
+``native``
+    What the camera recorded (240 fps, ~504 fps).  The timestamp parquet is the
+    authoritative record; nothing infers time from frame index.
+``selection`` (``--select-fs``, default 60 Hz)
+    Which frames the CNN sees: the native frames nearest the ticks of a uniform
+    grid built from the clip's own timestamps, the same principle
+    :func:`scoring.processing.resample_uniform` applies to the thermistor.
+``output`` (fixed 60 Hz)
+    Where the prediction, the target and every metric live.  Reconciled with
+    the selection grid *after* the CNN, by interpolating frame embeddings
+    (:meth:`~.model.BreathingNet.forward`) -- which is why the two may differ.
+
+Motion channels are measured against the frame nearest ``t - MOTION_TAU_S`` --
+a fixed interval in *time*, not a frame count -- and normalised by the interval
+actually achieved; see :mod:`.channels`.
+
+Frames are decoded from the start of the file with no seeking, since that is
+what keeps decoded frame ``i`` aligned with row ``i`` of the timestamp file.
 
 Layout
 ------
 For each clip, in ``--out-dir``::
 
-    feat_{camera}_{clip_id}.npy      uint8 (T, 4, size, size)
-    time_{camera}_{clip_id}.npy      float64 (T,)  anchor timestamps
+    feat_{camera}_{clip_id}.npy      uint8 (T_in, 4, size, size)
+    ftime_{camera}_{clip_id}.npy     float64 (T_in,)  anchor timestamps
+    dt_{camera}_{clip_id}.npy        float32 (T_in,)  achieved motion baseline
+    time_{camera}_{clip_id}.npy      float64 (T_out,) output grid, 60 Hz
     target_{clip_id}.parquet         time, signal, onset_heatmap   [public only]
     events_{clip_id}.npz             onset_times, offset_times     [public only]
     manifest.json                    one entry per clip, plus shared config
@@ -51,12 +67,14 @@ from pathlib import Path
 import cv2
 import numpy as np
 import pandas as pd
+from scoring.processing import CANONICAL_BREATHING_SAMPLING_RATE
 
 from .annotate import clip_boxes
 from .channels import (
     CHANNEL_NAMES,
     FLOW_CLIP_PX,
     FLOW_SCALE_PX,
+    MOTION_TAU_S,
     N_CHANNELS,
     channel_encoding,
     encode_stack,
@@ -66,6 +84,86 @@ from .clips import PUBLIC_SPLIT, ClipRef, discover_clips
 from .targets import load_target, onset_heatmap
 from .video import Box, iter_frames, probe_size
 
+OUTPUT_FS = CANONICAL_BREATHING_SAMPLING_RATE
+"""The scorer's grid, and therefore the model's.  Not a CLI option: a
+submission is only ever read on this grid."""
+
+
+def _nearest_index(times: np.ndarray, wanted: np.ndarray) -> np.ndarray:
+    """Index of the entry of sorted *times* closest to each of *wanted*.
+
+    Clamped at both ends, so a *wanted* outside the recorded span resolves to
+    the first or last frame rather than failing.
+    """
+    right = np.clip(np.searchsorted(times, wanted), 0, len(times) - 1)
+    left = np.clip(right - 1, 0, len(times) - 1)
+    nearer_left = np.abs(times[left] - wanted) <= np.abs(times[right] - wanted)
+    return np.where(nearer_left, left, right)
+
+
+def select_anchor_indices(frame_times: np.ndarray, select_fs: float) -> np.ndarray:
+    """Native frame indices nearest a uniform *select_fs* grid over the clip.
+
+    No integer-stride special case: a stride and a timestamp grid agree only
+    when the camera runs at exactly a multiple of *select_fs*, and real capture
+    runs a touch off its nominal rate, so they drift apart over a 5-minute clip.
+    The clock is what the target is sampled against, so the clock wins.
+    """
+    n = len(frame_times)
+    duration = float(frame_times[-1] - frame_times[0])
+    if n < 2 or duration <= 0:
+        raise ValueError(f"clip has no usable time span ({n} frames, {duration:.3f}s)")
+
+    native_fs = (n - 1) / duration
+    if select_fs > native_fs:
+        raise ValueError(
+            f"--select-fs {select_fs:.1f} Hz exceeds the clip's native rate "
+            f"{native_fs:.1f} Hz; there are not enough frames to select from"
+        )
+
+    n_anchors = int(np.floor(duration * select_fs)) + 1
+    wanted = frame_times[0] + np.arange(n_anchors) / select_fs
+    indices = _nearest_index(frame_times, wanted)
+    if np.any(np.diff(indices) <= 0):
+        raise ValueError(
+            f"--select-fs {select_fs:.1f} Hz is too close to the source rate "
+            f"{native_fs:.1f} Hz: two anchors landed on the same (or an "
+            "out-of-order) source frame"
+        )
+    return indices
+
+
+def motion_reference_indices(
+    frame_times: np.ndarray, anchor_indices: np.ndarray, tau: float
+) -> np.ndarray:
+    """For each anchor, the native frame nearest ``tau`` seconds before it.
+
+    Deliberately *not* "the previous anchor": the point of ``tau`` is that the
+    motion baseline is a property of the data, not of how densely it happened
+    to be sampled -- above 60 Hz selection the previous anchor is nearer than
+    ``tau``.  Anchor 0 resolves to itself, which
+    :func:`~.channels.encode_stack` reads as "no motion yet".
+    """
+    wanted = frame_times[anchor_indices] - tau
+    references = _nearest_index(frame_times, wanted)
+    if np.any(references[1:] >= anchor_indices[1:]):
+        # Only possible when tau is under half a native frame period, i.e. the
+        # camera is too slow to resolve the requested baseline at all.
+        native_period = float(np.median(np.diff(frame_times)))
+        raise ValueError(
+            f"motion tau {tau * 1e3:.1f} ms is shorter than this clip's frame "
+            f"period {native_period * 1e3:.1f} ms, so some anchors have no "
+            "earlier frame to measure against.  Raise --motion-tau-s."
+        )
+    return references
+
+
+def output_times(anchor_times: np.ndarray, output_fs: float = OUTPUT_FS) -> np.ndarray:
+    """The uniform grid the prediction and target live on, in clip time."""
+    duration = float(anchor_times[-1] - anchor_times[0])
+    n_out = int(np.floor(duration * output_fs)) + 1
+    return anchor_times[0] + np.arange(n_out) / output_fs
+
 
 def preprocess_clip(
     clip: ClipRef,
@@ -74,7 +172,8 @@ def preprocess_clip(
     box: Box,
     out_dir: Path,
     *,
-    stride: int = 4,
+    select_fs: float = OUTPUT_FS,
+    motion_tau_s: float = MOTION_TAU_S,
     flow_scale_px: float = FLOW_SCALE_PX,
     flow_clip_px: float = FLOW_CLIP_PX,
     onset_sigma_s: float = 0.020,
@@ -84,7 +183,13 @@ def preprocess_clip(
 
     frame_times = pd.read_parquet(clip.frame_times_path(camera))["Time"].to_numpy()
     n_expected = len(frame_times)
-    n_anchors = (n_expected + stride - 1) // stride
+    anchor_indices = select_anchor_indices(frame_times, select_fs)
+    reference_indices = motion_reference_indices(
+        frame_times, anchor_indices, motion_tau_s
+    )
+    n_anchors = len(anchor_indices)
+    anchor_times = frame_times[anchor_indices]
+    baselines = anchor_times - frame_times[reference_indices]
 
     box_w, box_h = box[2], box[3]
     feat_path = out_dir / f"feat_{camera}_{clip.clip_id}.npy"
@@ -96,7 +201,11 @@ def preprocess_clip(
     )
 
     flow_estimator = make_flow_estimator()
-    history: dict[int, np.ndarray] = {}
+    # Frames some anchor will want as its motion reference, held until that
+    # anchor arrives -- ~9 cropped frames at 504 fps, so cheaper than a second
+    # decode pass.
+    wanted_references = set(reference_indices.tolist())
+    held: dict[int, np.ndarray] = {}
     n_decoded = 0
     n_written = 0
     diff_saturated = 0
@@ -106,23 +215,32 @@ def preprocess_clip(
         for frame in block:
             index = n_decoded
             n_decoded += 1
-            if index % stride:
+            if index in wanted_references:
+                held[index] = frame.copy()
+            if n_written >= n_anchors or index != anchor_indices[n_written]:
                 continue
-            reference = history.pop(index - stride, None)
+
+            reference_index = int(reference_indices[n_written])
+            stack, n_diff, n_flow = encode_stack(
+                frame,
+                held.get(reference_index) if reference_index != index else None,
+                flow_estimator,
+                dt=float(baselines[n_written]),
+                tau=motion_tau_s,
+                flow_scale_px=flow_scale_px,
+                flow_clip_px=flow_clip_px,
+            )
+            features[n_written] = stack
+            diff_saturated += n_diff
+            flow_saturated += n_flow
+            n_written += 1
+
+            # Reference indices increase with the anchors, so anything below the
+            # next one will never be asked for again.
             if n_written < n_anchors:
-                stack, n_diff, n_flow = encode_stack(
-                    frame,
-                    reference,
-                    flow_estimator,
-                    flow_scale_px=flow_scale_px,
-                    flow_clip_px=flow_clip_px,
-                )
-                features[n_written] = stack
-                diff_saturated += n_diff
-                flow_saturated += n_flow
-                n_written += 1
-            # Retain this anchor as the reference for the next one.
-            history[index] = frame.copy()
+                cutoff = int(reference_indices[n_written])
+                for stale in [i for i in held if i < cutoff]:
+                    del held[stale]
 
     features.flush()
     del features
@@ -134,11 +252,21 @@ def preprocess_clip(
             f"{clip.clip_id}/{camera}: decoded {n_decoded} frames but the "
             f"timestamp parquet has {n_expected} rows"
         )
+    if n_written != n_anchors:
+        raise ValueError(
+            f"{clip.clip_id}/{camera}: expected {n_anchors} anchors but only "
+            f"{n_written} were reached before decoding ended"
+        )
 
-    anchor_times = frame_times[::stride][:n_written]
-    np.save(out_dir / f"time_{camera}_{clip.clip_id}.npy", anchor_times)
+    out_times = output_times(anchor_times)
+    np.save(out_dir / f"ftime_{camera}_{clip.clip_id}.npy", anchor_times)
+    np.save(out_dir / f"dt_{camera}_{clip.clip_id}.npy", baselines.astype(np.float32))
+    np.save(out_dir / f"time_{camera}_{clip.clip_id}.npy", out_times)
 
     n_pixels = n_written * box_w * box_h
+    # Anchor 0 has no motion by construction, so exclude it: the median over
+    # the rest is what says whether the requested baseline was achieved.
+    achieved = baselines[1:] if n_anchors > 1 else baselines
     entry = {
         "clip_id": clip.clip_id,
         "split": clip.split,
@@ -148,20 +276,26 @@ def preprocess_clip(
         "target_size": list(target_size),
         "crop_box": list(box),
         "n_frames": n_written,
+        "n_output": len(out_times),
         "features": feat_path.name,
+        "frame_times": f"ftime_{camera}_{clip.clip_id}.npy",
+        "baselines": f"dt_{camera}_{clip.clip_id}.npy",
         "times": f"time_{camera}_{clip.clip_id}.npy",
-        "output_fs_hz": float(1.0 / np.median(np.diff(anchor_times))),
+        "native_fs_hz": float((n_expected - 1) / (frame_times[-1] - frame_times[0])),
+        "select_fs_hz": float(1.0 / np.median(np.diff(anchor_times))),
+        "motion_dt_median_ms": float(np.median(achieved) * 1e3),
+        "motion_dt_spread_ms": float((achieved.max() - achieved.min()) * 1e3),
         "diff_saturated_frac": diff_saturated / n_pixels,
         "flow_saturated_frac": flow_saturated / (2 * n_pixels),
         "elapsed_s": round(time_module.perf_counter() - started, 1),
     }
 
     if clip.split == PUBLIC_SPLIT:
-        target = load_target(clip, anchor_times)
-        heatmap = onset_heatmap(anchor_times, target.onset_times, sigma_s=onset_sigma_s)
+        target = load_target(clip, out_times)
+        heatmap = onset_heatmap(out_times, target.onset_times, sigma_s=onset_sigma_s)
         pd.DataFrame(
             {
-                "time": anchor_times,
+                "time": out_times,
                 "signal": target.signal.astype(np.float32),
                 "onset_heatmap": heatmap,
             }
@@ -173,9 +307,10 @@ def preprocess_clip(
         )
         entry |= {
             "target": f"target_{clip.clip_id}.parquet",
+            "events": f"events_{clip.clip_id}.npz",
             "n_onsets": len(target.onset_times),
             "breathing_rate_hz": float(
-                len(target.onset_times) / (anchor_times[-1] - anchor_times[0])
+                len(target.onset_times) / (out_times[-1] - out_times[0])
             ),
             "thermistor_fs_hz": target.native_fs,
             "target_scale_adc": target.scale,
@@ -210,11 +345,23 @@ def main() -> None:
     )
     parser.add_argument("--out-dir", type=Path, default=Path("data/features"))
     parser.add_argument(
-        "--stride",
-        type=int,
-        default=4,
-        help="Source frames per stored frame.  4 maps 240 fps onto the 60 Hz "
-        "scoring grid.",
+        "--select-fs",
+        type=float,
+        default=OUTPUT_FS,
+        help=f"Frame-selection rate, in Hz.  Anchors are the source frames "
+        f"nearest a uniform grid at this rate built from each clip's own "
+        f"timestamps, so it works whatever the camera's fps.  Must be at least "
+        f"the {OUTPUT_FS:.0f} Hz output rate: raising it spends CNN compute on "
+        f"finer motion sampling, while going below would ask the model to "
+        f"localise events finer than its input was ever sampled.",
+    )
+    parser.add_argument(
+        "--motion-tau-s",
+        type=float,
+        default=MOTION_TAU_S,
+        help="Baseline the diff/flow channels are measured over and normalised "
+        "to, in seconds.  Must be at least the coarsest native frame period to "
+        "be supported, or a slow camera cannot reach back that far.",
     )
     parser.add_argument("--flow-scale-px", type=float, default=FLOW_SCALE_PX)
     parser.add_argument("--flow-clip-px", type=float, default=FLOW_CLIP_PX)
@@ -242,6 +389,13 @@ def main() -> None:
         "1 disables concurrency.",
     )
     args = parser.parse_args()
+
+    if args.select_fs < OUTPUT_FS:
+        raise SystemExit(
+            f"--select-fs {args.select_fs:.1f} Hz is below the {OUTPUT_FS:.0f} Hz "
+            "output rate.  Embeddings would have to be interpolated *upward*, "
+            "which invents temporal detail the input never carried."
+        )
 
     data = json.loads(args.boxes_json.read_text())
     if data.get("camera") not in (None, args.camera):
@@ -292,7 +446,8 @@ def main() -> None:
         f"{len(clips)} clips | native {frame_w}x{frame_h} -> "
         f"downsample {target_size[0]}x{target_size[1]} "
         f"({frame_w / target_size[0]:.2f}x) -> crop {box_w}x{box_h} | "
-        f"{n_distinct} distinct box(es) | stride {args.stride} | "
+        f"{n_distinct} distinct box(es) | select {args.select_fs:.1f} Hz -> "
+        f"output {OUTPUT_FS:.0f} Hz | tau {args.motion_tau_s * 1e3:.1f} ms | "
         f"{args.workers} worker(s)"
     )
 
@@ -315,7 +470,8 @@ def main() -> None:
                 target_size,
                 boxes[clip.clip_id],
                 args.out_dir,
-                stride=args.stride,
+                select_fs=args.select_fs,
+                motion_tau_s=args.motion_tau_s,
                 flow_scale_px=args.flow_scale_px,
                 flow_clip_px=args.flow_clip_px,
                 onset_sigma_s=args.onset_sigma_s,
@@ -330,7 +486,10 @@ def main() -> None:
                     completed += 1
                     print(
                         f"  [{completed}/{len(clips)}] {entry['clip_id']:16s} session {entry['session_idx']:>2d}  "
-                        f"T={entry['n_frames']}  {entry['output_fs_hz']:.2f} Hz  "
+                        f"T={entry['n_frames']}->{entry['n_output']}  "
+                        f"native {entry['native_fs_hz']:.1f} Hz  "
+                        f"dt={entry['motion_dt_median_ms']:.2f}"
+                        f"+-{entry['motion_dt_spread_ms'] / 2:.2f} ms  "
                         f"rate={entry.get('breathing_rate_hz', float('nan')):.2f} Hz  "
                         f"sat diff={entry['diff_saturated_frac']:.2e} "
                         f"flow={entry['flow_saturated_frac']:.2e}  "
@@ -358,10 +517,14 @@ def main() -> None:
             "native_size": [frame_w, frame_h],
             "target_size": list(target_size),
             "box_size": [box_w, box_h],
-            "stride": args.stride,
+            "select_fs_hz": args.select_fs,
+            "output_fs_hz": OUTPUT_FS,
+            "motion_tau_s": args.motion_tau_s,
             "channel_names": list(CHANNEL_NAMES),
             "channel_encoding": channel_encoding(
-                flow_scale_px=args.flow_scale_px, flow_clip_px=args.flow_clip_px
+                flow_scale_px=args.flow_scale_px,
+                flow_clip_px=args.flow_clip_px,
+                motion_tau_s=args.motion_tau_s,
             ),
             "onset_sigma_s": args.onset_sigma_s,
         },
@@ -374,7 +537,13 @@ def main() -> None:
         # the manifest to the clips it happened to touch, which would quietly
         # drop the rest of the split from every downstream consumer.
         previous = json.loads(manifest_path.read_text())
-        for key in ("target_size", "box_size", "stride"):
+        for key in (
+            "target_size",
+            "box_size",
+            "select_fs_hz",
+            "output_fs_hz",
+            "motion_tau_s",
+        ):
             if previous["config"].get(key) != manifest["config"].get(key):
                 raise SystemExit(
                     f"refusing to merge: existing manifest has {key}="
