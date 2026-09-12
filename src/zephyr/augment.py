@@ -218,28 +218,30 @@ MOTION_NOISE_SPREAD = 2.0
 a plausible camera could produce."""
 
 
-def add_motion_noise(
-    block: np.ndarray,
-    rng: np.random.Generator,
-    config: AugmentConfig,
-    channels: ChannelSet,
-) -> np.ndarray:
-    """Extra noise on the motion channels, at a level drawn per window.
+def noise_scales(
+    rng: np.random.Generator, config: AugmentConfig, channels: ChannelSet
+) -> np.ndarray | None:
+    """Per-channel noise standard deviation for one window, or ``None``.
 
-    Per window, not per frame: what is being emulated is the clip's achieved
-    motion baseline, a property of the camera that holds across the window.
+    The global and motion-only terms are independent Gaussians, so they combine
+    in quadrature into a single sd per channel.  Worth doing: the normal draw is
+    the data pipeline's dominant cost, so two draws over a
+    ``(T, C, H, W)`` block instead of one is directly visible in epoch time.
+
+    The motion level is drawn once per window, not per frame -- what it emulates
+    is the clip's achieved motion baseline, a property of the camera.
     """
-    if config.motion_noise <= 0:
-        return block
-    log_spread = np.log(MOTION_NOISE_SPREAD)
-    sd = config.motion_noise * float(np.exp(rng.uniform(-log_spread, log_spread)))
-    for name in MOTION_CHANNELS:
-        position = channels.position(name)
-        if position is None:
-            continue
-        plane = block[:, position]
-        block[:, position] = plane + rng.normal(0.0, sd, plane.shape).astype(np.float32)
-    return block
+    sd = np.full(len(channels), float(config.noise), np.float32)
+    if config.motion_noise > 0:
+        log_spread = np.log(MOTION_NOISE_SPREAD)
+        extra = config.motion_noise * float(
+            np.exp(rng.uniform(-log_spread, log_spread))
+        )
+        for name in MOTION_CHANNELS:
+            position = channels.position(name)
+            if position is not None:
+                sd[position] = np.hypot(sd[position], extra)
+    return sd if sd.any() else None
 
 
 def apply_spatial(
@@ -291,7 +293,10 @@ def apply_spatial(
                 (gray - 128.0) * gain + 128.0 + offset, 0.0, 255.0
             )
 
-    if config.noise > 0:
-        block = block + rng.normal(0.0, config.noise, block.shape).astype(np.float32)
+    sd = noise_scales(rng, config, channels)
+    if sd is not None:
+        block += rng.standard_normal(block.shape, dtype=np.float32) * sd.reshape(
+            1, -1, 1, 1
+        )
 
     return block
