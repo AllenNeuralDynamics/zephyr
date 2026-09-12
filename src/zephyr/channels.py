@@ -6,12 +6,23 @@ Channel rationale
     Raw appearance.  The CNN is per-frame and therefore temporally blind, so it
     cannot derive anything time-varying from this channel alone.
 ``diff``
-    ``I(t) - I(t - stride)``.  A hand-crafted temporal high-pass that lets the
+    ``I(t) - I(t - dt)``.  A hand-crafted temporal high-pass that lets the
     spatial trunk respond to motion at all.
 ``flow_x`` / ``flow_y``
     Signed dense optical flow.  Kept signed rather than as a magnitude because
     the sign is what distinguishes opposite directions of motion; a magnitude
     channel folds the two together.
+
+Motion is normalised in time
+----------------------------
+Motion is measured over the *achieved* interval ``dt`` -- the real gap to
+whichever source frame sat nearest ``t - TAU`` -- then scaled by ``TAU / dt``,
+so the stored value is displacement per :data:`MOTION_TAU_S` regardless of
+frame rate.  Nothing requires a common multiple between camera rates.
+
+Per ``TAU`` rather than per second, so the dynamic range stays where it was
+under a fixed 4-frame stride at 240 fps and :data:`DIFF_CLIP` and the flow
+companding stay calibrated.
 
 Choice of flow algorithm
 ------------------------
@@ -36,9 +47,10 @@ Quantisation
 Every channel is stored as uint8 to keep one compact array per clip:
 
 * ``gray`` is already 8-bit, stored as-is.
-* ``diff`` is an exact integer difference of two 8-bit frames, so
-  ``raw = diff + 128`` is *lossless* for the |diff| <= 127 that covers nearly
-  every pixel.
+* ``diff`` is a difference of two 8-bit frames scaled by ``TAU / dt``, stored as
+  ``round(diff) + 128``.  The scale sits near 1, so |diff| <= 127 still covers
+  nearly every pixel -- but it is not integer-valued, so this quantises to
+  1 count rather than being exactly lossless as a fixed stride was.
 * Flow is companded through ``asinh`` (see below) rather than clipped linearly.
 
 Why flow is companded and not clipped
@@ -61,7 +73,17 @@ CHANNEL_NAMES = ("gray", "diff", "flow_x", "flow_y")
 N_CHANNELS = len(CHANNEL_NAMES)
 
 DIFF_CLIP = 127
-"""Frame-difference clip in intensity counts.  Lossless below this magnitude."""
+"""Frame-difference clip in intensity counts, after normalisation to ``TAU``."""
+
+MOTION_TAU_S = 1.0 / 60.0
+"""Canonical motion baseline, in seconds.  Two constraints fix the value:
+
+* At least the coarsest native frame period to be supported, or a slow camera
+  cannot reach back that far.  16.7 ms covers 70/120/240/504 fps.
+* At least the selection gap, or motion between one selected frame and the next
+  goes unmeasured.  Denser selection gives overlapping baselines, which is
+  harmless.
+"""
 
 FLOW_SCALE_PX = 0.1
 """Knee of the ``asinh`` flow companding, in pixels.
@@ -250,29 +272,40 @@ def make_flow_estimator(
 
 
 def channel_encoding(
-    *, flow_scale_px: float = FLOW_SCALE_PX, flow_clip_px: float = FLOW_CLIP_PX
+    *,
+    flow_scale_px: float = FLOW_SCALE_PX,
+    flow_clip_px: float = FLOW_CLIP_PX,
+    motion_tau_s: float = MOTION_TAU_S,
 ) -> dict[str, dict]:
     """How to map each stored uint8 channel back to physical units.
 
     Recorded in the preprocessing manifest so a consumer never has to guess.
-    ``gray`` and ``diff`` are in intensity counts, the flow channels in pixels
-    (invert with :func:`decode_flow`).
+    ``gray`` is in intensity counts; ``diff`` is in counts per *motion_tau_s*
+    seconds and the flow channels in pixels per *motion_tau_s* seconds (invert
+    the companding with :func:`decode_flow` first).  Divide by ``motion_tau_s``
+    for per-second units.
     """
     return {
         "gray": {"kind": "identity", "units": "counts"},
-        "diff": {"kind": "affine", "gain": 1.0, "offset": -128.0, "units": "counts"},
+        "diff": {
+            "kind": "affine",
+            "gain": 1.0,
+            "offset": -128.0,
+            "units": "counts/tau",
+        },
         "flow_x": {
             "kind": "asinh",
             "scale_px": flow_scale_px,
             "clip_px": flow_clip_px,
-            "units": "px",
+            "units": "px/tau",
         },
         "flow_y": {
             "kind": "asinh",
             "scale_px": flow_scale_px,
             "clip_px": flow_clip_px,
-            "units": "px",
+            "units": "px/tau",
         },
+        "tau_s": {"kind": "constant", "value": motion_tau_s, "units": "s"},
     }
 
 
@@ -281,6 +314,8 @@ def encode_stack(
     reference: np.ndarray | None,
     flow_estimator: cv2.DISOpticalFlow,
     *,
+    dt: float = MOTION_TAU_S,
+    tau: float = MOTION_TAU_S,
     flow_scale_px: float = FLOW_SCALE_PX,
     flow_clip_px: float = FLOW_CLIP_PX,
 ) -> tuple[np.ndarray, int, int]:
@@ -291,37 +326,45 @@ def encode_stack(
     gray:
         The anchor frame, uint8.
     reference:
-        The frame ``stride`` earlier, or ``None`` for the first anchor -- in
-        which case the motion channels are set to their zero level rather than
-        left undefined.
+        The source frame nearest ``t - tau``, or ``None`` at the start of the
+        clip -- in which case the motion channels are set to their zero level
+        rather than left undefined.
     flow_estimator:
         From :func:`make_flow_estimator`; reused across calls so DIS keeps its
         internal buffers.
+    dt:
+        The interval *reference* to *gray* actually spans, in seconds.  Motion
+        is scaled by ``tau / dt`` -- see the module docstring.
     flow_scale_px, flow_clip_px:
-        Companding knee and range bound, in pixels.
+        Companding knee and range bound, in pixels per *tau*.
 
     Returns
     -------
     (stack, n_diff_saturated, n_flow_saturated)
-        The saturation counts let :mod:`.preprocess` report whether the bounds
-        are actually appropriate for this data.
+        Saturation is counted *after* normalisation, which is where the stored
+        value can actually saturate.
     """
     height, width = gray.shape
     stack = np.empty((N_CHANNELS, height, width), dtype=np.uint8)
     stack[0] = gray
 
-    if reference is None:
+    if reference is None or dt <= 0:
         stack[1:] = 128
         return stack, 0, 0
 
-    diff = gray.astype(np.int16) - reference.astype(np.int16)
+    gain = tau / dt
+
+    diff = (gray.astype(np.float32) - reference.astype(np.float32)) * gain
     n_diff_saturated = int((np.abs(diff) > DIFF_CLIP).sum())
-    stack[1] = (np.clip(diff, -DIFF_CLIP, DIFF_CLIP) + 128).astype(np.uint8)
+    stack[1] = np.clip(np.rint(diff) + 128.0, 0.0, 255.0).astype(np.uint8)
 
     # DIS asserts on non-contiguous input, and decoded frames arrive as views
     # into a shared read-only buffer -- so normalise before handing them over.
-    flow = flow_estimator.calc(
-        np.ascontiguousarray(reference), np.ascontiguousarray(gray), None
+    flow = (
+        flow_estimator.calc(
+            np.ascontiguousarray(reference), np.ascontiguousarray(gray), None
+        )
+        * gain
     )
     n_flow_saturated = int((np.abs(flow) > flow_clip_px).sum())
     codes = encode_flow(flow, scale_px=flow_scale_px, clip_px=flow_clip_px)

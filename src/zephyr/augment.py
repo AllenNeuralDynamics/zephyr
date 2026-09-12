@@ -37,6 +37,25 @@ class AugmentConfig:
         changing the effective frame interval must scale it or a stretched
         sample pairs a slow rhythm with fast-rhythm motion magnitudes.  A no-op
         when no motion channel is selected.
+
+        Not redundant with :mod:`.channels`' per-``TAU`` normalisation: that
+        makes the stored value independent of frame rate, this accounts for a
+        stretched window redefining how much real time one output sample covers.
+    select_jitter:
+        Maximum perturbation, in selection-grid units, applied independently to
+        each input frame's position -- with its timestamp moving with it.  So
+        the model is trained to read the timestamps and cope with irregular
+        sampling, not to ignore it.
+    motion_noise:
+        Standard deviation of extra Gaussian noise on the motion channels only,
+        in uint8 code units, drawn per window from a log-uniform band around
+        this value.
+
+        Normalising motion to ``TAU`` makes the *signal* independent of the
+        achieved baseline ``dt`` but scales estimator noise by ``TAU/dt``: a
+        shorter baseline measures a smaller displacement, so DIS's sub-pixel
+        precision and the quantisation are a larger share of it.  A cheap proxy
+        for re-deriving the channels at a different baseline.
     shift_px:
         Maximum spatial translation in pixels, drawn uniformly per axis.  Guards
         against the model keying on the crop's absolute position.
@@ -61,6 +80,8 @@ class AugmentConfig:
     time_stretch: float = 1.0
     rate_range: tuple[float, float] | None = None
     scale_motion: bool = True
+    select_jitter: float = 0.0
+    motion_noise: float = 0.0
     shift_px: int = 0
     brightness: float = 0.0
     contrast: float = 0.0
@@ -71,6 +92,8 @@ class AugmentConfig:
     def enabled(self) -> bool:
         return (
             self.time_stretch > 1.0
+            or self.select_jitter > 0
+            or self.motion_noise > 0
             or self.shift_px > 0
             or self.brightness > 0
             or self.contrast > 0
@@ -80,7 +103,7 @@ class AugmentConfig:
 
     @property
     def max_source_frames(self) -> float:
-        """Multiplier on the window length that a stretched draw may need."""
+        """Multiplier on the window's selection-grid span at the widest draw."""
         return max(1.0, self.time_stretch)
 
 
@@ -151,20 +174,72 @@ def scale_motion_channels(
     return block
 
 
-def resample_time(x: np.ndarray, n_out: int) -> np.ndarray:
-    """Linearly resample *x* along axis 0 to *n_out* samples."""
+def gather_positions(
+    x: np.ndarray, positions: np.ndarray, dtype: type = np.float32
+) -> np.ndarray:
+    """Linearly interpolate *x* along axis 0 at fractional *positions*.
+
+    Fractional rather than rounded: rounding would duplicate anchors whenever
+    the spacing fell below 1, putting repeated timestamps into the embedding
+    interpolator.  Exact integer positions take a plain gather, so the common
+    unstretched case never pays for interpolation.
+    """
     n_in = x.shape[0]
-    if n_in == n_out:
-        return x.astype(np.float32, copy=False)
-    positions = np.linspace(0.0, n_in - 1, n_out)
+    positions = np.clip(positions, 0.0, n_in - 1)
     lo = np.floor(positions).astype(np.intp)
+    weight = positions - lo
+    if not weight.any():
+        return x[lo].astype(dtype)
+
     hi = np.minimum(lo + 1, n_in - 1)
-    weight = (positions - lo).astype(np.float32)
     # Broadcast the weight over whatever trailing axes the array has.
-    weight = weight.reshape(-1, *([1] * (x.ndim - 1)))
-    left = x[lo].astype(np.float32)
-    right = x[hi].astype(np.float32)
+    weight = weight.astype(dtype).reshape(-1, *([1] * (x.ndim - 1)))
+    left = x[lo].astype(dtype)
+    right = x[hi].astype(dtype)
     return left * (1.0 - weight) + right * weight
+
+
+def jitter_positions(
+    positions: np.ndarray, rng: np.random.Generator, amount: float
+) -> np.ndarray:
+    """Perturb each selection position independently.
+
+    Re-sorted: the timestamps gathered at these positions become the grid the
+    embedding interpolation searches, which has to stay monotonic.
+    """
+    if amount <= 0:
+        return positions
+    return np.sort(positions + rng.uniform(-amount, amount, size=positions.shape))
+
+
+MOTION_NOISE_SPREAD = 2.0
+"""Factor the noise level is drawn log-uniformly within, either side of
+``AugmentConfig.motion_noise`` -- a stand-in for the range of ``TAU/dt`` ratios
+a plausible camera could produce."""
+
+
+def add_motion_noise(
+    block: np.ndarray,
+    rng: np.random.Generator,
+    config: AugmentConfig,
+    channels: ChannelSet,
+) -> np.ndarray:
+    """Extra noise on the motion channels, at a level drawn per window.
+
+    Per window, not per frame: what is being emulated is the clip's achieved
+    motion baseline, a property of the camera that holds across the window.
+    """
+    if config.motion_noise <= 0:
+        return block
+    log_spread = np.log(MOTION_NOISE_SPREAD)
+    sd = config.motion_noise * float(np.exp(rng.uniform(-log_spread, log_spread)))
+    for name in MOTION_CHANNELS:
+        position = channels.position(name)
+        if position is None:
+            continue
+        plane = block[:, position]
+        block[:, position] = plane + rng.normal(0.0, sd, plane.shape).astype(np.float32)
+    return block
 
 
 def apply_spatial(
