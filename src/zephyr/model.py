@@ -15,6 +15,13 @@ The two halves do different jobs:
     layers, where a stack of plain k=3 convolutions would need many more layers
     to reach the same span.
 
+Two grids, joined in embedding space
+------------------------------------
+The encoder runs on the *selection* grid (whichever source frames
+:mod:`.preprocess` picked, at whatever rate); the TCN runs on the fixed 60 Hz
+*output* grid. :func:`resample_embeddings` interpolates between them using the
+real frame timestamps.
+
 Non-causal on purpose
 ---------------------
 Inference runs offline on complete clips, so there is no reason to hide the
@@ -27,7 +34,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from .channels import N_CHANNELS
+from .channels import ALL_CHANNELS, ChannelSet
 
 
 class FrameEncoder(nn.Module):
@@ -41,7 +48,7 @@ class FrameEncoder(nn.Module):
 
     def __init__(
         self,
-        in_channels: int = N_CHANNELS,
+        in_channels: int,
         widths: tuple[int, ...] = (32, 64, 96, 128),
         embed: int = 128,
         pool: int = 2,
@@ -73,6 +80,33 @@ class FrameEncoder(nn.Module):
     def forward(self, frames: torch.Tensor) -> torch.Tensor:
         """(N, C, H, W) -> (N, embed)."""
         return self.head(self.pool(self.trunk(frames)))
+
+
+def resample_embeddings(
+    embeddings: torch.Tensor, t_in: torch.Tensor, t_out: torch.Tensor
+) -> torch.Tensor:
+    """``(B, T_in, E)`` sampled at *t_in* -> ``(B, T_out, E)`` at *t_out*.
+
+    Linear interpolation; targets outside the input span clamp rather than
+    extrapolate. Both time arrays must be relative to the window (not absolute
+    clip time), for float32 precision.
+    """
+    n_in = embeddings.shape[1]
+    if n_in < 2:
+        raise ValueError("resampling needs at least two input samples")
+
+    right = torch.searchsorted(t_in.contiguous(), t_out.contiguous()).clamp(1, n_in - 1)
+    left = right - 1
+    t0 = t_in.gather(1, left)
+    t1 = t_in.gather(1, right)
+    # clamp_min guards a repeated timestamp; clamp(0, 1) turns what would be
+    # extrapolation at the edges into a hold.
+    weight = ((t_out - t0) / (t1 - t0).clamp_min(1e-9)).clamp(0.0, 1.0).unsqueeze(-1)
+
+    embed = embeddings.shape[-1]
+    low = embeddings.gather(1, left.unsqueeze(-1).expand(-1, -1, embed))
+    high = embeddings.gather(1, right.unsqueeze(-1).expand(-1, -1, embed))
+    return low + (high - low) * weight
 
 
 class ResidualBlock(nn.Module):
@@ -144,11 +178,17 @@ class TemporalNet(nn.Module):
 
 
 class BreathingNet(nn.Module):
-    """The full model: per-frame CNN, then TCN over the frame sequence."""
+    """The full model: per-frame CNN, then TCN over the frame sequence.
+
+    ``channels`` names the stored channels this model consumes, in order, and
+    sets the encoder's input width.  :func:`~.infer.predict_clip` reads it to
+    slice the stored array and its per-channel statistics; :mod:`.train`
+    records it in the checkpoint.
+    """
 
     def __init__(
         self,
-        in_channels: int = N_CHANNELS,
+        channels: ChannelSet = ALL_CHANNELS,
         widths: tuple[int, ...] = (32, 64, 96, 128),
         embed: int = 128,
         tcn_channels: int = 128,
@@ -157,8 +197,9 @@ class BreathingNet(nn.Module):
         encoder_dropout: float = 0.0,
     ) -> None:
         super().__init__()
+        self.channels = channels
         self.encoder = FrameEncoder(
-            in_channels, widths, embed=embed, dropout=encoder_dropout
+            len(channels), widths, embed=embed, dropout=encoder_dropout
         )
         self.temporal = TemporalNet(
             embed, channels=tcn_channels, dilations=dilations, dropout=dropout
@@ -166,6 +207,7 @@ class BreathingNet(nn.Module):
 
     @property
     def receptive_field(self) -> int:
+        """Output-grid samples per prediction."""
         return self.temporal.receptive_field
 
     def encode(self, features: torch.Tensor, chunk: int | None = None) -> torch.Tensor:
@@ -190,9 +232,18 @@ class BreathingNet(nn.Module):
         return embeddings.view(b, t, -1)
 
     def forward(
-        self, features: torch.Tensor, chunk: int | None = None
+        self,
+        features: torch.Tensor,
+        t_in: torch.Tensor,
+        t_out: torch.Tensor,
+        chunk: int | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        return self.temporal(self.encode(features, chunk=chunk))
+        """``(B, T_in, C, H, W)`` -> signal and onset logits, both ``(B, T_out)``.
+
+        *t_in*/*t_out* per :func:`resample_embeddings`.
+        """
+        embeddings = self.encode(features, chunk=chunk)
+        return self.temporal(resample_embeddings(embeddings, t_in, t_out))
 
 
 def pearson_loss(pred: torch.Tensor, target: torch.Tensor, eps: float = 1e-6):
