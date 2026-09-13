@@ -25,7 +25,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import torch
-from scoring.metrics import event_f1, max_cross_correlation
+from scoring.metrics import event_f1, zero_lag_correlation
 from scoring.processing import detect_inhalation_events
 from torch.optim.swa_utils import AveragedModel, get_ema_multi_avg_fn
 from torch.utils.data import DataLoader
@@ -120,15 +120,14 @@ def score_full_clips(
             lo, hi = int(n * span[0]), int(n * span[1])
             truth, pred_n = truth[lo:hi], pred_n[lo:hi]
 
-        xcorr, delay = max_cross_correlation(truth, pred_n, fs)
+        corr = zero_lag_correlation(truth, pred_n)
         truth_on, truth_off = detect_inhalation_events(truth, fs)
         pred_on, pred_off = detect_inhalation_events(pred_n, fs)
         rows.append(
             {
                 "clip_id": entry.clip_id,
                 "session_idx": entry.session_idx,
-                "max_xcorr": xcorr,
-                "xcorr_delay_s": delay,
+                "correlation": corr,
                 "inhale_f1": event_f1(truth_on / fs, pred_on / fs),
                 "exhale_f1": event_f1(truth_off / fs, pred_off / fs),
                 "n_truth_onsets": len(truth_on),
@@ -136,7 +135,7 @@ def score_full_clips(
             }
         )
     summary = {
-        "xcorr": _mean(rows, "max_xcorr"),
+        "xcorr": _mean(rows, "correlation"),
         "inhale_f1": _mean(rows, "inhale_f1"),
         "exhale_f1": _mean(rows, "exhale_f1"),
     }
@@ -285,7 +284,7 @@ def main() -> None:
         type=int,
         default=8,
         help="Stop after this many consecutive scored evaluations without a new "
-        "best held-out max_xcorr.  0 disables early stopping.  Counts scored "
+        "best held-out correlation.  0 disables early stopping.  Counts scored "
         "evaluations, not epochs, so the budget is patience x score-every epochs.",
     )
     parser.add_argument(
@@ -741,7 +740,7 @@ def main() -> None:
         save(run_dir / "best.pt", epoch, {}, [], weights=ema.module if ema else None)
         print(f"final weights (no validation) -> {run_dir / 'best.pt'}")
     else:
-        print(f"best held-out max_xcorr {best:+.4f} -> {run_dir / 'best.pt'}")
+        print(f"best held-out correlation {best:+.4f} -> {run_dir / 'best.pt'}")
 
 
 if __name__ == "__main__":
