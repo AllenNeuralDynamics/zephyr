@@ -1,65 +1,17 @@
-"""Build the multi-channel per-frame input stack: gray, signed diff, flow_x, flow_y.
+"""Multi-channel per-frame input stack: gray, signed diff, flow_x, flow_y.
 
-Channel rationale
------------------
-``gray``
-    Raw appearance.  The CNN is per-frame and therefore temporally blind, so it
-    cannot derive anything time-varying from this channel alone.
-``diff``
-    ``I(t) - I(t - dt)``.  A hand-crafted temporal high-pass that lets the
-    spatial trunk respond to motion at all.
-``flow_x`` / ``flow_y``
-    Signed dense optical flow.  Kept signed rather than as a magnitude because
-    the sign is what distinguishes opposite directions of motion; a magnitude
-    channel folds the two together.
+``diff`` is ``I(t) - I(t - dt)``; ``flow_x``/``flow_y`` are signed DIS optical
+flow. Both are measured over the achieved interval ``dt`` (nearest source frame
+to ``t - TAU``) and scaled by ``TAU / dt``, so the stored value is displacement
+per :data:`MOTION_TAU_S` regardless of camera frame rate.
 
-Motion is normalised in time
-----------------------------
-Motion is measured over the *achieved* interval ``dt`` -- the real gap to
-whichever source frame sat nearest ``t - TAU`` -- then scaled by ``TAU / dt``,
-so the stored value is displacement per :data:`MOTION_TAU_S` regardless of
-frame rate.  Nothing requires a common multiple between camera rates.
+Preprocessing always writes all four channels; :class:`ChannelSet` selects the
+training-time subset.
 
-Per ``TAU`` rather than per second, so the dynamic range stays where it was
-under a fixed 4-frame stride at 240 fps and :data:`DIFF_CLIP` and the flow
-companding stay calibrated.
-
-Choice of flow algorithm
-------------------------
-DIS flow, not Farneback or TV-L1: DIS is built for speed on small motion and is
-the only one of the three fast enough to run over a full dataset. Variational
-refinement and the finest pyramid scale are both enabled so it resolves
-sub-pixel displacement rather than giving up at a coarser level.
-
-``stride`` should match the decimation stride used elsewhere, so the motion
-channels describe exactly the interval between consecutive *stored* frames.
-
-Storing every channel, training on a subset
--------------------------------------------
-Preprocessing always writes all four channels.  Which of them a model is
-actually *trained* on is a separate, training-time choice, expressed as a
-:class:`ChannelSet` -- so comparing a 1-channel model against a 4-channel one
-needs no second preprocessing pass, and every variant reads byte-identical
-crops and shares one set of normalisation statistics.
-
-Quantisation
-------------
-Every channel is stored as uint8 to keep one compact array per clip:
-
-* ``gray`` is already 8-bit, stored as-is.
-* ``diff`` is a difference of two 8-bit frames scaled by ``TAU / dt``, stored as
-  ``round(diff) + 128``.  The scale sits near 1, so |diff| <= 127 still covers
-  nearly every pixel -- but it is not integer-valued, so this quantises to
-  1 count rather than being exactly lossless as a fixed stride was.
-* Flow is companded through ``asinh`` (see below) rather than clipped linearly.
-
-Why flow is companded and not clipped
--------------------------------------
-Flow can span several orders of magnitude between the signal of interest and
-occasional large motion, so a linear quantiser forces a choice between
-resolving the small signal and covering the large excursions.  ``asinh``
-resolves both at once -- linear near zero and logarithmic beyond it -- giving
-fine steps close to zero while still representing large excursions.
+Quantisation: ``gray`` stored as-is; ``diff`` as ``round(diff) + 128`` (not
+exactly lossless, since the ``TAU/dt`` scale isn't integer-valued); flow
+companded through ``asinh`` rather than clipped linearly, for fine steps near
+zero while still covering large excursions.
 """
 
 import re
@@ -76,24 +28,15 @@ DIFF_CLIP = 127
 """Frame-difference clip in intensity counts, after normalisation to ``TAU``."""
 
 MOTION_TAU_S = 1.0 / 60.0
-"""Canonical motion baseline, in seconds.  Two constraints fix the value:
-
-* At least the coarsest native frame period to be supported, or a slow camera
-  cannot reach back that far.  16.7 ms covers 70/120/240/504 fps.
-* At least the selection gap, or motion between one selected frame and the next
-  goes unmeasured.  Denser selection gives overlapping baselines, which is
-  harmless.
-"""
+"""Canonical motion baseline, in seconds. Must be >= the coarsest native frame
+period to support (16.7 ms covers 70/120/240/504 fps) and >= the selection
+gap."""
 
 FLOW_SCALE_PX = 0.1
-"""Knee of the ``asinh`` flow companding, in pixels.
-
-Below this the encoding is effectively linear.
-"""
+"""Knee of the ``asinh`` flow companding, in pixels."""
 
 FLOW_CLIP_PX = 16.0
-"""Flow bound in pixels.  With companding this is large enough that saturation
-is negligible, so it functions as a range limit rather than a lossy clip."""
+"""Flow range bound, in pixels."""
 
 CHANNEL_GROUPS: dict[str, tuple[str, ...]] = {
     "gray": ("gray",),
@@ -101,27 +44,15 @@ CHANNEL_GROUPS: dict[str, tuple[str, ...]] = {
     "flow": ("flow_x", "flow_y"),
     "all": CHANNEL_NAMES,
 }
-"""Names accepted when selecting channels, beyond the raw channel names.
-
-``flow`` names both flow planes at once: they are one estimator's two outputs,
-and keeping them together is what lets a horizontal flip stay coherent -- a
-mirrored frame has to negate ``flow_x``, which is meaningless if only ``flow_y``
-is present.
-"""
+"""Group names accepted when selecting channels, beyond the raw channel names."""
 
 
 @dataclass(frozen=True)
 class ChannelSet:
-    """The channels one model is trained on, and where they sit in the array.
+    """The channels one model is trained on, always ordered as stored.
 
-    Preprocessing writes all of :data:`CHANNEL_NAMES`; this holds the subset a
-    model consumes, always ordered as stored.  Two index spaces, which differ:
-
-    :attr:`indices`
-        Positions in the stored ``(T, 4, H, W)`` array.
-    :meth:`position`
-        Position within the selection -- the block a model actually sees, and
-        what :mod:`.augment` indexes by.
+    :attr:`indices` positions within the stored ``(T, 4, H, W)`` array;
+    :meth:`position` positions within the selection itself.
     """
 
     names: tuple[str, ...]
@@ -145,9 +76,7 @@ class ChannelSet:
     def parse(cls, spec: str | Iterable[str]) -> "ChannelSet":
         """Build from ``"gray+diff+flow"``, ``"gray,diff"``, or a list of names.
 
-        Group names from :data:`CHANNEL_GROUPS` are expanded, duplicates
-        collapse, and the result is always ordered as stored -- so the same
-        selection written two ways gives the same object, and the same slug.
+        Group names expand, duplicates collapse, result is ordered as stored.
         """
         tokens = (
             [t for t in re.split(r"[+,\s]+", spec.strip()) if t]
@@ -185,12 +114,7 @@ class ChannelSet:
         return tuple(CHANNEL_NAMES.index(n) for n in self.names)
 
     def _folded(self) -> list[str]:
-        """Channel names with the complete flow pair folded back to ``flow``.
-
-        So a selection is echoed the way it was asked for -- ``gray+diff+flow``
-        rather than ``gray+diff+flow_x+flow_y``.  A lone flow plane, which no
-        group can name, is left spelled out.
-        """
+        """Channel names with the complete flow pair folded back to ``flow``."""
         flow = ("flow_x", "flow_y")
         parts = [n for n in self.names if n not in flow]
         if all(f in self.names for f in flow):
@@ -209,11 +133,7 @@ class ChannelSet:
         return self.names.index(name) if name in self.names else None
 
     def take(self, block: np.ndarray) -> np.ndarray:
-        """Slice the channel axis of a ``(T, C, H, W)`` stored block.
-
-        Returned unchanged for the complete set, so the default path costs
-        nothing and stays byte-identical to reading the array directly.
-        """
+        """Slice the channel axis of a ``(T, C, H, W)`` stored block."""
         if self.is_complete:
             return block
         return block[:, self.indices]
@@ -221,12 +141,7 @@ class ChannelSet:
     def take_stats(
         self, mean: np.ndarray, std: np.ndarray
     ) -> tuple[np.ndarray, np.ndarray]:
-        """Slice per-channel statistics measured over *all* stored channels.
-
-        Statistics are always measured and cached for the full stored set, so
-        one cache serves every selection and no two runs can disagree about
-        what a channel's mean is.
-        """
+        """Slice per-channel statistics measured over *all* stored channels."""
         index = list(self.indices)
         return np.asarray(mean)[index], np.asarray(std)[index]
 
@@ -279,11 +194,9 @@ def channel_encoding(
 ) -> dict[str, dict]:
     """How to map each stored uint8 channel back to physical units.
 
-    Recorded in the preprocessing manifest so a consumer never has to guess.
-    ``gray`` is in intensity counts; ``diff`` is in counts per *motion_tau_s*
-    seconds and the flow channels in pixels per *motion_tau_s* seconds (invert
-    the companding with :func:`decode_flow` first).  Divide by ``motion_tau_s``
-    for per-second units.
+    Recorded in the preprocessing manifest. ``gray`` in intensity counts;
+    ``diff`` in counts per *motion_tau_s*; flow in pixels per *motion_tau_s*
+    (invert companding with :func:`decode_flow` first).
     """
     return {
         "gray": {"kind": "identity", "units": "counts"},
@@ -326,23 +239,19 @@ def encode_stack(
     gray:
         The anchor frame, uint8.
     reference:
-        The source frame nearest ``t - tau``, or ``None`` at the start of the
-        clip -- in which case the motion channels are set to their zero level
-        rather than left undefined.
+        The source frame nearest ``t - tau``, or ``None`` at clip start (motion
+        channels then set to their zero level).
     flow_estimator:
-        From :func:`make_flow_estimator`; reused across calls so DIS keeps its
+        From :func:`make_flow_estimator`; reused across calls for DIS's
         internal buffers.
     dt:
-        The interval *reference* to *gray* actually spans, in seconds.  Motion
-        is scaled by ``tau / dt`` -- see the module docstring.
-    flow_scale_px, flow_clip_px:
-        Companding knee and range bound, in pixels per *tau*.
+        Interval *reference* to *gray* actually spans, in seconds. Motion is
+        scaled by ``tau / dt``.
 
     Returns
     -------
     (stack, n_diff_saturated, n_flow_saturated)
-        Saturation is counted *after* normalisation, which is where the stored
-        value can actually saturate.
+        Saturation counted after normalisation.
     """
     height, width = gray.shape
     stack = np.empty((N_CHANNELS, height, width), dtype=np.uint8)

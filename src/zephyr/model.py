@@ -19,13 +19,8 @@ Two grids, joined in embedding space
 ------------------------------------
 The encoder runs on the *selection* grid (whichever source frames
 :mod:`.preprocess` picked, at whatever rate); the TCN runs on the fixed 60 Hz
-*output* grid.  :func:`resample_embeddings` interpolates between them using the
+*output* grid. :func:`resample_embeddings` interpolates between them using the
 real frame timestamps.
-
-Resampling here rather than on pixels is what makes the pipeline
-rate-agnostic: after the encoder the camera's frame rate no longer exists, so
-the TCN's receptive field and the loss's pooling scales are fixed time spans
-rather than per-clip ones.
 
 Non-causal on purpose
 ---------------------
@@ -92,16 +87,9 @@ def resample_embeddings(
 ) -> torch.Tensor:
     """``(B, T_in, E)`` sampled at *t_in* -> ``(B, T_out, E)`` at *t_out*.
 
-    Linear, not cubic: a cubic kernel overshoots, and nothing here knows which
-    directions in embedding space are safe to leave.  Linear only ever produces
-    points between two embeddings the encoder itself produced, and
-    :class:`FrameEncoder`'s head ends in GELU with no output normalisation, so
-    there is no floor or norm statistic to violate.  Targets outside the input
-    span clamp rather than extrapolate.
-
-    Both time arrays must be **relative to the window**: they are float32, and
-    absolute clip timestamps hundreds of seconds in would quantise the
-    interpolation weight far coarser than the sub-millisecond precision wanted.
+    Linear interpolation; targets outside the input span clamp rather than
+    extrapolate. Both time arrays must be relative to the window (not absolute
+    clip time), for float32 precision.
     """
     n_in = embeddings.shape[1]
     if n_in < 2:
@@ -219,8 +207,7 @@ class BreathingNet(nn.Module):
 
     @property
     def receptive_field(self) -> int:
-        """Output-grid samples per prediction -- a fixed time span, since the
-        TCN only ever sees the 60 Hz grid."""
+        """Output-grid samples per prediction."""
         return self.temporal.receptive_field
 
     def encode(self, features: torch.Tensor, chunk: int | None = None) -> torch.Tensor:
@@ -253,8 +240,7 @@ class BreathingNet(nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """``(B, T_in, C, H, W)`` -> signal and onset logits, both ``(B, T_out)``.
 
-        *t_in* is each input frame's timestamp, *t_out* the grid to predict on,
-        both relative to the window start -- see :func:`resample_embeddings`.
+        *t_in*/*t_out* per :func:`resample_embeddings`.
         """
         embeddings = self.encode(features, chunk=chunk)
         return self.temporal(resample_embeddings(embeddings, t_in, t_out))

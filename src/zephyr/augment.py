@@ -37,25 +37,14 @@ class AugmentConfig:
         changing the effective frame interval must scale it or a stretched
         sample pairs a slow rhythm with fast-rhythm motion magnitudes.  A no-op
         when no motion channel is selected.
-
-        Not redundant with :mod:`.channels`' per-``TAU`` normalisation: that
-        makes the stored value independent of frame rate, this accounts for a
-        stretched window redefining how much real time one output sample covers.
     select_jitter:
         Maximum perturbation, in selection-grid units, applied independently to
-        each input frame's position -- with its timestamp moving with it.  So
-        the model is trained to read the timestamps and cope with irregular
-        sampling, not to ignore it.
+        each input frame's position (its timestamp moves with it).
     motion_noise:
         Standard deviation of extra Gaussian noise on the motion channels only,
         in uint8 code units, drawn per window from a log-uniform band around
-        this value.
-
-        Normalising motion to ``TAU`` makes the *signal* independent of the
-        achieved baseline ``dt`` but scales estimator noise by ``TAU/dt``: a
-        shorter baseline measures a smaller displacement, so DIS's sub-pixel
-        precision and the quantisation are a larger share of it.  A cheap proxy
-        for re-deriving the channels at a different baseline.
+        this value. Covers the estimator noise that per-``TAU`` normalisation
+        amplifies when the achieved baseline is shorter than ``TAU``.
     shift_px:
         Maximum spatial translation in pixels, drawn uniformly per axis.  Guards
         against the model keying on the crop's absolute position.
@@ -179,10 +168,7 @@ def gather_positions(
 ) -> np.ndarray:
     """Linearly interpolate *x* along axis 0 at fractional *positions*.
 
-    Fractional rather than rounded: rounding would duplicate anchors whenever
-    the spacing fell below 1, putting repeated timestamps into the embedding
-    interpolator.  Exact integer positions take a plain gather, so the common
-    unstretched case never pays for interpolation.
+    Exact integer positions take a plain gather (no interpolation cost).
     """
     n_in = x.shape[0]
     positions = np.clip(positions, 0.0, n_in - 1)
@@ -202,11 +188,7 @@ def gather_positions(
 def jitter_positions(
     positions: np.ndarray, rng: np.random.Generator, amount: float
 ) -> np.ndarray:
-    """Perturb each selection position independently.
-
-    Re-sorted: the timestamps gathered at these positions become the grid the
-    embedding interpolation searches, which has to stay monotonic.
-    """
+    """Perturb each selection position independently; re-sorted to stay monotonic."""
     if amount <= 0:
         return positions
     return np.sort(positions + rng.uniform(-amount, amount, size=positions.shape))
@@ -214,8 +196,7 @@ def jitter_positions(
 
 MOTION_NOISE_SPREAD = 2.0
 """Factor the noise level is drawn log-uniformly within, either side of
-``AugmentConfig.motion_noise`` -- a stand-in for the range of ``TAU/dt`` ratios
-a plausible camera could produce."""
+``AugmentConfig.motion_noise``."""
 
 
 def noise_scales(
@@ -223,13 +204,8 @@ def noise_scales(
 ) -> np.ndarray | None:
     """Per-channel noise standard deviation for one window, or ``None``.
 
-    The global and motion-only terms are independent Gaussians, so they combine
-    in quadrature into a single sd per channel.  Worth doing: the normal draw is
-    the data pipeline's dominant cost, so two draws over a
-    ``(T, C, H, W)`` block instead of one is directly visible in epoch time.
-
-    The motion level is drawn once per window, not per frame -- what it emulates
-    is the clip's achieved motion baseline, a property of the camera.
+    Global and motion-only terms are independent Gaussians, combined in
+    quadrature into a single sd per channel -- one draw instead of two.
     """
     sd = np.full(len(channels), float(config.noise), np.float32)
     if config.motion_noise > 0:
