@@ -242,20 +242,15 @@ def main() -> None:
         "--select-jitter",
         type=float,
         default=0.25,
-        help="How far each input frame's position may wander, in selection-"
-        "grid units, with its timestamp moving with it -- so the model learns "
-        "to read the timestamps rather than assume a uniform cadence.  The "
-        "default is one native frame at 240 fps, i.e. 'it could have picked "
-        "the neighbour'.  0 disables it.",
+        help="Max wander of each input frame's position, in selection-grid "
+        "units (timestamp moves with it). 0 disables it.",
     )
     parser.add_argument(
         "--motion-noise",
         type=float,
         default=2.0,
-        help="Extra noise on the motion channels only, in uint8 code units, at "
-        "a level drawn per window.  Covers the estimator noise that per-tau "
-        "normalisation amplifies when the achieved baseline is shorter than "
-        "tau.  0 disables it.",
+        help="Extra noise on the motion channels only, in uint8 code units, "
+        "at a level drawn per window. 0 disables it.",
     )
     parser.add_argument("--shift-px", type=int, default=4)
     parser.add_argument("--brightness", type=float, default=0.15)

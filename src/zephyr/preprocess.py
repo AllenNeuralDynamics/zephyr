@@ -7,27 +7,21 @@ can stream cheaply.
 
 Three grids
 -----------
-Kept distinct so that nothing downstream of the CNN knows the camera's frame
-rate:
-
 ``native``
-    What the camera recorded (240 fps, ~504 fps).  The timestamp parquet is the
-    authoritative record; nothing infers time from frame index.
+    What the camera recorded (240 fps, ~504 fps). From the timestamp parquet.
 ``selection`` (``--select-fs``, default 60 Hz)
-    Which frames the CNN sees: the native frames nearest the ticks of a uniform
-    grid built from the clip's own timestamps, the same principle
-    :func:`scoring.processing.resample_uniform` applies to the thermistor.
+    Which frames the CNN sees: native frames nearest the ticks of a uniform
+    grid built from the clip's own timestamps.
 ``output`` (fixed 60 Hz)
-    Where the prediction, the target and every metric live.  Reconciled with
-    the selection grid *after* the CNN, by interpolating frame embeddings
-    (:meth:`~.model.BreathingNet.forward`) -- which is why the two may differ.
+    Where the prediction, target and metrics live. Reconciled with the
+    selection grid after the CNN by interpolating frame embeddings
+    (:meth:`~.model.BreathingNet.forward`).
 
-Motion channels are measured against the frame nearest ``t - MOTION_TAU_S`` --
-a fixed interval in *time*, not a frame count -- and normalised by the interval
-actually achieved; see :mod:`.channels`.
+Motion channels are measured against the frame nearest ``t - MOTION_TAU_S``
+and normalised by the interval actually achieved; see :mod:`.channels`.
 
-Frames are decoded from the start of the file with no seeking, since that is
-what keeps decoded frame ``i`` aligned with row ``i`` of the timestamp file.
+Frames are decoded from the start of the file with no seeking, so decoded
+frame ``i`` stays aligned with row ``i`` of the timestamp file.
 
 Layout
 ------
@@ -85,15 +79,13 @@ from .targets import load_target, onset_heatmap
 from .video import Box, iter_frames, probe_size
 
 OUTPUT_FS = CANONICAL_BREATHING_SAMPLING_RATE
-"""The scorer's grid, and therefore the model's.  Not a CLI option: a
-submission is only ever read on this grid."""
+"""The scorer's grid, and therefore the model's. Not a CLI option."""
 
 
 def _nearest_index(times: np.ndarray, wanted: np.ndarray) -> np.ndarray:
     """Index of the entry of sorted *times* closest to each of *wanted*.
 
-    Clamped at both ends, so a *wanted* outside the recorded span resolves to
-    the first or last frame rather than failing.
+    Clamped at both ends.
     """
     right = np.clip(np.searchsorted(times, wanted), 0, len(times) - 1)
     left = np.clip(right - 1, 0, len(times) - 1)
@@ -102,13 +94,7 @@ def _nearest_index(times: np.ndarray, wanted: np.ndarray) -> np.ndarray:
 
 
 def select_anchor_indices(frame_times: np.ndarray, select_fs: float) -> np.ndarray:
-    """Native frame indices nearest a uniform *select_fs* grid over the clip.
-
-    No integer-stride special case: a stride and a timestamp grid agree only
-    when the camera runs at exactly a multiple of *select_fs*, and real capture
-    runs a touch off its nominal rate, so they drift apart over a 5-minute clip.
-    The clock is what the target is sampled against, so the clock wins.
-    """
+    """Native frame indices nearest a uniform *select_fs* grid over the clip."""
     n = len(frame_times)
     duration = float(frame_times[-1] - frame_times[0])
     if n < 2 or duration <= 0:
@@ -138,17 +124,12 @@ def motion_reference_indices(
 ) -> np.ndarray:
     """For each anchor, the native frame nearest ``tau`` seconds before it.
 
-    Deliberately *not* "the previous anchor": the point of ``tau`` is that the
-    motion baseline is a property of the data, not of how densely it happened
-    to be sampled -- above 60 Hz selection the previous anchor is nearer than
-    ``tau``.  Anchor 0 resolves to itself, which
-    :func:`~.channels.encode_stack` reads as "no motion yet".
+    Not "the previous anchor": above 60 Hz selection the previous anchor is
+    nearer than ``tau``. Anchor 0 resolves to itself (no motion yet).
     """
     wanted = frame_times[anchor_indices] - tau
     references = _nearest_index(frame_times, wanted)
     if np.any(references[1:] >= anchor_indices[1:]):
-        # Only possible when tau is under half a native frame period, i.e. the
-        # camera is too slow to resolve the requested baseline at all.
         native_period = float(np.median(np.diff(frame_times)))
         raise ValueError(
             f"motion tau {tau * 1e3:.1f} ms is shorter than this clip's frame "
@@ -201,9 +182,7 @@ def preprocess_clip(
     )
 
     flow_estimator = make_flow_estimator()
-    # Frames some anchor will want as its motion reference, held until that
-    # anchor arrives -- ~9 cropped frames at 504 fps, so cheaper than a second
-    # decode pass.
+    # Frames some anchor will want as its motion reference, held until used.
     wanted_references = set(reference_indices.tolist())
     held: dict[int, np.ndarray] = {}
     n_decoded = 0
@@ -235,8 +214,6 @@ def preprocess_clip(
             flow_saturated += n_flow
             n_written += 1
 
-            # Reference indices increase with the anchors, so anything below the
-            # next one will never be asked for again.
             if n_written < n_anchors:
                 cutoff = int(reference_indices[n_written])
                 for stale in [i for i in held if i < cutoff]:
@@ -264,8 +241,7 @@ def preprocess_clip(
     np.save(out_dir / f"time_{camera}_{clip.clip_id}.npy", out_times)
 
     n_pixels = n_written * box_w * box_h
-    # Anchor 0 has no motion by construction, so exclude it: the median over
-    # the rest is what says whether the requested baseline was achieved.
+    # Anchor 0 has no motion by construction; excluded from the achieved-dt stat.
     achieved = baselines[1:] if n_anchors > 1 else baselines
     entry = {
         "clip_id": clip.clip_id,
@@ -348,20 +324,15 @@ def main() -> None:
         "--select-fs",
         type=float,
         default=OUTPUT_FS,
-        help=f"Frame-selection rate, in Hz.  Anchors are the source frames "
-        f"nearest a uniform grid at this rate built from each clip's own "
-        f"timestamps, so it works whatever the camera's fps.  Must be at least "
-        f"the {OUTPUT_FS:.0f} Hz output rate: raising it spends CNN compute on "
-        f"finer motion sampling, while going below would ask the model to "
-        f"localise events finer than its input was ever sampled.",
+        help=f"Frame-selection rate, in Hz. Must be >= the {OUTPUT_FS:.0f} Hz "
+        f"output rate.",
     )
     parser.add_argument(
         "--motion-tau-s",
         type=float,
         default=MOTION_TAU_S,
-        help="Baseline the diff/flow channels are measured over and normalised "
-        "to, in seconds.  Must be at least the coarsest native frame period to "
-        "be supported, or a slow camera cannot reach back that far.",
+        help="Baseline the diff/flow channels are measured over and "
+        "normalised to, in seconds.",
     )
     parser.add_argument("--flow-scale-px", type=float, default=FLOW_SCALE_PX)
     parser.add_argument("--flow-clip-px", type=float, default=FLOW_CLIP_PX)
@@ -393,8 +364,7 @@ def main() -> None:
     if args.select_fs < OUTPUT_FS:
         raise SystemExit(
             f"--select-fs {args.select_fs:.1f} Hz is below the {OUTPUT_FS:.0f} Hz "
-            "output rate.  Embeddings would have to be interpolated *upward*, "
-            "which invents temporal detail the input never carried."
+            "output rate."
         )
 
     data = json.loads(args.boxes_json.read_text())

@@ -10,10 +10,9 @@ the margin trimmed, every output sample comes from a fully-populated receptive
 field, and the stitched trace is identical to what an unbounded forward pass
 would produce.
 
-Windows are laid out on the **output** grid -- what the receptive field, the
-margin and the returned trace are all counted in -- and each reads whichever
-selection frames cover its time span.  Time-stretch is training-only, so the
-input positions are a plain contiguous slice.
+Windows are laid out on the output grid; each reads whichever selection
+frames cover its time span (a plain contiguous slice -- no time-stretch at
+inference).
 """
 
 import numpy as np
@@ -23,8 +22,7 @@ from .dataset import INTERP_MARGIN, ClipEntry
 from .model import BreathingNet
 
 INPUT_MARGIN = INTERP_MARGIN
-"""The same slack the training windows keep, so the embedding interpolation
-brackets its targets rather than clamping."""
+"""Same slack the training windows keep."""
 
 
 def window_starts(n_frames: int, window: int, hop: int) -> list[int]:
