@@ -62,7 +62,7 @@ def predict_clip(
     -------
     (signal, onset_prob)
         Both aligned with ``np.load(entry.times)``, the clip's 60 Hz output
-        grid.  *signal* is z-scored over the clip -- the scorer's ``max_xcorr``
+        grid.  *signal* is z-scored over the clip -- the scorer's ``correlation``
         is amplitude-invariant, and a per-clip z-score is the closest thing to
         a canonical choice.
     """
