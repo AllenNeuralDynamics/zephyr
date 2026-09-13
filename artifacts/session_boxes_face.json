@@ -9,7 +9,7 @@
     270
   ],
   "box_size": 96,
-  "n_placed": 28,
+  "n_placed": 31,
   "sessions": {
     "train_1": {
       "box": [
@@ -429,6 +429,51 @@
       "clip_ids": [
         "test_12_part_1",
         "test_12_part_2"
+      ]
+    },
+    "test_13": {
+      "box": [
+        228,
+        89,
+        96,
+        96
+      ],
+      "placed": true,
+      "split": "test",
+      "session_idx": 13,
+      "clip_ids": [
+        "test_13_part_1",
+        "test_13_part_2"
+      ]
+    },
+    "test_14": {
+      "box": [
+        210,
+        94,
+        96,
+        96
+      ],
+      "placed": true,
+      "split": "test",
+      "session_idx": 14,
+      "clip_ids": [
+        "test_14_part_1",
+        "test_14_part_2"
+      ]
+    },
+    "test_15": {
+      "box": [
+        219,
+        89,
+        96,
+        96
+      ],
+      "placed": true,
+      "split": "test",
+      "session_idx": 15,
+      "clip_ids": [
+        "test_15_part_1",
+        "test_15_part_2"
       ]
     }
   }
