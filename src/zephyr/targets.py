@@ -33,10 +33,11 @@ class Target:
     signal:
         Filtered, z-scored breathing trace sampled at *times*.
     onset_times:
-        Inhalation-onset times detected on *signal*, for the auxiliary event
-        head and for event-level diagnostics.
+        Inhalation-onset times (positive temperature peaks) detected on
+        *signal*, for the auxiliary event head and event-level diagnostics.
     offset_times:
-        Inhalation-offset (exhalation) times, same convention.
+        Exhalation-onset times (negative temperature troughs). These are also
+        the preceding inhalations' offsets.
     native_fs:
         Thermistor sampling rate inferred from its own timestamps.
     scale:
@@ -100,9 +101,8 @@ def onset_heatmap(
 
     A hard one-hot target is nearly impossible to optimise at 60 Hz — one
     positive sample per ~11 — so onsets are blurred into soft bumps of width
-    *sigma_s*.  The default 20 ms sits comfortably inside the scoring
-    programme's 50 ms matching tolerance, so a peak recovered from this heatmap
-    is still counted as a hit.
+    *sigma_s*. The heatmap is centred exactly on each event; its width makes
+    the sparse target trainable without changing the desired peak location.
     """
     heatmap = np.zeros_like(times, dtype=np.float32)
     if len(onset_times) == 0:
