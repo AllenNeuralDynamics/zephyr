@@ -143,9 +143,13 @@ def channel_stats(
     recompute, and two runs can never disagree about a channel's mean.  Slice
     the result with :meth:`~.channels.ChannelSet.take_stats`.
     """
+    clip_ids = [entry.clip_id for entry in entries]
     if cache_path.exists():
         cached = json.loads(cache_path.read_text())
-        return np.array(cached["mean"], np.float32), np.array(cached["std"], np.float32)
+        if cached.get("clip_ids") == clip_ids:
+            return np.array(cached["mean"], np.float32), np.array(
+                cached["std"], np.float32
+            )
 
     rng = np.random.default_rng(seed)
     total = np.zeros(N_CHANNELS, np.float64)
@@ -171,6 +175,7 @@ def channel_stats(
                 "mean": mean.tolist(),
                 "std": std.tolist(),
                 "n_clips": len(entries),
+                "clip_ids": clip_ids,
                 "frames_per_clip": frames_per_clip,
                 "n_pixels": int(count),
             },
