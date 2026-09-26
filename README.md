@@ -30,23 +30,29 @@ declares PyTorch as a dependency; install a build suitable for your hardware.
 
 ## Download the data
 
-The public training data contains videos, frame timestamp parquets, and
-thermistor parquets. Download it to `data/train/`:
+The [Breathing from Video Challenge](https://github.com/AllenNeuralDynamics/breathing-codabench-challenge)
+publishes a labelled training dataset in a public S3 bucket. Each clip needs
+three matching files: the face-camera video, its frame timestamps, and the
+thermistor trace. From the Zephyr repository root, use the AWS CLI to download
+only those files into `data/train/`:
 
 ```bash
-aws s3 sync --no-sign-request s3://aind-scratch-data/vr-foraging/codabench-breathing-challenge/3fd049f3b2d5bb39409611187918ac41ce1f8b0a0d8d113a3526e5cf5a2ebc08/public/train/ data/train/
+aws s3 sync --no-sign-request --exclude "*" --include "video_face_*" --include "thermistor_*" s3://aind-scratch-data/vr-foraging/codabench-breathing-challenge/3fd049f3b2d5bb39409611187918ac41ce1f8b0a0d8d113a3526e5cf5a2ebc08/public/train/ data/train/
 ```
 
-Use the AWS CLI for dataset downloads; this command works in Bash and PowerShell. `data/` is ignored by Git. A clip uses matching
-`video_face_{session}_part_{part}.mp4`,
+The filter selects `video_face_{session}_part_{part}.mp4`, its matching
 `video_face_{session}_part_{part}.parquet`, and
-`thermistor_{session}_part_{part}.parquet` files. The model does not need the
-private test split for training.
+`thermistor_{session}_part_{part}.parquet`. It excludes the side-camera files.
+The command works in Bash and PowerShell; no AWS credentials are needed. A
+dry run with `--dryrun` listed 96 files (32 clips times three files) from the
+public train prefix. `data/` is ignored by Git. The private test split is not
+needed to train or validate Zephyr.
 
 ## Choose the crop
 
 `artifacts/session_boxes_face.json` contains the hand-placed face-camera crop
-boxes from the original baseline. Reuse it as-is to reproduce that geometry.
+boxes for all 16 public training sessions from the original baseline. Reuse it
+as-is to reproduce that geometry; no annotation step is needed for these clips.
 For new data or a different crop, cache a frame per clip and open the
 annotation UI:
 
@@ -84,11 +90,21 @@ uv run python -m zephyr.train
 ```
 
 Training uses every non-reserved public session. The checked-in
-`artifacts/holdout_sessions.json` reserves sessions that are excluded from
-training and checkpoint selection. Validation uses a time tail of the
-remaining clips; local full-clip correlation selects `best.pt`. Runs go under
-`runs_all/zephyr/<timestamp>-<channels>/` and contain `best.pt`, `last.pt`,
-`history.json`, and per-clip validation results.
+`artifacts/holdout_sessions.json` reserves sessions 9, 10, and 12; they are
+excluded from training, normalization statistics, validation, and checkpoint
+selection. Keep this file unchanged if you want comparable runs. The default
+validation set is the last 25% in time of each remaining clip, leaving its
+first 75% for training. Thus validation measures performance later in the
+same sessions; it does not estimate generalization to unseen sessions.
+
+Every epoch writes windowed `val_loss` and `val_corr` to `history.json`.
+Every four epochs (and at the final epoch), Zephyr predicts the full clips and
+measures only their validation tails. `xcorr`, `inhale_f1`, and `exhale_f1`
+are local diagnostics; `xcorr` selects `best.pt` and drives early stopping.
+Runs go under `runs_all/zephyr/<timestamp>-<channels>/` and contain `best.pt`,
+`last.pt`, `history.json`, and `best_per_clip.json`. The latter lists each
+validation clip's correlation and event F1. The reserved sessions remain
+untouched for final evaluation in the challenge repository.
 
 The default inputs are gray, signed frame difference, and two optical-flow
 channels. Preprocessing always stores all four; `--channels` selects the

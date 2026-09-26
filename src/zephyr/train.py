@@ -332,8 +332,6 @@ def main() -> None:
     except ValueError as exc:
         raise SystemExit(f"--channels: {exc}") from exc
 
-    mean, std = channel_stats(labelled, args.features_dir / STATS_FILENAME)
-
     test_sessions = reserve_test_sessions(
         labelled,
         args.holdout_json,
@@ -341,6 +339,9 @@ def main() -> None:
         seed=args.test_seed,
     )
     pool = [e for e in labelled if e.session_idx not in set(test_sessions)]
+    if not pool:
+        raise SystemExit("all labelled sessions are reserved; no training clips remain")
+    mean, std = channel_stats(pool, args.features_dir / STATS_FILENAME)
     train_entries, val_entries = pool, pool
     # Every session trains.  Validation, if any, is the time-tail of these
     # same clips -- see --val-fraction.
