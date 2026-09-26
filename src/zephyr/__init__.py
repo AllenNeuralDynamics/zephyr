@@ -1,1 +1,1 @@
-"""CNN and temporal network components for breathing prediction."""
+"""Breathing model, data preparation, training, and inference utilities."""
