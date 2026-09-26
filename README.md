@@ -29,6 +29,10 @@ uv sync --locked
 The tracked `.python-version` prefers Python 3.13, then 3.12 or 3.11;
 `uv.lock` fixes package versions for a repeatable install.
 
+The package also installs `zephyr-annotate`, `zephyr-preprocess`,
+`zephyr-train`, and `zephyr-evaluate` commands. The examples below
+use the equivalent `python -m zephyr.<module>` form.
+
 The default training device is CUDA when available, otherwise CPU. The package
 declares PyTorch as a dependency; install a build suitable for your hardware.
 
