@@ -37,7 +37,7 @@ thermistor parquets. Download it to `data/train/`:
 aws s3 sync --no-sign-request s3://aind-scratch-data/vr-foraging/codabench-breathing-challenge/3fd049f3b2d5bb39409611187918ac41ce1f8b0a0d8d113a3526e5cf5a2ebc08/public/train/ data/train/
 ```
 
-This is roughly 11 GiB. `data/` is ignored by Git. A clip uses matching
+Use the AWS CLI for dataset downloads; this command works in Bash and PowerShell. `data/` is ignored by Git. A clip uses matching
 `video_face_{session}_part_{part}.mp4`,
 `video_face_{session}_part_{part}.parquet`, and
 `thermistor_{session}_part_{part}.parquet` files. The model does not need the
