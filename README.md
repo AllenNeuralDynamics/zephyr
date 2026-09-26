@@ -7,9 +7,10 @@ training, and whole-clip inference. Its model code and relevant Git history
 were extracted from the
 [Breathing from Video Challenge](https://github.com/AllenNeuralDynamics/breathing-codabench-challenge).
 
-Zephyr has no dependency on the challenge scorer. Local training diagnostics
-are for choosing checkpoints. The challenge repository retains submission
-packaging, official scoring, held-out evaluation, and competition plots.
+Zephyr has no dependency on the challenge scorer. It includes local training
+diagnostics, held-out evaluation, and diagnostic plots. The challenge
+repository retains submission packaging and the authoritative competition
+scorer.
 
 ## Requirements
 
@@ -104,7 +105,7 @@ are local diagnostics; `xcorr` selects `best.pt` and drives early stopping.
 Runs go under `runs_all/zephyr/<timestamp>-<channels>/` and contain `best.pt`,
 `last.pt`, `history.json`, and `best_per_clip.json`. The latter lists each
 validation clip's correlation and event F1. The reserved sessions remain
-untouched for final evaluation in the challenge repository.
+untouched until final held-out evaluation.
 
 The default inputs are gray, signed frame difference, and two optical-flow
 channels. Preprocessing always stores all four; `--channels` selects the
@@ -120,6 +121,31 @@ Use `--device cpu --amp off` on a machine without a suitable CUDA device.
 `--resume` continues from the latest `last.pt` in the selected run directory.
 Run `uv run python -m zephyr.train --help` for augmentation, validation, and
 optimization settings. Local diagnostics are not official challenge scores.
+
+## Evaluate reserved sessions
+
+After training, evaluate a checkpoint on the three reserved public sessions.
+Keep the raw thermistor parquets in `data/train/`; the evaluator reads them
+directly and needs the preprocessed features for those sessions.
+
+```bash
+uv run python -m zephyr.evaluate --checkpoint runs_all/zephyr/<run>/best.pt --plot
+```
+
+The command checks that the checkpoint reserved every session it scores. It
+prints per-clip correlation, inhale and exhale event F1, and inter-breath
+interval divergence. With `--plot`, it writes rate breakdown and reserved
+session diagnostic plots under the run's `diagnosis/` directory. Use `--out`
+to save metrics as JSON. Several checkpoints can be ensembled when `--plot`
+is omitted.
+
+`zephyr.evaluation` contains local copies of the metric calculations used
+by this command, so evaluation does not import the challenge scorer. The
+[challenge scorer](https://github.com/AllenNeuralDynamics/breathing-codabench-challenge/tree/main/scoring)
+remains authoritative for Codabench results; changes there may make these
+local metrics differ. Because inspecting reserved results can influence model
+choices, use them for final assessment after choosing a checkpoint with the
+training validation tail.
 
 ## Run inference
 
