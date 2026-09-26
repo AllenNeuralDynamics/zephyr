@@ -23,8 +23,11 @@ scorer.
 Run these commands from the root of a Zephyr clone:
 
 ```bash
-uv sync
+uv sync --locked
 ```
+
+The tracked `.python-version` prefers Python 3.13, then 3.12 or 3.11;
+`uv.lock` fixes package versions for a repeatable install.
 
 The default training device is CUDA when available, otherwise CPU. The package
 declares PyTorch as a dependency; install a build suitable for your hardware.

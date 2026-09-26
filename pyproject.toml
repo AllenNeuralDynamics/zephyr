@@ -2,6 +2,9 @@
 name = "zephyr"
 version = "0.1.0"
 description = "CNN and temporal network for breathing prediction from video"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
 dependencies = [
     "numpy>=1.26",
@@ -12,6 +15,13 @@ dependencies = [
     "scipy>=1.11",
     "torch>=2.6,<2.8",
 ]
+
+[project.urls]
+Repository = "https://github.com/AllenNeuralDynamics/zephyr"
+Issues = "https://github.com/AllenNeuralDynamics/zephyr/issues"
+
+[dependency-groups]
+dev = ["ruff>=0.14"]
 
 [build-system]
 requires = ["hatchling"]

@@ -1,11 +1,33 @@
+# Python
 __pycache__/
 *.py[cod]
+*.so
+.Python
 .venv/
-.pytest_cache/
-.ruff_cache/
+venv/
+env/
+*.egg-info/
+.eggs/
 build/
 dist/
-*.egg-info/
+wheels/
+
+# Tool caches and reports
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+.ipynb_checkpoints/
+
+# Editors
+.idea/
+.vscode/
+
+# Zephyr generated data and runs
 artifacts/frames/
 data/
 runs*/
