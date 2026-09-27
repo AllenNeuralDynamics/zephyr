@@ -65,7 +65,7 @@ def _head_event_indices(probability: np.ndarray, times: np.ndarray) -> np.ndarra
     if len(times) < 2:
         return np.empty(0, dtype=int)
     sampling_rate = 1.0 / float(np.median(np.diff(times)))
-    distance = max(1, int(round(HEAD_MIN_DISTANCE_S * sampling_rate)))
+    distance = max(1, round(HEAD_MIN_DISTANCE_S * sampling_rate))
     peaks, _ = find_peaks(probability, height=HEAD_THRESHOLD, distance=distance)
     return peaks.astype(int)
 
@@ -919,8 +919,8 @@ def _write_summary_table(config: BenchmarkConfig, summary: list[dict]) -> None:
                 "|---|---|---:|---:|---:|",
             ]
         )
-        for representation in REPRESENTATION_LABELS:
-            for objective in OBJECTIVE_LABELS:
+        for representation, representation_label in REPRESENTATION_LABELS.items():
+            for objective, objective_label in OBJECTIVE_LABELS.items():
                 row = next(
                     value
                     for value in rows
@@ -928,8 +928,8 @@ def _write_summary_table(config: BenchmarkConfig, summary: list[dict]) -> None:
                     and value["objective"] == objective
                 )
                 lines.append(
-                    f"| {REPRESENTATION_LABELS[representation]} | "
-                    f"{OBJECTIVE_LABELS[objective]} | "
+                    f"| {representation_label} | "
+                    f"{objective_label} | "
                     f"{_format_cell(row, 'correlation', best['correlation'])} | "
                     f"{_format_cell(row, 'inhale_f1', best['inhale_f1'])} | "
                     f"{_format_cell(row, 'head_inhale_f1', best['head_inhale_f1'])} |"
