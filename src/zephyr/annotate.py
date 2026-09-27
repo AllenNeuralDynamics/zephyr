@@ -13,10 +13,10 @@ verified across a session's part frames with the ``1`` / ``2`` keys below.
 Usage
 -----
     # once: cache one native-resolution frame per clip
-    python -m zephyr.annotate --prepare
+    zephyr annotate --prepare
 
     # then choose the geometry and place the boxes
-    python -m zephyr.annotate --width 360 --height 270 --box-size 96
+    zephyr annotate --width 360 --height 270 --box-size 96
 
 Boxes auto-save to ``--out`` on every edit, so the window can be closed at any
 point and reopened to resume.
@@ -632,7 +632,7 @@ def run_ui(
     root.mainloop()
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         description="Choose a downsample target and hand-place a crop box per session."
     )
@@ -658,7 +658,7 @@ def main() -> None:
         action="store_true",
         help="Cache one frame per clip for every requested split, then exit.",
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     if args.prepare:
         for split in args.splits:
@@ -729,7 +729,3 @@ def main() -> None:
         f"target {target[0]}x{target[1]} | box {state.box_size} | -> {out_path}"
     )
     run_ui(sessions, state, args.camera, args.frame_dir, out_path)
-
-
-if __name__ == "__main__":
-    main()

@@ -46,7 +46,7 @@ one size, since the model needs a single input shape.
 
 CLI
 ---
-    python -m zephyr.preprocess \\
+    zephyr preprocess \\
         --boxes-json artifacts/session_boxes_face.json \\
         --drop-sessions 14
 """
@@ -297,7 +297,7 @@ def preprocess_clip(
     return entry
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         description="Decode and channelise clips into uint8 feature arrays."
     )
@@ -308,8 +308,7 @@ def main() -> None:
         "--boxes-json",
         type=Path,
         required=True,
-        help="Hand-placed boxes from `python -m zephyr.annotate`, "
-        "session-keyed or clip-keyed.",
+        help="Hand-placed boxes from `zephyr annotate`, session-keyed or clip-keyed.",
     )
     parser.add_argument(
         "--drop-sessions",
@@ -360,7 +359,7 @@ def main() -> None:
         "here without Windows' expensive per-worker interpreter relaunch. "
         "1 disables concurrency.",
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     if args.select_fs < OUTPUT_FS:
         raise SystemExit(
@@ -407,7 +406,7 @@ def main() -> None:
         raise SystemExit(
             f"{len(unannotated)} clips have no hand-placed box in "
             f"{args.boxes_json}: {unannotated}\n"
-            "Annotate them with `python -m zephyr.annotate`."
+            "Annotate them with `zephyr annotate`."
         )
 
     frame_w, frame_h = probe_size(clips[0].video(args.camera))
@@ -530,7 +529,3 @@ def main() -> None:
 
     manifest_path.write_text(json.dumps(manifest, indent=2))
     print(f"wrote {manifest_path}")
-
-
-if __name__ == "__main__":
-    main()

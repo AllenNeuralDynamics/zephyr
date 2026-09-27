@@ -102,9 +102,7 @@ def load_manifest(
     """Read ``manifest_{split}_{camera}.json`` and resolve its paths."""
     path = features_dir / f"manifest_{split}_{camera}.json"
     if not path.exists():
-        raise FileNotFoundError(
-            f"{path} not found -- run `python -m zephyr.preprocess` first."
-        )
+        raise FileNotFoundError(f"{path} not found -- run `zephyr preprocess` first.")
     manifest = json.loads(path.read_text())
     entries = [
         ClipEntry(

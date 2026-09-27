@@ -13,12 +13,13 @@ Two numbers are reported per epoch:
 
 CLI
 ---
-    python -m zephyr.train
+    zephyr train
 """
 
 import argparse
 import json
 import math
+import random
 import time
 from pathlib import Path
 
@@ -151,12 +152,19 @@ def cosine_schedule(step: int, total: int, warmup: int) -> float:
     return 0.01 + 0.99 * 0.5 * (1.0 + math.cos(math.pi * min(1.0, progress)))
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--features-dir", type=Path, default=Path("data/features"))
     parser.add_argument("--split", default="train")
     parser.add_argument("--camera", default="face", choices=["face", "side"])
     parser.add_argument("--out-dir", type=Path, default=Path("runs_all"))
+    parser.add_argument(
+        "--run-dir",
+        type=Path,
+        help="Exact directory for this run. Unlike --out-dir, no timestamp or "
+        "model-name component is appended. This is the safe option for sweep "
+        "jobs and makes --resume unambiguous.",
+    )
     parser.add_argument(
         "--val-fraction",
         type=float,
@@ -177,6 +185,14 @@ def main() -> None:
     )
     parser.add_argument("--n-test-sessions", type=int, default=3)
     parser.add_argument("--test-seed", type=int, default=0)
+    parser.add_argument(
+        "--reserve-test-sessions",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Reserve the sessions in --holdout-json. Disable only when an "
+        "independent packaged test split is used; then every labelled session "
+        "in --split is used for training.",
+    )
     parser.add_argument(
         "--resume",
         action="store_true",
@@ -307,7 +323,7 @@ def main() -> None:
         help="bf16 needs no loss scaling and is the default on Ada GPUs.",
     )
     parser.add_argument("--seed", type=int, default=0)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     torch.manual_seed(args.seed)
     device = torch.device(args.device)
@@ -332,16 +348,19 @@ def main() -> None:
     except ValueError as exc:
         raise SystemExit(f"--channels: {exc}") from exc
 
-    test_sessions = reserve_test_sessions(
-        labelled,
-        args.holdout_json,
-        n_test=args.n_test_sessions,
-        seed=args.test_seed,
+    mean, std = channel_stats(labelled, args.features_dir / STATS_FILENAME)
+
+    test_sessions = (
+        reserve_test_sessions(
+            labelled,
+            args.holdout_json,
+            n_test=args.n_test_sessions,
+            seed=args.test_seed,
+        )
+        if args.reserve_test_sessions
+        else []
     )
     pool = [e for e in labelled if e.session_idx not in set(test_sessions)]
-    if not pool:
-        raise SystemExit("all labelled sessions are reserved; no training clips remain")
-    mean, std = channel_stats(pool, args.features_dir / STATS_FILENAME)
     train_entries, val_entries = pool, pool
     # Every session trains.  Validation, if any, is the time-tail of these
     # same clips -- see --val-fraction.
@@ -360,11 +379,18 @@ def main() -> None:
     if leaked:
         raise SystemExit(f"reserved test sessions leaked into training: {leaked}")
 
-    print(
-        f"reserved test sessions (never trained or validated on): "
-        f"{test_sessions}  <- {args.holdout_json}",
-        flush=True,
-    )
+    if args.reserve_test_sessions:
+        print(
+            f"reserved test sessions (never trained or validated on): "
+            f"{test_sessions}  <- {args.holdout_json}",
+            flush=True,
+        )
+    else:
+        print(
+            "no sessions reserved from the training split; an independent "
+            "test split is required for unbiased evaluation",
+            flush=True,
+        )
     tail = (
         f"validating on the last {args.val_fraction:.0%} of each clip"
         if scoring
@@ -502,13 +528,20 @@ def main() -> None:
     # sets is legible without opening args.json.  The timestamp still leads, so
     # --resume's "most recent" ordering is unchanged.
     fresh_dir = runs_root / f"{time.strftime('%Y%m%d-%H%M%S')}-{channel_set.slug}"
-    if args.resume:
+    if args.run_dir is not None:
+        run_dir = args.run_dir
+    elif args.resume:
         # Resume the most recently started run that has a checkpoint, rather
         # than a run directory named for this invocation's arguments.
         existing = sorted(p for p in runs_root.glob("*") if (p / "last.pt").exists())
         run_dir = existing[-1] if existing else fresh_dir
     else:
         run_dir = fresh_dir
+    if run_dir.exists() and not args.resume and any(run_dir.iterdir()):
+        raise SystemExit(
+            f"{run_dir} already exists and is not empty; pass --resume to "
+            "continue that exact run or choose another --run-dir"
+        )
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "args.json").write_text(
         json.dumps({k: str(v) for k, v in vars(args).items()}, indent=2)
@@ -529,37 +562,49 @@ def main() -> None:
         resumes exactly: optimiser, scheduler, and a cosine schedule restarted
         mid-run would otherwise not be the same schedule.
         """
-        torch.save(
-            {
-                "model": (weights or model).state_dict(),
-                "model_live": model.state_dict(),
-                "ema": ema.state_dict() if ema is not None else None,
-                "ema_decay": args.ema_decay,
-                "optimiser": optimiser.state_dict(),
-                "scheduler": scheduler.state_dict(),
-                "scaler": scaler.state_dict(),
-                "epoch": epoch,
-                "best": best,
-                "since_best": since_best,
-                "history": history,
-                "test_sessions": test_sessions,
-                # Not part of state_dict, but the weights are unusable without
-                # it: it fixes the first conv's input width and which planes of
-                # the stored array to feed it.
-                "channels": list(channel_set.names),
-                # Full-width, over every stored channel, so checkpoints trained
-                # on different selections stay comparable.  Consumers slice with
-                # ChannelSet.take_stats.
-                "mean": mean,
-                "std": std,
-                "args": vars(args)
-                | {k: str(v) for k, v in vars(args).items() if isinstance(v, Path)},
-                "feature_config": config,
-                "metrics": metrics,
-                "per_clip": per_clip,
-            },
-            path,
-        )
+        state = {
+            "model": (weights or model).state_dict(),
+            "model_live": model.state_dict(),
+            "ema": ema.state_dict() if ema is not None else None,
+            "ema_decay": args.ema_decay,
+            "optimiser": optimiser.state_dict(),
+            "scheduler": scheduler.state_dict(),
+            "scaler": scaler.state_dict(),
+            "epoch": epoch,
+            "best": best,
+            "since_best": since_best,
+            "history": history,
+            "global_step": global_step,
+            "torch_rng_state": torch.get_rng_state(),
+            "cuda_rng_state_all": (
+                torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
+            ),
+            "numpy_rng_state": np.random.get_state(),
+            "python_rng_state": random.getstate(),
+            "test_sessions": test_sessions,
+            "train_split": args.split,
+            "trained_sessions": sorted({e.session_idx for e in train_entries}),
+            # Not part of state_dict, but the weights are unusable without
+            # it: it fixes the first conv's input width and which planes of
+            # the stored array to feed it.
+            "channels": list(channel_set.names),
+            # Full-width, over every stored channel, so checkpoints trained
+            # on different selections stay comparable.  Consumers slice with
+            # ChannelSet.take_stats.
+            "mean": mean,
+            "std": std,
+            "args": vars(args)
+            | {k: str(v) for k, v in vars(args).items() if isinstance(v, Path)},
+            "feature_config": config,
+            "metrics": metrics,
+            "per_clip": per_clip,
+        }
+        # Keep the previous checkpoint intact until the replacement is fully
+        # serialized. A process or machine failure during torch.save then costs
+        # at most one epoch instead of corrupting the only resumable file.
+        temporary = path.with_suffix(f"{path.suffix}.tmp")
+        torch.save(state, temporary)
+        temporary.replace(path)
 
     best = -np.inf
     since_best = 0
@@ -593,6 +638,17 @@ def main() -> None:
         since_best = state.get("since_best", 0)
         history = state["history"]
         start_epoch = state["epoch"] + 1
+        global_step = state.get("global_step", start_epoch * args.steps_per_epoch)
+        if state.get("torch_rng_state") is not None:
+            torch.set_rng_state(state["torch_rng_state"].cpu())
+        if torch.cuda.is_available() and state.get("cuda_rng_state_all") is not None:
+            torch.cuda.set_rng_state_all(
+                [rng_state.cpu() for rng_state in state["cuda_rng_state_all"]]
+            )
+        if state.get("numpy_rng_state") is not None:
+            np.random.set_state(state["numpy_rng_state"])
+        if state.get("python_rng_state") is not None:
+            random.setstate(state["python_rng_state"])
         print(
             f"resumed from {last_path} at epoch {start_epoch} (best xcorr {best:+.4f})"
         )
@@ -743,7 +799,3 @@ def main() -> None:
         print(f"final weights (no validation) -> {run_dir / 'best.pt'}")
     else:
         print(f"best held-out correlation {best:+.4f} -> {run_dir / 'best.pt'}")
-
-
-if __name__ == "__main__":
-    main()
