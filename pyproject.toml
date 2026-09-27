@@ -25,20 +25,18 @@ dependencies = [
     "matplotlib>=3.8",
     "scipy>=1.11",
     "torch>=2.6,<2.8",
+    "pydantic-settings>=2.6",
 ]
 
 [project.scripts]
-zephyr-annotate = "zephyr.annotate:main"
-zephyr-preprocess = "zephyr.preprocess:main"
-zephyr-train = "zephyr.train:main"
-zephyr-evaluate = "zephyr.evaluate:main"
+zephyr = "zephyr.cli:run"
 
 [project.urls]
 Repository = "https://github.com/AllenNeuralDynamics/zephyr"
 Issues = "https://github.com/AllenNeuralDynamics/zephyr/issues"
 
 [dependency-groups]
-dev = ["ruff>=0.14"]
+dev = ["ruff>=0.14", "pytest>=8.0"]
 
 [build-system]
 requires = ["hatchling"]
