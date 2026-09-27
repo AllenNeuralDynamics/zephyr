@@ -1,0 +1,118 @@
+name: Zephyr CI/CD
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - dev*
+      - release*
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  # ╔──────────────────────────╗
+  # │   _____         _        │
+  # │  |_   _|__  ___| |_ ___  │
+  # │    | |/ _ \/ __| __/ __| │
+  # │    | |  __/\__ \ |_\__ \ │
+  # │    |_|\___||___/\__|___/ │
+  # │                          │
+  # ╚──────────────────────────╝
+  tests:
+    runs-on: ubuntu-latest
+    name: Zephyr unit tests (py${{ matrix.python-version }})
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v8.2.0
+        with:
+          enable-cache: true
+
+      - name: Install python dependencies
+        run: uv sync --python ${{ matrix.python-version }} --extra cpu
+
+      - name: Run ruff format
+        run: uv run ruff format --check
+
+      - name: Run ruff check
+        run: uv run ruff check
+
+      - name: Run python unit tests
+        run: uv run pytest
+
+      - name: Build package
+        run: uv build
+
+      - name: Check for uncommitted changes
+        shell: bash
+        run: |
+          git config --global core.safecrlf false
+          git diff --exit-code || (echo "Untracked changes found" && exit 1)
+
+  # ╔─────────────────────────────────────────────────────────────────╗
+  # │   ____        _     _ _        ____      _                      │
+  # │  |  _ \ _   _| |__ | (_) ___  |  _ \ ___| | ___  __ _ ___  ___  │
+  # │  | |_) | | | | '_ \| | |/ __| | |_) / _ \ |/ _ \/ _` / __|/ _ \ │
+  # │  |  __/| |_| | |_) | | | (__  |  _ <  __/ |  __/ (_| \__ \  __/ │
+  # │  |_|    \__,_|_.__/|_|_|\___| |_| \_\___|_|\___|\__,_|___/\___| │
+  # │                                                                 │
+  # ╚─────────────────────────────────────────────────────────────────╝
+
+  prepare-release:
+    runs-on: ubuntu-latest
+    name: Build release wheel
+    needs: tests
+    if: github.event_name == 'release' && github.event.action == 'published'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # required so hatch-vcs can read the full tag history
+          ref: ${{ github.event.release.tag_name }}
+
+      - uses: astral-sh/setup-uv@v8.2.0
+        with:
+          enable-cache: true
+
+      - name: Build wheel
+        run: uv build
+
+      - name: Upload wheel as artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: dist
+          path: dist/
+          retention-days: 1
+
+  # ╔──────────────────────────────────────────────╗
+  # │      _         _   _  __            _        │
+  # │     / \   _ __| |_(_)/ _| __ _  ___| |_ ___  │
+  # │    / _ \ | '__| __| | |_ / _` |/ __| __/ __| │
+  # │   / ___ \| |  | |_| |  _| (_| | (__| |_\__ \ │
+  # │  /_/   \_\_|   \__|_|_|  \__,_|\___|\__|___/ │
+  # │                                              │
+  # ╚──────────────────────────────────────────────╝
+
+  attach-release-assets:
+    runs-on: ubuntu-latest
+    name: Attach wheel to GitHub release
+    needs: prepare-release
+    permissions:
+      contents: write
+    steps:
+      - name: Download wheel artifact
+        uses: actions/download-artifact@v5
+        with:
+          name: dist
+          path: dist/
+
+      - name: Upload wheel to GitHub release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ github.event.release.tag_name }}
+          files: dist/*

@@ -27,6 +27,9 @@ htmlcov/
 .idea/
 .vscode/
 
+# Zephyr generated version file (hatch-vcs)
+src/zephyr/_version.py
+
 # Zephyr generated data and runs
 artifacts/frames/
 data/
