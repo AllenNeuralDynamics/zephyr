@@ -2,13 +2,41 @@
 name = "zephyr"
 version = "0.1.0"
 description = "CNN and temporal network for breathing prediction from video"
+authors = [{ name = "Allen Institute for Neural Dynamics" }]
+keywords = ["breathing", "computer vision", "neural network", "pytorch"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
 dependencies = [
     "numpy>=1.26",
+    "pandas>=2.0",
+    "pyarrow>=14.0",
     "opencv-python-headless>=4.9",
+    "matplotlib>=3.8",
     "scipy>=1.11",
     "torch>=2.6,<2.8",
+    "pydantic-settings>=2.6",
 ]
+
+[project.scripts]
+zephyr = "zephyr.cli:run"
+
+[project.urls]
+Repository = "https://github.com/AllenNeuralDynamics/zephyr"
+Issues = "https://github.com/AllenNeuralDynamics/zephyr/issues"
+
+[dependency-groups]
+dev = ["ruff>=0.14", "pytest>=8.0"]
 
 [build-system]
 requires = ["hatchling"]
@@ -16,3 +44,10 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/zephyr"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 88
+
+[tool.ruff.lint]
+extend-select = ["I"]
