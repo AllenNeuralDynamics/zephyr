@@ -117,9 +117,11 @@ class BenchmarkConfigTests(unittest.TestCase):
             run_dir = isolated.run_dir(job)
             run_dir.mkdir(parents=True)
             (run_dir / "unrelated.txt").write_text("keep me")
-            with patch("zephyr.benchmark.preflight"):
-                with self.assertRaisesRegex(SystemExit, "unexpected files"):
-                    run_jobs(isolated, [job], resume=True, dry_run=False)
+            with (
+                patch("zephyr.benchmark.preflight"),
+                self.assertRaisesRegex(SystemExit, "unexpected files"),
+            ):
+                run_jobs(isolated, [job], resume=True, dry_run=False)
 
     def test_collector_writes_one_strict_json_artifact(self):
         config = load_config(DEFAULT_CONFIG)
