@@ -153,7 +153,7 @@ def validate(destination: Path, camera: str) -> dict:
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--dest", type=Path, default=Path("data/benchmark"))
+    parser.add_argument("--dest", type=Path, default=Path("data"))
     parser.add_argument("--camera", choices=["face", "side", "both"], default="face")
     subparsers = parser.add_subparsers(dest="command", required=True)
     download_parser = subparsers.add_parser("download")
