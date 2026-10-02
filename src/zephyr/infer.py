@@ -141,6 +141,13 @@ def predict_clip(
             f"(window={window}, margin={margin}, hop={hop})"
         )
 
+    # Networks trained on a transformed target (TS-CAN predicts the derivative)
+    # rebuild the trace here, once, on the stitched whole clip.
+    postprocess = getattr(model, "postprocess", None)
+    if postprocess is not None:
+        fs = 1.0 / float(np.median(np.diff(grid)))
+        signal = postprocess(signal, fs).astype(np.float32)
+
     scale = signal.std()
     signal = (signal - signal.mean()) / (scale if scale > 0 else 1.0)
     return signal, onset

@@ -30,6 +30,7 @@ from torch.optim.swa_utils import AveragedModel, get_ema_multi_avg_fn
 from torch.utils.data import DataLoader
 
 from zephyr.augment import AugmentConfig
+from zephyr.baselines.nets import ARCHS, DerivativeMSELoss, build_model
 from zephyr.channels import CHANNEL_NAMES, ChannelSet
 from zephyr.model import BreathingLoss, BreathingNet
 
@@ -209,6 +210,14 @@ def main(argv: list[str] | None = None) -> None:
         "crops and share one channel_stats.json.  Order does not matter.",
     )
 
+    parser.add_argument(
+        "--arch",
+        default="zephyr",
+        choices=ARCHS,
+        help="Network: zephyr's CNN-TCN, or the tscan / physnet benchmark "
+        "baselines (gray channel only).",
+    )
+
     parser.add_argument("--window", type=int, default=512)
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--epochs", type=int, default=200)
@@ -347,6 +356,8 @@ def main(argv: list[str] | None = None) -> None:
         channel_set = ChannelSet.parse(args.channels)
     except ValueError as exc:
         raise SystemExit(f"--channels: {exc}") from exc
+    if args.arch != "zephyr" and channel_set.names != ("gray",):
+        raise SystemExit(f"--arch {args.arch} needs --channels gray")
 
     mean, std = channel_stats(labelled, args.features_dir / STATS_FILENAME)
 
@@ -479,8 +490,14 @@ def main(argv: list[str] | None = None) -> None:
         else None
     )
 
-    model = BreathingNet(channels=channel_set, dropout=args.dropout).to(device)
-    criterion = BreathingLoss(args.w_corr, args.w_onset, tuple(args.scales))
+    model = build_model(
+        args.arch, channel_set, dropout=args.dropout, mean=mean, std=std
+    ).to(device)
+    criterion = (
+        DerivativeMSELoss()
+        if args.arch == "tscan"
+        else BreathingLoss(args.w_corr, args.w_onset, tuple(args.scales))
+    )
     optimiser = torch.optim.AdamW(
         model.parameters(), lr=args.lr, weight_decay=args.weight_decay
     )
@@ -527,7 +544,10 @@ def main(argv: list[str] | None = None) -> None:
     # The channel selection is in the directory name so a sweep over channel
     # sets is legible without opening args.json.  The timestamp still leads, so
     # --resume's "most recent" ordering is unchanged.
-    fresh_dir = runs_root / f"{time.strftime('%Y%m%d-%H%M%S')}-{channel_set.slug}"
+    slug = (
+        channel_set.slug if args.arch == "zephyr" else f"{args.arch}-{channel_set.slug}"
+    )
+    fresh_dir = runs_root / f"{time.strftime('%Y%m%d-%H%M%S')}-{slug}"
     if args.run_dir is not None:
         run_dir = args.run_dir
     elif args.resume:
@@ -588,6 +608,7 @@ def main(argv: list[str] | None = None) -> None:
             # it: it fixes the first conv's input width and which planes of
             # the stored array to feed it.
             "channels": list(channel_set.names),
+            "arch": args.arch,
             # Full-width, over every stored channel, so checkpoints trained
             # on different selections stay comparable.  Consumers slice with
             # ChannelSet.take_stats.
@@ -627,6 +648,11 @@ def main(argv: list[str] | None = None) -> None:
                 f"{last_path} was trained on channels {list(resumed_channels)} "
                 f"but this run asks for {list(channel_set.names)} -- the first "
                 "convolution has a different shape, so it cannot be resumed."
+            )
+        if state.get("arch", "zephyr") != args.arch:
+            raise SystemExit(
+                f"{last_path} was trained as {state.get('arch', 'zephyr')}, "
+                f"not {args.arch}"
             )
         model.load_state_dict(state.get("model_live") or state["model"])
         if ema is not None and state.get("ema") is not None:
