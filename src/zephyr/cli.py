@@ -17,6 +17,7 @@ CLI
     zephyr benchmark plan|run|collect ...
     zephyr benchmark-data download|validate ...
     zephyr benchmark-report head|report|all ...
+    zephyr baseline pixel|facemap|net|collect ...
 """
 
 from pydantic import BaseModel
@@ -108,6 +109,18 @@ class BenchmarkReportCommand(_PassthroughCommand):
         benchmark_report.main(self.args)
 
 
+class BaselineCommand(_PassthroughCommand):
+    """Run and collect the manuscript baselines. See ``zephyr.baseline``.
+
+    Takes its own ``pixel|facemap|net|collect`` sub-subcommand.
+    """
+
+    def cli_cmd(self) -> None:
+        from . import baseline
+
+        baseline.main(self.args)
+
+
 class Zephyr(BaseSettings):
     """Zephyr: CNN + TCN network for predicting breathing from video."""
 
@@ -120,6 +133,7 @@ class Zephyr(BaseSettings):
     benchmark: CliSubCommand[BenchmarkCommand]
     benchmark_data: CliSubCommand[BenchmarkDataCommand]
     benchmark_report: CliSubCommand[BenchmarkReportCommand]
+    baseline: CliSubCommand[BaselineCommand]
 
     def cli_cmd(self) -> None:
         CliApp.run_subcommand(self)
