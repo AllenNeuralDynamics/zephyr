@@ -20,7 +20,7 @@ the pooled frequency distribution to pull those apart.
 
 Everything is on the scorer's canonical grid, with events detected on the
 resampled signal exactly as ``score_clip`` does, so the per-bin counts
-aggregate back to the leaderboard's ``inhale_f1``.  The windowed-correlation
+aggregate back to the scorer's ``inhale_f1``.  The windowed-correlation
 panel is the exception: it correlates against the *filtered* truth, since raw
 noise depresses a short-window correlation for reasons that have nothing to do
 with the model.

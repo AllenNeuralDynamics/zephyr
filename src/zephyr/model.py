@@ -18,7 +18,7 @@ The two halves do different jobs:
 Two grids, joined in embedding space
 ------------------------------------
 The encoder runs on the *selection* grid (whichever source frames
-the challenge preprocessing selected, at whatever rate); the TCN runs on the fixed 60 Hz
+the preprocessing selected, at whatever rate); the TCN runs on the fixed 60 Hz
 *output* grid. :func:`resample_embeddings` interpolates between them using the
 real frame timestamps.
 
@@ -181,7 +181,7 @@ class BreathingNet(nn.Module):
     """The full model: per-frame CNN, then TCN over the frame sequence.
 
     ``channels`` names the stored channels this model consumes, in order, and
-    sets the encoder's input width. The challenge's inference code reads it to
+    sets the encoder's input width. Inference code reads it to
     slice the stored array and its per-channel statistics; training records it
     in the checkpoint.
     """

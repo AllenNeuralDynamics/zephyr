@@ -1,4 +1,4 @@
-"""Assemble and validate the organizer's labelled train/test benchmark data.
+"""Assemble and validate the labelled train/test benchmark data.
 
 The public prefix contains labelled training data and test videos.  The private
 prefix contains only the matching test thermistors and split metadata.  This

@@ -39,7 +39,7 @@ A predicted event within this window of a GT event counts as a true positive.
 
 @dataclass
 class Score:
-    """Per-clip scoring result for the breathing-from-video challenge.
+    """Per-clip scoring result for the breathing-from-video benchmark.
 
     Construct via the individual metric functions below, or via
     ``score_clip()`` in the local evaluation workflow.  Serialise with
@@ -300,9 +300,9 @@ def score_clip(
         Overrides, independent of each other; any omitted here are detected
         from the resampled signal via
         :func:`~zephyr.signal.detect_inhalation_events`. Inhale and
-        exhale onsets need not pair up or match in count. Truth is never
-        submitted, so it's always auto-detected in practice; a Codabench submission supplies explicit predicted event times, while
-        this local evaluator detects them from the predicted signal.
+        exhale onsets need not pair up or match in count. Truth events
+        are auto-detected in practice; predicted events may be supplied
+        explicitly, and are otherwise detected from the predicted signal.
     tolerance_s:
         Event-matching tolerance passed to the event metrics.
 

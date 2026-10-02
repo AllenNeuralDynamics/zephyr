@@ -1,15 +1,15 @@
-"""Score checkpoints against held-out labelled clips, the way the competition would.
+"""Score checkpoints against held-out labelled clips, the way the benchmark does.
 
 Truth comes from the raw signal, not the filtered, z-scored target this package
 trains on, and scoring goes through ``.evaluation.score_clip`` -- which
 resamples both traces onto the canonical grid and detects events itself.
-Anything less faithful would report a number the leaderboard will not reproduce.
+Anything less faithful would report a number the benchmark scorer will not reproduce.
 
 What this is for
 ----------------
 Two protocols are supported. Legacy development runs score sessions reserved in
 ``artifacts/holdout_sessions.json``. The factorial benchmark instead trains on
-the complete ``train`` split and supplies the organizer's ``split.json`` while
+the complete ``train`` split and supplies the provided ``split.json`` while
 scoring the independent ``test`` split. In either protocol the estimate is
 consumable: every look influences what gets tried next, so score models only
 after the training choices are frozen.
@@ -149,7 +149,7 @@ def aggregate_sessions(rows: list[dict]) -> list[dict]:
 
 
 def load_test_strata(path: Path | None) -> dict[str, list[int]]:
-    """Map the organizer split manifest to stable benchmark stratum names."""
+    """Map the split manifest to stable benchmark stratum names."""
     if path is None:
         return {}
     data = json.loads(path.read_text())
@@ -162,6 +162,46 @@ def load_test_strata(path: Path | None) -> dict[str, list[int]]:
         "known_animals_new_date": indices("val_held_out"),
     }
     return {name: values for name, values in strata.items() if values}
+
+
+def build_result(
+    rows: list[dict], sessions: set[int], strata: dict[str, list[int]]
+) -> dict:
+    """Clip, session and stratum summaries plus the composite, as JSON-ready data.
+
+    Shared by checkpoint evaluation and the baselines so both report identically.
+    """
+    summary = summarise_rows(rows)
+    session_rows = aggregate_sessions(rows)
+    summary_by_session = summarise_rows(session_rows)
+    stratum_results = {}
+    if strata:
+        for name, indices in strata.items():
+            members = [r for r in session_rows if r["session_idx"] in set(indices)]
+            stratum_results[name] = {
+                "sessions": indices,
+                "summary": summarise_rows(members),
+            }
+        stratum_results["all"] = {
+            "sessions": sorted(sessions),
+            "summary": summary_by_session,
+        }
+    # Weighted summary of the four metrics, for orientation only.
+    composite = (
+        0.50 * summary["inhale_f1"]
+        + 0.20 * summary["exhale_f1"]
+        + 0.20 * max(0.0, summary["correlation"])
+        + 0.10 * float(np.exp(-summary["kl_ibi"]))
+    )
+    return {
+        "sessions": sorted(sessions),
+        "clips": rows,
+        "summary": summary,
+        "per_session": session_rows,
+        "summary_by_session": summary_by_session,
+        "strata": stratum_results,
+        "composite": composite,
+    }
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -179,7 +219,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "--split-manifest",
         type=Path,
-        help="Organizer split.json. When --sessions is omitted, score every "
+        help="Benchmark split.json. When --sessions is omitted, score every "
         "test video_index and report new-animal and known-animal/new-date strata.",
     )
     parser.add_argument(
@@ -324,50 +364,19 @@ def main(argv: list[str] | None = None) -> None:
     print("-" * len(header))
     # Keep the historical clip-level summary, and add the academically correct
     # session-level result used by the benchmark harness.
-    summary = summarise_rows(rows)
-    session_rows = aggregate_sessions(rows)
-    summary_by_session = summarise_rows(session_rows)
-    stratum_results = {}
-    if strata:
-        for name, indices in strata.items():
-            members = [r for r in session_rows if r["session_idx"] in set(indices)]
-            stratum_results[name] = {
-                "sessions": indices,
-                "summary": summarise_rows(members),
-            }
-        stratum_results["all"] = {
-            "sessions": sorted(sessions),
-            "summary": summary_by_session,
-        }
+    result = build_result(rows, sessions, strata)
+    summary = result["summary"]
     print(
         f"{'mean':25s}{summary['correlation']:+10.3f}"
         f"{summary['inhale_f1']:8.3f}{summary['exhale_f1']:8.3f}{summary['kl_ibi']:8.3f}"
     )
-
-    # The composite proposed in the organiser notes, for orientation only -- the
-    # official weighting is still a TODO on the competition page.
-    composite = (
-        0.50 * summary["inhale_f1"]
-        + 0.20 * summary["exhale_f1"]
-        + 0.20 * max(0.0, summary["correlation"])
-        + 0.10 * float(np.exp(-summary["kl_ibi"]))
-    )
-    print(f"\nproposed composite (0.5/0.2/0.2/0.1): {composite:.4f}")
+    print(f"\ncomposite (0.5/0.2/0.2/0.1): {result['composite']:.4f}")
 
     if args.out:
         args.out.parent.mkdir(parents=True, exist_ok=True)
         args.out.write_text(
             json.dumps(
-                {
-                    "checkpoints": [str(p) for p in args.checkpoint],
-                    "sessions": sorted(sessions),
-                    "clips": rows,
-                    "summary": summary,
-                    "per_session": session_rows,
-                    "summary_by_session": summary_by_session,
-                    "strata": stratum_results,
-                    "composite": composite,
-                },
+                {"checkpoints": [str(p) for p in args.checkpoint]} | result,
                 indent=2,
             )
         )
