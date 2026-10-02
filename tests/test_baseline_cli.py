@@ -67,3 +67,55 @@ class CollectTests(unittest.TestCase):
             self.assertAlmostEqual(by[("tscan", "-")]["correlation_mean"], 0.5)
             self.assertEqual(by[("tscan", "-")]["n_seeds"], 2)
             self.assertTrue((root / "results.md").exists())
+
+
+class HeadAndBestTests(unittest.TestCase):
+    def _zephyr(self, root: Path) -> Path:
+        results = root / "zephyr" / "results.json"
+        results.parent.mkdir(parents=True)
+        metrics = {
+            f"{m}_{s}": v
+            for m, v in (
+                ("correlation", 0.9),
+                ("inhale_f1", 0.8),
+                ("exhale_f1", 0.85),
+                ("kl_ibi", 0.05),
+            )
+            for s in ("mean", "sd")
+        }
+        results.write_text(
+            json.dumps(
+                {
+                    "summary_across_seeds": [
+                        {
+                            "representation": "gray+diff",
+                            "objective": "multitask",
+                            "stratum": "all",
+                            "n_seeds": 2,
+                        }
+                        | metrics
+                    ]
+                }
+            )
+        )
+        for seed, f1 in ((1, 0.90), (2, 0.94)):
+            run = root / "zephyr" / "runs" / f"gray-diff__multitask__seed-{seed}"
+            run.mkdir(parents=True)
+            (run / "head_evaluation.json").write_text(
+                json.dumps({"strata": {"all": {"summary": {"head_inhale_f1": f1}}}})
+            )
+        return results
+
+    def test_collect_adds_onset_head_rows_and_best_table(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            rows = baseline.collect(root / "out", self._zephyr(root))
+            head = [r for r in rows if r["method"] == "zephyr (onset head)"]
+            self.assertEqual(len(head), 1)
+            self.assertEqual(head[0]["variant"], "gray+diff/multitask")
+            self.assertAlmostEqual(head[0]["inhale_f1_mean"], 0.92)
+            self.assertEqual(head[0]["n_seeds"], 2)
+            self.assertIsNone(head[0]["correlation_mean"])
+            text = (root / "out" / "results.md").read_text(encoding="utf-8")
+            self.assertIn("Best per method", text)
+            self.assertIn("0.920", text)

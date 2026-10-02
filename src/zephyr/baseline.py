@@ -139,6 +139,67 @@ def _markdown(rows: list[dict]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _onset_head_rows(runs_dir: Path) -> list[dict]:
+    """Zephyr's inhale F1 from the multitask onset head, across seeds.
+
+    The head only scores inhale onsets, so the other metrics are left empty.
+    """
+    by_variant: dict[str, list[dict]] = {}
+    for path in sorted(runs_dir.glob("*/head_evaluation.json")):
+        representation, objective, _ = path.parent.name.split("__")
+        by_variant.setdefault(
+            f"{representation.replace('-', '+')}/{objective}", []
+        ).append(json.loads(path.read_text()))
+    rows = []
+    for variant, results in by_variant.items():
+        values = np.array(
+            [r["strata"]["all"]["summary"]["head_inhale_f1"] for r in results],
+            dtype=float,
+        )
+        values = values[np.isfinite(values)]
+        row = {
+            "method": "zephyr (onset head)",
+            "variant": variant,
+            "stratum": "all",
+            "n_seeds": len(results),
+        }
+        for metric in METRICS:
+            row[f"{metric}_mean"] = None
+            row[f"{metric}_sd"] = None
+        row["inhale_f1_mean"] = float(values.mean()) if len(values) else None
+        row["inhale_f1_sd"] = float(values.std(ddof=1)) if len(values) > 1 else None
+        rows.append(row)
+    return rows
+
+
+def _best_markdown(rows: list[dict]) -> str:
+    """Each method's best score per metric over its variants, 'all' stratum only.
+
+    Not a like-for-like ranking: variants are picked by their own test score, so
+    this shows what each method can reach, not what a tuned run would report.
+    """
+    lines = [
+        "## Best per method (all sessions)",
+        "",
+        "| method | correlation | inhale F1 | exhale F1 | KL-IBI (lower is better) |",
+        "| --- | --- | --- | --- | --- |",
+    ]
+    for method in dict.fromkeys(r["method"] for r in rows):
+        members = [r for r in rows if r["method"] == method and r["stratum"] == "all"]
+        cells = []
+        for metric in METRICS:
+            scored = [r for r in members if r.get(f"{metric}_mean") is not None]
+            if not scored:
+                cells.append("—")
+                continue
+            pick = (min if metric == "kl_ibi" else max)(
+                scored, key=lambda r: r[f"{metric}_mean"]
+            )
+            cells.append(f"{pick[f'{metric}_mean']:.3f} ({pick['variant']})")
+        lines.append(f"| {method} | " + " | ".join(cells) + " |")
+    return "\n".join(lines) + "\n"
+
+
 def collect(out_root: Path, zephyr_results: Path | None) -> list[dict]:
     rows: list[dict] = []
     for path in sorted(out_root.glob("pixel/*/*/evaluation.json")):
@@ -171,9 +232,12 @@ def collect(out_root: Path, zephyr_results: Path | None) -> list[dict]:
                     for s in ("mean", "sd")
                 }
             )
+        rows += _onset_head_rows(zephyr_results.parent / "runs")
     out_root.mkdir(parents=True, exist_ok=True)
     (out_root / "results.json").write_text(json.dumps(rows, indent=2))
-    (out_root / "results.md").write_text(_markdown(rows), encoding="utf-8")
+    (out_root / "results.md").write_text(
+        _markdown(rows) + "\n" + _best_markdown(rows), encoding="utf-8"
+    )
     print(f"wrote {out_root / 'results.md'}")
     return rows
 
