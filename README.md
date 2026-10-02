@@ -64,7 +64,7 @@ flags.
 ## Beyond the quickstart
 
 - `zephyr benchmark` / `benchmark-data` / `benchmark-report` run a fixed
-  train/test factorial sweep against the organizer's official split, as an
+  train/test factorial sweep against a fixed, provided train/test split, as an
   alternative to the single-run workflow above.
 - `zephyr.infer.predict_clip` runs inference on an arbitrary preprocessed clip
   and checkpoint; see its docstring.

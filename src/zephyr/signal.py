@@ -1,4 +1,4 @@
-"""Signal preparation for model targets, independent of competition scoring."""
+"""Signal preparation for model targets, independent of scoring."""
 
 import numpy as np
 import pandas as pd

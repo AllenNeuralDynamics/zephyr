@@ -1,4 +1,4 @@
-"""Local training diagnostics; competition scores remain in the challenge repo."""
+"""Local training diagnostics; final scores come from :mod:`.evaluation`."""
 
 import numpy as np
 from scipy.optimize import linear_sum_assignment

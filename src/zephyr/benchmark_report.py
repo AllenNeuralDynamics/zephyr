@@ -1,8 +1,8 @@
 """Build the final benchmark report and directly score the auxiliary onset head.
 
-The ordinary challenge evaluation derives inhalation events from the reconstructed
+The ordinary evaluation derives inhalation events from the reconstructed
 breathing trace.  This module adds a separate, explicitly labelled diagnostic for
-the multitask models' onset head, then combines it with the challenge metrics and
+the multitask models' onset head, then combines it with the standard metrics and
 the training histories in publication-oriented figures and a Markdown table.
 
 Examples
