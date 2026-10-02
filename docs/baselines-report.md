@@ -177,9 +177,14 @@ only produces inhale events, so it has no correlation, exhale F1 or KL-IBI.
    (add it as a dev-only dependency) and compare the leading components.
 3. **Timing precision of Facemap's F1.** Rescore with a wider tolerance (for
    example 50 ms), or rerun with single-frame lag steps.
-4. **TS-CAN and PhysNet (not started).** Reimplement both in PyTorch from the
-   published architectures, behind the same interface as zephyr's network, with
-   a new `--arch` flag in `train.py` / `evaluate.py` / `infer.py`.
+4. **TS-CAN and PhysNet: code done, training not yet run.** Both are
+   reimplemented in PyTorch (`src/zephyr/baselines/nets.py`) behind the same
+   interface as zephyr's network, with a new `--arch tscan|physnet` flag in
+   `train.py` / `evaluate.py` / `infer.py`. Checked so far: unit tests, a
+   3-step CPU smoke train and evaluate for each, and a synthetic task where both
+   reach correlation about 0.99 within 40 steps. Not yet done: learning-rate
+   tuning on the train split and the 5-seed runs, which need a GPU
+   (`zephyr baseline net --arch tscan|physnet`).
    - TS-CAN is trained on the derivative of the trace, as in the original
      paper, and the trace is rebuilt by cumulative sum, detrend and band-pass.
    - Neither can use code from rPPG-Toolbox (a licence that would impose use

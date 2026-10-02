@@ -37,6 +37,7 @@ import numpy as np
 import pandas as pd
 import torch
 
+from zephyr.baselines.nets import build_model
 from zephyr.channels import ChannelSet
 from zephyr.model import BreathingNet
 
@@ -62,12 +63,15 @@ def load_checkpoint(
     written before ``--channels`` existed have no such field and trained on
     every stored channel, which their own manifest config records.  Returned
     ``mean``/``std`` stay full-width -- :func:`~.infer.predict_clip` slices
-    them to the model.
+    them to the model.  Checkpoints without an ``arch`` field are zephyr
+    CNN-TCNs.
     """
     state = torch.load(path, map_location=device, weights_only=False)
     config = state["feature_config"]
     channels = ChannelSet.parse(state.get("channels") or config["channel_names"])
-    model = BreathingNet(channels=channels).to(device)
+    model = build_model(
+        state.get("arch", "zephyr"), channels, mean=state["mean"], std=state["std"]
+    ).to(device)
     model.load_state_dict(state["model"])
     model.eval()
     return model, state["mean"], state["std"], state
