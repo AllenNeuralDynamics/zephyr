@@ -70,6 +70,18 @@ class WarmupClipTests(unittest.TestCase):
         self.assertNotIn(warmup, timed)
 
 
+class WarmFileCacheTests(unittest.TestCase):
+    def test_reads_every_distinct_feature_file_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = []
+            for name, size in (("a.npy", 1000), ("b.npy", 5000)):
+                path = Path(tmp) / name
+                path.write_bytes(b"x" * size)
+                paths.append(path)
+            entries = [SimpleNamespace(features=p) for p in paths + paths[:1]]
+            self.assertEqual(timing.warm_file_cache(entries), 6000)
+
+
 class TimingTableTests(unittest.TestCase):
     def test_collect_includes_timing_table(self):
         with tempfile.TemporaryDirectory() as tmp:

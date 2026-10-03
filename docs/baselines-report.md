@@ -29,6 +29,11 @@ Every method sees the same inputs and is scored the same way as zephyr.
   `data/split.json`. It is divided into two strata:
   - `new_animals`: animals not seen in training.
   - `known_animals_new_date`: known animals recorded on a new date.
+- **Dev sessions:** sessions 9, 10 and 12 of the `train` split (6 clips),
+  reserved in `artifacts/holdout_sessions.json`. Models used for tuning never
+  train on them. They are used for learning-rate tuning and the TS-CAN
+  input-size experiments, and for nothing else. **They are not the test data**: every number in the Results section comes from
+  `data/test`.
 - **Scoring:** `zephyr.evaluation.score_clip`, the same function `zephyr
   evaluate` uses. Per-clip scores are averaged within session, and sessions are
   the sampling unit.
@@ -104,9 +109,9 @@ Shared setup:
 |---|---|---|
 | Parameters | 0.53 M | 0.77 M |
 | Window (frames) | 512 | 128 |
-| Target | derivative of the trace | the trace |
-| Loss | MSE on the standardised derivative | negative Pearson (scale 1) |
-| Trace at inference | cumulative sum, detrend (lambda 100), first-order Butterworth band-pass | direct |
+| Target | forward difference of the trace, `y[k+1] - y[k]` | the trace |
+| Loss | MSE on the standardised forward difference | negative Pearson (scale 1) |
+| Trace at inference | running sum, detrend (lambda 100), first-order Butterworth band-pass | direct |
 
 The TS-CAN band-pass uses the same 1-15 Hz band as the other baselines, where the
 original used a human breathing band.
@@ -126,6 +131,34 @@ for choosing between rates.
 
 TS-CAN's best rate is the top of the grid, so it may be slightly under-tuned.
 Final runs used 3e-4 (PhysNet) and 1e-3 (TS-CAN).
+
+**TS-CAN target.** The paper trains on the forward difference of the label
+(`np.diff`), and a running sum then recovers the label exactly. An earlier
+version of this benchmark used a *central* difference instead, a deviation from
+the paper. The running sum of a central difference lands half a sample early, so
+that version's inhale F1 was 0.32 against exhale F1 0.76. TS-CAN was retrained
+with the paper's forward-difference target (each output is placed at the earlier
+frame of its frame pair and the reconstruction is an exact running sum). On a
+synthetic task with a known answer the reconstructed trace correlates 0.999 with
+the truth at zero lag. The earlier central-difference results are not reported
+below; the checkpoints are kept in `runs_all/archive-central-diff/` and
+`benchmarks/baselines-v1/tscan_central_diff_archive/`.
+
+**Attempts to improve the (central-difference) TS-CAN.** Same protocol (40
+epochs, dev sessions plus the validation tail), held-out correlation:
+
+| Input | Learning rate | Held-out correlation |
+|---|---|---|
+| 36 px (the paper's size) | 1e-3 | 0.785 |
+| 36 px | 3e-3 | **0.792** |
+| 72 px | 1e-3 | 0.765 |
+| 72 px | 3e-3 | 0.751 |
+
+None helped beyond noise (the 0.007 gain from 3e-3 is about the seed-to-seed
+spread), so the retrained TS-CAN keeps the paper's 36 px input. 96 px
+was not run: about 9 h per full run on this GPU, and a 72 px attempt with
+512-frame windows filled the 8 GB of GPU memory, so the larger sizes used
+128-frame windows.
 
 ## Results
 
@@ -157,19 +190,17 @@ Facemap-style by stratum (correlation / inhale F1):
 
 | Method | Stratum | Correlation | Inhale F1 | Exhale F1 | KL-IBI |
 |---|---|---|---|---|---|
-| TS-CAN | all | 0.764 +/- 0.002 | 0.324 +/- 0.001 | 0.761 +/- 0.003 | 0.067 |
-| TS-CAN | `new_animals` | 0.748 | 0.312 | 0.713 | 0.058 |
-| TS-CAN | `known_animals_new_date` | 0.779 | 0.335 | 0.809 | 0.077 |
+| TS-CAN | all | *retraining in progress* | | | |
 | PhysNet | all | **0.900** +/- 0.003 | **0.822** +/- 0.004 | **0.870** +/- 0.006 | 0.038 |
 | PhysNet | `new_animals` | 0.893 | 0.794 | 0.834 | 0.036 |
 | PhysNet | `known_animals_new_date` | 0.908 | 0.850 | 0.907 | 0.040 |
 
 Per seed (all sessions, correlation / inhale F1 / exhale F1 / KL-IBI):
 
-| Seed | TS-CAN | PhysNet |
-|---|---|---|
-| 17 | 0.762 / 0.323 / 0.759 / 0.066 | 0.898 / 0.819 / 0.875 / 0.047 |
-| 42 | 0.766 / 0.324 / 0.763 / 0.069 | 0.903 / 0.825 / 0.866 / 0.030 |
+| Seed | PhysNet |
+|---|---|
+| 17 | 0.898 / 0.819 / 0.875 / 0.047 |
+| 42 | 0.903 / 0.825 / 0.866 / 0.030 |
 
 ### Zephyr, for reference (5 seeds, from the existing sweep)
 
@@ -185,16 +216,70 @@ for the baselines. The onset-head column scores the network's own onset head
 (`head_evaluation.json`, written by `zephyr benchmark-report head`). The head
 only produces inhale events, so it has no correlation, exhale F1 or KL-IBI.
 
-### Best per method
+### Best per method (test split)
 
 | Method | Correlation | Inhale F1 | Exhale F1 |
 |---|---|---|---|
 | Pixel flow / pca / snr | at most 0.02 | at most 0.16 | at most 0.16 |
 | Facemap-style (both) | 0.434 | 0.303 | 0.322 |
-| TS-CAN | 0.764 | 0.324 | 0.761 |
+| TS-CAN | *pending retrain* | | |
 | PhysNet | 0.900 | 0.822 | 0.870 |
 | Zephyr, from the trace | 0.913 | 0.872 | 0.891 |
 | Zephyr, from the onset head | n/a | 0.954 | n/a |
+
+The TS-CAN and PhysNet rows have no choice made on the test split (learning
+rates came from the dev sessions). The pixel, Facemap-style and zephyr rows are
+the best variant by test score.
+
+### Inference time per clip
+
+Wall-clock seconds per 300 s clip, from the preprocessed crops on disk to the
+finished 60 Hz trace, mean +/- sd over 8 test clips (`test_1_part_1`,
+`test_2_part_2`, `test_4_part_2`, `test_6_part_1`, `test_7_part_2`,
+`test_9_part_1`, `test_11_part_1`, `test_12_part_2`). "x real time" is 300 s
+divided by the time per clip.
+
+| Method | Device | Params (M) | Seconds per clip | x real time |
+|---|---|---|---|---|
+| pixel flow | CPU | n/a | 3.48 +/- 0.03 | 86x |
+| pixel pca | CPU | n/a | 2.80 +/- 0.16 | 107x |
+| pixel snr | CPU | n/a | 1.94 +/- 0.17 | 155x |
+| Facemap-style motion | CPU | n/a | 0.95 +/- 0.01 | 316x |
+| Facemap-style movie | CPU | n/a | 0.86 +/- 0.01 | 350x |
+| Facemap-style both | CPU | n/a | 1.19 +/- 0.02 | 251x |
+| PhysNet | GPU | 0.77 | 1.42 +/- 0.01 | 211x |
+| TS-CAN | GPU | 0.53 | 0.83 +/- 0.00 | 363x |
+| zephyr, gray | GPU | 0.86 | 0.65 +/- 0.01 | 459x |
+| zephyr, gray + diff + flow | GPU | 0.86 | 1.70 +/- 0.02 | 176x |
+| PhysNet | CPU | 0.77 | 18.99 +/- 1.52 | 16x |
+| TS-CAN | CPU | 0.53 | 4.70 +/- 0.02 | 64x |
+| zephyr, gray | CPU | 0.86 | 3.42 +/- 0.06 | 88x |
+| zephyr, gray + diff + flow | CPU | 0.86 | 4.11 +/- 0.02 | 73x |
+
+Hardware: NVIDIA GeForce RTX 4060 Ti (8 GB), an Intel CPU (PyTorch using 24
+threads), PyTorch 2.7.1 (CUDA 12.6). Networks run on the GPU in bf16 and on the CPU in fp32; the
+pixel and Facemap-style methods are numpy and run on the CPU only.
+
+What the numbers include and exclude:
+
+- **Included:** reading the crop array, the method itself, and trace
+  reconstruction (TS-CAN's integrate-and-filter, the pixel polarity rule). The
+  Facemap-style time includes projection and the lagged readout.
+- **Not included:** video decoding and cropping (shared by every method), scoring,
+  and the preprocessing channels a method reads. **Optical flow is computed once
+  in `zephyr preprocess` and costs about 52 s per clip on the CPU (2.9 ms per
+  frame).** Add it for any method that reads the flow channel (pixel flow, zephyr
+  with flow); it is larger than the inference time of every method above. Gray
+  and diff channels are cheap.
+- **File cache:** every timed clip is read into the operating system's file cache
+  first, so all methods are timed on warm data. Cold disk reads add real cost to
+  the cheaper methods (pixel flow measured 6.4 s cold against 3.5 s warm here).
+- **Warm-up:** one extra clip, not among the 8, is run and discarded before each
+  method.
+- **Facemap-style weights** are not saved by the benchmark run, so timing uses
+  random weights of the right shape (cost depends on shape, not values).
+- **Single machine, single run per clip.** Treat differences under about 10% as
+  noise (a repeat of the whole timing run differed by at most 7.7%).
 
 `zephyr baseline collect` regenerates the full tables, including this one, in
 `benchmarks/baselines-v1/results.md`.
@@ -229,12 +314,21 @@ only produces inhale events, so it has no correlation, exhale F1 or KL-IBI.
     separate claims, and a reviewer is likely to notice.
   - PhysNet generalises about equally to new animals (0.893) and to new dates
     (0.908).
-- **TS-CAN reconstructs the waveform but not the timing of inhales.** Correlation
-  is 0.764, but inhale F1 is 0.324 against exhale F1 0.761 on both seeds. Zephyr's
-  and PhysNet's two F1s are within about 0.05 of each other. A plausible cause is
-  that the integrated, band-passed reconstruction keeps the broad troughs in
-  place while blurring the sharp inhale peaks. Not yet established; see
-  [Open items](#open-items).
+- **A sub-frame timing offset explained the first TS-CAN's weak inhale F1.** The
+  first version scored correlation 0.764 but inhale F1 only 0.324 (exhale F1
+  0.761). On the dev sessions, loosening the match tolerance from 17 ms to 34 ms
+  lifted inhale F1 from 0.30 to 0.75, so the peaks were about a frame off. The
+  cause was the central-difference target (see Methods); TS-CAN was retrained
+  with the paper's forward difference. Other reconstruction settings (band,
+  filter order, detrend strength) changed scores by only about 0.05.
+- **Neither a larger input nor a higher learning rate improved TS-CAN** (dev
+  sessions, central-difference version).
+- **Inference is cheap for every method on a GPU.** All networks process a
+  5-minute clip in under 2 s (zephyr gray 0.65 s, TS-CAN 0.83 s, PhysNet 1.42 s,
+  zephyr gray + diff + flow 1.70 s). On the CPU, PhysNet is the slowest by a wide
+  margin (19 s per clip); zephyr gray (3.4 s) is faster than TS-CAN (4.7 s).
+  Preprocessing optical flow (52 s per clip) costs far more than any of these
+  inference times.
 
 ## Caveats
 
@@ -254,7 +348,20 @@ only produces inhale events, so it has no correlation, exhale F1 or KL-IBI.
   training recipe instead of the papers' optimisers, and (TS-CAN) a different
   breathing band. They have not been checked against the authors' code.
 - **Fewer seeds than zephyr.** TS-CAN and PhysNet have 2 seeds, zephyr 5.
-- **TS-CAN's learning rate** was best at the top of the grid (1e-3).
+- **TS-CAN's learning rate** was best at the top of the grid (1e-3), though 3e-3
+  was no better at 36 px.
+- **The dev sessions are only 6 clips,** from animals seen in training, so they
+  are a coarse guide for choosing learning rates.
+- **The TS-CAN investigation started from a test-split result.** The weak inhale F1
+  was first noticed in a test score (seed 17). The cause was diagnosed on the dev
+  sessions only, and the fix (the paper's forward-difference target) involves no
+  parameter chosen on the test split.
+- **Possible sub-frame offsets elsewhere.** PhysNet and zephyr were not checked
+  for the same kind of timing offset (see [Open items](#open-items)).
+- **Inference timing** is for 8 clips on one machine, on warm file cache, with
+  random Facemap-style weights, and excludes preprocessing (including the 52 s per
+  clip of optical flow). Networks are timed on both GPU (bf16) and CPU (fp32),
+  the numpy methods on CPU only, so the two groups are not like for like.
 - **Tight event tolerance.** 17 ms is about one frame. A trace with a little
   timing blur loses most matches even when the rhythm is right, which probably
   limits Facemap's F1 (its lag step is 3 frames, or 50 ms). Not tested.
@@ -271,10 +378,10 @@ only produces inhale events, so it has no correlation, exhale F1 or KL-IBI.
    (add it as a dev-only dependency) and compare the leading components.
 3. **Timing precision of Facemap's F1.** Rescore with a wider tolerance (for
    example 50 ms), or rerun with single-frame lag steps.
-4. **Improve TS-CAN's inhale timing (in progress).** Test other reconstruction
-   settings (band, detrend strength) and a higher learning rate (3e-3), choosing
-   them on the held-out validation tail of the training clips and not on the test
-   split.
+4. **Check PhysNet and zephyr for a sub-frame timing offset.** Scoring PhysNet on
+   the dev sessions showed its F1 is sensitive to a fraction of a frame, and the
+   cause has not been found. A fix would belong in the model or its training, not
+   in a post-hoc parameter.
 5. **Decide how to pick variants for the paper** (test split vs validation).
 6. **Rerun the baselines with 5 seeds** if the paper needs the same count as
    zephyr (about 2 h per TS-CAN seed and 1 h per PhysNet seed on the RTX 4060 Ti).
@@ -289,8 +396,10 @@ uv run --extra cpu zephyr baseline pixel     # flow, pca, snr: roughly 30 min on
 uv run --extra cpu zephyr baseline facemap   # up to about an hour on CPU
 uv run --extra gpu zephyr baseline net --arch physnet --lr 0.0003 --seeds 17 42
 uv run --extra gpu zephyr baseline net --arch tscan --lr 0.001 --seeds 17 42
+uv run --extra gpu zephyr baseline timing --n-clips 8   # inference time per clip
 uv run --extra cpu zephyr baseline collect   # tables, merges zephyr's sweep
 ```
+
 
 Learning-rate tuning for each network (repeat for 1e-4, 3e-4, 1e-3; PhysNet also
 needs `--window 128 --scales 1`):
@@ -309,6 +418,7 @@ pixel/{flow,pca,snr}/traces/{train,test}/*.npy   cached output-grid traces
 facemap/{motion,movie,both}/evaluation.json
 facemap/bases.npz
 {tscan,physnet}/runs/gray__signal__seed-*/{best.pt,evaluation.json}
+timing.json                                      per-clip inference times
 results.json, results.md
 ```
 
@@ -336,7 +446,8 @@ train` command.
 | `src/zephyr/baselines/facemap_ridge.py` | SVD basis, lagged design, ridge with session-wise validation |
 | `src/zephyr/baselines/run.py` | Runs and scores the pixel and Facemap baselines |
 | `src/zephyr/baselines/nets.py` | TS-CAN and PhysNet, the derivative loss and trace reconstruction, `build_model` |
-| `src/zephyr/baseline.py` | `zephyr baseline` CLI and the results table |
+| `src/zephyr/baselines/timing.py` | Per-clip inference timing for every method |
+| `src/zephyr/baseline.py` | `zephyr baseline` CLI (`pixel`, `facemap`, `net`, `timing`, `collect`) and the results table |
 | `src/zephyr/evaluate.py` | `build_result`, the result builder shared with `zephyr evaluate`; `--arch`-aware `load_checkpoint` |
-| `src/zephyr/train.py`, `src/zephyr/infer.py` | `--arch` flag; trace postprocessing hook for TS-CAN |
-| `tests/test_baselines_*.py`, `tests/test_baseline_cli.py`, `tests/test_evaluate_result.py`, `tests/test_module_entrypoints.py` | Tests |
+| `src/zephyr/train.py`, `src/zephyr/infer.py` | `--arch` and `--tscan-img-size` flags; trace postprocessing hook (TS-CAN reconstruction) |
+| `tests/test_baselines_*.py` (including `test_baselines_timing.py`), `tests/test_baseline_cli.py`, `tests/test_evaluate_result.py`, `tests/test_module_entrypoints.py` | Tests |

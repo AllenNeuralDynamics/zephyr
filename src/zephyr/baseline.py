@@ -74,29 +74,7 @@ def net_train_command(
     return command
 
 
-DELAY_EVALUATION = "evaluation_delay.json"
-"""Scores with a fitted reconstruction delay; ``evaluation.json`` stays delay-free."""
-
-
-def net_evaluate_command(
-    config: BenchmarkConfig, job: Job, *, recon_delay: float | None
-) -> list[str]:
-    command = evaluate_command(config, job)
-    if recon_delay is not None:
-        out = command.index("--out") + 1
-        command[out] = str(config.run_dir(job) / DELAY_EVALUATION)
-        command += ["--recon-delay", str(recon_delay)]
-    return command
-
-
-def run_net(
-    config: BenchmarkConfig,
-    arch: str,
-    *,
-    lr,
-    dry_run: bool,
-    recon_delay: float | None = None,
-) -> None:
+def run_net(config: BenchmarkConfig, arch: str, *, lr, dry_run: bool) -> None:
     for job in config.jobs():
         run_dir = config.run_dir(job)
         if not (run_dir / "best.pt").exists():
@@ -106,9 +84,8 @@ def run_net(
             print(subprocess.list2cmdline(command), flush=True)
             if not dry_run:
                 subprocess.run(command, check=True)
-        scored = DELAY_EVALUATION if recon_delay is not None else "evaluation.json"
-        if not (run_dir / scored).exists():
-            command = net_evaluate_command(config, job, recon_delay=recon_delay)
+        if not (run_dir / "evaluation.json").exists():
+            command = evaluate_command(config, job)
             print(subprocess.list2cmdline(command), flush=True)
             if not dry_run:
                 subprocess.run(command, check=True)
@@ -138,6 +115,8 @@ def run_timing(
     )
     clips = timing.pick_clips(entries, n_clips)
     warmup = timing.pick_warmup(entries, clips)
+    cached = timing.warm_file_cache([*clips, warmup])
+    print(f"file cache warmed: {cached / 1e9:.1f} GB read", flush=True)
     fs = manifest["select_fs_hz"]
     methods: list[dict] = []
 
@@ -348,18 +327,13 @@ def collect(out_root: Path, zephyr_results: Path | None) -> list[dict]:
         )
     for path in sorted(out_root.glob("facemap/*/evaluation.json")):
         rows += _aggregate("facemap", path.parent.name, [json.loads(path.read_text())])
-    for arch, name, pattern in (
-        ("tscan", "tscan", "evaluation.json"),
-        ("tscan", "tscan + fitted delay", DELAY_EVALUATION),
-        ("physnet", "physnet", "evaluation.json"),
-        ("physnet", "physnet + fitted delay", DELAY_EVALUATION),
-    ):
+    for arch in ("tscan", "physnet"):
         results = [
             json.loads(p.read_text())
-            for p in sorted(out_root.glob(f"{arch}/runs/*/{pattern}"))
+            for p in sorted(out_root.glob(f"{arch}/runs/*/evaluation.json"))
         ]
         if results:
-            rows += _aggregate(name, "-", results)
+            rows += _aggregate(arch, "-", results)
     if zephyr_results is not None and zephyr_results.exists():
         for r in json.loads(zephyr_results.read_text())["summary_across_seeds"]:
             rows.append(
@@ -404,12 +378,6 @@ def main(argv: list[str] | None = None) -> None:
     n = sub.add_parser("net")
     n.add_argument("--arch", required=True, choices=sorted(ARCH_ARGS))
     n.add_argument("--lr", type=float)
-    n.add_argument(
-        "--recon-delay",
-        type=float,
-        help="Reconstruction delay (frames) to score with, written to "
-        "evaluation_delay.json next to the delay-free evaluation.json.",
-    )
     n.add_argument("--seeds", type=int, nargs="+")
     n.add_argument("--dry-run", action="store_true")
     t = sub.add_parser("timing")
@@ -425,7 +393,6 @@ def main(argv: list[str] | None = None) -> None:
             args.arch,
             lr=args.lr,
             dry_run=args.dry_run,
-            recon_delay=args.recon_delay,
         )
         return
     if args.command == "timing":

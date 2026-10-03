@@ -18,8 +18,14 @@ What is not timed
 
 Fairness
 --------
-- Same clips for every method; the first clip is run once beforehand and discarded,
-  so one-off costs (cuDNN autotuning, lazy imports, memmap page-in) are not counted.
+- Same clips for every method.  One further clip, *not* among the timed ones, is run
+  beforehand and discarded, so one-off costs (cuDNN autotuning, lazy imports) are
+  not counted.
+- Every timed clip's file is read into the operating system's file cache first
+  (:func:`warm_file_cache`), so all methods are measured on warm-cache data.  Reading
+  one channel of a ``(T, 4, H, W)`` array still pulls in most of the file, so cold
+  disk reads can dominate the cheaper methods (pixel flow: about 6.4 s cold against
+  3.5 s warm on the development machine); they are excluded here.
 - Neural networks run on the GPU (bf16, as ``zephyr evaluate`` does) *and* on the CPU
   (fp32); the pixel and Facemap-style methods are numpy and run on the CPU only.
 - The Facemap-style readout weights are not saved by the benchmark run, so timing
@@ -61,6 +67,16 @@ def pick_clips(entries: list, n: int) -> list:
         return ordered
     positions = np.linspace(0, len(ordered) - 1, n).round().astype(int)
     return [ordered[i] for i in dict.fromkeys(positions)]
+
+
+def warm_file_cache(entries: list, block: int = 64 << 20) -> int:
+    """Read each distinct ``features`` file once; returns the bytes read."""
+    total = 0
+    for path in dict.fromkeys(Path(e.features) for e in entries):
+        with open(path, "rb") as handle:
+            while chunk := handle.read(block):
+                total += len(chunk)
+    return total
 
 
 def pick_warmup(entries: list, timed: list):
