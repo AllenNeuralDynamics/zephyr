@@ -8,6 +8,7 @@ CLI
     zephyr baseline pixel   [--methods flow pca snr]
     zephyr baseline facemap [--n-components 100]
     zephyr baseline net     --arch tscan|physnet [--lr 3e-4] [--seeds 17 42] [--dry-run]
+    zephyr baseline timing  [--n-clips 8] [--devices cuda cpu]
     zephyr baseline collect
 """
 
@@ -73,7 +74,29 @@ def net_train_command(
     return command
 
 
-def run_net(config: BenchmarkConfig, arch: str, *, lr, dry_run: bool) -> None:
+DELAY_EVALUATION = "evaluation_delay.json"
+"""Scores with a fitted reconstruction delay; ``evaluation.json`` stays delay-free."""
+
+
+def net_evaluate_command(
+    config: BenchmarkConfig, job: Job, *, recon_delay: float | None
+) -> list[str]:
+    command = evaluate_command(config, job)
+    if recon_delay is not None:
+        out = command.index("--out") + 1
+        command[out] = str(config.run_dir(job) / DELAY_EVALUATION)
+        command += ["--recon-delay", str(recon_delay)]
+    return command
+
+
+def run_net(
+    config: BenchmarkConfig,
+    arch: str,
+    *,
+    lr,
+    dry_run: bool,
+    recon_delay: float | None = None,
+) -> None:
     for job in config.jobs():
         run_dir = config.run_dir(job)
         if not (run_dir / "best.pt").exists():
@@ -83,11 +106,126 @@ def run_net(config: BenchmarkConfig, arch: str, *, lr, dry_run: bool) -> None:
             print(subprocess.list2cmdline(command), flush=True)
             if not dry_run:
                 subprocess.run(command, check=True)
-        if not (run_dir / "evaluation.json").exists():
-            command = evaluate_command(config, job)
+        scored = DELAY_EVALUATION if recon_delay is not None else "evaluation.json"
+        if not (run_dir / scored).exists():
+            command = net_evaluate_command(config, job, recon_delay=recon_delay)
             print(subprocess.list2cmdline(command), flush=True)
             if not dry_run:
                 subprocess.run(command, check=True)
+
+
+NETWORK_CHECKPOINTS = {
+    "physnet": "{out}/physnet/runs/gray__signal__seed-17/best.pt",
+    "tscan": "{out}/tscan/runs/gray__signal__seed-17/best.pt",
+    "zephyr gray": "{zephyr}/runs/gray__multitask__seed-17/best.pt",
+    "zephyr gray+diff+flow": "{zephyr}/runs/gray-diff-flow__multitask__seed-17/best.pt",
+}
+"""Checkpoints timed (seed 17 of each). Inference cost does not depend on the seed."""
+
+
+def run_timing(
+    config: BenchmarkConfig, out_root: Path, *, n_clips: int, devices: list[str]
+) -> dict:
+    """Time every method per clip on the test split; write ``timing.json``."""
+    import numpy as np
+    import torch
+
+    from .baselines import timing
+    from .dataset import load_manifest
+
+    manifest, entries = load_manifest(
+        config.features_dir, config.test_split, config.camera
+    )
+    clips = timing.pick_clips(entries, n_clips)
+    warmup = timing.pick_warmup(entries, clips)
+    fs = manifest["select_fs_hz"]
+    methods: list[dict] = []
+
+    def add(name: str, device: str, fn, params_m: float | None = None) -> None:
+        print(f"timing {name} on {device} ({len(clips)} clips)", flush=True)
+        result = timing.time_method(fn, clips, warmup=warmup)
+        methods.append(
+            {"method": name, "device": device, "params_m": params_m} | result
+        )
+        print(f"  mean {result['summary']['mean_s']:.2f} s/clip", flush=True)
+
+    for method in ("flow", "pca", "snr"):
+        add(f"pixel {method}", "cpu", timing.pixel_method(method, fs, 2))
+    lags = np.arange(-15, 16, 3)
+    for variant in ("motion", "movie", "both"):
+        add(
+            f"facemap-style {variant}",
+            "cpu",
+            timing.facemap_method(
+                variant,
+                out_root / "facemap" / "bases.npz",
+                n_components=100,
+                lags=lags,
+                seed=0,
+            ),
+        )
+    for device_name in devices:
+        if device_name == "cuda" and not torch.cuda.is_available():
+            print("skipping cuda timing: no GPU", flush=True)
+            continue
+        device = torch.device(device_name)
+        for name, template in NETWORK_CHECKPOINTS.items():
+            path = Path(template.format(out=out_root, zephyr=ZEPHYR_RESULTS.parent))
+            if not path.exists():
+                print(f"skipping {name}: {path} not found", flush=True)
+                continue
+            fn, params_m = timing.network_method(path, device)
+            add(name, device_name, fn, params_m)
+
+    data = {
+        "split": config.test_split,
+        "n_clips": len(clips),
+        "clip_seconds": float(np.mean([e.n_output / timing.CLIP_FS for e in clips])),
+        "clip_ids": [e.clip_id for e in clips],
+        "hardware": timing.hardware(),
+        "flow_preprocessing": timing.estimate_flow_preprocessing(clips[0]),
+        "methods": methods,
+    }
+    timing.write(out_root / "timing.json", data)
+    print(f"wrote {out_root / 'timing.json'}")
+    return data
+
+
+def _timing_markdown(timing_path: Path) -> str:
+    data = json.loads(timing_path.read_text())
+    seconds = data["clip_seconds"]
+    lines = [
+        "## Inference time per clip",
+        "",
+        (
+            f"Mean ± sd over {data['n_clips']} test clips (each {seconds:.0f} s of "
+            "video), from the preprocessed crops on disk to the finished trace. "
+            "Video decoding and preprocessing are not included."
+        ),
+        "",
+        "| method | device | params (M) | seconds per clip | x real time |",
+        "| --- | --- | --- | --- | --- |",
+    ]
+    for m in data["methods"]:
+        s = m["summary"]
+        spread = f" ± {s['sd_s']:.2f}" if s.get("sd_s") is not None else ""
+        params = "—" if m.get("params_m") is None else f"{m['params_m']:.2f}"
+        lines.append(
+            f"| {m['method']} | {m['device']} | {params} | "
+            f"{s['mean_s']:.2f}{spread} | {seconds / s['mean_s']:.0f}x |"
+        )
+    flow = data.get("flow_preprocessing")
+    if flow:
+        lines += [
+            "",
+            (
+                "Optical flow is computed in preprocessing, not above: about "
+                f"{flow['seconds_per_clip']:.0f} s per clip "
+                f"({flow['per_frame_ms']:.2f} ms per frame, CPU). Add it for any "
+                "method that reads the flow channel (pixel flow, zephyr with flow)."
+            ),
+        ]
+    return "\n".join(lines) + "\n"
 
 
 def _strata(result: dict) -> dict:
@@ -210,13 +348,18 @@ def collect(out_root: Path, zephyr_results: Path | None) -> list[dict]:
         )
     for path in sorted(out_root.glob("facemap/*/evaluation.json")):
         rows += _aggregate("facemap", path.parent.name, [json.loads(path.read_text())])
-    for arch in ("tscan", "physnet"):
+    for arch, name, pattern in (
+        ("tscan", "tscan", "evaluation.json"),
+        ("tscan", "tscan + fitted delay", DELAY_EVALUATION),
+        ("physnet", "physnet", "evaluation.json"),
+        ("physnet", "physnet + fitted delay", DELAY_EVALUATION),
+    ):
         results = [
             json.loads(p.read_text())
-            for p in sorted(out_root.glob(f"{arch}/runs/*/evaluation.json"))
+            for p in sorted(out_root.glob(f"{arch}/runs/*/{pattern}"))
         ]
         if results:
-            rows += _aggregate(arch, "-", results)
+            rows += _aggregate(name, "-", results)
     if zephyr_results is not None and zephyr_results.exists():
         for r in json.loads(zephyr_results.read_text())["summary_across_seeds"]:
             rows.append(
@@ -235,9 +378,10 @@ def collect(out_root: Path, zephyr_results: Path | None) -> list[dict]:
         rows += _onset_head_rows(zephyr_results.parent / "runs")
     out_root.mkdir(parents=True, exist_ok=True)
     (out_root / "results.json").write_text(json.dumps(rows, indent=2))
-    (out_root / "results.md").write_text(
-        _markdown(rows) + "\n" + _best_markdown(rows), encoding="utf-8"
-    )
+    text = _markdown(rows) + "\n" + _best_markdown(rows)
+    if (out_root / "timing.json").exists():
+        text += "\n" + _timing_markdown(out_root / "timing.json")
+    (out_root / "results.md").write_text(text, encoding="utf-8")
     print(f"wrote {out_root / 'results.md'}")
     return rows
 
@@ -260,8 +404,17 @@ def main(argv: list[str] | None = None) -> None:
     n = sub.add_parser("net")
     n.add_argument("--arch", required=True, choices=sorted(ARCH_ARGS))
     n.add_argument("--lr", type=float)
+    n.add_argument(
+        "--recon-delay",
+        type=float,
+        help="Reconstruction delay (frames) to score with, written to "
+        "evaluation_delay.json next to the delay-free evaluation.json.",
+    )
     n.add_argument("--seeds", type=int, nargs="+")
     n.add_argument("--dry-run", action="store_true")
+    t = sub.add_parser("timing")
+    t.add_argument("--n-clips", type=int, default=8)
+    t.add_argument("--devices", nargs="+", default=["cuda", "cpu"])
     sub.add_parser("collect")
     args = parser.parse_args(argv)
 
@@ -272,7 +425,11 @@ def main(argv: list[str] | None = None) -> None:
             args.arch,
             lr=args.lr,
             dry_run=args.dry_run,
+            recon_delay=args.recon_delay,
         )
+        return
+    if args.command == "timing":
+        run_timing(config, args.out_root, n_clips=args.n_clips, devices=args.devices)
         return
     if args.command == "collect":
         collect(args.out_root, ZEPHYR_RESULTS)

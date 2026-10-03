@@ -132,6 +132,20 @@ def reconstruct_from_derivative(
     return filtfilt(b, a, detrended)
 
 
+def frac_delay(x: np.ndarray, delay: float) -> np.ndarray:
+    """Delay *x* by *delay* samples (fractional allowed), holding the edge values.
+
+    Integrating a *central* difference with a cumulative sum lands half a sample
+    early, and band-pass smoothing moves sharp peaks, so TS-CAN's reconstructed
+    trace can sit a fraction of a frame ahead of the truth.  At 60 Hz the scorer
+    matches events within 17 ms -- one frame -- so that matters.
+    """
+    if delay == 0.0:
+        return x
+    n = np.arange(len(x))
+    return np.interp(n - delay, n, x)
+
+
 class DerivativeMSELoss(nn.Module):
     """MSE against the standardised central-difference derivative of the target.
 
@@ -164,6 +178,7 @@ class TSCANBreathing(nn.Module):
         gray_mean: float = 0.0,
         gray_std: float = 1.0,
         band: tuple[float, float] = BREATH_BAND_HZ,
+        delay: float = 0.0,
     ) -> None:
         super().__init__()
         if channels.names != ("gray",):
@@ -172,6 +187,7 @@ class TSCANBreathing(nn.Module):
         self.frame_depth = frame_depth
         self.img_size = img_size
         self.band = band
+        self.delay = delay
         self.net = TSCAN(frame_depth=frame_depth, img_size=img_size)
         self.register_buffer("gray_mean", torch.tensor(float(gray_mean)))
         self.register_buffer("gray_std", torch.tensor(float(gray_std)))
@@ -206,7 +222,9 @@ class TSCANBreathing(nn.Module):
         return signal, torch.zeros_like(signal)
 
     def postprocess(self, signal: np.ndarray, fs: float) -> np.ndarray:
-        return reconstruct_from_derivative(signal, fs, self.band)
+        return frac_delay(
+            reconstruct_from_derivative(signal, fs, self.band), self.delay
+        )
 
 
 def _block(cin: int, cout: int, kernel, padding) -> nn.Sequential:
@@ -257,11 +275,12 @@ class PhysNetBreathing(nn.Module):
 
     arch = "physnet"
 
-    def __init__(self, channels: ChannelSet = GRAY) -> None:
+    def __init__(self, channels: ChannelSet = GRAY, *, delay: float = 0.0) -> None:
         super().__init__()
         if channels.names != ("gray",):
             raise ValueError(f"PhysNet takes only the gray channel, got {channels}")
         self.channels = channels
+        self.delay = delay
         self.net = PhysNet(in_channels=1)
 
     @property
@@ -278,8 +297,17 @@ class PhysNetBreathing(nn.Module):
         signal = resample_embeddings(out.unsqueeze(-1), t_in, t_out).squeeze(-1)
         return signal, torch.zeros_like(signal)
 
+    def postprocess(self, signal: np.ndarray, fs: float) -> np.ndarray:
+        return frac_delay(signal, self.delay)
+
 
 ARCHS = ("zephyr", "tscan", "physnet")
+ARCH_OPTIONS = {
+    "zephyr": set(),
+    "tscan": {"img_size", "delay"},
+    "physnet": {"delay"},
+}
+"""Architecture options a checkpoint may record and :func:`build_model` accepts."""
 
 
 def build_model(
@@ -289,8 +317,18 @@ def build_model(
     dropout: float = 0.1,
     mean: np.ndarray | None = None,
     std: np.ndarray | None = None,
+    **arch_kwargs,
 ) -> nn.Module:
-    """Construct any supported network.  *mean*/*std* are full-width channel stats."""
+    """Construct any supported network.  *mean*/*std* are full-width channel stats.
+
+    *arch_kwargs* are architecture options (TS-CAN: ``img_size``, ``delay``) that a
+    checkpoint records so it can be rebuilt; the other networks take none.
+    """
+    if arch not in ARCHS:
+        raise ValueError(f"unknown arch {arch!r}; choose from {ARCHS}")
+    unsupported = set(arch_kwargs) - ARCH_OPTIONS[arch]
+    if unsupported:
+        raise ValueError(f"--arch {arch} does not take {sorted(unsupported)}")
     if arch == "zephyr":
         return BreathingNet(channels=channels, dropout=dropout)
     if arch == "tscan":
@@ -299,7 +337,6 @@ def build_model(
             channels,
             gray_mean=float(mean[gray]) if mean is not None else 0.0,
             gray_std=float(std[gray]) if std is not None else 1.0,
+            **arch_kwargs,
         )
-    if arch == "physnet":
-        return PhysNetBreathing(channels)
-    raise ValueError(f"unknown arch {arch!r}; choose from {ARCHS}")
+    return PhysNetBreathing(channels, **arch_kwargs)

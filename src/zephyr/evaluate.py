@@ -70,7 +70,11 @@ def load_checkpoint(
     config = state["feature_config"]
     channels = ChannelSet.parse(state.get("channels") or config["channel_names"])
     model = build_model(
-        state.get("arch", "zephyr"), channels, mean=state["mean"], std=state["std"]
+        state.get("arch", "zephyr"),
+        channels,
+        mean=state["mean"],
+        std=state["std"],
+        **state.get("arch_kwargs", {}),
     ).to(device)
     model.load_state_dict(state["model"])
     model.eval()
@@ -232,6 +236,13 @@ def main(argv: list[str] | None = None) -> None:
         nargs="+",
         help="Sessions to score.  Defaults to the reserved test sessions.",
     )
+    parser.add_argument(
+        "--recon-delay",
+        type=float,
+        help="Override a TS-CAN or PhysNet checkpoint's reconstruction delay "
+        "(frames, fractions allowed). Chosen on held-out training sessions, never "
+        "on the split being scored.",
+    )
     parser.add_argument("--infer-window", type=int, default=1024)
     parser.add_argument("--frame-chunk", type=int, default=256)
     parser.add_argument(
@@ -287,6 +298,12 @@ def main(argv: list[str] | None = None) -> None:
     trained_on: set[int] = set()
     for path in args.checkpoint:
         model, mean, std, state = load_checkpoint(path, device)
+        if args.recon_delay is not None:
+            if not hasattr(model, "delay"):
+                raise SystemExit(
+                    f"--recon-delay given but {path} is not a TS-CAN or PhysNet"
+                )
+            model.delay = args.recon_delay
         models.append((model, mean, std))
         reserved = set(state.get("test_sessions") or [])
         train_split = state.get("train_split") or state.get("args", {}).get("split")
@@ -380,7 +397,11 @@ def main(argv: list[str] | None = None) -> None:
         args.out.parent.mkdir(parents=True, exist_ok=True)
         args.out.write_text(
             json.dumps(
-                {"checkpoints": [str(p) for p in args.checkpoint]} | result,
+                {
+                    "checkpoints": [str(p) for p in args.checkpoint],
+                    "recon_delay": args.recon_delay,
+                }
+                | result,
                 indent=2,
             )
         )
@@ -417,3 +438,7 @@ def main(argv: list[str] | None = None) -> None:
             amp_dtype=amp_dtype,
         )
         print(f"wrote diagnostic plots -> {plot_dir}")
+
+
+if __name__ == "__main__":
+    main()
