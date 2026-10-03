@@ -106,3 +106,49 @@ class BuildModelTests(unittest.TestCase):
         )
         with self.assertRaises(ValueError):
             nets.build_model("nope", ChannelSet.parse("gray"))
+
+
+class TscanOptionsTests(unittest.TestCase):
+    def test_frac_delay_shifts_by_fractions_of_a_sample(self):
+        x = np.arange(10.0)
+        np.testing.assert_allclose(nets.frac_delay(x, 0.0), x)
+        np.testing.assert_allclose(nets.frac_delay(x, 1.0)[1:], x[:-1])
+        np.testing.assert_allclose(nets.frac_delay(x, 0.5)[1:], x[1:] - 0.5)
+
+    def test_postprocess_applies_delay(self):
+        t = np.arange(3600) / 60.0
+        d = np.gradient(np.sin(2 * np.pi * 3 * t))
+        base = nets.TSCANBreathing(ChannelSet.parse("gray"), delay=0.0)
+        late = nets.TSCANBreathing(ChannelSet.parse("gray"), delay=1.0)
+        np.testing.assert_allclose(
+            late.postprocess(d, 60.0)[10:], base.postprocess(d, 60.0)[9:-1], atol=1e-6
+        )
+
+    def test_build_model_forwards_tscan_options(self):
+        model = nets.build_model(
+            "tscan", ChannelSet.parse("gray"), img_size=96, delay=0.5
+        )
+        self.assertEqual(model.img_size, 96)
+        self.assertEqual(model.delay, 0.5)
+        out = model(
+            torch.randn(1, 21, 1, 96, 96),
+            torch.arange(21.0).unsqueeze(0) / 60,
+            torch.arange(20.0).unsqueeze(0) / 60,
+        )[0]
+        self.assertEqual(out.shape, (1, 20))
+
+    def test_unsupported_options_are_rejected(self):
+        gray = ChannelSet.parse("gray")
+        with self.assertRaises(ValueError):
+            nets.build_model("physnet", gray, img_size=96)
+        with self.assertRaises(ValueError):
+            nets.build_model("zephyr", gray, delay=1.0)
+
+    def test_physnet_delay_is_applied_in_postprocess(self):
+        t = np.arange(600) / 60.0
+        x = np.sin(2 * np.pi * 3 * t)
+        base = nets.build_model("physnet", ChannelSet.parse("gray"))
+        late = nets.build_model("physnet", ChannelSet.parse("gray"), delay=1.0)
+        self.assertEqual(base.delay, 0.0)
+        np.testing.assert_allclose(base.postprocess(x, 60.0), x)
+        np.testing.assert_allclose(late.postprocess(x, 60.0)[1:], x[:-1])

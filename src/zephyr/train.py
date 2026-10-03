@@ -217,6 +217,19 @@ def main(argv: list[str] | None = None) -> None:
         help="Network: zephyr's CNN-TCN, or the tscan / physnet benchmark "
         "baselines (gray channel only).",
     )
+    parser.add_argument(
+        "--tscan-img-size",
+        type=int,
+        default=36,
+        help="TS-CAN input size in pixels (the paper uses 36; the crops are 96).",
+    )
+    parser.add_argument(
+        "--tscan-delay",
+        type=float,
+        default=0.0,
+        help="Frames to delay TS-CAN's reconstructed trace by (fractions allowed). "
+        "Corrects the timing offset of integrating a central difference.",
+    )
 
     parser.add_argument("--window", type=int, default=512)
     parser.add_argument("--batch-size", type=int, default=4)
@@ -490,8 +503,13 @@ def main(argv: list[str] | None = None) -> None:
         else None
     )
 
+    arch_kwargs = (
+        {"img_size": args.tscan_img_size, "delay": args.tscan_delay}
+        if args.arch == "tscan"
+        else {}
+    )
     model = build_model(
-        args.arch, channel_set, dropout=args.dropout, mean=mean, std=std
+        args.arch, channel_set, dropout=args.dropout, mean=mean, std=std, **arch_kwargs
     ).to(device)
     criterion = (
         DerivativeMSELoss()
@@ -609,6 +627,7 @@ def main(argv: list[str] | None = None) -> None:
             # the stored array to feed it.
             "channels": list(channel_set.names),
             "arch": args.arch,
+            "arch_kwargs": arch_kwargs,
             # Full-width, over every stored channel, so checkpoints trained
             # on different selections stay comparable.  Consumers slice with
             # ChannelSet.take_stats.
@@ -825,3 +844,7 @@ def main(argv: list[str] | None = None) -> None:
         print(f"final weights (no validation) -> {run_dir / 'best.pt'}")
     else:
         print(f"best held-out correlation {best:+.4f} -> {run_dir / 'best.pt'}")
+
+
+if __name__ == "__main__":
+    main()
