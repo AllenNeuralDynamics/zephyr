@@ -59,23 +59,56 @@ class ReconstructionTests(unittest.TestCase):
         dense = (np.eye(n) - np.linalg.inv(np.eye(n) + lam**2 * d.T @ d)) @ x
         np.testing.assert_allclose(nets.tarvainen_detrend(x, lam), dense, atol=1e-8)
 
-    def test_reconstruct_from_derivative_recovers_signal(self):
+    def test_reconstruct_from_derivative_recovers_signal_without_a_lag(self):
         t = np.arange(3600) / 60.0
         signal = np.sin(2 * np.pi * 3 * t)
-        rebuilt = nets.reconstruct_from_derivative(np.gradient(signal), 60.0)
-        self.assertGreater(np.corrcoef(rebuilt[600:-600], signal[600:-600])[0, 1], 0.95)
+        forward = np.diff(signal, append=signal[-1])  # y[k+1] - y[k]
+        rebuilt = nets.reconstruct_from_derivative(forward, 60.0)
+        inner = slice(600, -600)
+        self.assertGreater(np.corrcoef(rebuilt[inner], signal[inner])[0, 1], 0.99)
+        # exact alignment: correlation peaks at zero lag, not one sample either side
+        corr = {
+            lag: np.corrcoef(np.roll(rebuilt, lag)[inner], signal[inner])[0, 1]
+            for lag in (-1, 0, 1)
+        }
+        self.assertEqual(max(corr, key=corr.get), 0)
 
 
 class DerivativeLossTests(unittest.TestCase):
-    def test_perfect_derivative_has_near_zero_loss(self):
+    def test_target_is_the_forward_difference(self):
         y = torch.sin(torch.linspace(0, 20, 512)).repeat(3, 1)
-        d = torch.gradient(y, dim=-1)[0]
+        d = y[:, 1:] - y[:, :-1]
         d = d / d.std(dim=-1, keepdim=True)
+        pred = torch.cat([d, torch.full((3, 1), 99.0)], dim=-1)  # last sample unscored
         loss, stats = nets.DerivativeMSELoss()(
-            d, torch.zeros_like(d), y, torch.zeros_like(y)
+            pred, torch.zeros_like(pred), y, torch.zeros_like(y)
         )
         self.assertLess(float(loss), 1e-6)
         self.assertGreater(stats["corr"], 0.999)
+
+    def test_a_central_difference_prediction_is_not_perfect(self):
+        y = torch.sin(torch.linspace(0, 20, 512)).repeat(3, 1)
+        d = torch.gradient(y, dim=-1)[0]
+        d = d / d.std(dim=-1, keepdim=True)
+        loss, _ = nets.DerivativeMSELoss()(
+            d, torch.zeros_like(d), y, torch.zeros_like(y)
+        )
+        self.assertGreater(float(loss), 1e-5)
+
+
+class TscanAlignmentTests(unittest.TestCase):
+    def test_each_output_is_placed_at_the_earlier_frame_of_its_pair(self):
+        model = nets.TSCANBreathing(ChannelSet.parse("gray"))
+
+        class Ramp(torch.nn.Module):
+            def forward(self, motion, appearance):
+                return torch.arange(motion.shape[0], dtype=torch.float32)
+
+        model.net = Ramp()
+        t = torch.arange(21.0).unsqueeze(0) / 60
+        signal, _ = model(torch.randn(1, 21, 1, 96, 96), t, t)
+        # output j describes frames (j, j+1), so it sits at frame j's time
+        self.assertEqual(signal[0, :20].tolist(), list(range(20)))
 
 
 class PhysNetTests(unittest.TestCase):
@@ -109,27 +142,9 @@ class BuildModelTests(unittest.TestCase):
 
 
 class TscanOptionsTests(unittest.TestCase):
-    def test_frac_delay_shifts_by_fractions_of_a_sample(self):
-        x = np.arange(10.0)
-        np.testing.assert_allclose(nets.frac_delay(x, 0.0), x)
-        np.testing.assert_allclose(nets.frac_delay(x, 1.0)[1:], x[:-1])
-        np.testing.assert_allclose(nets.frac_delay(x, 0.5)[1:], x[1:] - 0.5)
-
-    def test_postprocess_applies_delay(self):
-        t = np.arange(3600) / 60.0
-        d = np.gradient(np.sin(2 * np.pi * 3 * t))
-        base = nets.TSCANBreathing(ChannelSet.parse("gray"), delay=0.0)
-        late = nets.TSCANBreathing(ChannelSet.parse("gray"), delay=1.0)
-        np.testing.assert_allclose(
-            late.postprocess(d, 60.0)[10:], base.postprocess(d, 60.0)[9:-1], atol=1e-6
-        )
-
-    def test_build_model_forwards_tscan_options(self):
-        model = nets.build_model(
-            "tscan", ChannelSet.parse("gray"), img_size=96, delay=0.5
-        )
+    def test_build_model_forwards_the_input_size(self):
+        model = nets.build_model("tscan", ChannelSet.parse("gray"), img_size=96)
         self.assertEqual(model.img_size, 96)
-        self.assertEqual(model.delay, 0.5)
         out = model(
             torch.randn(1, 21, 1, 96, 96),
             torch.arange(21.0).unsqueeze(0) / 60,
@@ -142,13 +157,10 @@ class TscanOptionsTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             nets.build_model("physnet", gray, img_size=96)
         with self.assertRaises(ValueError):
-            nets.build_model("zephyr", gray, delay=1.0)
+            nets.build_model("zephyr", gray, img_size=96)
 
-    def test_physnet_delay_is_applied_in_postprocess(self):
-        t = np.arange(600) / 60.0
-        x = np.sin(2 * np.pi * 3 * t)
-        base = nets.build_model("physnet", ChannelSet.parse("gray"))
-        late = nets.build_model("physnet", ChannelSet.parse("gray"), delay=1.0)
-        self.assertEqual(base.delay, 0.0)
-        np.testing.assert_allclose(base.postprocess(x, 60.0), x)
-        np.testing.assert_allclose(late.postprocess(x, 60.0)[1:], x[:-1])
+    def test_there_is_no_reconstruction_delay_option(self):
+        gray = ChannelSet.parse("gray")
+        for arch in ("tscan", "physnet", "zephyr"):
+            with self.assertRaises(ValueError):
+                nets.build_model(arch, gray, delay=1.0)

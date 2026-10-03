@@ -223,13 +223,6 @@ def main(argv: list[str] | None = None) -> None:
         default=36,
         help="TS-CAN input size in pixels (the paper uses 36; the crops are 96).",
     )
-    parser.add_argument(
-        "--tscan-delay",
-        type=float,
-        default=0.0,
-        help="Frames to delay TS-CAN's reconstructed trace by (fractions allowed). "
-        "Corrects the timing offset of integrating a central difference.",
-    )
 
     parser.add_argument("--window", type=int, default=512)
     parser.add_argument("--batch-size", type=int, default=4)
@@ -503,11 +496,7 @@ def main(argv: list[str] | None = None) -> None:
         else None
     )
 
-    arch_kwargs = (
-        {"img_size": args.tscan_img_size, "delay": args.tscan_delay}
-        if args.arch == "tscan"
-        else {}
-    )
+    arch_kwargs = {"img_size": args.tscan_img_size} if args.arch == "tscan" else {}
     model = build_model(
         args.arch, channel_set, dropout=args.dropout, mean=mean, std=std, **arch_kwargs
     ).to(device)

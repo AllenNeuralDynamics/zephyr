@@ -236,13 +236,6 @@ def main(argv: list[str] | None = None) -> None:
         nargs="+",
         help="Sessions to score.  Defaults to the reserved test sessions.",
     )
-    parser.add_argument(
-        "--recon-delay",
-        type=float,
-        help="Override a TS-CAN or PhysNet checkpoint's reconstruction delay "
-        "(frames, fractions allowed). Chosen on held-out training sessions, never "
-        "on the split being scored.",
-    )
     parser.add_argument("--infer-window", type=int, default=1024)
     parser.add_argument("--frame-chunk", type=int, default=256)
     parser.add_argument(
@@ -298,12 +291,6 @@ def main(argv: list[str] | None = None) -> None:
     trained_on: set[int] = set()
     for path in args.checkpoint:
         model, mean, std, state = load_checkpoint(path, device)
-        if args.recon_delay is not None:
-            if not hasattr(model, "delay"):
-                raise SystemExit(
-                    f"--recon-delay given but {path} is not a TS-CAN or PhysNet"
-                )
-            model.delay = args.recon_delay
         models.append((model, mean, std))
         reserved = set(state.get("test_sessions") or [])
         train_split = state.get("train_split") or state.get("args", {}).get("split")
@@ -397,11 +384,7 @@ def main(argv: list[str] | None = None) -> None:
         args.out.parent.mkdir(parents=True, exist_ok=True)
         args.out.write_text(
             json.dumps(
-                {
-                    "checkpoints": [str(p) for p in args.checkpoint],
-                    "recon_delay": args.recon_delay,
-                }
-                | result,
+                {"checkpoints": [str(p) for p in args.checkpoint]} | result,
                 indent=2,
             )
         )

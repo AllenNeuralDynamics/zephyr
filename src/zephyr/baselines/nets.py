@@ -126,37 +126,33 @@ def reconstruct_from_derivative(
     band: tuple[float, float] = BREATH_BAND_HZ,
     lam: float = 100.0,
 ) -> np.ndarray:
-    """TS-CAN's own inference post-processing: integrate, detrend, band-pass."""
-    detrended = tarvainen_detrend(np.cumsum(derivative.astype(np.float64)), lam)
+    """TS-CAN's own inference post-processing: integrate, detrend, band-pass.
+
+    *derivative* is the forward difference ``d[k] = y[k+1] - y[k]`` (the paper's
+    ``np.diff`` label), so the running sum up to but excluding ``k = n`` is exactly
+    ``y[n]`` and the trace lands on the right frame with no lag.  The last sample
+    has no successor and is not used.
+    """
+    integrated = np.concatenate(([0.0], np.cumsum(derivative[:-1].astype(np.float64))))
+    detrended = tarvainen_detrend(integrated, lam)
     b, a = butter(1, band, btype="bandpass", fs=fs)
     return filtfilt(b, a, detrended)
 
 
-def frac_delay(x: np.ndarray, delay: float) -> np.ndarray:
-    """Delay *x* by *delay* samples (fractional allowed), holding the edge values.
-
-    Integrating a *central* difference with a cumulative sum lands half a sample
-    early, and band-pass smoothing moves sharp peaks, so TS-CAN's reconstructed
-    trace can sit a fraction of a frame ahead of the truth.  At 60 Hz the scorer
-    matches events within 17 ms -- one frame -- so that matters.
-    """
-    if delay == 0.0:
-        return x
-    n = np.arange(len(x))
-    return np.interp(n - delay, n, x)
-
-
 class DerivativeMSELoss(nn.Module):
-    """MSE against the standardised central-difference derivative of the target.
+    """MSE against the standardised forward difference of the target.
 
-    Same call signature and stats keys as :class:`~zephyr.model.BreathingLoss`.
+    ``d[k] = y[k+1] - y[k]``, as in the paper.  The last sample of a window has no
+    successor, so it is not scored.  Same call signature and stats keys as
+    :class:`~zephyr.model.BreathingLoss`.
     """
 
     def forward(self, signal_pred, onset_logits, signal_true, onset_true):
-        d = torch.gradient(signal_true, dim=-1)[0]
+        d = signal_true[..., 1:] - signal_true[..., :-1]
         d = d / d.std(dim=-1, keepdim=True).clamp_min(1e-6)
-        loss = F.mse_loss(signal_pred, d)
-        corr = 1.0 - pearson_loss(signal_pred, d)
+        pred = signal_pred[..., :-1]
+        loss = F.mse_loss(pred, d)
+        corr = 1.0 - pearson_loss(pred, d)
         return loss, {
             "loss": float(loss.detach()),
             "corr": float(corr.detach()),
@@ -165,7 +161,7 @@ class DerivativeMSELoss(nn.Module):
 
 
 class TSCANBreathing(nn.Module):
-    """TS-CAN on the gray channel, predicting the trace's derivative."""
+    """TS-CAN on the gray channel, predicting the trace's forward difference."""
 
     arch = "tscan"
 
@@ -178,7 +174,6 @@ class TSCANBreathing(nn.Module):
         gray_mean: float = 0.0,
         gray_std: float = 1.0,
         band: tuple[float, float] = BREATH_BAND_HZ,
-        delay: float = 0.0,
     ) -> None:
         super().__init__()
         if channels.names != ("gray",):
@@ -187,7 +182,6 @@ class TSCANBreathing(nn.Module):
         self.frame_depth = frame_depth
         self.img_size = img_size
         self.band = band
-        self.delay = delay
         self.net = TSCAN(frame_depth=frame_depth, img_size=img_size)
         self.register_buffer("gray_mean", torch.tensor(float(gray_mean)))
         self.register_buffer("gray_std", torch.tensor(float(gray_std)))
@@ -217,14 +211,13 @@ class TSCANBreathing(nn.Module):
             )
         out = self.net(motion.reshape(-1, 1, s, s), appearance.reshape(-1, 1, s, s))
         out = out.view(b, n + pad)[:, :n]
-        t_mid = 0.5 * (t_in[:, 1:] + t_in[:, :-1])
-        signal = resample_embeddings(out.unsqueeze(-1), t_mid, t_out).squeeze(-1)
+        # Output j describes the frame pair (j, j+1) and is the forward difference
+        # y[j+1] - y[j], so it sits at frame j's time.
+        signal = resample_embeddings(out.unsqueeze(-1), t_in[:, :-1], t_out).squeeze(-1)
         return signal, torch.zeros_like(signal)
 
     def postprocess(self, signal: np.ndarray, fs: float) -> np.ndarray:
-        return frac_delay(
-            reconstruct_from_derivative(signal, fs, self.band), self.delay
-        )
+        return reconstruct_from_derivative(signal, fs, self.band)
 
 
 def _block(cin: int, cout: int, kernel, padding) -> nn.Sequential:
@@ -275,12 +268,11 @@ class PhysNetBreathing(nn.Module):
 
     arch = "physnet"
 
-    def __init__(self, channels: ChannelSet = GRAY, *, delay: float = 0.0) -> None:
+    def __init__(self, channels: ChannelSet = GRAY) -> None:
         super().__init__()
         if channels.names != ("gray",):
             raise ValueError(f"PhysNet takes only the gray channel, got {channels}")
         self.channels = channels
-        self.delay = delay
         self.net = PhysNet(in_channels=1)
 
     @property
@@ -297,15 +289,12 @@ class PhysNetBreathing(nn.Module):
         signal = resample_embeddings(out.unsqueeze(-1), t_in, t_out).squeeze(-1)
         return signal, torch.zeros_like(signal)
 
-    def postprocess(self, signal: np.ndarray, fs: float) -> np.ndarray:
-        return frac_delay(signal, self.delay)
-
 
 ARCHS = ("zephyr", "tscan", "physnet")
 ARCH_OPTIONS = {
     "zephyr": set(),
-    "tscan": {"img_size", "delay"},
-    "physnet": {"delay"},
+    "tscan": {"img_size"},
+    "physnet": set(),
 }
 """Architecture options a checkpoint may record and :func:`build_model` accepts."""
 
@@ -321,7 +310,7 @@ def build_model(
 ) -> nn.Module:
     """Construct any supported network.  *mean*/*std* are full-width channel stats.
 
-    *arch_kwargs* are architecture options (TS-CAN: ``img_size``, ``delay``) that a
+    *arch_kwargs* are architecture options (TS-CAN: ``img_size``) that a
     checkpoint records so it can be rebuilt; the other networks take none.
     """
     if arch not in ARCHS:
