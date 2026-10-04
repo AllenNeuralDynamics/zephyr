@@ -125,12 +125,14 @@ for choosing between rates.
 
 | Learning rate | PhysNet | TS-CAN |
 |---|---|---|
-| 1e-4 | 0.918 | 0.706 |
-| 3e-4 | **0.929** | 0.759 |
-| 1e-3 | 0.922 | **0.785** |
+| 1e-4 | 0.918 | |
+| 3e-4 | **0.929** | 0.787 |
+| 1e-3 | 0.922 | 0.820 |
+| 3e-3 | | **0.829** |
 
-TS-CAN's best rate is the top of the grid, so it may be slightly under-tuned.
-Final runs used 3e-4 (PhysNet) and 1e-3 (TS-CAN).
+The TS-CAN column is for the forward-difference version. Its best rate is again
+the top of the grid, so it may be slightly under-tuned. Final runs used 3e-4
+(PhysNet) and 3e-3 (TS-CAN).
 
 **TS-CAN target.** The paper trains on the forward difference of the label
 (`np.diff`), and a running sum then recovers the label exactly. An earlier
@@ -190,17 +192,19 @@ Facemap-style by stratum (correlation / inhale F1):
 
 | Method | Stratum | Correlation | Inhale F1 | Exhale F1 | KL-IBI |
 |---|---|---|---|---|---|
-| TS-CAN | all | *retraining in progress* | | | |
+| TS-CAN | all | 0.773 +/- 0.001 | 0.696 +/- 0.015 | 0.837 +/- 0.008 | 0.077 |
+| TS-CAN | `new_animals` | 0.770 | 0.662 | 0.811 | 0.073 |
+| TS-CAN | `known_animals_new_date` | 0.777 | 0.730 | 0.864 | 0.080 |
 | PhysNet | all | **0.900** +/- 0.003 | **0.822** +/- 0.004 | **0.870** +/- 0.006 | 0.038 |
 | PhysNet | `new_animals` | 0.893 | 0.794 | 0.834 | 0.036 |
 | PhysNet | `known_animals_new_date` | 0.908 | 0.850 | 0.907 | 0.040 |
 
 Per seed (all sessions, correlation / inhale F1 / exhale F1 / KL-IBI):
 
-| Seed | PhysNet |
-|---|---|
-| 17 | 0.898 / 0.819 / 0.875 / 0.047 |
-| 42 | 0.903 / 0.825 / 0.866 / 0.030 |
+| Seed | TS-CAN | PhysNet |
+|---|---|---|
+| 17 | 0.774 / 0.707 / 0.843 / 0.070 | 0.898 / 0.819 / 0.875 / 0.047 |
+| 42 | 0.772 / 0.686 / 0.831 / 0.083 | 0.903 / 0.825 / 0.866 / 0.030 |
 
 ### Zephyr, for reference (5 seeds, from the existing sweep)
 
@@ -222,7 +226,7 @@ only produces inhale events, so it has no correlation, exhale F1 or KL-IBI.
 |---|---|---|---|
 | Pixel flow / pca / snr | at most 0.02 | at most 0.16 | at most 0.16 |
 | Facemap-style (both) | 0.434 | 0.303 | 0.322 |
-| TS-CAN | *pending retrain* | | |
+| TS-CAN | 0.773 | 0.696 | 0.837 |
 | PhysNet | 0.900 | 0.822 | 0.870 |
 | Zephyr, from the trace | 0.913 | 0.872 | 0.891 |
 | Zephyr, from the onset head | n/a | 0.954 | n/a |
@@ -314,12 +318,15 @@ What the numbers include and exclude:
     separate claims, and a reviewer is likely to notice.
   - PhysNet generalises about equally to new animals (0.893) and to new dates
     (0.908).
-- **A sub-frame timing offset explained the first TS-CAN's weak inhale F1.** The
-  first version scored correlation 0.764 but inhale F1 only 0.324 (exhale F1
-  0.761). On the dev sessions, loosening the match tolerance from 17 ms to 34 ms
-  lifted inhale F1 from 0.30 to 0.75, so the peaks were about a frame off. The
-  cause was the central-difference target (see Methods); TS-CAN was retrained
-  with the paper's forward difference. Other reconstruction settings (band,
+- **A sub-frame timing offset explained the first TS-CAN's weak inhale F1, and
+  the paper's forward-difference target fixes most of it.** The first version
+  scored correlation 0.764 but inhale F1 only 0.324 (exhale F1 0.761). On the dev
+  sessions, loosening the match tolerance from 17 ms to 34 ms lifted inhale F1
+  from 0.30 to 0.75, so the peaks were about a frame off. The cause was the
+  central-difference target (see Methods). The retrained TS-CAN scores
+  correlation 0.773, inhale F1 0.696 and exhale F1 0.837, so inhale F1 more than
+  doubled with no timing correction. It still sits below PhysNet (0.900 /
+  0.822 / 0.870) and below zephyr gray (0.872 / 0.784 / 0.803). Other reconstruction settings (band,
   filter order, detrend strength) changed scores by only about 0.05.
 - **Neither a larger input nor a higher learning rate improved TS-CAN** (dev
   sessions, central-difference version).
@@ -348,8 +355,8 @@ What the numbers include and exclude:
   training recipe instead of the papers' optimisers, and (TS-CAN) a different
   breathing band. They have not been checked against the authors' code.
 - **Fewer seeds than zephyr.** TS-CAN and PhysNet have 2 seeds, zephyr 5.
-- **TS-CAN's learning rate** was best at the top of the grid (1e-3), though 3e-3
-  was no better at 36 px.
+- **TS-CAN's learning rate** was best at the top of the grid (3e-3), so a higher
+  rate might help slightly.
 - **The dev sessions are only 6 clips,** from animals seen in training, so they
   are a coarse guide for choosing learning rates.
 - **The TS-CAN investigation started from a test-split result.** The weak inhale F1
@@ -389,19 +396,21 @@ What the numbers include and exclude:
 ## Reproducing
 
 Use `uv run --extra cpu ...` (or `--extra gpu` for TS-CAN and PhysNet); plain
-`uv run` removes torch because it is an optional extra.
+`uv run` removes torch because it is an optional extra. `baseline net` defaults
+to each network's tuned learning rate (TS-CAN 3e-3, PhysNet 3e-4); `--lr`
+overrides it.
 
 ```bash
 uv run --extra cpu zephyr baseline pixel     # flow, pca, snr: roughly 30 min on CPU
 uv run --extra cpu zephyr baseline facemap   # up to about an hour on CPU
-uv run --extra gpu zephyr baseline net --arch physnet --lr 0.0003 --seeds 17 42
-uv run --extra gpu zephyr baseline net --arch tscan --lr 0.001 --seeds 17 42
+uv run --extra gpu zephyr baseline net --arch physnet --seeds 17 42
+uv run --extra gpu zephyr baseline net --arch tscan --seeds 17 42
 uv run --extra gpu zephyr baseline timing --n-clips 8   # inference time per clip
 uv run --extra cpu zephyr baseline collect   # tables, merges zephyr's sweep
 ```
 
 
-Learning-rate tuning for each network (repeat for 1e-4, 3e-4, 1e-3; PhysNet also
+Learning-rate tuning for each network (repeat for 1e-4, 3e-4, 1e-3, 3e-3; PhysNet also
 needs `--window 128 --scales 1`):
 
 ```bash

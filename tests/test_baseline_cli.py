@@ -33,7 +33,16 @@ class NetCommandTests(unittest.TestCase):
         )
         self.assertEqual(command[command.index("--window") + 1], "128")
         self.assertEqual(command[command.index("--scales") + 1], "1")
-        self.assertNotIn("--lr", command)
+        self.assertEqual(command[command.index("--lr") + 1], "0.0003")
+
+    def test_tscan_defaults_to_its_tuned_learning_rate(self):
+        config = baseline.net_config(
+            load_config(DEFAULT_CONFIG), "tscan", Path("out"), [17]
+        )
+        command = baseline.net_train_command(
+            config, config.jobs()[0], "tscan", lr=None, resume=False
+        )
+        self.assertEqual(command[command.index("--lr") + 1], "0.003")
 
 
 class CollectTests(unittest.TestCase):
