@@ -7,7 +7,7 @@ CLI
 ---
     zephyr baseline pixel   [--methods flow pca snr]
     zephyr baseline facemap [--n-components 100]
-    zephyr baseline net     --arch tscan|physnet [--lr 3e-4] [--seeds 17 42] [--dry-run]
+    zephyr baseline net     --arch tscan|physnet [--lr <per-arch default>] [--seeds 17 42] [--dry-run]
     zephyr baseline timing  [--n-clips 8] [--devices cuda cpu]
     zephyr baseline collect
 """
@@ -33,6 +33,9 @@ from .benchmark import (
 
 DEFAULT_OUT = Path("benchmarks/baselines-v1")
 ZEPHYR_RESULTS = Path("benchmarks/input-objective-v1/results.json")
+
+ARCH_LR = {"tscan": 3e-3, "physnet": 3e-4}
+"""Per-network learning rates chosen on the dev sessions (see the report)."""
 
 ARCH_ARGS = {
     # Temporal augmentation off: TS-CAN's motion stream differences consecutive
@@ -69,8 +72,7 @@ def net_train_command(
     config: BenchmarkConfig, job: Job, arch: str, *, lr, resume: bool
 ) -> list[str]:
     command = train_command(config, job, resume=resume) + ARCH_ARGS[arch]
-    if lr is not None:
-        command += ["--lr", str(lr)]
+    command += ["--lr", str(ARCH_LR[arch] if lr is None else lr)]
     return command
 
 
