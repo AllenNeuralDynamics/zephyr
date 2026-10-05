@@ -82,7 +82,7 @@ are `face_test_known_animals_new_date.toml`, following the dataset's
    ```
 
 4. **Preprocess** into a feature cache (~1-2 min per clip on CPU; the 56 face
-   clips take ~20 GiB). Entries are keyed by video, recipe and box, so a cache
+   clips take ~39 GiB). Entries are keyed by video, recipe and box, so a cache
    directory is safe to share and re-running only does what changed:
 
    ```bash
@@ -118,13 +118,95 @@ are `face_test_known_animals_new_date.toml`, following the dataset's
    uv run zephyr evaluate --checkpoint runs/benchmark-gray-diff-flow-multitask/benchmark-gray-diff-flow-multitask/seed-17/best.pt --clips configs/clips/face_test_new_animals.toml configs/clips/face_test_known_animals_new_date.toml --cache data/features-v2 --out evaluation.json
    ```
 
+## How to reproduce the benchmark network
+
+The reference network is the CNN + TCN on `gray + diff + flow` input with two
+heads: the breathing trace (correlation loss, weight 1.0) and inhalation onsets
+(weight 0.5). It trains on all 16 labelled face sessions (32 clips) for a fixed
+budget of 200 epochs x 200 steps, with no validation split and no early
+stopping. It is then scored on the 12 test sessions, reported as two groups of
+6: animals not seen in training, and known animals recorded on new dates. The
+recipe is `configs/folds/benchmark-gray-diff-flow-multitask.toml`, run with
+seeds 17, 42, 101, 202 and 314 by
+`configs/experiments/benchmark-gray-diff-flow-multitask.toml`.
+
+1. **Install with GPU support.** Training needs a CUDA GPU.
+
+   ```bash
+   git clone https://github.com/AllenNeuralDynamics/zephyr
+   cd zephyr
+   uv sync --locked --extra gpu
+   ```
+
+2. **Download the face data** into `data/train/` and `data/test/`: the first
+   three commands under [Example dataset](#example-dataset). The `side_right`
+   data is not needed.
+
+3. **Preprocess** the training clips and both test groups into the feature
+   cache the experiment reads (`data/features-v2`). The shipped clip lists
+   already carry the crop boxes, so no annotation is needed:
+
+   ```bash
+   uv run zephyr preprocess configs/clips/face_train.toml configs/clips/face_test_new_animals.toml configs/clips/face_test_known_animals_new_date.toml --cache data/features-v2
+   ```
+
+4. **Check the plumbing** with a 2-step run (it writes to `runs/smoke/`):
+
+   ```bash
+   uv run zephyr run configs/experiments/benchmark-gray-diff-flow-multitask.toml --smoke --seeds 42 --output-dir runs/smoke
+   ```
+
+5. **Train and score.** Each seed took about 5 hours on the GPU the reference
+   runs used. A single seed:
+
+   ```bash
+   uv run zephyr run configs/experiments/benchmark-gray-diff-flow-multitask.toml --seeds 42
+   ```
+
+   All five seeds (17, 42, 101, 202, 314), one after another; a seed whose
+   `best.pt` already exists is not retrained, only re-scored:
+
+   ```bash
+   uv run zephyr run configs/experiments/benchmark-gray-diff-flow-multitask.toml
+   ```
+
+   Each seed writes
+   `runs/benchmark-gray-diff-flow-multitask/benchmark-gray-diff-flow-multitask/seed-<n>/`
+   with `best.pt`, the resolved config, the training video list and
+   `evaluation.json`.
+
+6. **Summarise across seeds** by running this in `uv run python`:
+
+   ```python
+   import glob, json, statistics
+
+   runs = sorted(glob.glob("runs/benchmark-gray-diff-flow-multitask/*/seed-*/evaluation.json"))
+   groups = [json.load(open(path))["groups"] for path in runs]
+   metrics = ("correlation", "inhale_f1", "exhale_f1", "kl_ibi", "head_inhale_f1")
+   print(f"{len(runs)} seeds")
+   for group in ("new_animals", "known_animals_new_date", "all"):
+       means = [statistics.mean(g[group]["summary"][m] for g in groups) for m in metrics]
+       print(f"{group:24s}", "  ".join(f"{m} {v:.3f}" for m, v in zip(metrics, means)))
+   ```
+
+The configs reproduce the reference runs' inputs exactly: the same settings,
+the same 32 training clips in the same order, the same sequence of training
+windows per seed, and byte-identical preprocessed features
+(`tests/test_reproduction.py` checks this against local reference runs). GPU
+training is not bit-deterministic, so a retrained network lands within about
+the seed-to-seed spread rather than on the exact numbers. Scoring the
+original checkpoints with `zephyr evaluate --device cuda --amp bf16`
+reproduces their stored results exactly.
+
 ## Beyond the quickstart
 
-- **Other camera view.** `configs/folds/ood-hold{13,14,15}.toml` fine-tune the
-  benchmark network (`init_from`) on the face data (weight 0.5) plus the two
-  other `side_right` sessions (0.25 each), and score the held-out session and
-  both face groups; `configs/experiments/ood-finetune.toml` runs all three.
-  Preprocess `configs/clips/ood_side_right_{13,14,15}.toml` first.
+- **Other camera view.** `configs/clips/ood_side_right.toml` lists the three
+  `side_right` sessions; `configs/folds/ood-hold{13,14,15}.toml` each select
+  two of them with `groups = [...]` to fine-tune the benchmark network
+  (`init_from`) on the face data (weight 0.5) plus those sessions (0.5), and
+  score the held-out session and both face groups.
+  `configs/experiments/ood-finetune.toml` runs all three. Preprocess
+  `configs/clips/ood_side_right.toml` first.
 - **Baselines** (`zephyr baseline pixel|facemap|timing|collect`) take a fold
   file so they see the same train/test clips; TS-CAN and PhysNet are trained
   with `zephyr run` on a fold whose `train_params.arch` is `tscan` or `physnet`
