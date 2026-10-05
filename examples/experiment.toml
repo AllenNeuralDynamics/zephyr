@@ -1,0 +1,12 @@
+# Example experiment: which folds run, with which seeds, and where.
+#   zephyr preprocess examples/clips.toml --cache data/features-example
+#   zephyr run examples/experiment.toml --smoke     # always first
+#   zephyr run examples/experiment.toml
+
+folds = ["fold.toml"]
+seeds = [42]                      # each fold runs once per seed
+output_dir = "../runs/example"
+features_dir = "../data/features-example"
+# Machine settings are optional; CLI flags override them.
+# device = "cuda"
+# amp = "bf16"

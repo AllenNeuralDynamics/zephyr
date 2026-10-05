@@ -1,0 +1,18 @@
+# Example fold: train on recordings 1 and 2 of clips.toml, score recording 3.
+# A recording never goes to both sides; loading the fold refuses it if it does.
+# Every [train_params] key is optional (see TrainParams in zephyr.config).
+
+[[train]]
+clips = "clips.toml"
+groups = ["1", "2"]               # optional: only these recordings
+
+[test]                            # report group name -> clips to score
+held_out = { clips = "clips.toml", groups = ["3"] }
+
+[train_params]
+channels = "gray+diff+flow"
+epochs = 20
+val_fraction = 0                  # no validation tail: train the full budget
+
+[train_params.augmentation]
+time_stretch = 3.0
