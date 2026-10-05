@@ -1,20 +1,10 @@
 """Non-learned breathing traces from pixels alone -- the floor every method must clear.
 
-Three methods, none of which ever sees the thermistor:
-
-``flow``
-    Mean optical flow over the crop, projected on its dominant direction (per-clip
-    PCA of the 2-D velocity), integrated to displacement, band-passed.
-``pca``
-    Per-pixel band-passed intensity, per-clip PCA, keeping the component whose
-    spectrum is most concentrated in one peak inside the breathing band -- the
-    blind-source-separation recipe of camera pulse measurement (Poh et al., 2010).
-``snr``
-    Pixels weighted by the fraction of their variance inside the breathing band,
-    the top fraction kept, each signed to agree with the best pixel, averaged.
-
-Every output is unsigned in the sense that matters: polarity is fixed afterwards
-by :func:`.common.blind_polarity`.
+``flow``: mean optical flow over the crop on its dominant direction, integrated and
+band-passed. ``pca``: per-pixel band-passed intensity, keeping the PCA component most
+concentrated in one in-band peak (Poh et al., 2010). ``snr``: pixels weighted by in-band
+variance fraction, signed to agree, averaged. None sees the thermistor; polarity is
+fixed afterwards by :func:`.common.blind_polarity`.
 """
 
 import numpy as np

@@ -1,17 +1,12 @@
 """Facemap-style SVD features with a linear readout -- the field-standard baseline.
 
-Facemap (Stringer et al., 2019; Syeda et al., 2024) summarises face video as the
-top singular vectors of the *motion* (absolute frame difference) and of the
-*movie* (raw frames).  Here the basis is fitted once on frames sampled from every
-training clip and shared by all clips, so a single readout transfers between
-animals; Facemap itself fits per video, which would leave no common space to
-regress in.  Motion is rectified, so direction is lost and inhale and exhale can
-look alike -- which is why the movie variant is reported too.
+Facemap (Stringer 2019; Syeda 2024) summarises video as top singular vectors of the
+*motion* (absolute frame difference) and the *movie* (raw frames). One basis is fitted
+on frames from every training clip so a single readout transfers between animals. Motion
+is rectified, so inhale and exhale can look alike -- hence the movie variant too.
 
-The readout is ridge regression on lagged copies of the per-clip z-scored
-components: a learned linear filter, nothing more.  The regularisation strength
-is chosen by leave-one-session-out, computed exactly from per-session Gram
-matrices so no design matrix is ever held for more than one clip.
+The readout is ridge regression on lagged, z-scored components, chosen leave-one-
+recording-out from per-recording Gram matrices.
 """
 
 import functools

@@ -1,0 +1,11 @@
+# Leave-one-session-out fine-tuning on the side-profile rig.
+folds = [
+  "../folds/ood-hold13.toml",
+  "../folds/ood-hold14.toml",
+  "../folds/ood-hold15.toml",
+]
+seeds = [42]
+output_dir = "../../runs/ood-finetune"
+features_dir = "../../data/features-v2"
+device = "cuda"
+amp = "bf16"

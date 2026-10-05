@@ -59,7 +59,7 @@ class AugmentConfig:
         Horizontal mirror probability.  Mirroring must negate ``flow_x``,
         otherwise the flow field contradicts the image -- skipped when
         ``flow_x`` is not selected, since then there is nothing to contradict.
-        Off by default when a camera only ever views one side of the subject.
+        Off by default when a camera only ever views one side of the animal.
 
     Note that these do not all apply to every channel, so two models trained on
     different channel sets are not regularised quite equally: a ``gray``-only

@@ -1,18 +1,10 @@
 """Grayscale frame decoding through an ffmpeg pipe.
 
-``cv2.VideoCapture`` frame-by-frame decoding is the bottleneck in a naive
-pipeline.  Piping raw grayscale out of a single ffmpeg process instead decodes
-much faster at reduced resolution, because scaling and colour conversion
-happen inside ffmpeg's own pipeline.
-
-Frame indexing
---------------
-:func:`iter_frames` decodes from the start of the file so that yielded frame
-``i`` is row ``i`` of the clip's timestamp table.  Passing ``start_s`` enables
-ffmpeg's accurate seek, which is good enough for grabbing a representative
-frame (as :mod:`.annotate` does when caching them) but should be avoided when
-exact frame indices matter, since a stream-copied file's first frame may sit
-up to one GOP before the requested window.
+Piping raw grayscale out of one ffmpeg process decodes far faster at reduced resolution
+than ``cv2.VideoCapture``, because scaling and colour conversion happen inside ffmpeg.
+:func:`iter_frames` decodes from the file start so frame ``i`` is row ``i`` of the
+timestamp table; ``start_s`` seeks, which suits grabbing a representative frame but not
+exact indexing (the first frame may sit up to one GOP early).
 """
 
 import json

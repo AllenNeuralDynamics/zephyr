@@ -1,50 +1,18 @@
 """Windowed torch dataset over the preprocessed uint8 feature arrays.
 
-Windows, not whole clips
-------------------------
-A clip is much longer than fits usefully in one gradient step, so training
-samples fixed-length windows instead, long enough that the TCN's receptive
-field is filled well inside the window and short enough to batch.
-
-Window starts are drawn at random rather than being fixed on a grid, so the
-effective sample count is every valid offset in a clip rather than one
-window per receptive-field-length. Validation windows *are* gridded and
-non-overlapping, so the reported number is stable between epochs.
-
-A window is two sequences, not one
-----------------------------------
-``window`` counts *output* samples at 60 Hz; input frames live on the
-*selection* grid, joined via :func:`zephyr.model.resample_embeddings`. Each item
-carries ``t_in``/``t_out`` alongside the pixels, relative to the window start.
-
-Input frames are read at fractional selection positions spaced ``stretch``
-apart, so a stretched window still hands the CNN a fixed frame count.
-
-The draw is keyed on the dataset index alone, never on a mutable epoch counter.
-DataLoader workers are spawned on Windows and hold a frozen copy of the dataset,
-so an epoch attribute set in the parent would never reach them and every epoch
-would silently replay the same windows.  Instead the index space runs the whole
-length of training and :class:`EpochRangeSampler` -- which lives in the parent --
-hands out a fresh slice of it each epoch.
-
-What never happens here
------------------------
-Windows are never mixed across clips: a window lives inside exactly one clip.
-
-Normalisation
--------------
-Stored values are the *companded* uint8 codes, and that is what the model is
-fed, standardised per channel.  Decoding flow back to pixels first would undo
-the variance stabilisation that ``asinh`` provides: the companded code is the
-better-conditioned input, and the network does not care that the mapping to
-pixels is non-linear as long as it is monotonic and fixed.
-
-Statistics are measured once over a sample of the training clips and cached, so
-they cannot drift between training and inference, and are not recomputed per run.
+Training samples fixed-length windows from random starts, so every valid offset is
+reachable; validation windows are gridded and non-overlapping so the number is stable.
+``window`` counts 60 Hz output samples; input frames sit on the selection grid at
+fractional positions ``stretch`` apart.
+The draw is keyed on the dataset index alone, never an epoch counter (spawned DataLoader
+workers hold a frozen copy); :class:`EpochRangeSampler` hands out a fresh slice of the
+index space each epoch. The companded uint8 codes are standardised per channel with
+statistics measured once over the training clips and cached.
 """
 
+import hashlib
 import json
-from dataclasses import dataclass
+from collections.abc import Sequence
 from pathlib import Path
 
 import numpy as np
@@ -62,65 +30,19 @@ from zephyr.augment import (
 )
 from zephyr.channels import ALL_CHANNELS, CHANNEL_NAMES, N_CHANNELS, ChannelSet
 
+from .features import ClipEntry
 from .targets import onset_heatmap
-
-STATS_FILENAME = "channel_stats.json"
 
 INTERP_MARGIN = 2
 """Extra input frames kept either side of a window's output span, so the
 selection grid's jitter never pushes an output sample outside the input span."""
 
 
-@dataclass(frozen=True)
-class ClipEntry:
-    """One preprocessed clip: where its arrays live and which session it is.
-
-    *n_frames* is on the selection grid (``features``/``frame_times``);
-    *n_output* on the 60 Hz output grid (``times``/``target``).
-    """
-
-    clip_id: str
-    session_idx: int
-    part: int
-    n_frames: int
-    n_output: int
-    features: Path
-    frame_times: Path
-    baselines: Path
-    times: Path
-    target: Path | None
-    events: Path | None
-
-    @property
-    def has_target(self) -> bool:
-        return self.target is not None
-
-
-def load_manifest(
-    features_dir: Path, split: str = "train", camera: str = "face"
-) -> tuple[dict, list[ClipEntry]]:
-    """Read ``manifest_{split}_{camera}.json`` and resolve its paths."""
-    path = features_dir / f"manifest_{split}_{camera}.json"
-    if not path.exists():
-        raise FileNotFoundError(f"{path} not found -- run `zephyr preprocess` first.")
-    manifest = json.loads(path.read_text())
-    entries = [
-        ClipEntry(
-            clip_id=c["clip_id"],
-            session_idx=c["session_idx"],
-            part=c["part"],
-            n_frames=c["n_frames"],
-            n_output=c["n_output"],
-            features=features_dir / c["features"],
-            frame_times=features_dir / c["frame_times"],
-            baselines=features_dir / c["baselines"],
-            times=features_dir / c["times"],
-            target=features_dir / c["target"] if c.get("target") else None,
-            events=features_dir / c["events"] if c.get("events") else None,
-        )
-        for c in manifest["clips"]
-    ]
-    return manifest["config"], entries
+def stats_path(cache_dir: Path, entries: Sequence[ClipEntry]) -> Path:
+    """Where the statistics over exactly *entries* are cached: next to the
+    features, named for the ordered clip set so another set never reuses them."""
+    blob = json.dumps([e.features.name for e in entries]).encode()
+    return cache_dir / f"channel_stats-{hashlib.sha256(blob).hexdigest()[:10]}.json"
 
 
 def channel_stats(
@@ -134,17 +56,18 @@ def channel_stats(
 
     Sampled rather than exhaustive: *frames_per_clip* frames spread evenly over
     each clip is enough to pin the mean well under a count.  Cached to
-    *cache_path* so training and inference cannot disagree.
+    *cache_path* (see :func:`stats_path`) so repeated runs over the same clips
+    cannot disagree.
 
     Always measured over every stored channel, whatever subset a run trains on
     -- so one cache serves every :class:`zephyr.channels.ChannelSet` with no
     recompute, and two runs can never disagree about a channel's mean.  Slice
     the result with :meth:`~.channels.ChannelSet.take_stats`.
     """
-    clip_ids = [entry.clip_id for entry in entries]
+    names = [entry.features.name for entry in entries]
     if cache_path.exists():
         cached = json.loads(cache_path.read_text())
-        if cached.get("clip_ids") == clip_ids:
+        if cached.get("clips") == names:
             return np.array(cached["mean"], np.float32), np.array(
                 cached["std"], np.float32
             )
@@ -173,7 +96,7 @@ def channel_stats(
                 "mean": mean.tolist(),
                 "std": std.tolist(),
                 "n_clips": len(entries),
-                "clip_ids": clip_ids,
+                "clips": names,
                 "frames_per_clip": frames_per_clip,
                 "n_pixels": int(count),
             },
@@ -181,6 +104,30 @@ def channel_stats(
         )
     )
     return mean.astype(np.float32), std.astype(np.float32)
+
+
+def mixture_weights(
+    offsets: np.ndarray, source_of: Sequence[int], weights: Sequence[float]
+) -> np.ndarray:
+    """Clip draw probabilities for a weighted mix of clip lists.
+
+    Each list gets its relative share of the mass (*weights* are normalised, so
+    0.5 / 0.5 and 1 / 1 agree); within a list, clips are drawn in proportion to
+    their usable *offsets*, as a single list always was.  *source_of* gives each
+    clip's list.  With one list this reduces exactly to ``offsets / offsets.sum()``.
+    """
+    source_of = np.asarray(source_of)
+    share = np.asarray(weights, np.float64) / float(np.sum(weights))
+    empty = [i for i in range(len(share)) if not (source_of == i).any()]
+    if empty:
+        raise ValueError(
+            f"training list(s) {empty} have no clip long enough to draw windows from"
+        )
+    probabilities = np.zeros(len(offsets))
+    for i, fraction in enumerate(share):
+        members = source_of == i
+        probabilities[members] = fraction * offsets[members] / offsets[members].sum()
+    return probabilities
 
 
 def _load_target_frame(
@@ -205,13 +152,14 @@ class WindowDataset(Dataset):
 
     Parameters
     ----------
-    entries:
-        Clips to draw from.  All must carry a target.
+    sources:
+        Clip lists to draw from, each a list of entries; all must carry a
+        target.  Windows are drawn across lists in proportion to *weights*.
     window:
         Window length in *output* samples. Input frame count follows from
         *select_fs* and the drawn stretch.
     select_fs, output_fs, motion_tau_s, onset_sigma_s:
-        From the preprocessing manifest's ``config``.
+        From the clips' :class:`~zephyr.config.PreprocessParams`.
     mean, std:
         Per-channel standardisation constants from :func:`channel_stats`, over
         *all* stored channels.  Sliced here to match *channels*, so callers
@@ -231,6 +179,12 @@ class WindowDataset(Dataset):
     seed:
         Base seed for random starts.  Combined with the dataset index, so the
         window drawn for a given (seed, index) pair is always the same.
+    weights:
+        Relative share of the windows each list in *sources* receives (default
+        equal), each list still drawing its clips in proportion to their usable
+        offsets.  Lets a handful of clips from a new camera view be oversampled
+        against a much larger set instead of drowning in it; see
+        :func:`mixture_weights`.
     span:
         Fraction of each clip this dataset may draw from, as ``(start, stop)``.
         ``(0, 0.75)`` and ``(0.75, 1)`` split every clip in time, which is how a
@@ -241,7 +195,7 @@ class WindowDataset(Dataset):
 
     def __init__(
         self,
-        entries: list[ClipEntry],
+        sources: Sequence[Sequence[ClipEntry]],
         *,
         window: int,
         mean: np.ndarray,
@@ -256,7 +210,13 @@ class WindowDataset(Dataset):
         augment: AugmentConfig | None = None,
         span: tuple[float, float] = (0.0, 1.0),
         channels: ChannelSet = ALL_CHANNELS,
+        weights: Sequence[float] | None = None,
     ) -> None:
+        entries = [e for source in sources for e in source]
+        source_of = [i for i, source in enumerate(sources) for _ in source]
+        weights = [1.0] * len(sources) if weights is None else list(weights)
+        if len(weights) != len(sources):
+            raise ValueError(f"{len(sources)} clip lists but {len(weights)} weights")
         missing = [e.clip_id for e in entries if not e.has_target]
         if missing:
             raise ValueError(f"clips without a target cannot be trained on: {missing}")
@@ -291,9 +251,10 @@ class WindowDataset(Dataset):
             1, -1, 1, 1
         )
 
-        self._arrays: dict[str, np.ndarray] = {}
-        self._targets: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
-        self._frame_time_cache: dict[str, np.ndarray] = {}
+        # Keyed by feature path: the clip label is for people and need not be unique.
+        self._arrays: dict[Path, np.ndarray] = {}
+        self._targets: dict[Path, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
+        self._frame_time_cache: dict[Path, np.ndarray] = {}
 
         # A clip must be long enough for the widest stretch draw, not just window.
         self.max_source = int(np.ceil(self.extent(self.augment.max_source_frames))) + 1
@@ -301,14 +262,16 @@ class WindowDataset(Dataset):
             raise ValueError(f"span must satisfy 0 <= start < stop <= 1, got {span}")
         self.span = span
         self.bounds = {
-            e.clip_id: (int(e.n_frames * span[0]), int(e.n_frames * span[1]))
+            e.features: (int(e.n_frames * span[0]), int(e.n_frames * span[1]))
             for e in entries
         }
-        usable = [
-            e
-            for e in entries
-            if self.bounds[e.clip_id][1] - self.bounds[e.clip_id][0] >= self.max_source
+        keep = [
+            i
+            for i, e in enumerate(entries)
+            if self.bounds[e.features][1] - self.bounds[e.features][0]
+            >= self.max_source
         ]
+        usable = [entries[i] for i in keep]
         if not usable:
             raise ValueError(
                 f"no clip has {self.max_source} selection frames inside span "
@@ -323,8 +286,8 @@ class WindowDataset(Dataset):
                 (i, float(start))
                 for i, entry in enumerate(usable)
                 for start in np.arange(
-                    self.bounds[entry.clip_id][0],
-                    self.bounds[entry.clip_id][1] - extent,
+                    self.bounds[entry.features][0],
+                    self.bounds[entry.features][1] - extent,
                     hop,
                 )
             ]
@@ -336,15 +299,17 @@ class WindowDataset(Dataset):
             # is not over-represented relative to the data it actually holds.
             offsets = np.array(
                 [
-                    self.bounds[e.clip_id][1]
-                    - self.bounds[e.clip_id][0]
+                    self.bounds[e.features][1]
+                    - self.bounds[e.features][0]
                     - self.max_source
                     + 1
                     for e in usable
                 ],
                 np.float64,
             )
-            self.weights = offsets / offsets.sum()
+            self.weights = mixture_weights(
+                offsets, [source_of[i] for i in keep], weights
+            )
             self.length = length if length is not None else 8 * len(usable)
 
     def extent(self, stretch: float) -> float:
@@ -362,24 +327,24 @@ class WindowDataset(Dataset):
     def _array(self, entry: ClipEntry) -> np.ndarray:
         # Opened lazily and cached per process: DataLoader workers are spawned on
         # Windows, so a memmap opened in the parent would not survive the fork.
-        array = self._arrays.get(entry.clip_id)
+        array = self._arrays.get(entry.features)
         if array is None:
             array = np.load(entry.features, mmap_mode="r")
-            self._arrays[entry.clip_id] = array
+            self._arrays[entry.features] = array
         return array
 
     def _target(self, entry: ClipEntry) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        target = self._targets.get(entry.clip_id)
+        target = self._targets.get(entry.features)
         if target is None:
             target = _load_target_frame(entry)
-            self._targets[entry.clip_id] = target
+            self._targets[entry.features] = target
         return target
 
     def _frame_times(self, entry: ClipEntry) -> np.ndarray:
-        times = self._frame_time_cache.get(entry.clip_id)
+        times = self._frame_time_cache.get(entry.features)
         if times is None:
             times = np.load(entry.frame_times)
-            self._frame_time_cache[entry.clip_id] = times
+            self._frame_time_cache[entry.features] = times
         return times
 
     def _draw_start(
@@ -389,43 +354,60 @@ class WindowDataset(Dataset):
         top = hi - 1 - self.extent(stretch)
         return float(rng.uniform(lo, top)) if top > lo else float(lo)
 
+    def _draw(self, i: int) -> tuple[np.random.Generator | None, int, float, float]:
+        """The ``(rng, clip index, start, stretch)`` of window *i*.
+
+        *rng* is the generator positioned after the draw, for the augmentation
+        that follows; ``None`` in gridded mode, which draws nothing.
+        """
+        stretch = 1.0
+        if not self.random:
+            clip_i, start = self.index[i]
+            return None, clip_i, start, stretch
+
+        rng = np.random.default_rng((self.seed, i))
+        clip_i = int(rng.choice(len(self.usable), p=self.weights))
+        entry = self.usable[clip_i]
+        lo, hi = self.bounds[entry.features]
+        start = self._draw_start(rng, lo, hi, 1.0)
+        if self.augment.time_stretch > 1.0:
+            # Measure the rate on a provisional window first, then choose
+            # the stretch: the target is already in memory, so this costs a
+            # peak count and nothing else.
+            target_times, signal_all, _ = self._target(entry)
+            probe_t = float(self._frame_times(entry)[int(start)])
+            probe = int(
+                np.clip(
+                    round((probe_t - target_times[0]) * self.output_fs),
+                    0,
+                    max(0, len(signal_all) - self.window),
+                )
+            )
+            stretch = rate_targeted_stretch(
+                signal_all[probe : probe + self.window],
+                rng,
+                self.augment,
+                self.output_fs,
+            )
+            start = self._draw_start(rng, lo, hi, stretch)
+        return rng, clip_i, start, stretch
+
+    def draw(self, i: int) -> tuple[int, float, float]:
+        """Which clip, where, and at what stretch window *i* is cut.
+
+        Exposed because the draw is the dataset's whole contract with training:
+        a test pins the first draws of a known run, so a refactor that shifted
+        them would silently change what every seed trains on.
+        """
+        _, clip_i, start, stretch = self._draw(i)
+        return clip_i, start, stretch
+
     def __getitem__(self, i: int) -> dict[str, torch.Tensor]:
         window = self.window
-        stretch = 1.0
-        if self.random:
-            rng = np.random.default_rng((self.seed, i))
-            clip_i = int(rng.choice(len(self.usable), p=self.weights))
-            entry = self.usable[clip_i]
-            lo, hi = self.bounds[entry.clip_id]
-            target_times, signal_all, onset_times = self._target(entry)
-            frame_times = self._frame_times(entry)
-
-            start = self._draw_start(rng, lo, hi, 1.0)
-            if self.augment.time_stretch > 1.0:
-                # Measure the rate on a provisional window first, then choose
-                # the stretch: the target is already in memory, so this costs a
-                # peak count and nothing else.
-                probe_t = float(frame_times[int(start)])
-                probe = int(
-                    np.clip(
-                        round((probe_t - target_times[0]) * self.output_fs),
-                        0,
-                        max(0, len(signal_all) - window),
-                    )
-                )
-                stretch = rate_targeted_stretch(
-                    signal_all[probe : probe + window],
-                    rng,
-                    self.augment,
-                    self.output_fs,
-                )
-                start = self._draw_start(rng, lo, hi, stretch)
-        else:
-            rng = None
-            clip_i, start = self.index[i]
-            entry = self.usable[clip_i]
-            target_times, signal_all, onset_times = self._target(entry)
-            frame_times = self._frame_times(entry)
+        rng, clip_i, start, stretch = self._draw(i)
+        entry = self.usable[clip_i]
+        target_times, signal_all, onset_times = self._target(entry)
+        frame_times = self._frame_times(entry)
 
         positions = start + np.arange(self.n_in) * stretch
         if rng is not None and self.augment.select_jitter > 0:
@@ -486,59 +468,3 @@ class EpochRangeSampler(Sampler[int]):
 
     def __len__(self) -> int:
         return self.per_epoch
-
-
-def reserve_test_sessions(
-    entries: list[ClipEntry],
-    path: Path,
-    *,
-    n_test: int = 3,
-    seed: int = 0,
-) -> list[int]:
-    """Draw and persist a set of sessions that training never sees.
-
-    Validation selects the checkpoint, so a run's own score is optimistically
-    biased.  These sessions are removed before training and touched by nothing
-    -- no training, no validation, no selection -- which makes them the only
-    clean local estimate of generalisation.
-
-    Persisted on first use and reloaded verbatim after.  Re-drawing per run
-    would leak: a session held out in one run becomes training data in the next.
-    The file is the source of truth, not the seed.
-    """
-    sessions = sorted({e.session_idx for e in entries})
-    if path.exists():
-        record = json.loads(path.read_text())
-        reserved = list(record["test_sessions"])
-        missing = [s for s in reserved if s not in sessions]
-        if missing:
-            raise ValueError(
-                f"{path} reserves sessions {missing} that are absent from the "
-                "manifest.  Refusing to continue: silently re-drawing would put "
-                "previously held-out sessions into training."
-            )
-        return reserved
-
-    if n_test >= len(sessions):
-        raise ValueError(
-            f"cannot reserve {n_test} of {len(sessions)} sessions -- nothing "
-            "would be left to train on"
-        )
-    rng = np.random.default_rng(seed)
-    reserved = sorted(rng.choice(sessions, size=n_test, replace=False).tolist())
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(
-            {
-                "test_sessions": reserved,
-                # Seed and pool together re-derive test_sessions exactly -- the
-                # draw is over list positions -- so the file can be audited
-                # rather than merely trusted.  It is still the source of truth:
-                # the pool changes if the manifest does.
-                "seed": seed,
-                "drawn_from": sessions,
-            },
-            indent=2,
-        )
-    )
-    return reserved

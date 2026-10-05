@@ -1,125 +1,67 @@
-"""Benchmark baselines for the manuscript, run on the same split as ``zephyr benchmark``.
+"""Benchmark baselines for the manuscript, run on the same fold as ``zephyr run``.
 
-Paths, splits, epoch budget and seeds come from ``artifacts/benchmark.toml`` so
-every method sees exactly the protocol zephyr's own sweep does.
+A fold file supplies the clips: its training lists fit each baseline and its
+test groups score it, so every method sees the protocol the networks do.
+Network baselines (TS-CAN, PhysNet) are trained with ``zephyr run`` on a fold
+whose ``train_params.arch`` names them.
 
 CLI
 ---
-    zephyr baseline pixel   [--methods flow pca snr]
-    zephyr baseline facemap [--n-components 100]
-    zephyr baseline net     --arch tscan|physnet [--lr <per-arch default>] [--seeds 17 42] [--dry-run]
-    zephyr baseline timing  [--n-clips 8] [--devices cuda cpu]
-    zephyr baseline collect
+    zephyr baseline pixel   FOLD --cache DIR [--methods flow pca snr]
+    zephyr baseline facemap FOLD --cache DIR [--n-components 100]
+    zephyr baseline timing  FOLD --cache DIR --checkpoint NAME=best.pt ...
+    zephyr baseline collect --runs EXPERIMENT_OUTPUT_DIR
 """
 
 import argparse
 import json
-import subprocess
-from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
 
-from .benchmark import (
-    DEFAULT_CONFIG,
-    METRICS,
-    BenchmarkConfig,
-    Job,
-    Objective,
-    evaluate_command,
-    load_config,
-    train_command,
-)
+from . import features
+from .config import OUTPUT_FS, Fold, load
 
-DEFAULT_OUT = Path("benchmarks/baselines-v1")
-ZEPHYR_RESULTS = Path("benchmarks/input-objective-v1/results.json")
-
-ARCH_LR = {"tscan": 3e-3, "physnet": 3e-4}
-"""Per-network learning rates chosen on the dev sessions (see the report)."""
-
-ARCH_ARGS = {
-    # Temporal augmentation off: TS-CAN's motion stream differences consecutive
-    # frames, and a stretched window would change what "consecutive" means.
-    "tscan": ["--arch", "tscan", "--time-stretch", "1", "--select-jitter", "0"],
-    "physnet": [
-        "--arch",
-        "physnet",
-        "--time-stretch",
-        "1",
-        "--select-jitter",
-        "0",
-        "--window",
-        "128",
-        "--scales",
-        "1",
-    ],
-}
+METRICS = ("correlation", "inhale_f1", "exhale_f1", "kl_ibi")
+DEFAULT_OUT = Path("benchmarks/baselines")
 
 
-def net_config(
-    config: BenchmarkConfig, arch: str, out_root: Path, seeds
-) -> BenchmarkConfig:
-    return replace(
-        config,
-        output_root=out_root / arch,
-        representations=("gray",),
-        objectives=(Objective("signal", 1.0, 0.0),),
-        seeds=tuple(seeds or config.seeds),
-    )
-
-
-def net_train_command(
-    config: BenchmarkConfig, job: Job, arch: str, *, lr, resume: bool
-) -> list[str]:
-    command = train_command(config, job, resume=resume) + ARCH_ARGS[arch]
-    command += ["--lr", str(ARCH_LR[arch] if lr is None else lr)]
-    return command
-
-
-def run_net(config: BenchmarkConfig, arch: str, *, lr, dry_run: bool) -> None:
-    for job in config.jobs():
-        run_dir = config.run_dir(job)
-        if not (run_dir / "best.pt").exists():
-            command = net_train_command(
-                config, job, arch, lr=lr, resume=(run_dir / "last.pt").exists()
-            )
-            print(subprocess.list2cmdline(command), flush=True)
-            if not dry_run:
-                subprocess.run(command, check=True)
-        if not (run_dir / "evaluation.json").exists():
-            command = evaluate_command(config, job)
-            print(subprocess.list2cmdline(command), flush=True)
-            if not dry_run:
-                subprocess.run(command, check=True)
-
-
-NETWORK_CHECKPOINTS = {
-    "physnet": "{out}/physnet/runs/gray__signal__seed-17/best.pt",
-    "tscan": "{out}/tscan/runs/gray__signal__seed-17/best.pt",
-    "zephyr gray": "{zephyr}/runs/gray__multitask__seed-17/best.pt",
-    "zephyr gray+diff+flow": "{zephyr}/runs/gray-diff-flow__multitask__seed-17/best.pt",
-}
-"""Checkpoints timed (seed 17 of each). Inference cost does not depend on the seed."""
+def _entries(fold: Fold, cache: Path) -> tuple[list, dict[str, list]]:
+    """The fold's training entries and its labelled test entries per group."""
+    recipe = fold.preprocess
+    train = [
+        e
+        for clips in fold.train_clips()
+        for e in features.require(clips, recipe, cache)
+    ]
+    groups = {
+        name: features.require([c for c in clips if c.labelled], recipe, cache)
+        for name, clips in fold.test_clips().items()
+    }
+    return train, groups
 
 
 def run_timing(
-    config: BenchmarkConfig, out_root: Path, *, n_clips: int, devices: list[str]
+    fold: Fold,
+    cache: Path,
+    out_root: Path,
+    checkpoints: dict[str, Path],
+    *,
+    n_clips: int,
+    devices: list[str],
 ) -> dict:
-    """Time every method per clip on the test split; write ``timing.json``."""
-    import numpy as np
+    """Time every method per clip on the fold's test clips; write ``timing.json``."""
     import torch
 
     from .baselines import timing
-    from .dataset import load_manifest
 
-    manifest, entries = load_manifest(
-        config.features_dir, config.test_split, config.camera
-    )
+    _, groups = _entries(fold, cache)
+    entries = [e for members in groups.values() for e in members]
     clips = timing.pick_clips(entries, n_clips)
     warmup = timing.pick_warmup(entries, clips)
     cached = timing.warm_file_cache([*clips, warmup])
     print(f"file cache warmed: {cached / 1e9:.1f} GB read", flush=True)
-    fs = manifest["select_fs_hz"]
+    fs = fold.preprocess.select_fs
     methods: list[dict] = []
 
     def add(name: str, device: str, fn, params_m: float | None = None) -> None:
@@ -150,16 +92,11 @@ def run_timing(
             print("skipping cuda timing: no GPU", flush=True)
             continue
         device = torch.device(device_name)
-        for name, template in NETWORK_CHECKPOINTS.items():
-            path = Path(template.format(out=out_root, zephyr=ZEPHYR_RESULTS.parent))
-            if not path.exists():
-                print(f"skipping {name}: {path} not found", flush=True)
-                continue
+        for name, path in checkpoints.items():
             fn, params_m = timing.network_method(path, device)
             add(name, device_name, fn, params_m)
 
     data = {
-        "split": config.test_split,
         "n_clips": len(clips),
         "clip_seconds": float(np.mean([e.n_output / timing.CLIP_FS for e in clips])),
         "clip_ids": [e.clip_id for e in clips],
@@ -209,25 +146,22 @@ def _timing_markdown(timing_path: Path) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _strata(result: dict) -> dict:
-    return result.get("strata") or {"all": {"summary": result["summary_by_session"]}}
-
-
 def _aggregate(method: str, variant: str, results: list[dict]) -> list[dict]:
+    """One row per group: each metric's mean and sd across *results* (seeds)."""
     rows = []
-    for stratum in sorted({s for r in results for s in _strata(r)}):
+    for group in sorted({g for r in results for g in r["groups"]}):
         row = {
             "method": method,
             "variant": variant,
-            "stratum": stratum,
+            "group": group,
             "n_seeds": len(results),
         }
         for metric in METRICS:
             values = np.array(
                 [
-                    _strata(r)[stratum]["summary"].get(metric)
+                    r["groups"][group]["summary"].get(metric)
                     for r in results
-                    if stratum in _strata(r)
+                    if group in r["groups"]
                 ],
                 dtype=float,
             )
@@ -240,7 +174,7 @@ def _aggregate(method: str, variant: str, results: list[dict]) -> list[dict]:
 
 def _markdown(rows: list[dict]) -> str:
     lines = [
-        "| method | variant | stratum | n | correlation | inhale F1 | exhale F1 | KL-IBI |",
+        "| method | variant | group | n | correlation | inhale F1 | exhale F1 | KL-IBI |",
         "| --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for r in rows:
@@ -251,60 +185,53 @@ def _markdown(rows: list[dict]) -> str:
                 "—" if mean is None else f"{mean:.3f}" + (f" ± {sd:.3f}" if sd else "")
             )
         lines.append(
-            f"| {r['method']} | {r['variant']} | {r['stratum']} | {r['n_seeds']} | "
+            f"| {r['method']} | {r['variant']} | {r['group']} | {r['n_seeds']} | "
             + " | ".join(cells)
             + " |"
         )
     return "\n".join(lines) + "\n"
 
 
-def _onset_head_rows(runs_dir: Path) -> list[dict]:
-    """Zephyr's inhale F1 from the multitask onset head, across seeds.
+def _onset_head_row(fold: str, results: list[dict]) -> dict | None:
+    """Inhale F1 from the multitask onset head, across seeds.
 
     The head only scores inhale onsets, so the other metrics are left empty.
     """
-    by_variant: dict[str, list[dict]] = {}
-    for path in sorted(runs_dir.glob("*/head_evaluation.json")):
-        representation, objective, _ = path.parent.name.split("__")
-        by_variant.setdefault(
-            f"{representation.replace('-', '+')}/{objective}", []
-        ).append(json.loads(path.read_text()))
-    rows = []
-    for variant, results in by_variant.items():
-        values = np.array(
-            [r["strata"]["all"]["summary"]["head_inhale_f1"] for r in results],
-            dtype=float,
-        )
-        values = values[np.isfinite(values)]
-        row = {
-            "method": "zephyr (onset head)",
-            "variant": variant,
-            "stratum": "all",
-            "n_seeds": len(results),
-        }
-        for metric in METRICS:
-            row[f"{metric}_mean"] = None
-            row[f"{metric}_sd"] = None
-        row["inhale_f1_mean"] = float(values.mean()) if len(values) else None
-        row["inhale_f1_sd"] = float(values.std(ddof=1)) if len(values) > 1 else None
-        rows.append(row)
-    return rows
+    values = np.array(
+        [r["groups"]["all"]["summary"].get("head_inhale_f1") for r in results],
+        dtype=float,
+    )
+    values = values[np.isfinite(values)]
+    if not len(values):
+        return None
+    row = {
+        "method": "zephyr (onset head)",
+        "variant": fold,
+        "group": "all",
+        "n_seeds": len(results),
+    }
+    for metric in METRICS:
+        row[f"{metric}_mean"] = None
+        row[f"{metric}_sd"] = None
+    row["inhale_f1_mean"] = float(values.mean())
+    row["inhale_f1_sd"] = float(values.std(ddof=1)) if len(values) > 1 else None
+    return row
 
 
 def _best_markdown(rows: list[dict]) -> str:
-    """Each method's best score per metric over its variants, 'all' stratum only.
+    """Each method's best score per metric over its variants, 'all' group only.
 
     Not a like-for-like ranking: variants are picked by their own test score, so
     this shows what each method can reach, not what a tuned run would report.
     """
     lines = [
-        "## Best per method (all sessions)",
+        "## Best per method (all recordings)",
         "",
         "| method | correlation | inhale F1 | exhale F1 | KL-IBI (lower is better) |",
         "| --- | --- | --- | --- | --- |",
     ]
     for method in dict.fromkeys(r["method"] for r in rows):
-        members = [r for r in rows if r["method"] == method and r["stratum"] == "all"]
+        members = [r for r in rows if r["method"] == method and r["group"] == "all"]
         cells = []
         for metric in METRICS:
             scored = [r for r in members if r.get(f"{metric}_mean") is not None]
@@ -319,7 +246,13 @@ def _best_markdown(rows: list[dict]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def collect(out_root: Path, zephyr_results: Path | None) -> list[dict]:
+def collect(out_root: Path, runs_dir: Path | None) -> list[dict]:
+    """Tabulate every baseline under *out_root* and the runs under *runs_dir*.
+
+    *runs_dir* is a ``zephyr run`` output directory (``{fold}/seed-{n}/``);
+    each fold is one row set, seeds aggregated, and a fold trained as a
+    baseline architecture is labelled with it.
+    """
     rows: list[dict] = []
     for path in sorted(out_root.glob("pixel/*/*/evaluation.json")):
         rows += _aggregate(
@@ -329,29 +262,21 @@ def collect(out_root: Path, zephyr_results: Path | None) -> list[dict]:
         )
     for path in sorted(out_root.glob("facemap/*/evaluation.json")):
         rows += _aggregate("facemap", path.parent.name, [json.loads(path.read_text())])
-    for arch in ("tscan", "physnet"):
-        results = [
-            json.loads(p.read_text())
-            for p in sorted(out_root.glob(f"{arch}/runs/*/evaluation.json"))
-        ]
-        if results:
-            rows += _aggregate(arch, "-", results)
-    if zephyr_results is not None and zephyr_results.exists():
-        for r in json.loads(zephyr_results.read_text())["summary_across_seeds"]:
-            rows.append(
-                {
-                    "method": "zephyr",
-                    "variant": f"{r['representation']}/{r['objective']}",
-                    "stratum": r["stratum"],
-                    "n_seeds": r["n_seeds"],
-                }
-                | {
-                    f"{m}_{s}": r.get(f"{m}_{s}")
-                    for m in METRICS
-                    for s in ("mean", "sd")
-                }
-            )
-        rows += _onset_head_rows(zephyr_results.parent / "runs")
+    if runs_dir is not None and runs_dir.exists():
+        for fold_dir in sorted(p for p in runs_dir.iterdir() if p.is_dir()):
+            paths = sorted(fold_dir.glob("seed-*/evaluation.json"))
+            if not paths:
+                continue
+            results = [json.loads(p.read_text()) for p in paths]
+            config = paths[0].parent / "config.json"
+            arch = "zephyr"
+            if config.exists():
+                params = json.loads(config.read_text())["fold"]
+                arch = params.get("train_params", {}).get("arch", "zephyr")
+            rows += _aggregate(arch, fold_dir.name, results)
+            head = _onset_head_row(fold_dir.name, results)
+            if head is not None:
+                rows.append(head)
     out_root.mkdir(parents=True, exist_ok=True)
     (out_root / "results.json").write_text(json.dumps(rows, indent=2))
     text = _markdown(rows) + "\n" + _best_markdown(rows)
@@ -364,73 +289,75 @@ def collect(out_root: Path, zephyr_results: Path | None) -> list[dict]:
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     parser.add_argument("--out-root", type=Path, default=DEFAULT_OUT)
     sub = parser.add_subparsers(dest="command", required=True)
-    p = sub.add_parser("pixel")
-    p.add_argument("--methods", nargs="+", default=["flow", "pca", "snr"])
-    p.add_argument("--bin", type=int, default=2)
-    f = sub.add_parser("facemap")
-    f.add_argument("--n-components", type=int, default=100)
-    f.add_argument("--samples-per-clip", type=int, default=2000)
-    f.add_argument("--bin", type=int, default=2)
-    f.add_argument("--max-lag", type=int, default=15, help="Output frames.")
-    f.add_argument("--lag-step", type=int, default=3)
-    f.add_argument("--seed", type=int, default=0)
-    n = sub.add_parser("net")
-    n.add_argument("--arch", required=True, choices=sorted(ARCH_ARGS))
-    n.add_argument("--lr", type=float)
-    n.add_argument("--seeds", type=int, nargs="+")
-    n.add_argument("--dry-run", action="store_true")
-    t = sub.add_parser("timing")
-    t.add_argument("--n-clips", type=int, default=8)
-    t.add_argument("--devices", nargs="+", default=["cuda", "cpu"])
-    sub.add_parser("collect")
+    for name in ("pixel", "facemap", "timing"):
+        command = sub.add_parser(name)
+        command.add_argument("fold", type=Path)
+        command.add_argument("--cache", type=Path, required=True)
+        if name == "pixel":
+            command.add_argument("--methods", nargs="+", default=["flow", "pca", "snr"])
+            command.add_argument("--bin", type=int, default=2)
+        elif name == "facemap":
+            command.add_argument("--n-components", type=int, default=100)
+            command.add_argument("--samples-per-clip", type=int, default=2000)
+            command.add_argument("--bin", type=int, default=2)
+            command.add_argument(
+                "--max-lag", type=int, default=15, help="Output frames."
+            )
+            command.add_argument("--lag-step", type=int, default=3)
+            command.add_argument("--seed", type=int, default=0)
+        else:
+            command.add_argument("--n-clips", type=int, default=8)
+            command.add_argument("--devices", nargs="+", default=["cuda", "cpu"])
+            command.add_argument(
+                "--checkpoint",
+                action="append",
+                default=[],
+                metavar="NAME=PATH",
+                help="A network to time; repeat for several.",
+            )
+    collect_parser = sub.add_parser("collect")
+    collect_parser.add_argument("--runs", type=Path, help="A `zephyr run` output dir.")
     args = parser.parse_args(argv)
 
-    config = load_config(args.config)
-    if args.command == "net":
-        run_net(
-            net_config(config, args.arch, args.out_root, args.seeds),
-            args.arch,
-            lr=args.lr,
-            dry_run=args.dry_run,
-        )
-        return
-    if args.command == "timing":
-        run_timing(config, args.out_root, n_clips=args.n_clips, devices=args.devices)
-        return
     if args.command == "collect":
-        collect(args.out_root, ZEPHYR_RESULTS)
+        collect(args.out_root, args.runs)
+        return
+
+    fold = load(Fold, args.fold)
+    if args.command == "timing":
+        checkpoints = {
+            name: Path(path)
+            for name, _, path in (c.partition("=") for c in args.checkpoint)
+        }
+        run_timing(
+            fold,
+            args.cache,
+            args.out_root,
+            checkpoints,
+            n_clips=args.n_clips,
+            devices=args.devices,
+        )
         return
 
     from .baselines import run
-    from .dataset import load_manifest
 
-    manifest, train = load_manifest(
-        config.features_dir, config.train_split, config.camera
-    )
-    _, test = load_manifest(config.features_dir, config.test_split, config.camera)
-    scoring = {
-        "packaged_root": config.packaged_root,
-        "split": config.test_split,
-        "split_manifest": config.split_manifest,
-    }
+    train, groups = _entries(fold, args.cache)
     if args.command == "pixel":
         run.run_pixel(
             train,
-            test,
+            groups,
             methods=args.methods,
             out_root=args.out_root,
-            fs=manifest["select_fs_hz"],
-            output_fs=manifest["output_fs_hz"],
+            fs=fold.preprocess.select_fs,
+            output_fs=OUTPUT_FS,
             bin_factor=args.bin,
-            scoring=scoring,
         )
     else:
         run.run_facemap(
             train,
-            test,
+            groups,
             out_root=args.out_root,
             n_components=args.n_components,
             samples_per_clip=args.samples_per_clip,
@@ -438,5 +365,4 @@ def main(argv: list[str] | None = None) -> None:
             max_lag=args.max_lag,
             lag_step=args.lag_step,
             seed=args.seed,
-            scoring=scoring,
         )

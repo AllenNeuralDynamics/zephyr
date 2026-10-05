@@ -1,37 +1,28 @@
-"""Build the final benchmark report and directly score the auxiliary onset head.
+"""Build the benchmark report (figures and a Markdown table) from ``zephyr run`` output.
 
-The ordinary evaluation derives inhalation events from the reconstructed
-breathing trace.  This module adds a separate, explicitly labelled diagnostic for
-the multitask models' onset head, then combines it with the standard metrics and
-the training histories in publication-oriented figures and a Markdown table.
+Runs are discovered under one output directory (``{fold}/seed-{n}/``, each with
+the ``config.json``, ``history.json`` and ``evaluation.json`` ``zephyr run``
+writes); a run's input and objective come from its recorded config.  The onset
+head's inhale F1 is already in ``evaluation.json`` for multitask runs.  The
+figures expect the full 4 inputs x 2 objectives x 5 seeds grid and the two group
+names below.
 
-Examples
---------
-    zephyr benchmark-report head
-    zephyr benchmark-report head --job gray__multitask__seed-17
-    zephyr benchmark-report report
-    zephyr benchmark-report all
+CLI
+---
+    zephyr benchmark-report --runs runs/benchmark-grid --out reports/benchmark
 """
 
 import argparse
 import json
+from dataclasses import dataclass
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
-import pandas as pd
-import torch
 from matplotlib.lines import Line2D
-from scipy.signal import find_peaks
 
-from .benchmark import DEFAULT_CONFIG, BenchmarkConfig, Job, load_config
-from .dataset import load_manifest
-from .evaluate import load_checkpoint, load_test_strata, truth_frame
-from .evaluation import score_clip
-from .infer import predict_clip
-from .signal import BREATHING_SIGNAL_COLUMN, TIME_COLUMN
+from .channels import ChannelSet
 
-HEAD_FILENAME = "head_evaluation.json"
 HEAD_THRESHOLD = 0.5
 HEAD_MIN_DISTANCE_S = 0.05
 REPRESENTATION_LABELS = {
@@ -59,212 +50,68 @@ def _write_json_atomic(path: Path, data: dict | list) -> None:
     temporary.replace(path)
 
 
-def _head_event_indices(probability: np.ndarray, times: np.ndarray) -> np.ndarray:
-    if len(probability) != len(times):
-        raise ValueError("onset probability and time arrays have different lengths")
-    if len(times) < 2:
-        return np.empty(0, dtype=int)
-    sampling_rate = 1.0 / float(np.median(np.diff(times)))
-    distance = max(1, round(HEAD_MIN_DISTANCE_S * sampling_rate))
-    peaks, _ = find_peaks(probability, height=HEAD_THRESHOLD, distance=distance)
-    return peaks.astype(int)
+@dataclass(frozen=True)
+class Job:
+    """One finished run: an input representation, an objective and a seed."""
+
+    representation: str
+    objective: str
+    seed: int
+    run_dir: Path
+
+    @property
+    def job_id(self) -> str:
+        return f"{self.run_dir.parent.name}/seed-{self.seed}"
 
 
-def _head_summary(rows: list[dict]) -> dict[str, float | int]:
-    values = np.asarray([row["head_inhale_f1"] for row in rows], dtype=float)
-    values = values[np.isfinite(values)]
-    return {
-        "head_inhale_f1": float(values.mean()) if len(values) else float("nan"),
-        "head_inhale_f1_sd": (
-            float(values.std(ddof=1)) if len(values) > 1 else float("nan")
-        ),
-        "head_inhale_f1_n": len(values),
-    }
+@dataclass(frozen=True)
+class Runs:
+    """The runs under *root*; reports are written to *output_root*."""
 
+    root: Path
+    output_root: Path
 
-def _aggregate_head_sessions(rows: list[dict]) -> list[dict]:
-    result = []
-    for session_idx in sorted({int(row["session_idx"]) for row in rows}):
-        members = [row for row in rows if int(row["session_idx"]) == session_idx]
-        result.append(
-            {
-                "session_idx": session_idx,
-                "n_clips": len(members),
-                **_head_summary(members),
-            }
-        )
-    return result
-
-
-def evaluate_head_job(
-    config: BenchmarkConfig,
-    job: Job,
-    *,
-    force: bool = False,
-) -> Path | None:
-    if job.objective.w_onset <= 0:
-        return None
-
-    run_dir = config.run_dir(job)
-    output = run_dir / HEAD_FILENAME
-    if output.is_file() and not force:
-        print(f"skip {job.job_id}: {HEAD_FILENAME} already exists", flush=True)
-        return output
-
-    checkpoint = run_dir / "best.pt"
-    if not checkpoint.is_file():
-        raise FileNotFoundError(f"missing checkpoint: {checkpoint}")
-
-    device = torch.device(config.device)
-    amp_dtype = {"bf16": torch.bfloat16, "fp16": torch.float16, "off": None}[config.amp]
-    model, mean, std, _ = load_checkpoint(checkpoint, device)
-    _, entries = load_manifest(config.features_dir, config.test_split, config.camera)
-    strata = load_test_strata(config.split_manifest)
-    sessions = sorted({index for values in strata.values() for index in values})
-    entries = [entry for entry in entries if entry.session_idx in set(sessions)]
-
-    print(
-        f"head evaluation {job.job_id}: {len(entries)} clips / "
-        f"{len(sessions)} sessions",
-        flush=True,
-    )
-    rows = []
-    for clip_number, entry in enumerate(
-        sorted(entries, key=lambda value: (value.session_idx, value.part)), start=1
-    ):
-        signal, onset_probability = predict_clip(
-            model,
-            entry,
-            mean,
-            std,
-            device=device,
-            amp_dtype=amp_dtype,
-        )
-        times = np.load(entry.times)
-        n = min(len(times), len(signal), len(onset_probability))
-        times = times[:n]
-        signal = signal[:n]
-        onset_probability = onset_probability[:n]
-        head_indices = _head_event_indices(onset_probability, times)
-        head_times = times[head_indices]
-
-        predicted = pd.DataFrame(
-            {
-                TIME_COLUMN: times.astype(np.float64),
-                BREATHING_SIGNAL_COLUMN: signal.astype(np.float64),
-            }
-        )
-        score = score_clip(
-            truth_frame(
-                config.packaged_root,
-                config.test_split,
-                entry.session_idx,
-                entry.part,
-            ),
-            predicted,
-            predicted_onset_times_s=head_times,
-        )
-        rows.append(
-            {
-                "clip_id": entry.clip_id,
-                "session_idx": entry.session_idx,
-                "part": entry.part,
-                "head_inhale_f1": score.inhale_f1,
-                "n_predicted_head_events": len(head_indices),
-                "head_probability_min": float(onset_probability.min()),
-                "head_probability_max": float(onset_probability.max()),
-                "head_probability_mean": float(onset_probability.mean()),
-            }
-        )
-        print(
-            f"  [{clip_number:02d}/{len(entries)}] {entry.clip_id}: "
-            f"head inhale F1={score.inhale_f1:.3f}, events={len(head_indices)}",
-            flush=True,
-        )
-
-    session_rows = _aggregate_head_sessions(rows)
-    stratum_results = {}
-    for name, indices in strata.items():
-        members = [row for row in session_rows if row["session_idx"] in set(indices)]
-        stratum_results[name] = {
-            "sessions": indices,
-            "summary": _head_summary(members),
-        }
-    stratum_results["all"] = {
-        "sessions": sessions,
-        "summary": _head_summary(session_rows),
-    }
-    payload = {
-        "job_id": job.job_id,
-        "checkpoint": str(checkpoint),
-        "split": config.test_split,
-        "detector": {
-            "kind": "local_maxima",
-            "input": "sigmoid(onset_head_logits)",
-            "height_threshold": HEAD_THRESHOLD,
-            "minimum_distance_s": HEAD_MIN_DISTANCE_S,
-            "event_match_tolerance_s": 0.017,
-            "threshold_selection": "fixed a priori; not tuned on holdout data",
-        },
-        "clips": rows,
-        "per_session": session_rows,
-        "strata": stratum_results,
-    }
-    _write_json_atomic(output, payload)
-    print(f"wrote {output}", flush=True)
-    return output
-
-
-def evaluate_heads(
-    config: BenchmarkConfig,
-    selected_jobs: list[str] | None,
-    *,
-    force: bool,
-) -> None:
-    jobs = [job for job in config.jobs() if job.objective.w_onset > 0]
-    if selected_jobs:
-        wanted = set(selected_jobs)
-        unknown = wanted - {job.job_id for job in jobs}
-        if unknown:
-            raise SystemExit(
-                "unknown or non-multitask job(s): " + ", ".join(sorted(unknown))
+    def jobs(self) -> list[Job]:
+        jobs = []
+        for config in sorted(self.root.glob("*/seed-*/config.json")):
+            record = json.loads(config.read_text())
+            params = record["fold"]["train_params"]
+            jobs.append(
+                Job(
+                    representation=str(ChannelSet.parse(params["channels"])),
+                    objective="multitask" if params["w_onset"] > 0 else "signal",
+                    seed=int(record["seed"]),
+                    run_dir=config.parent,
+                )
             )
-        jobs = [job for job in jobs if job.job_id in wanted]
-    for index, job in enumerate(jobs, start=1):
-        print(f"[{index}/{len(jobs)}] {job.job_id}", flush=True)
-        evaluate_head_job(config, job, force=force)
+        return jobs
+
+    def run_dir(self, job: Job) -> Path:
+        return job.run_dir
+
+    @property
+    def seeds(self) -> list[int]:
+        return sorted({job.seed for job in self.jobs()})
 
 
-def _load_combined_rows(config: BenchmarkConfig) -> list[dict]:
-    results = json.loads((config.output_root / "results.json").read_text())
-    rows = [
-        dict(row)
-        for row in results["summary_by_seed"]
-        if row["stratum"] in STRATUM_LABELS
-    ]
-    by_key = {
-        (row["representation"], row["objective"], row["seed"], row["stratum"]): row
-        for row in rows
-    }
-    missing = []
+def _load_combined_rows(config: Runs) -> list[dict]:
+    """One row per (run, report group): signal and onset-head metrics."""
+    rows = []
     for job in config.jobs():
-        if job.objective.w_onset <= 0:
-            continue
-        path = config.run_dir(job) / HEAD_FILENAME
-        if not path.is_file():
-            missing.append(job.job_id)
-            continue
-        head = json.loads(path.read_text())
+        result = json.loads((job.run_dir / "evaluation.json").read_text())
         for stratum in STRATUM_LABELS:
-            key = (job.representation, job.objective.name, job.seed, stratum)
-            by_key[key]["head_inhale_f1"] = head["strata"][stratum]["summary"][
-                "head_inhale_f1"
-            ]
-    if missing:
-        raise SystemExit(
-            f"missing {HEAD_FILENAME} for {len(missing)} multitask jobs; run the "
-            f"`head` command first. First missing: {missing[0]}"
-        )
+            summary = result["groups"][stratum]["summary"]
+            row = {
+                "job_id": job.job_id,
+                "representation": job.representation,
+                "objective": job.objective,
+                "seed": job.seed,
+                "stratum": stratum,
+            }
+            row |= {m: summary[m] for m in ("correlation", "inhale_f1")}
+            if "head_inhale_f1" in summary:
+                row["head_inhale_f1"] = summary["head_inhale_f1"]
+            rows.append(row)
     return rows
 
 
@@ -304,7 +151,7 @@ def _summarise_combined(rows: list[dict]) -> list[dict]:
     return summary
 
 
-def _plot_performance_detailed(config: BenchmarkConfig, rows: list[dict]) -> None:
+def _plot_performance_detailed(config: Runs, rows: list[dict]) -> None:
     metric_specs = [
         ("correlation", "Signal correlation", "Pearson correlation"),
         ("inhale_f1", "Inhalation F1 from signal", "F1 score"),
@@ -416,7 +263,7 @@ def _plot_performance_detailed(config: BenchmarkConfig, rows: list[dict]) -> Non
     fig.text(
         0.014,
         0.62,
-        "Held-out animals\n(unseen subjects)",
+        "Held-out animals\n(new animals)",
         va="center",
         ha="center",
         rotation=90,
@@ -483,13 +330,11 @@ def _rolling_mean(values: np.ndarray, width: int = 9) -> tuple[np.ndarray, np.nd
     return np.arange(width // 2, width // 2 + len(smooth)), smooth
 
 
-def _plot_losses_per_network(config: BenchmarkConfig) -> list[dict]:
+def _plot_losses_per_network(config: Runs) -> list[dict]:
     representations = list(REPRESENTATION_LABELS)
     objectives = list(OBJECTIVE_LABELS)
     seeds = list(config.seeds)
-    jobs = {
-        (job.representation, job.objective.name, job.seed): job for job in config.jobs()
-    }
+    jobs = {(job.representation, job.objective, job.seed): job for job in config.jobs()}
     fig, axes = plt.subplots(
         len(representations) * len(objectives),
         len(seeds),
@@ -584,7 +429,7 @@ def _plot_losses_per_network(config: BenchmarkConfig) -> list[dict]:
     return convergence
 
 
-def _plot_performance(config: BenchmarkConfig, rows: list[dict]) -> None:
+def _plot_performance(config: Runs, rows: list[dict]) -> None:
     """Two-row report with correlation and all applicable inhalation F1s."""
     representations = list(REPRESENTATION_LABELS)
     strata = list(STRATUM_LABELS)
@@ -727,7 +572,7 @@ def _plot_performance(config: BenchmarkConfig, rows: list[dict]) -> None:
     fig.text(
         0.025,
         0.615,
-        "Held-out animals\n(unseen subjects)",
+        "Held-out animals\n(new animals)",
         va="center",
         ha="center",
         rotation=90,
@@ -787,14 +632,12 @@ def _plot_performance(config: BenchmarkConfig, rows: list[dict]) -> None:
     plt.close(fig)
 
 
-def _plot_losses(config: BenchmarkConfig) -> list[dict]:
+def _plot_losses(config: Runs) -> list[dict]:
     """Eight panels, one per condition, with all five seeds overlaid."""
     representations = list(REPRESENTATION_LABELS)
     objectives = list(OBJECTIVE_LABELS)
     seeds = list(config.seeds)
-    jobs = {
-        (job.representation, job.objective.name, job.seed): job for job in config.jobs()
-    }
+    jobs = {(job.representation, job.objective, job.seed): job for job in config.jobs()}
     seed_colors = ["#0072B2", "#D55E00", "#009E73", "#CC79A7", "#7A4EAB"]
     fig, axes = plt.subplots(
         len(representations),
@@ -894,7 +737,7 @@ def _format_cell(row: dict, metric: str, best: float | None) -> str:
     return f"**{cell}**" if best is not None and np.isclose(mean, best) else cell
 
 
-def _write_summary_table(config: BenchmarkConfig, summary: list[dict]) -> None:
+def _write_summary_table(config: Runs, summary: list[dict]) -> None:
     lines = [
         "# Final CNN–TCN benchmark summary",
         "",
@@ -939,7 +782,8 @@ def _write_summary_table(config: BenchmarkConfig, summary: list[dict]) -> None:
     )
 
 
-def build_report(config: BenchmarkConfig) -> None:
+def build_report(config: Runs) -> None:
+    config.output_root.mkdir(parents=True, exist_ok=True)
     rows = _load_combined_rows(config)
     summary = _summarise_combined(rows)
     _plot_performance(config, rows)
@@ -948,7 +792,7 @@ def build_report(config: BenchmarkConfig) -> None:
     _write_json_atomic(
         config.output_root / "final-report-results.json",
         {
-            "benchmark": config.name,
+            "runs": str(config.root),
             "head_detector": {
                 "kind": "local_maxima",
                 "height_threshold": HEAD_THRESHOLD,
@@ -965,16 +809,8 @@ def build_report(config: BenchmarkConfig) -> None:
 
 
 def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.add_argument("command", choices=("head", "report", "all"))
-    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
-    parser.add_argument("--job", action="append", dest="jobs")
-    parser.add_argument("--force", action="store_true")
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--runs", type=Path, required=True)
+    parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args(argv)
-    config = load_config(args.config)
-    if args.command in {"head", "all"}:
-        evaluate_heads(config, args.jobs, force=args.force)
-    if args.command in {"report", "all"}:
-        if args.jobs:
-            raise SystemExit("--job can only be used with the `head` command")
-        build_report(config)
+    build_report(Runs(args.runs, args.out))

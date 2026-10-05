@@ -24,14 +24,12 @@ class SummariseTests(unittest.TestCase):
 
 class PickClipsTests(unittest.TestCase):
     def _entries(self, n):
-        return [
-            SimpleNamespace(session_idx=i // 2 + 1, part=i % 2 + 1) for i in range(n)
-        ]
+        return [SimpleNamespace(clip_id=f"c{i:02d}") for i in range(n)]
 
     def test_picks_evenly_spaced_clips_in_order(self):
         picked = timing.pick_clips(self._entries(24), 8)
         self.assertEqual(len(picked), 8)
-        keys = [(e.session_idx, e.part) for e in picked]
+        keys = [e.clip_id for e in picked]
         self.assertEqual(keys, sorted(keys))
         self.assertEqual(len(set(keys)), 8)
 
@@ -102,7 +100,7 @@ class TimingTableTests(unittest.TestCase):
                     }
                 )
             )
-            baseline.collect(root, zephyr_results=None)
+            baseline.collect(root, runs_dir=None)
             text = (root / "results.md").read_text(encoding="utf-8")
         self.assertIn("Inference time per clip", text)
         self.assertIn("physnet", text)

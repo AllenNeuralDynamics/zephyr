@@ -1,14 +1,13 @@
-"""Run the pixel and Facemap baselines over every preprocessed clip and score them.
+"""Run the pixel and Facemap baselines over preprocessed clips and score them.
 
-Layout under ``out_root`` (default ``benchmarks/baselines-v1``)::
+Layout under ``out_root``::
 
-    pixel/{flow,pca,snr}/traces/{split}/{clip_id}.npy   raw output-grid traces (cache)
+    pixel/{flow,pca,snr}/traces/{clip}.npy   raw output-grid traces (cache)
     pixel/{method}/{blind,calibrated}/evaluation.json
     facemap/bases.npz
     facemap/{motion,movie,both}/evaluation.json
 
-Each ``evaluation.json`` has the same shape as ``zephyr evaluate --out``, plus the
-method's own fitted constants.
+Each ``evaluation.json`` has the same shape as ``zephyr evaluate --out``.
 """
 
 import json
@@ -17,7 +16,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from ..evaluate import build_result, load_test_strata, truth_frame, zscore
+from ..evaluate import build_result, truth_frame, zscore
 from ..evaluation import score_clip
 from ..signal import BREATHING_SIGNAL_COLUMN, TIME_COLUMN
 from . import common, facemap_ridge, pixel
@@ -35,31 +34,33 @@ def target_signal(entry) -> np.ndarray:
     return pd.read_parquet(entry.target)["signal"].to_numpy(np.float64)
 
 
-def score_traces(traces, entries, *, packaged_root, split, split_manifest) -> dict:
-    """Score output-grid *traces* (``clip_id -> array``) exactly as ``zephyr evaluate`` does."""
-    rows = []
-    for entry in sorted(entries, key=lambda e: (e.session_idx, e.part)):
-        times = np.load(entry.times)
-        signal = traces[entry.clip_id]
-        n = min(len(times), len(signal))
-        predicted = pd.DataFrame(
-            {
-                TIME_COLUMN: times[:n].astype(np.float64),
-                BREATHING_SIGNAL_COLUMN: zscore(signal[:n]).astype(np.float64),
-            }
-        )
-        truth = truth_frame(packaged_root, split, entry.session_idx, entry.part)
-        rows.append(
-            {
-                "clip_id": entry.clip_id,
-                "session_idx": entry.session_idx,
-                "part": entry.part,
-            }
-            | score_clip(truth, predicted).to_dict()
-        )
-    return build_result(
-        rows, {e.session_idx for e in entries}, load_test_strata(split_manifest)
-    )
+def trace_key(entry) -> str:
+    """Cache key of an entry's trace: its feature file's stem, unique per clip."""
+    return Path(entry.features).stem
+
+
+def score_traces(traces, groups) -> dict:
+    """Score output-grid *traces* (``trace_key -> array``) per named group of
+    entries, exactly as ``zephyr evaluate`` does."""
+    rows_by_group = {}
+    for name, entries in groups.items():
+        rows = []
+        for entry in entries:
+            times = np.load(entry.times)
+            signal = traces[trace_key(entry)]
+            n = min(len(times), len(signal))
+            predicted = pd.DataFrame(
+                {
+                    TIME_COLUMN: times[:n].astype(np.float64),
+                    BREATHING_SIGNAL_COLUMN: zscore(signal[:n]).astype(np.float64),
+                }
+            )
+            rows.append(
+                {"clip_id": entry.clip_id, "recording": entry.recording}
+                | score_clip(truth_frame(entry), predicted).to_dict()
+            )
+        rows_by_group[name] = rows
+    return build_result(rows_by_group)
 
 
 def pixel_trace(method: str, entry, fs: float, bin_factor: int) -> np.ndarray:
@@ -78,34 +79,35 @@ def pixel_trace(method: str, entry, fs: float, bin_factor: int) -> np.ndarray:
     raise ValueError(f"unknown pixel method {method!r}")
 
 
-def cached_traces(method, entries, split, out_root, fs, bin_factor) -> dict:
-    cache = out_root / "pixel" / method / "traces" / split
+def cached_traces(method, entries, out_root, fs, bin_factor) -> dict:
+    cache = out_root / "pixel" / method / "traces"
     cache.mkdir(parents=True, exist_ok=True)
     traces = {}
     for entry in entries:
-        path = cache / f"{entry.clip_id}.npy"
+        path = cache / f"{trace_key(entry)}.npy"
         if not path.exists():
             trace = pixel_trace(method, entry, fs, bin_factor)
             np.save(path, common.to_output_grid(entry, trace))
-        traces[entry.clip_id] = np.load(path)
-        print(f"  {method} {split} {entry.clip_id}", flush=True)
+        traces[trace_key(entry)] = np.load(path)
+        print(f"  {method} {entry.clip_id}", flush=True)
     return traces
 
 
-def run_pixel(
-    train, test, *, methods, out_root, fs, output_fs, bin_factor, scoring
-) -> None:
+def run_pixel(train, groups, *, methods, out_root, fs, output_fs, bin_factor) -> None:
+    """*groups* maps each test group's name to its entries."""
+    test = [e for entries in groups.values() for e in entries]
     for method in methods:
-        raw_train = cached_traces(method, train, "train", out_root, fs, bin_factor)
-        raw_test = cached_traces(method, test, "test", out_root, fs, bin_factor)
+        raw_train = cached_traces(method, train, out_root, fs, bin_factor)
+        raw_test = cached_traces(method, test, out_root, fs, bin_factor)
         blind_train = {k: common.blind_polarity(v) for k, v in raw_train.items()}
         blind_test = {k: common.blind_polarity(v) for k, v in raw_test.items()}
 
         pairs = []
         for entry in train:
             truth = target_signal(entry)
-            n = min(len(truth), len(blind_train[entry.clip_id]))
-            pairs.append((blind_train[entry.clip_id][:n], truth[:n]))
+            trace = blind_train[trace_key(entry)]
+            n = min(len(truth), len(trace))
+            pairs.append((trace[:n], truth[:n]))
         positive = float(np.mean([np.corrcoef(p, t)[0, 1] > 0 for p, t in pairs]))
         sign, lag, train_r = common.fit_sign_lag(
             pairs, round(common.MAX_LAG_S * output_fs)
@@ -117,13 +119,13 @@ def run_pixel(
         base = {"method": method, "band_hz": list(common.BREATH_BAND_HZ)}
         write_json(
             out_root / "pixel" / method / "blind" / "evaluation.json",
-            score_traces(blind_test, test, **scoring)
+            score_traces(blind_test, groups)
             | base
             | {"variant": "blind", "train_positive_polarity_fraction": positive},
         )
         write_json(
             out_root / "pixel" / method / "calibrated" / "evaluation.json",
-            score_traces(calibrated_test, test, **scoring)
+            score_traces(calibrated_test, groups)
             | base
             | {
                 "variant": "calibrated",
@@ -137,7 +139,7 @@ def run_pixel(
 
 def run_facemap(
     train,
-    test,
+    groups,
     *,
     out_root,
     n_components,
@@ -146,8 +148,8 @@ def run_facemap(
     max_lag,
     lag_step,
     seed,
-    scoring,
 ) -> None:
+    test = [e for entries in groups.values() for e in entries]
     rng = np.random.default_rng(seed)
     samples = {"motion": [], "movie": []}
     for entry in train:
@@ -170,14 +172,14 @@ def run_facemap(
     )
 
     projections: dict[tuple[str, str], dict[str, np.ndarray]] = {}
-    for split, entries in (("train", train), ("test", test)):
+    for split, entries in (("fit", train), ("score", test)):
         for entry in entries:
             frames = common.load_channel(entry, "gray", bin_factor=bin_factor)
             matrices = {
                 "motion": facemap_ridge.motion_matrix(frames),
                 "movie": facemap_ridge.movie_matrix(frames),
             }
-            projections[(split, entry.clip_id)] = {
+            projections[(split, trace_key(entry))] = {
                 k: facemap_ridge.zscore_columns(
                     common.to_output_grid(entry, facemap_ridge.project(m, bases[k]))
                 ).astype(np.float32)
@@ -188,7 +190,7 @@ def run_facemap(
     lags = np.arange(-max_lag, max_lag + 1, lag_step)
 
     def features(split, entry, variant):
-        p = projections[(split, entry.clip_id)]
+        p = projections[(split, trace_key(entry))]
         if variant == "both":
             return np.concatenate([p["motion"], p["movie"]], axis=1)
         return p[variant]
@@ -196,23 +198,25 @@ def run_facemap(
     for variant in FACEMAP_VARIANTS:
         grams: dict[int, facemap_ridge.Gram] = {}
         for entry in train:
-            x = facemap_ridge.lagged_design(features("train", entry, variant), lags)
+            x = facemap_ridge.lagged_design(features("fit", entry, variant), lags)
             y = target_signal(entry)
             n = min(len(x), len(y))
             gram = facemap_ridge.Gram.of(x[:n], y[:n])
-            grams[entry.session_idx] = (
-                grams[entry.session_idx] + gram if entry.session_idx in grams else gram
+            grams[entry.recording] = (
+                grams[entry.recording] + gram if entry.recording in grams else gram
             )
         alpha, table = facemap_ridge.select_alpha(grams)
         w = facemap_ridge.solve(facemap_ridge.total(grams), alpha)
         traces = {
-            e.clip_id: facemap_ridge.lagged_design(features("test", e, variant), lags)
+            trace_key(e): facemap_ridge.lagged_design(
+                features("score", e, variant), lags
+            )
             @ w
             for e in test
         }
         write_json(
             out_root / "facemap" / variant / "evaluation.json",
-            score_traces(traces, test, **scoring)
+            score_traces(traces, groups)
             | {
                 "method": "facemap",
                 "variant": variant,

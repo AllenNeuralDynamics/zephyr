@@ -1,0 +1,31 @@
+# Side-profile rig: three sessions (groups 13, 14, 15), two parts each.
+# Only the videos are listed; timestamps, thermistor and group are derived from
+# each file name (see [derive] in zephyr.config).  Folds pick sessions with
+# `groups = [...]`.
+
+[preprocess]
+target_size = [360, 270]
+
+[[clip]]
+video = "../../data/ood/video_side_right_13_part_1.mp4"
+box = [228, 85, 96, 96]
+
+[[clip]]
+video = "../../data/ood/video_side_right_13_part_2.mp4"
+box = [228, 85, 96, 96]
+
+[[clip]]
+video = "../../data/ood/video_side_right_14_part_1.mp4"
+box = [212, 92, 96, 96]
+
+[[clip]]
+video = "../../data/ood/video_side_right_14_part_2.mp4"
+box = [212, 92, 96, 96]
+
+[[clip]]
+video = "../../data/ood/video_side_right_15_part_1.mp4"
+box = [220, 90, 96, 96]
+
+[[clip]]
+video = "../../data/ood/video_side_right_15_part_2.mp4"
+box = [220, 90, 96, 96]

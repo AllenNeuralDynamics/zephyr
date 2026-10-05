@@ -1,169 +1,139 @@
-"""Clip discovery: sessions, parts, and how clips are found on disk.
+"""Writing clip lists: ``zephyr clips scan`` and the box write-back annotate uses.
 
-Packaged files are named ``{stream}_{session}_part_{part}.{ext}`` with session
-indices restarting at 1 within each split, so an index is only meaningful
-alongside its split -- ``session_idx`` is the whole identity a clip carries,
-and the key everything downstream groups by.
+A clip list is a human-edited TOML file (see :mod:`zephyr.config`), so it is
+written with ``tomlkit``, which keeps comments, ordering and layout across
+rewrites.  Scanning writes the minimum -- the videos -- and leaves everything
+else to be derived from their names.
+
+CLI
+---
+    zephyr clips scan data/train --glob 'video_face_*.mp4' -o configs/clips/face_train.toml
 """
 
+import argparse
+import os
 import re
-from collections.abc import Sequence
-from dataclasses import dataclass
 from pathlib import Path
 
-CAMERAS = ("face", "side")
+import tomlkit
 
-PUBLIC_SPLIT = "train"
-"""Packaged split that carries ground-truth training targets."""
-
-PRIVATE_SPLIT = "test"
-"""Packaged split held out for scoring.  Its labels must not be used for
-training, validation, or model selection — see :func:`assert_public`."""
-
-_CLIP_RE = re.compile(r"^thermistor_(\d+)_part_(\d+)\.parquet$")
+from .config import ClipList
+from .video import Box, probe_size
 
 
-@dataclass(frozen=True)
-class ClipRef:
-    """A single packaged clip: one 300 s window of one session."""
-
-    root: Path
-    split: str
-    session_idx: int
-    part: int
-
-    @property
-    def suffix(self) -> str:
-        """The ``{session}_part_{part}`` stem shared by every file in the clip."""
-        return f"{self.session_idx}_part_{self.part}"
-
-    @property
-    def clip_id(self) -> str:
-        return f"{self.split}_{self.suffix}"
-
-    @property
-    def dir(self) -> Path:
-        return self.root / self.split
-
-    def video(self, camera: str) -> Path:
-        return self.dir / f"video_{camera}_{self.suffix}.mp4"
-
-    def frame_times_path(self, camera: str) -> Path:
-        return self.dir / f"video_{camera}_{self.suffix}.parquet"
-
-    def thermistor_path(self) -> Path:
-        return self.dir / f"thermistor_{self.suffix}.parquet"
-
-    def exists(self, camera: str) -> bool:
-        return self.video(camera).exists() and self.frame_times_path(camera).exists()
+def natural_key(path: Path) -> list[int | str]:
+    """Sort key putting ``part_2`` before ``part_10``."""
+    return [int(t) if t.isdigit() else t for t in re.split(r"(\d+)", path.name)]
 
 
-def _video_clip_re(camera: str) -> re.Pattern[str]:
-    return re.compile(rf"^video_{re.escape(camera)}_(\d+)_part_(\d+)\.mp4$")
+def _relative(path: Path, base: Path) -> str:
+    return Path(os.path.relpath(path, base)).as_posix()
 
 
-def discover_clips(
-    packaged_root: Path, split: str = PUBLIC_SPLIT, *, camera: str | None = None
-) -> list[ClipRef]:
-    """Enumerate clips in ``{packaged_root}/{split}``, sorted by session then part.
-
-    Falls back to ``video_{camera}_*.mp4`` when no thermistor parquets exist
-    for the split (e.g. private/test).
-    """
-    clips_dir = packaged_root / split
-    paths = sorted(clips_dir.glob("thermistor_*.parquet"))
-    pattern = _CLIP_RE
-    if not paths:
-        if camera is None:
-            return []
-        pattern = _video_clip_re(camera)
-        paths = sorted(clips_dir.glob(f"video_{camera}_*.mp4"))
-
-    clips: list[ClipRef] = []
-    for path in paths:
-        match = pattern.match(path.name)
-        if match is None:
-            continue
-        clips.append(
-            ClipRef(
-                root=packaged_root,
-                split=split,
-                session_idx=int(match.group(1)),
-                part=int(match.group(2)),
-            )
-        )
-    return sorted(clips, key=lambda c: (c.session_idx, c.part))
-
-
-@dataclass(frozen=True)
-class SessionRef:
-    """One recording session and the clips packaged from it.
-
-    A session is the natural unit for anything the camera geometry determines --
-    a crop box, most obviously -- because the camera is not repositioned
-    between a session's parts.  It is also the unit for grouped validation, so
-    a session's clips always land on the same side of a train/test split.
-    """
-
-    split: str
-    session_idx: int
-    clips: tuple[ClipRef, ...]
-
-    @property
-    def key(self) -> str:
-        """Stable identifier, unique across splits (session indices restart)."""
-        return f"{self.split}_{self.session_idx}"
-
-    @property
-    def clip_ids(self) -> list[str]:
-        return [c.clip_id for c in self.clips]
-
-    @property
-    def is_public(self) -> bool:
-        return self.split == PUBLIC_SPLIT
-
-    @property
-    def label(self) -> str:
-        return f"session {self.session_idx}"
-
-
-def discover_sessions(
-    packaged_root: Path,
-    splits: Sequence[str] = (PUBLIC_SPLIT, PRIVATE_SPLIT),
+def scan(
+    directory: Path,
+    patterns: list[str],
+    out: Path,
     *,
-    camera: str | None = None,
-) -> list[SessionRef]:
-    """Group clips into sessions, across one or more splits.
+    target_size: tuple[int, int] | None = None,
+    unlabelled: bool = False,
+) -> None:
+    """Write a clip list of the videos in *directory* matching any of *patterns*.
 
-    Parameters
-    ----------
-    packaged_root:
-        Directory holding the split sub-directories.
-    splits:
-        Splits to enumerate, in the order they should be presented.
-    camera:
-        When given, only clips having video for this camera are included, and
-        sessions left with no clips are dropped. Also the fallback discovery
-        key for a split with no thermistor parquet (e.g. private/test) --
-        see :func:`discover_clips`.
+    *target_size* defaults to the first video's native size.  The list is
+    validated before it is written, so a scan that would produce an unloadable
+    file (say, thermistors that do not exist) fails instead of leaving it behind.
     """
-    sessions: list[SessionRef] = []
-    for split in splits:
-        if not (packaged_root / split).is_dir():
-            continue
-        by_index: dict[int, list[ClipRef]] = {}
-        for clip in discover_clips(packaged_root, split, camera=camera):
-            if camera is not None and not clip.exists(camera):
-                continue
-            by_index.setdefault(clip.session_idx, []).append(clip)
+    out = out.resolve()
+    found = {
+        video
+        for pattern in patterns
+        for video in Path(directory).resolve().glob(pattern)
+    }
+    videos = sorted(found, key=natural_key)
+    if not videos:
+        raise SystemExit(f"no videos match {patterns} in {directory}")
+    if target_size is None:
+        target_size = probe_size(videos[0])
 
-        for session_idx in sorted(by_index):
-            group = sorted(by_index[session_idx], key=lambda c: c.part)
-            sessions.append(
-                SessionRef(
-                    split=split,
-                    session_idx=session_idx,
-                    clips=tuple(group),
-                )
-            )
-    return sessions
+    doc = tomlkit.document()
+    doc.add(tomlkit.comment("Clip list written by `zephyr clips scan`."))
+    doc.add(
+        tomlkit.comment(
+            "Only the videos are listed; timestamps, thermistor and group are "
+            "derived from each file name (see [derive] in zephyr.config)."
+        )
+    )
+    preprocess = tomlkit.table()
+    preprocess.add("target_size", list(target_size))
+    doc.add("preprocess", preprocess)
+    clips = tomlkit.aot()
+    for video in videos:
+        entry = tomlkit.table()
+        entry.add("video", _relative(video, out.parent))
+        if unlabelled:
+            entry.add("thermistor", False)
+        clips.append(entry)
+    doc.add("clip", clips)
+
+    try:
+        ClipList.model_validate(doc.unwrap(), context={"base": out.parent})
+    except ValueError as exc:
+        hint = "" if unlabelled else "  (clips with no thermistor need --unlabelled)"
+        raise SystemExit(f"the scanned list does not validate{hint}:\n{exc}") from exc
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(tomlkit.dumps(doc))
+    print(f"wrote {out}: {len(videos)} clips, target {target_size[0]}x{target_size[1]}")
+
+
+def write_boxes(
+    path: Path, boxes: dict[Path, Box], target_size: tuple[int, int] | None = None
+) -> None:
+    """Write ``box =`` entries (and optionally ``target_size``) back into *path*.
+
+    Only those keys are touched, so comments, ordering and every other field of
+    the hand-edited file survive.  *boxes* is keyed by resolved video path.
+    """
+    path = path.resolve()
+    doc = tomlkit.parse(path.read_text())
+    if target_size is not None:
+        doc["preprocess"]["target_size"] = list(target_size)
+    for entry in doc["clip"]:
+        video = (path.parent / str(entry["video"])).resolve()
+        if video in boxes:
+            entry["box"] = list(boxes[video])
+    path.write_text(tomlkit.dumps(doc))
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description="Create and maintain clip lists.")
+    sub = parser.add_subparsers(dest="command", required=True)
+    scan_parser = sub.add_parser("scan", help="List the videos in a directory.")
+    scan_parser.add_argument("directory", type=Path)
+    scan_parser.add_argument(
+        "--glob",
+        action="append",
+        required=True,
+        help="Video file pattern, e.g. 'video_face_*.mp4'; repeat to combine.",
+    )
+    scan_parser.add_argument("-o", "--out", type=Path, required=True)
+    scan_parser.add_argument(
+        "--target-size",
+        type=int,
+        nargs=2,
+        metavar=("W", "H"),
+        help="Working frame size; defaults to the first video's native size.",
+    )
+    scan_parser.add_argument(
+        "--unlabelled",
+        action="store_true",
+        help="Mark every clip `thermistor = false` (inference only).",
+    )
+    args = parser.parse_args(argv)
+    scan(
+        args.directory,
+        args.glob,
+        args.out,
+        target_size=tuple(args.target_size) if args.target_size else None,
+        unlabelled=args.unlabelled,
+    )

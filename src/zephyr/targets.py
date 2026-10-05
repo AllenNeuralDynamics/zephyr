@@ -8,12 +8,12 @@ resampled grid's Nyquist frequency.
 """
 
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 from scipy.interpolate import interp1d
 
-from .clips import ClipRef
 from .signal import (
     BREATHING_SIGNAL_COLUMN,
     TIME_COLUMN,
@@ -56,10 +56,10 @@ class Target:
     offset: float
 
 
-def load_target(clip: ClipRef, times: np.ndarray) -> Target:
-    """Build the training target for *clip*, sampled at *times*."""
+def load_target(thermistor: Path, times: np.ndarray) -> Target:
+    """Build the training target from a thermistor parquet, sampled at *times*."""
 
-    frame = pd.read_parquet(clip.thermistor_path())
+    frame = pd.read_parquet(thermistor)
     t = frame[TIME_COLUMN].to_numpy(dtype=float)
     v = frame[BREATHING_SIGNAL_COLUMN].to_numpy(dtype=float)
 

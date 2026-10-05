@@ -1,36 +1,13 @@
 """Inference time per clip, for every method in the benchmark.
 
-What is timed
--------------
-Wall-clock seconds from the *preprocessed crops on disk* (``feat_*.npy``, the output
-of ``zephyr preprocess``) to the finished 60 Hz breathing trace, one clip at a time.
-That covers reading the crop array, the method itself, and any trace reconstruction
-(TS-CAN's integrate-and-filter, the pixel methods' polarity rule).
+Timed: wall-clock seconds from the preprocessed crops on disk to the finished 60 Hz
+trace. Not timed: decoding, preprocessing (optical-flow cost is estimated by
+:func:`estimate_flow_preprocessing`) and scoring.
 
-What is not timed
------------------
-- Video decoding and cropping, which every method shares.
-- The preprocessing channels a method needs: ``flow`` (optical flow) and ``diff``
-  are computed once in ``zephyr preprocess``.  Optical flow is not free, so its cost
-  is estimated separately (:func:`estimate_flow_preprocessing`) and should be added
-  for any method that reads ``flow``.
-- Scoring.
-
-Fairness
---------
-- Same clips for every method.  One further clip, *not* among the timed ones, is run
-  beforehand and discarded, so one-off costs (cuDNN autotuning, lazy imports) are
-  not counted.
-- Every timed clip's file is read into the operating system's file cache first
-  (:func:`warm_file_cache`), so all methods are measured on warm-cache data.  Reading
-  one channel of a ``(T, 4, H, W)`` array still pulls in most of the file, so cold
-  disk reads can dominate the cheaper methods (pixel flow: about 6.4 s cold against
-  3.5 s warm on the development machine); they are excluded here.
-- Neural networks run on the GPU (bf16, as ``zephyr evaluate`` does) *and* on the CPU
-  (fp32); the pixel and Facemap-style methods are numpy and run on the CPU only.
-- The Facemap-style readout weights are not saved by the benchmark run, so timing
-  uses weights of the right shape drawn at random.  Cost depends on the shape, not
-  the values.
+Fair: the same clips for every method, one untimed warm-up clip outside them, every file
+read into the OS cache first. Networks run on GPU (bf16) and CPU (fp32); pixel and
+Facemap-style methods are numpy. Facemap weights are random of the right shape: cost
+depends on shape, not values.
 """
 
 import json
@@ -61,8 +38,8 @@ def summarise(times: list[float]) -> dict:
 
 
 def pick_clips(entries: list, n: int) -> list:
-    """*n* evenly spaced clips from *entries*, in (session, part) order."""
-    ordered = sorted(entries, key=lambda e: (e.session_idx, e.part))
+    """*n* evenly spaced clips from *entries*, in list order."""
+    ordered = list(entries)
     if n >= len(ordered):
         return ordered
     positions = np.linspace(0, len(ordered) - 1, n).round().astype(int)
@@ -86,7 +63,7 @@ def pick_warmup(entries: list, timed: list):
     and make that one clip look faster than the rest (3.4 s against 6.4 s for the
     pixel flow method, whose cost is partly disk reads).
     """
-    ordered = sorted(entries, key=lambda e: (e.session_idx, e.part))
+    ordered = list(entries)
     return next((e for e in ordered if e not in timed), ordered[0])
 
 

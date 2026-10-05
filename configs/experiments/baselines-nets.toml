@@ -1,0 +1,9 @@
+# The published network baselines, two seeds each as in docs/baselines-report.md.
+# A full run needs a GPU:
+#   zephyr run configs/experiments/baselines-nets.toml
+folds = ["../folds/baseline-tscan.toml", "../folds/baseline-physnet.toml"]
+seeds = [17, 42]
+output_dir = "../../runs/baselines-nets"
+features_dir = "../../data/features-v2"
+device = "cuda"
+amp = "bf16"

@@ -1,19 +1,10 @@
 """Pieces every baseline shares: the breathing band, frame loading, polarity, lag.
 
-Polarity
---------
-The scorer counts inhale onsets as positive peaks, so a trace with the wrong sign
-scores badly however well it tracks the rhythm, and an unsupervised component's
-sign is arbitrary.  :func:`blind_polarity` fixes it from the waveform alone:
-inhalation (temperature falling) is shorter than exhalation, so a correctly signed
-trace falls faster than it rises and its first difference has negative skew.  All
-32 training targets satisfy this (median skew -1.45).
-
-Lag
----
-The scorer measures correlation at zero lag and matches events within 17 ms, so a
-method that is right but late scores as wrong.  :func:`fit_sign_lag` fits one global
-sign and lag on the training split -- the ``calibrated`` variant.
+The scorer counts inhale onsets as positive peaks and matches events at zero lag, so an
+unsupervised trace needs two fixes. :func:`blind_polarity` signs it from the waveform
+alone (inhalation is shorter than exhalation, so a correct trace falls faster than it
+rises). :func:`fit_sign_lag` fits one global sign and lag on the training clips -- the
+``calibrated`` variant.
 """
 
 import numpy as np
