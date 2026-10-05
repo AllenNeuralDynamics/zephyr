@@ -1,18 +1,11 @@
 """Whole-clip prediction by stitching overlapping windows.
 
-A 300 s clip is 18 001 frames of 4x96x96, which is 2.5 GB as float32 -- so
-inference runs in windows even though the model itself has no length limit.
-Windows are overlapped and their edges discarded rather than butt-joined: the
-TCN's receptive field is 253 frames, so a prediction fewer than ~126 frames from
-a window boundary is computed from zero-padding rather than from data, and
-butt-joining would stamp a visible artefact into the trace every window.  With
-the margin trimmed, every output sample comes from a fully-populated receptive
-field, and the stitched trace is identical to what an unbounded forward pass
-would produce.
-
-Windows are laid out on the output grid; each reads whichever selection
-frames cover its time span (a plain contiguous slice -- no time-stretch at
-inference).
+A 300 s clip is 2.5 GB as float32, so inference runs in windows although the model has
+no length limit. Windows overlap and their edges are discarded rather than butt-joined:
+within ~126 frames (half the TCN's receptive field) of an edge a prediction comes from
+zero-padding, which would stamp an artefact into the trace every window. With the margin
+trimmed the stitched trace equals an unbounded forward pass. Each window reads the
+selection frames covering its span; there is no time-stretch.
 """
 
 import numpy as np

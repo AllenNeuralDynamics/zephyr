@@ -1,0 +1,133 @@
+# Clip list written by `zephyr clips scan`.
+# Only the videos are listed; timestamps, thermistor and group are derived from each file name (see [derive] in zephyr.config).
+
+[preprocess]
+target_size = [360, 270]
+
+[[clip]]
+video = "../../data/train/video_face_1_part_1.mp4"
+box = [212, 99, 96, 96]
+
+[[clip]]
+video = "../../data/train/video_face_1_part_2.mp4"
+box = [212, 99, 96, 96]
+
+[[clip]]
+video = "../../data/train/video_face_2_part_1.mp4"
+box = [223, 117, 96, 96]
+
+[[clip]]
+video = "../../data/train/video_face_2_part_2.mp4"
+box = [223, 117, 96, 96]
+
+[[clip]]
+video = "../../data/train/video_face_3_part_1.mp4"
+box = [211, 110, 96, 96]
+
+[[clip]]
+video = "../../data/train/video_face_3_part_2.mp4"
+box = [211, 110, 96, 96]
+
+[[clip]]
+video = "../../data/train/video_face_4_part_1.mp4"
+box = [208, 98, 96, 96]
+
+[[clip]]
+video = "../../data/train/video_face_4_part_2.mp4"
+box = [208, 98, 96, 96]
+
+[[clip]]
+video = "../../data/train/video_face_5_part_1.mp4"
+box = [213, 94, 96, 96]
+
+[[clip]]
+video = "../../data/train/video_face_5_part_2.mp4"
+box = [213, 94, 96, 96]
+
+[[clip]]
+video = "../../data/train/video_face_6_part_1.mp4"
+box = [201, 117, 96, 96]
+
+[[clip]]
+video = "../../data/train/video_face_6_part_2.mp4"
+box = [201, 117, 96, 96]
+
+[[clip]]
+video = "../../data/train/video_face_7_part_1.mp4"
+box = [193, 110, 96, 96]
+
+[[clip]]
+video = "../../data/train/video_face_7_part_2.mp4"
+box = [193, 110, 96, 96]
+
+[[clip]]
+video = "../../data/train/video_face_8_part_1.mp4"
+box = [214, 92, 96, 96]
+
+[[clip]]
+video = "../../data/train/video_face_8_part_2.mp4"
+box = [214, 92, 96, 96]
+
+[[clip]]
+video = "../../data/train/video_face_9_part_1.mp4"
+box = [220, 98, 96, 96]
+
+[[clip]]
+video = "../../data/train/video_face_9_part_2.mp4"
+box = [220, 98, 96, 96]
+
+[[clip]]
+video = "../../data/train/video_face_10_part_1.mp4"
+box = [202, 123, 96, 96]
+
+[[clip]]
+video = "../../data/train/video_face_10_part_2.mp4"
+box = [202, 123, 96, 96]
+
+[[clip]]
+video = "../../data/train/video_face_11_part_1.mp4"
+box = [212, 101, 96, 96]
+
+[[clip]]
+video = "../../data/train/video_face_11_part_2.mp4"
+box = [212, 101, 96, 96]
+
+[[clip]]
+video = "../../data/train/video_face_12_part_1.mp4"
+box = [238, 118, 96, 96]
+
+[[clip]]
+video = "../../data/train/video_face_12_part_2.mp4"
+box = [238, 118, 96, 96]
+
+[[clip]]
+video = "../../data/train/video_face_13_part_1.mp4"
+box = [237, 117, 96, 96]
+
+[[clip]]
+video = "../../data/train/video_face_13_part_2.mp4"
+box = [237, 117, 96, 96]
+
+[[clip]]
+video = "../../data/train/video_face_14_part_1.mp4"
+box = [192, 111, 96, 96]
+
+[[clip]]
+video = "../../data/train/video_face_14_part_2.mp4"
+box = [192, 111, 96, 96]
+
+[[clip]]
+video = "../../data/train/video_face_15_part_1.mp4"
+box = [229, 120, 96, 96]
+
+[[clip]]
+video = "../../data/train/video_face_15_part_2.mp4"
+box = [229, 120, 96, 96]
+
+[[clip]]
+video = "../../data/train/video_face_16_part_1.mp4"
+box = [199, 114, 96, 96]
+
+[[clip]]
+video = "../../data/train/video_face_16_part_2.mp4"
+box = [199, 114, 96, 96]

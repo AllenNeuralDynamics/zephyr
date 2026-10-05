@@ -1,0 +1,425 @@
+{
+ "note": "First 64 draws of the pre-refactor WindowDataset built as the seed-42 gray-diff-flow multitask benchmark run built it (32 train clips, window 512, seed 42, benchmark augmentation). clip is the old clip_id (train_<session>_part_<part>).",
+ "seed": 42,
+ "window": 512,
+ "draws": [
+  {
+   "i": 0,
+   "clip": "train_13_part_1",
+   "start": 11943.773269040845,
+   "stretch": 1.693340220412778
+  },
+  {
+   "i": 1,
+   "clip": "train_13_part_2",
+   "start": 11212.508754101402,
+   "stretch": 0.5414807709470301
+  },
+  {
+   "i": 2,
+   "clip": "train_5_part_2",
+   "start": 5723.927401756477,
+   "stretch": 0.3333333333333333
+  },
+  {
+   "i": 3,
+   "clip": "train_4_part_2",
+   "start": 10353.530492598898,
+   "stretch": 1.3474479116571407
+  },
+  {
+   "i": 4,
+   "clip": "train_12_part_2",
+   "start": 48.5408033113323,
+   "stretch": 2.2716130249595787
+  },
+  {
+   "i": 5,
+   "clip": "train_3_part_2",
+   "start": 3050.1521375779794,
+   "stretch": 0.3333333333333333
+  },
+  {
+   "i": 6,
+   "clip": "train_7_part_1",
+   "start": 12389.052668952887,
+   "stretch": 1.157463325073906
+  },
+  {
+   "i": 7,
+   "clip": "train_9_part_1",
+   "start": 15719.389634049247,
+   "stretch": 0.8888532754921065
+  },
+  {
+   "i": 8,
+   "clip": "train_15_part_1",
+   "start": 15074.032656066778,
+   "stretch": 0.7942915852326337
+  },
+  {
+   "i": 9,
+   "clip": "train_9_part_1",
+   "start": 8670.344448496537,
+   "stretch": 1.1890538580979473
+  },
+  {
+   "i": 10,
+   "clip": "train_6_part_2",
+   "start": 14716.880807262312,
+   "stretch": 0.8898068530513001
+  },
+  {
+   "i": 11,
+   "clip": "train_1_part_1",
+   "start": 4495.6278621081865,
+   "stretch": 1.7324685313860029
+  },
+  {
+   "i": 12,
+   "clip": "train_5_part_1",
+   "start": 10031.858070215902,
+   "stretch": 0.9498797143988995
+  },
+  {
+   "i": 13,
+   "clip": "train_1_part_1",
+   "start": 13059.402193430109,
+   "stretch": 0.459876977181389
+  },
+  {
+   "i": 14,
+   "clip": "train_8_part_2",
+   "start": 6935.638990436948,
+   "stretch": 1.1329697301657464
+  },
+  {
+   "i": 15,
+   "clip": "train_5_part_1",
+   "start": 14798.073242462224,
+   "stretch": 0.3333333333333333
+  },
+  {
+   "i": 16,
+   "clip": "train_1_part_2",
+   "start": 4942.044095681231,
+   "stretch": 1.0863437081768024
+  },
+  {
+   "i": 17,
+   "clip": "train_4_part_1",
+   "start": 10559.882713673132,
+   "stretch": 1.3167751114867152
+  },
+  {
+   "i": 18,
+   "clip": "train_2_part_1",
+   "start": 4200.854766990751,
+   "stretch": 1.247108431050695
+  },
+  {
+   "i": 19,
+   "clip": "train_8_part_2",
+   "start": 12339.405322090395,
+   "stretch": 0.9015417486707897
+  },
+  {
+   "i": 20,
+   "clip": "train_11_part_1",
+   "start": 12384.241117822608,
+   "stretch": 1.2714942805154592
+  },
+  {
+   "i": 21,
+   "clip": "train_2_part_1",
+   "start": 12036.220363381472,
+   "stretch": 0.812237178331366
+  },
+  {
+   "i": 22,
+   "clip": "train_4_part_2",
+   "start": 11212.507489907843,
+   "stretch": 1.2649907634999142
+  },
+  {
+   "i": 23,
+   "clip": "train_9_part_1",
+   "start": 3217.1916927678158,
+   "stretch": 0.3333333333333333
+  },
+  {
+   "i": 24,
+   "clip": "train_15_part_1",
+   "start": 11135.279472274673,
+   "stretch": 1.9975162838494658
+  },
+  {
+   "i": 25,
+   "clip": "train_16_part_1",
+   "start": 6219.0407828239395,
+   "stretch": 0.3333333333333333
+  },
+  {
+   "i": 26,
+   "clip": "train_10_part_2",
+   "start": 10186.151730903468,
+   "stretch": 1.656191218847683
+  },
+  {
+   "i": 27,
+   "clip": "train_2_part_1",
+   "start": 4325.066633237851,
+   "stretch": 0.6378245106846983
+  },
+  {
+   "i": 28,
+   "clip": "train_1_part_1",
+   "start": 2243.49625924909,
+   "stretch": 2.02262405798996
+  },
+  {
+   "i": 29,
+   "clip": "train_11_part_2",
+   "start": 6878.273337262102,
+   "stretch": 0.8079773334869861
+  },
+  {
+   "i": 30,
+   "clip": "train_10_part_1",
+   "start": 6393.00003837477,
+   "stretch": 0.7639219593136694
+  },
+  {
+   "i": 31,
+   "clip": "train_10_part_1",
+   "start": 16345.541871338817,
+   "stretch": 1.2079310603748439
+  },
+  {
+   "i": 32,
+   "clip": "train_7_part_2",
+   "start": 402.3449263550151,
+   "stretch": 0.8802290194276435
+  },
+  {
+   "i": 33,
+   "clip": "train_8_part_1",
+   "start": 832.062242177159,
+   "stretch": 1.030385147416827
+  },
+  {
+   "i": 34,
+   "clip": "train_10_part_2",
+   "start": 5696.787484829753,
+   "stretch": 1.491342152762767
+  },
+  {
+   "i": 35,
+   "clip": "train_1_part_2",
+   "start": 9823.91708703596,
+   "stretch": 1.7229052319849343
+  },
+  {
+   "i": 36,
+   "clip": "train_3_part_2",
+   "start": 3604.4963330199125,
+   "stretch": 0.9718309660674723
+  },
+  {
+   "i": 37,
+   "clip": "train_3_part_2",
+   "start": 6297.375175429209,
+   "stretch": 0.7967503773411391
+  },
+  {
+   "i": 38,
+   "clip": "train_12_part_1",
+   "start": 10465.957315784879,
+   "stretch": 1.1817433878850936
+  },
+  {
+   "i": 39,
+   "clip": "train_13_part_1",
+   "start": 8889.454375008083,
+   "stretch": 0.4373097851233533
+  },
+  {
+   "i": 40,
+   "clip": "train_7_part_1",
+   "start": 14223.81317003377,
+   "stretch": 0.3333333333333333
+  },
+  {
+   "i": 41,
+   "clip": "train_4_part_2",
+   "start": 9291.086566774515,
+   "stretch": 0.8089919655772525
+  },
+  {
+   "i": 42,
+   "clip": "train_11_part_1",
+   "start": 7680.5081986762,
+   "stretch": 0.5322815180296606
+  },
+  {
+   "i": 43,
+   "clip": "train_2_part_1",
+   "start": 10381.611204160243,
+   "stretch": 1.6138133999412767
+  },
+  {
+   "i": 44,
+   "clip": "train_14_part_1",
+   "start": 9103.809877514319,
+   "stretch": 0.8500891515621315
+  },
+  {
+   "i": 45,
+   "clip": "train_1_part_1",
+   "start": 5267.05721681374,
+   "stretch": 1.5801850515179612
+  },
+  {
+   "i": 46,
+   "clip": "train_13_part_2",
+   "start": 11374.784253986943,
+   "stretch": 1.360944799012688
+  },
+  {
+   "i": 47,
+   "clip": "train_12_part_1",
+   "start": 2324.836849461115,
+   "stretch": 0.3479526183180714
+  },
+  {
+   "i": 48,
+   "clip": "train_7_part_2",
+   "start": 5318.140903357275,
+   "stretch": 0.5194719767111943
+  },
+  {
+   "i": 49,
+   "clip": "train_3_part_1",
+   "start": 2275.1854989544045,
+   "stretch": 0.9436029782374071
+  },
+  {
+   "i": 50,
+   "clip": "train_10_part_1",
+   "start": 7440.867797783108,
+   "stretch": 0.8540602169571347
+  },
+  {
+   "i": 51,
+   "clip": "train_10_part_1",
+   "start": 2174.8290665001396,
+   "stretch": 2.703268297184997
+  },
+  {
+   "i": 52,
+   "clip": "train_13_part_2",
+   "start": 11778.098571704926,
+   "stretch": 0.5766858923954558
+  },
+  {
+   "i": 53,
+   "clip": "train_12_part_2",
+   "start": 6005.3237726857315,
+   "stretch": 1.0101705244535615
+  },
+  {
+   "i": 54,
+   "clip": "train_8_part_1",
+   "start": 12542.999406462479,
+   "stretch": 0.74039309480296
+  },
+  {
+   "i": 55,
+   "clip": "train_8_part_2",
+   "start": 6443.393448969629,
+   "stretch": 0.5749112510182444
+  },
+  {
+   "i": 56,
+   "clip": "train_3_part_2",
+   "start": 11879.594209506236,
+   "stretch": 0.3333333333333333
+  },
+  {
+   "i": 57,
+   "clip": "train_6_part_2",
+   "start": 15460.82175771322,
+   "stretch": 0.6955034035330518
+  },
+  {
+   "i": 58,
+   "clip": "train_9_part_1",
+   "start": 11744.646827399058,
+   "stretch": 1.5830656589166177
+  },
+  {
+   "i": 59,
+   "clip": "train_16_part_2",
+   "start": 14424.81380090412,
+   "stretch": 0.9185923838412261
+  },
+  {
+   "i": 60,
+   "clip": "train_3_part_2",
+   "start": 5614.107107345434,
+   "stretch": 0.600247344938876
+  },
+  {
+   "i": 61,
+   "clip": "train_15_part_1",
+   "start": 3295.582645262419,
+   "stretch": 1.4388501479347373
+  },
+  {
+   "i": 62,
+   "clip": "train_1_part_2",
+   "start": 14069.810574353287,
+   "stretch": 1.589284898873039
+  },
+  {
+   "i": 63,
+   "clip": "train_6_part_2",
+   "start": 3687.5900480275864,
+   "stretch": 0.373798152857666
+  }
+ ],
+ "train_clip_order": [
+  "train_1_part_1",
+  "train_1_part_2",
+  "train_2_part_1",
+  "train_2_part_2",
+  "train_3_part_1",
+  "train_3_part_2",
+  "train_4_part_1",
+  "train_4_part_2",
+  "train_5_part_1",
+  "train_5_part_2",
+  "train_6_part_1",
+  "train_6_part_2",
+  "train_7_part_1",
+  "train_7_part_2",
+  "train_8_part_1",
+  "train_8_part_2",
+  "train_9_part_1",
+  "train_9_part_2",
+  "train_10_part_1",
+  "train_10_part_2",
+  "train_11_part_1",
+  "train_11_part_2",
+  "train_12_part_1",
+  "train_12_part_2",
+  "train_13_part_1",
+  "train_13_part_2",
+  "train_14_part_1",
+  "train_14_part_2",
+  "train_15_part_1",
+  "train_15_part_2",
+  "train_16_part_1",
+  "train_16_part_2"
+ ]
+}

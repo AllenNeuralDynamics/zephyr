@@ -1,23 +1,13 @@
-"""TS-CAN and PhysNet, reimplemented in PyTorch for the benchmark.
+"""TS-CAN and PhysNet, reimplemented in PyTorch from the published architectures.
 
-Written from the published architectures, not copied from any codebase:
+TS-CAN: Liu, Fromm, Patel & McDuff, NeurIPS 2020. PhysNet: Yu, Li & Zhao, BMVC 2019.
+Deviations forced by the data: one gray channel, the mouse breathing band, PhysNet at
+the 96 px crop.
 
-- TS-CAN -- Liu, Fromm, Patel & McDuff, "Multi-Task Temporal Shift Attention
-  Networks for On-Device Contactless Vitals Measurement", NeurIPS 2020.  Authors'
-  Keras reference: https://github.com/xliucs/MTTS-CAN (``code/model.py``).
-- PhysNet -- Yu, Li & Zhao, "Remote Photoplethysmograph Signal Measurement from
-  Facial Videos Using Spatio-Temporal Networks", BMVC 2019.  Authors' reference:
-  https://github.com/ZitongYu/PhysNet (``PhysNetED_BMVC.py``).
-
-Deviations from the papers, all forced by the data: one gray input channel rather
-than RGB; the mouse breathing band; PhysNet at the 96 px crop instead of 128 px.
-
-Both are wrapped to :class:`~zephyr.model.BreathingNet`'s interface --
-``forward(features, t_in, t_out, chunk=None) -> (signal, onset_logits)`` with
-``channels`` and ``receptive_field`` -- so training, stitching and scoring are
-the same code for every network.  Neither has an onset head, so the onset logits
-are zeros.  A model may define ``postprocess(signal, fs)``, which
-:func:`~zephyr.infer.predict_clip` applies to the stitched whole-clip trace.
+Both are wrapped to :class:`~zephyr.model.BreathingNet`'s interface (``forward(features,
+t_in, t_out, chunk=None) -> (signal, onset_logits)``, ``channels``, ``receptive_field``)
+so training and scoring are shared. Onset logits are zeros; an optional
+``postprocess(signal, fs)`` is applied by :func:`~zephyr.infer.predict_clip`.
 """
 
 import numpy as np

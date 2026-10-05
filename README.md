@@ -6,9 +6,53 @@ everything from raw video to a trained, evaluated checkpoint.
 Needs Python 3.11+, [uv](https://docs.astral.sh/uv/), the AWS CLI, and
 `ffmpeg`/`ffprobe` on `PATH`. A display is only needed for the optional
 annotation step. Everything runs through the single `zephyr <subcommand>`
-command; `zephyr <subcommand> --help` only prints a one-line summary, so see
-each module's own docstring (e.g. `src/zephyr/train.py`) for its full set of
-flags.
+command; `zephyr <subcommand> --help` prints a one-line summary, so see each
+module's docstring (e.g. `src/zephyr/run.py`) for its flags.
+
+## How inputs are described
+
+Zephyr knows nothing about where data came from. Every input is a **TOML file
+of local paths**, validated by a pydantic model (`src/zephyr/config.py`); paths
+are relative to the file they are written in.
+
+- A **clip list** names videos (everything else -- timestamps, thermistor,
+  recording group -- is derived from the file name, or given explicitly), the
+  `[preprocess]` recipe, and a hand-placed crop `box` per clip.
+- A **fold** names the clip lists to train on (with relative weights), the
+  clip lists to score (each a named group in the report), the training
+  hyperparameters, and optionally a checkpoint to start from. Leakage is
+  refused at load: no test clip may share a video, or a *recording* (video
+  folder + group), with a training clip.
+- An **experiment** names folds, the seeds each runs with, and where results go.
+
+`zephyr schema <dir>` writes JSON schemas of all three for editor validation.
+`configs/` holds the examples used below.
+
+## Example dataset
+
+The examples use the AIND breathing challenge data: 16 labelled training
+sessions and 12 test sessions of a face camera, plus 3 labelled sessions from a
+different rig (`side_right`). Download into `data/` (ignored by Git; no AWS
+credentials needed):
+
+```bash
+# face training clips: videos, frame timestamps, thermistors
+aws s3 sync --no-sign-request --exclude "*" --include "video_face_*" --include "thermistor_*" s3://aind-scratch-data/vr-foraging/codabench-breathing-challenge/3fd049f3b2d5bb39409611187918ac41ce1f8b0a0d8d113a3526e5cf5a2ebc08/public/train/ data/train/
+
+# face test clips: videos and timestamps are public, thermistors are in private/
+aws s3 sync --no-sign-request --exclude "*" --include "video_face_*" s3://aind-scratch-data/vr-foraging/codabench-breathing-challenge/3fd049f3b2d5bb39409611187918ac41ce1f8b0a0d8d113a3526e5cf5a2ebc08/public/test/ data/test/
+aws s3 sync --no-sign-request --exclude "*" --include "thermistor_*" s3://aind-scratch-data/vr-foraging/codabench-breathing-challenge/3fd049f3b2d5bb39409611187918ac41ce1f8b0a0d8d113a3526e5cf5a2ebc08/private/test/ data/test/
+
+# other rig (side_right, sessions 13-15), ~2.6 GiB
+aws s3 sync --no-sign-request --exclude "*" --include "video_side_right_13_*" --include "video_side_right_14_*" --include "video_side_right_15_*" s3://aind-scratch-data/vr-foraging/codabench-breathing-challenge/3fd049f3b2d5bb39409611187918ac41ce1f8b0a0d8d113a3526e5cf5a2ebc08/public/test/ data/ood/
+aws s3 sync --no-sign-request --exclude "*" --include "thermistor_13_*" --include "thermistor_14_*" --include "thermistor_15_*" s3://aind-scratch-data/vr-foraging/codabench-breathing-challenge/3fd049f3b2d5bb39409611187918ac41ce1f8b0a0d8d113a3526e5cf5a2ebc08/private/test/ data/ood/
+```
+
+Session numbers restart in every folder, which is why a recording is the pair
+(folder, group). In `configs/clips/` the test sessions 1-6 (animals not in
+training) are `face_test_new_animals.toml` and 7-12 (known animals, new dates)
+are `face_test_known_animals_new_date.toml`, following the dataset's
+`split.json`.
 
 ## Clone to an evaluated network
 
@@ -20,51 +64,72 @@ flags.
    uv sync --locked
    ```
 
-2. **Download the labelled public training data** into `data/train/` (ignored
-   by Git; no AWS credentials needed):
+2. **Scan** a folder into a clip list (videos only; the scan validates that
+   every derived file exists, so unlabelled clips need `--unlabelled`):
 
    ```bash
-   aws s3 sync --no-sign-request --exclude "*" --include "video_face_*" --include "thermistor_*" s3://aind-scratch-data/vr-foraging/codabench-breathing-challenge/3fd049f3b2d5bb39409611187918ac41ce1f8b0a0d8d113a3526e5cf5a2ebc08/public/train/ data/train/
+   uv run zephyr clips scan data/train --glob 'video_face_*.mp4' -o configs/clips/my_train.toml
    ```
 
-3. **Crop boxes** -- already checked in at `artifacts/session_boxes_face.json`
-   for all 16 public sessions, so skip to step 4 unless you have new data or
-   want a different crop:
+3. **Annotate**: place one crop box per recording (one box covers a
+   recording's parts; `o` gives a single clip its own). Boxes are written into
+   the clip list as `box = [x, y, w, h]`. The shipped lists already carry
+   boxes, so skip this unless you have new data or want a different crop:
 
    ```bash
-   uv run zephyr annotate --prepare --splits train
-   uv run zephyr annotate --splits train --width 360 --height 270 --box-size 96
+   uv run zephyr annotate configs/clips/my_train.toml --prepare
+   uv run zephyr annotate configs/clips/my_train.toml --width 360 --height 270 --box-size 96
    ```
 
-4. **Preprocess** into channel arrays and training targets (~45 min, ~20 GiB
-   under `data/features/`):
+4. **Preprocess** into a feature cache (~1-2 min per clip on CPU; the 56 face
+   clips take ~20 GiB). Entries are keyed by video, recipe and box, so a cache
+   directory is safe to share and re-running only does what changed:
 
    ```bash
-   uv run zephyr preprocess --boxes-json artifacts/session_boxes_face.json
+   uv run zephyr preprocess configs/clips/face_train.toml configs/clips/face_test_new_animals.toml configs/clips/face_test_known_animals_new_date.toml --cache data/features-v2
    ```
 
-5. **Train.** Reserves sessions 9, 10, and 12 (`artifacts/holdout_sessions.json`)
-   from training/validation/checkpoint selection. Add `--device cpu --amp off`
-   without a CUDA GPU; `--channels gray` (or `gray+diff`, `diff+flow`, ...)
-   selects a channel subset without reprocessing.
+5. **Run.** `zephyr run` trains each (fold, seed) into
+   `<output_dir>/<fold>/seed-<n>/` -- with the resolved config, the list of
+   training videos, checkpoints and `evaluation.json` -- then scores the
+   fold's test groups. Check the plumbing first with `--smoke` (1 epoch of 2
+   steps; add `--device cpu --amp off --num-workers 0` without a GPU):
 
    ```bash
-   uv run zephyr train
+   uv run zephyr run configs/experiments/benchmark-gray-diff-flow-multitask.toml --smoke --seeds 42 --output-dir runs/smoke
    ```
 
-6. **Evaluate** the trained checkpoint on the reserved sessions:
+   The full benchmark network (200 epochs x 200 steps, five seeds) needs a
+   GPU:
 
    ```bash
-   uv run zephyr evaluate --checkpoint runs_all/zephyr/<run>/best.pt --plot
+   uv run zephyr run configs/experiments/benchmark-gray-diff-flow-multitask.toml
    ```
 
-   Prints per-clip correlation and event F1; `--plot` also writes diagnostic
-   plots under the run's `diagnosis/` directory.
+   `evaluation.json` reports each clip, each recording, and each named test
+   group (plus the onset head's inhale F1 for multitask networks).
+
+6. **Evaluate** any checkpoint on any clip lists; each list is reported as a
+   group. A checkpoint records the videos it trained on and `evaluate` refuses
+   clips that share a video or recording with them (older checkpoints without
+   the record are scored with a warning):
+
+   ```bash
+   uv run zephyr evaluate --checkpoint runs/benchmark-gray-diff-flow-multitask/benchmark-gray-diff-flow-multitask/seed-17/best.pt --clips configs/clips/face_test_new_animals.toml configs/clips/face_test_known_animals_new_date.toml --cache data/features-v2 --out evaluation.json
+   ```
 
 ## Beyond the quickstart
 
-- `zephyr benchmark` / `benchmark-data` / `benchmark-report` run a fixed
-  train/test factorial sweep against a fixed, provided train/test split, as an
-  alternative to the single-run workflow above.
+- **Other camera view.** `configs/folds/ood-hold{13,14,15}.toml` fine-tune the
+  benchmark network (`init_from`) on the face data (weight 0.5) plus the two
+  other `side_right` sessions (0.25 each), and score the held-out session and
+  both face groups; `configs/experiments/ood-finetune.toml` runs all three.
+  Preprocess `configs/clips/ood_side_right_{13,14,15}.toml` first.
+- **Baselines** (`zephyr baseline pixel|facemap|timing|collect`) take a fold
+  file so they see the same train/test clips; TS-CAN and PhysNet are trained
+  with `zephyr run` on a fold whose `train_params.arch` is `tscan` or `physnet`
+  (with `channels = "gray"`).
+- `zephyr benchmark-report --runs <dir> --out <dir>` builds the figures and
+  table for the full 4 inputs x 2 objectives x 5 seeds grid from run output.
 - `zephyr.infer.predict_clip` runs inference on an arbitrary preprocessed clip
   and checkpoint; see its docstring.

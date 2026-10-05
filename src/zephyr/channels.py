@@ -1,17 +1,11 @@
 """Multi-channel per-frame input stack: gray, signed diff, flow_x, flow_y.
 
-``diff`` is ``I(t) - I(t - dt)``; ``flow_x``/``flow_y`` are signed DIS optical
-flow. Both are measured over the achieved interval ``dt`` (nearest source frame
-to ``t - TAU``) and scaled by ``TAU / dt``, so the stored value is displacement
-per :data:`MOTION_TAU_S` regardless of camera frame rate.
-
-Preprocessing always writes all four channels; :class:`ChannelSet` selects the
-training-time subset.
-
-Quantisation: ``gray`` stored as-is; ``diff`` as ``round(diff) + 128`` (not
-exactly lossless, since the ``TAU/dt`` scale isn't integer-valued); flow
-companded through ``asinh`` rather than clipped linearly, for fine steps near
-zero while still covering large excursions.
+``diff`` is ``I(t) - I(t - dt)``; ``flow_x``/``flow_y`` are signed DIS flow, both
+measured over the achieved interval ``dt`` (nearest frame to ``t - TAU``) and scaled by
+``TAU / dt``, so values are per :data:`MOTION_TAU_S` whatever the camera rate.
+Preprocessing writes all four; :class:`ChannelSet` selects the training subset.
+Quantisation: gray as-is, diff as ``round(diff) + 128``, flow companded through
+``asinh`` (fine near zero, wide range).
 """
 
 import re

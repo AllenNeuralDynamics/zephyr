@@ -1,14 +1,8 @@
 """Local evaluation metrics for breathing predictions.
 
-The canonical output of the scoring pipeline is a :class:`Score` dataclass
-instance, one per clip.  It carries all metrics and can be serialised directly
-to JSON via :meth:`Score.to_json`.
-
-NaN convention
---------------
-A field is NaN when the metric cannot be computed for a clip (e.g. no
-inhalation events detected).  :meth:`Score.to_dict` converts NaN to ``None``
-so serialised output is always valid JSON.
+:class:`Score` is the per-clip result; :meth:`Score.to_dict` / :meth:`Score.to_json`
+serialise it. A field is NaN when the metric cannot be computed (e.g. no inhalations
+detected) and becomes ``None`` in the dict, so output is always valid JSON.
 """
 
 import json

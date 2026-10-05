@@ -1,32 +1,16 @@
 """Score checkpoints against held-out labelled clips, the way the benchmark does.
 
-Truth comes from the raw signal, not the filtered, z-scored target this package
-trains on, and scoring goes through ``.evaluation.score_clip`` -- which
-resamples both traces onto the canonical grid and detects events itself.
-Anything less faithful would report a number the benchmark scorer will not reproduce.
-
-What this is for
-----------------
-Two protocols are supported. Legacy development runs score sessions reserved in
-``artifacts/holdout_sessions.json``. The factorial benchmark instead trains on
-the complete ``train`` split and supplies the provided ``split.json`` while
-scoring the independent ``test`` split. In either protocol the estimate is
-consumable: every look influences what gets tried next, so score models only
-after the training choices are frozen.
-
-Several ``--checkpoint`` paths are ensembled, each z-scored before averaging --
-the models are trained on a correlation loss that leaves output scale free, so
-averaging raw outputs would weight by whichever run happened to settle largest.
-
-``--plot`` additionally writes the rate-breakdown and reserved-grid diagnostic
-plots (see :mod:`.plot_diagnosis`) from the same predictions computed here --
-nothing is re-predicted.  The reserved-grid panel needs one model's own
-onset-head probability, so ``--plot`` requires exactly one ``--checkpoint``.
+Truth is the raw thermistor trace, scored by ``.evaluation.score_clip``. ``zephyr
+evaluate`` and the evaluation after :mod:`zephyr.run` share :func:`evaluate_groups`:
+named groups of clips in, one result out. Clips sharing a video or recording with a
+checkpoint's recorded training set are refused (older checkpoints only warn). Multitask
+checkpoints also report the onset head's inhale F1. Several checkpoints are z-scored
+then averaged; ``--plot`` (one checkpoint) writes :mod:`.plot_diagnosis` figures.
 
 CLI
 ---
-    zephyr evaluate \\
-        --checkpoint runs/baseline-cnn-tcn/<run>/best.pt --plot
+    zephyr evaluate --checkpoint runs/<fold>/seed-17/best.pt \\
+        --clips configs/clips/face_test_new_animals.toml --cache data/features-v2
 """
 
 import argparse
@@ -36,17 +20,24 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import torch
+from scipy.signal import find_peaks
 
 from zephyr.baselines.nets import build_model
 from zephyr.channels import ChannelSet
 from zephyr.model import BreathingNet
 
-from .clips import PUBLIC_SPLIT
-from .dataset import ClipEntry, load_manifest
+from . import features
+from .config import ClipList, ResolvedClip, load
 from .evaluation import score_clip
+from .features import ClipEntry
 from .infer import predict_clip
 from .plot_diagnosis import ClipPrediction, rate_breakdown, reserved_grid
 from .signal import BREATHING_SIGNAL_COLUMN, TIME_COLUMN
+
+HEAD_THRESHOLD = 0.5
+HEAD_MIN_DISTANCE_S = 0.05
+"""Onset-head detector: local maxima of the probability above a fixed
+threshold, at least this far apart.  Fixed a priori; never tuned on holdout data."""
 
 
 def load_checkpoint(
@@ -58,10 +49,10 @@ def load_checkpoint(
     averaging was enabled -- so nothing here needs to know how it was trained.
 
     The channel selection comes from the checkpoint, not from the current
-    manifest: it fixes the first convolution's shape, so reading it from
+    config: it fixes the first convolution's shape, so reading it from
     anywhere else would build a model the weights do not fit.  Checkpoints
-    written before ``--channels`` existed have no such field and trained on
-    every stored channel, which their own manifest config records.  Returned
+    written before channel selection existed have no such field and trained on
+    every stored channel, which their own feature config records.  Returned
     ``mean``/``std`` stay full-width -- :func:`~.infer.predict_clip` slices
     them to the model.  Checkpoints without an ``arch`` field are zephyr
     CNN-TCNs.
@@ -81,6 +72,42 @@ def load_checkpoint(
     return model, state["mean"], state["std"], state
 
 
+def refuse_leaked(states: list[dict], clips: list[ResolvedClip]) -> None:
+    """Refuse to score clips any checkpoint trained on, by video or recording.
+
+    A fine-tuned checkpoint is checked against its parents' clips too.  One with
+    no training record, or descended from one, cannot be fully checked: that is
+    warned about, not refused, so old checkpoints stay usable.
+    """
+    leaked = []
+    for state in states:
+        videos = state.get("train_videos")
+        if videos is None or not state.get("lineage_known", True):
+            print(
+                "WARNING: checkpoint (or a checkpoint it was initialised from) "
+                "records no training clips, so leakage cannot be fully checked; "
+                "make sure it never saw these recordings."
+            )
+        if videos is None:
+            continue
+        trained_videos = {*videos, *state.get("inherited_videos", ())}
+        trained_recordings = {
+            *state.get("train_recordings", ()),
+            *state.get("inherited_recordings", ()),
+        }
+        for clip in clips:
+            if str(clip.video) in trained_videos:
+                leaked.append(f"{clip.name} (trained on this video)")
+            elif clip.recording_id in trained_recordings:
+                leaked.append(f"{clip.name} (trained on its recording)")
+    if leaked:
+        raise SystemExit(
+            f"refusing to score: {len(leaked)} clip(s) were not held out by every "
+            "checkpoint, so this would not be an unbiased estimate: "
+            f"{sorted(set(leaked))}"
+        )
+
+
 def zscore(x: np.ndarray) -> np.ndarray:
     scale = x.std()
     return (x - x.mean()) / (scale if scale > 0 else 1.0)
@@ -94,44 +121,62 @@ def predict_entry(
     window: int,
     frame_chunk: int,
     amp_dtype: torch.dtype | None,
-) -> np.ndarray:
+) -> tuple[np.ndarray, np.ndarray | None]:
     """Ensemble prediction for one clip, z-scored per model then averaged.
 
     Each model is z-scored before averaging: they are trained on a correlation
     loss that leaves output scale free, so averaging raw outputs would weight by
-    whichever run happened to settle on the largest amplitude.
+    whichever run happened to settle on the largest amplitude.  Also returns the
+    onset-head probability when there is exactly one model, else ``None``.
     """
-    stack = [
-        zscore(
-            predict_clip(
-                model,
-                entry,
-                mean,
-                std,
-                window=window,
-                device=device,
-                frame_chunk=frame_chunk,
-                amp_dtype=amp_dtype,
-            )[0]
+    outputs = [
+        predict_clip(
+            model,
+            entry,
+            mean,
+            std,
+            window=window,
+            device=device,
+            frame_chunk=frame_chunk,
+            amp_dtype=amp_dtype,
         )
         for model, mean, std in models
     ]
-    return zscore(np.mean(stack, axis=0))
+    stack = [zscore(signal) for signal, _ in outputs]
+    onset = outputs[0][1] if len(outputs) == 1 else None
+    return zscore(np.mean(stack, axis=0)), onset
 
 
-def truth_frame(packaged_root: Path, split: str, session_idx: int, part: int):
+def truth_frame(entry: ClipEntry) -> pd.DataFrame:
     """Raw thermistor trace -- already the columns ``score_clip`` expects."""
-    path = packaged_root / split / f"thermistor_{session_idx}_part_{part}.parquet"
-    return pd.read_parquet(path)
+    return pd.read_parquet(entry.thermistor)
+
+
+def head_event_indices(probability: np.ndarray, times: np.ndarray) -> np.ndarray:
+    """Inhale events the onset head asserts: thresholded local maxima."""
+    if len(probability) != len(times):
+        raise ValueError("onset probability and time arrays have different lengths")
+    if len(times) < 2:
+        return np.empty(0, dtype=int)
+    sampling_rate = 1.0 / float(np.median(np.diff(times)))
+    distance = max(1, round(HEAD_MIN_DISTANCE_S * sampling_rate))
+    peaks, _ = find_peaks(probability, height=HEAD_THRESHOLD, distance=distance)
+    return peaks.astype(int)
 
 
 METRIC_FIELDS = ("correlation", "inhale_f1", "exhale_f1", "kl_ibi")
+HEAD_FIELD = "head_inhale_f1"
+
+
+def _fields(rows: list[dict]) -> tuple[str, ...]:
+    head = any(r.get(HEAD_FIELD) is not None for r in rows)
+    return METRIC_FIELDS + ((HEAD_FIELD,) if head else ())
 
 
 def summarise_rows(rows: list[dict]) -> dict[str, float]:
     """Mean and spread for metric rows, ignoring undefined values."""
     summary: dict[str, float] = {}
-    for field in METRIC_FIELDS:
+    for field in _fields(rows):
         values = np.array(
             [r[field] for r in rows if r.get(field) is not None], dtype=float
         )
@@ -144,56 +189,47 @@ def summarise_rows(rows: list[dict]) -> dict[str, float]:
     return summary
 
 
-def aggregate_sessions(rows: list[dict]) -> list[dict]:
-    """Average clip metrics within session, the independent sampling unit."""
-    sessions: list[dict] = []
-    for session_idx in sorted({int(r["session_idx"]) for r in rows}):
-        members = [r for r in rows if int(r["session_idx"]) == session_idx]
-        sessions.append(
-            {"session_idx": session_idx, "n_clips": len(members)}
-            | {field: summarise_rows(members)[field] for field in METRIC_FIELDS}
+def aggregate_recordings(rows: list[dict]) -> list[dict]:
+    """Average clip metrics within recording, the independent sampling unit."""
+    recordings: list[dict] = []
+    for recording in dict.fromkeys(r["recording"] for r in rows):
+        members = [r for r in rows if r["recording"] == recording]
+        summary = summarise_rows(members)
+        recordings.append(
+            {"recording": recording, "n_clips": len(members)}
+            | {field: summary[field] for field in _fields(rows)}
         )
-    return sessions
+    return recordings
 
 
-def load_test_strata(path: Path | None) -> dict[str, list[int]]:
-    """Map the split manifest to stable benchmark stratum names."""
-    if path is None:
-        return {}
-    data = json.loads(path.read_text())
+def build_result(groups: dict[str, list[dict]]) -> dict:
+    """Clip, recording and group summaries plus the composite, as JSON-ready data.
 
-    def indices(key: str) -> list[int]:
-        return sorted(int(item["video_index"]) for item in data.get(key, []))
-
-    strata = {
-        "new_animals": indices("val_new_animals"),
-        "known_animals_new_date": indices("val_held_out"),
-    }
-    return {name: values for name, values in strata.items() if values}
-
-
-def build_result(
-    rows: list[dict], sessions: set[int], strata: dict[str, list[int]]
-) -> dict:
-    """Clip, session and stratum summaries plus the composite, as JSON-ready data.
-
-    Shared by checkpoint evaluation and the baselines so both report identically.
+    *groups* maps each group's name to its clip rows (each carrying a
+    ``recording``).  Shared by checkpoint evaluation and the baselines so both
+    report identically.  ``"all"`` is reserved for the summary across groups.
     """
+    if "all" in groups:
+        raise ValueError("'all' is reserved for the summary across groups")
+    rows = [
+        row | {"group": name} for name, members in groups.items() for row in members
+    ]
     summary = summarise_rows(rows)
-    session_rows = aggregate_sessions(rows)
-    summary_by_session = summarise_rows(session_rows)
-    stratum_results = {}
-    if strata:
-        for name, indices in strata.items():
-            members = [r for r in session_rows if r["session_idx"] in set(indices)]
-            stratum_results[name] = {
-                "sessions": indices,
-                "summary": summarise_rows(members),
-            }
-        stratum_results["all"] = {
-            "sessions": sorted(sessions),
-            "summary": summary_by_session,
+
+    group_results = {}
+    per_recording: list[dict] = []
+    for name, members in groups.items():
+        recordings = aggregate_recordings(members)
+        per_recording += [{"group": name} | r for r in recordings]
+        group_results[name] = {
+            "recordings": [r["recording"] for r in recordings],
+            "summary": summarise_rows(recordings),
         }
+    summary_by_recording = summarise_rows(per_recording)
+    group_results["all"] = {
+        "recordings": [r["recording"] for r in per_recording],
+        "summary": summary_by_recording,
+    }
     # Weighted summary of the four metrics, for orientation only.
     composite = (
         0.50 * summary["inhale_f1"]
@@ -202,39 +238,214 @@ def build_result(
         + 0.10 * float(np.exp(-summary["kl_ibi"]))
     )
     return {
-        "sessions": sorted(sessions),
         "clips": rows,
         "summary": summary,
-        "per_session": session_rows,
-        "summary_by_session": summary_by_session,
-        "strata": stratum_results,
+        "per_recording": per_recording,
+        "summary_by_recording": summary_by_recording,
+        "groups": group_results,
         "composite": composite,
     }
+
+
+def score_entries(
+    models: list[tuple[BreathingNet, np.ndarray, np.ndarray]],
+    entries: list[ClipEntry],
+    device: torch.device,
+    *,
+    window: int,
+    frame_chunk: int,
+    amp_dtype: torch.dtype | None,
+    head: bool = False,
+    plot_data: list[ClipPrediction] | None = None,
+) -> list[dict]:
+    """Score each labelled entry: one row of metrics per clip, printed as it goes."""
+    header = f"{'clip':40s}{'corr':>8s}{'inh_f1':>8s}{'exh_f1':>8s}{'kl_ibi':>8s}" + (
+        f"{'head_f1':>8s}" if head else ""
+    )
+    print(header)
+    print("-" * len(header))
+    rows = []
+    for entry in entries:
+        signal, onset = predict_entry(
+            models,
+            entry,
+            device,
+            window=window,
+            frame_chunk=frame_chunk,
+            amp_dtype=amp_dtype,
+        )
+        times = np.load(entry.times)
+        n = min(len(times), len(signal))
+        signal, times = signal[:n], times[:n]
+        predicted = pd.DataFrame(
+            {
+                TIME_COLUMN: times.astype(np.float64),
+                BREATHING_SIGNAL_COLUMN: signal.astype(np.float64),
+            }
+        )
+        truth = truth_frame(entry)
+        score = score_clip(truth, predicted)
+        row = {"clip_id": entry.clip_id, "recording": entry.recording}
+        row |= score.to_dict()
+        line = (
+            f"{entry.clip_id:40s}{score.correlation:+8.3f}"
+            f"{score.inhale_f1:8.3f}{score.exhale_f1:8.3f}{score.kl_ibi:8.3f}"
+        )
+        if head:
+            head_indices = head_event_indices(onset[:n], times)
+            head_score = score_clip(
+                truth, predicted, predicted_onset_times_s=times[head_indices]
+            )
+            row[HEAD_FIELD] = head_score.to_dict()["inhale_f1"]
+            row["n_head_events"] = len(head_indices)
+            line += f"{head_score.inhale_f1:8.3f}"
+        rows.append(row)
+        if plot_data is not None:
+            plot_data.append(ClipPrediction(entry, signal, times, truth))
+        print(line, flush=True)
+    print("-" * len(header))
+    return rows
+
+
+def has_onset_head(states: list[dict]) -> bool:
+    """Whether the (single) checkpoint was trained with an onset objective."""
+    if len(states) != 1:
+        return False
+    recorded = states[0].get("params") or states[0].get("args") or {}
+    return float(recorded.get("w_onset", 0.0)) > 0
+
+
+def evaluate_groups(
+    checkpoints: list[Path],
+    groups: dict[str, list[ResolvedClip]],
+    features_dir: Path,
+    recipe,
+    *,
+    device: str,
+    amp: str,
+    window: int = 1024,
+    frame_chunk: int = 256,
+    out: Path | None = None,
+    plot_dir: Path | None = None,
+    plot_options: dict | None = None,
+) -> dict:
+    """Score *checkpoints* on named groups of clips; the one evaluation path.
+
+    Unlabelled clips (no thermistor) are skipped: there is nothing to score them
+    against.  Returns the :func:`build_result` dict, also written to *out*.
+    """
+    torch_device = torch.device(device)
+    amp_dtype = {"bf16": torch.bfloat16, "fp16": torch.float16, "off": None}[amp]
+    models, states = [], []
+    for path in checkpoints:
+        model, mean, std, state = load_checkpoint(path, torch_device)
+        models.append((model, mean, std))
+        states.append(state)
+        print(f"loaded {path}  epoch {state.get('epoch')}")
+
+    labelled = {
+        name: [c for c in clips if c.labelled] for name, clips in groups.items()
+    }
+    skipped = sum(len(clips) - len(labelled[name]) for name, clips in groups.items())
+    if skipped:
+        print(f"skipping {skipped} unlabelled clip(s): nothing to score them against")
+    labelled = {name: clips for name, clips in labelled.items() if clips}
+    if not labelled:
+        raise SystemExit("no labelled clips to score")
+    refuse_leaked(states, [c for clips in labelled.values() for c in clips])
+
+    head = has_onset_head(states)
+    plot_data: list[ClipPrediction] | None = [] if plot_dir is not None else None
+    rows_by_group: dict[str, list[dict]] = {}
+    for name, clips in labelled.items():
+        entries = features.require(clips, recipe, features_dir)
+        print(
+            f"\ngroup {name!r}: {len(entries)} clips / "
+            f"{len({e.recording for e in entries})} recordings with "
+            f"{len(models)} model(s)\n"
+        )
+        rows_by_group[name] = score_entries(
+            models,
+            entries,
+            torch_device,
+            window=window,
+            frame_chunk=frame_chunk,
+            amp_dtype=amp_dtype,
+            head=head,
+            plot_data=plot_data,
+        )
+
+    result = build_result(rows_by_group)
+    for name, group in result["groups"].items():
+        summary = group["summary"]
+        line = (
+            f"{name:28s} corr {summary['correlation']:+.3f}  "
+            f"inhale F1 {summary['inhale_f1']:.3f}  exhale F1 "
+            f"{summary['exhale_f1']:.3f}  KL-IBI {summary['kl_ibi']:.3f}"
+        )
+        if head:
+            line += f"  head F1 {summary[HEAD_FIELD]:.3f}"
+        print(line)
+    print(f"\ncomposite (0.5/0.2/0.2/0.1): {result['composite']:.4f}")
+
+    result = {"checkpoints": [str(p) for p in checkpoints]} | result
+    if out is not None:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(result, indent=2))
+        print(f"wrote {out}")
+
+    if plot_dir is not None:
+        plot_dir.mkdir(parents=True, exist_ok=True)
+        options = plot_options or {}
+        recordings = list(
+            dict.fromkeys(
+                r["recording"] for rows in rows_by_group.values() for r in rows
+            )
+        )
+        rate_breakdown(
+            plot_data,
+            recordings,
+            plot_dir / "rate_breakdown.png",
+            checkpoints[0].parent.name,
+            n_shifts=options.get("null_shifts", 5),
+            corr_window_s=options.get("corr_window_s", 3.0),
+            corr_hop_s=options.get("corr_hop_s", 1.5),
+            corr_min_breaths=options.get("corr_min_breaths", 3),
+        )
+        model, mean, std = models[0]
+        reserved_grid(
+            model,
+            mean,
+            std,
+            torch_device,
+            [p.entry for p in plot_data],
+            recordings,
+            plot_dir / "reserved_grid.png",
+            window=options.get("grid_window", 512),
+            infer_window=window,
+            frame_chunk=frame_chunk,
+            amp_dtype=amp_dtype,
+        )
+        print(f"wrote diagnostic plots -> {plot_dir}")
+    return result
 
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Score checkpoints on held-out clips.")
     parser.add_argument("--checkpoint", type=Path, nargs="+", required=True)
-    parser.add_argument("--features-dir", type=Path, default=Path("data/features"))
-    parser.add_argument("--packaged-root", type=Path, default=Path("data"))
-    parser.add_argument("--split", default=PUBLIC_SPLIT)
-    parser.add_argument("--camera", default="face", choices=["face", "side"])
     parser.add_argument(
-        "--holdout-json",
+        "--clips",
         type=Path,
-        default=Path("artifacts/holdout_sessions.json"),
-    )
-    parser.add_argument(
-        "--split-manifest",
-        type=Path,
-        help="Benchmark split.json. When --sessions is omitted, score every "
-        "test video_index and report new-animal and known-animal/new-date strata.",
-    )
-    parser.add_argument(
-        "--sessions",
-        type=int,
         nargs="+",
-        help="Sessions to score.  Defaults to the reserved test sessions.",
+        required=True,
+        help="Clip list(s) to score; each is reported as its own group.",
+    )
+    parser.add_argument(
+        "--name",
+        help="Group name for a single --clips list (default: the file's stem).",
+    )
+    parser.add_argument(
+        "--cache", type=Path, required=True, help="Feature cache directory."
     )
     parser.add_argument("--infer-window", type=int, default=1024)
     parser.add_argument("--frame-chunk", type=int, default=256)
@@ -275,152 +486,36 @@ def main(argv: list[str] | None = None) -> None:
             f"--plot needs exactly one --checkpoint (the reserved-grid panel "
             f"reads one model's own onset head); got {len(args.checkpoint)}"
         )
+    if args.name and len(args.clips) != 1:
+        raise SystemExit("--name names one group, so it needs exactly one --clips list")
 
-    device = torch.device(args.device)
-    amp_dtype = {"bf16": torch.bfloat16, "fp16": torch.float16, "off": None}[args.amp]
-
-    strata = load_test_strata(args.split_manifest)
-    sessions = args.sessions
-    if sessions is None and strata:
-        sessions = sorted({i for values in strata.values() for i in values})
-    elif sessions is None:
-        sessions = json.loads(args.holdout_json.read_text())["test_sessions"]
-    sessions = set(sessions)
-
-    models = []
-    trained_on: set[int] = set()
-    for path in args.checkpoint:
-        model, mean, std, state = load_checkpoint(path, device)
-        models.append((model, mean, std))
-        reserved = set(state.get("test_sessions") or [])
-        train_split = state.get("train_split") or state.get("args", {}).get("split")
-        trained_sessions = set(state.get("trained_sessions") or [])
-        if train_split is not None and trained_sessions:
-            # Numeric session indices restart in each packaged split. Only an
-            # overlap within the same split is leakage.
-            if args.split == train_split:
-                trained_on |= sessions & trained_sessions
-        elif train_split is None or args.split == train_split:
-            # Backwards compatibility for checkpoints created before split
-            # provenance was recorded; those only supported the train split.
-            trained_on |= sessions - reserved
-        print(
-            f"loaded {path}  epoch {state.get('epoch')}  "
-            f"reserved {sorted(reserved) or 'none recorded'}"
-        )
-    if trained_on:
-        raise SystemExit(
-            f"refusing to score: {sorted(trained_on)} were not held out by every "
-            "checkpoint, so this would not be an unbiased estimate."
-        )
-
-    _, entries = load_manifest(args.features_dir, args.split, args.camera)
-    entries = [e for e in entries if e.session_idx in sessions]
-    if not entries:
-        raise SystemExit(f"no clips found for sessions {sorted(sessions)}")
-
-    print(
-        f"\nscoring {len(entries)} clips / {len(sessions)} sessions "
-        f"({', '.join(str(s) for s in sorted(sessions))}) with {len(models)} model(s)\n"
+    lists = {(args.name or path.stem): load(ClipList, path) for path in args.clips}
+    recipes = {lst.preprocess for lst in lists.values()}
+    if len(recipes) != 1:
+        raise SystemExit("the clip lists disagree on [preprocess]")
+    evaluate_groups(
+        args.checkpoint,
+        {name: lst.resolve() for name, lst in lists.items()},
+        args.cache,
+        recipes.pop(),
+        device=args.device,
+        amp=args.amp,
+        window=args.infer_window,
+        frame_chunk=args.frame_chunk,
+        out=args.out,
+        plot_dir=(
+            args.plot_dir or args.checkpoint[0].parent / "diagnosis"
+            if args.plot
+            else None
+        ),
+        plot_options={
+            "grid_window": args.grid_window,
+            "corr_window_s": args.corr_window_s,
+            "corr_hop_s": args.corr_hop_s,
+            "corr_min_breaths": args.corr_min_breaths,
+            "null_shifts": args.null_shifts,
+        },
     )
-    header = (
-        f"{'clip':16s}{'sess':9s}{'corr':>10s}"
-        f"{'inh_f1':>8s}{'exh_f1':>8s}{'kl_ibi':>8s}"
-    )
-    print(header)
-    print("-" * len(header))
-
-    rows = []
-    plot_data: list[ClipPrediction] = []
-    for entry in sorted(entries, key=lambda e: (e.session_idx, e.part)):
-        signal = predict_entry(
-            models,
-            entry,
-            device,
-            window=args.infer_window,
-            frame_chunk=args.frame_chunk,
-            amp_dtype=amp_dtype,
-        )
-        times = np.load(entry.times)
-        n = min(len(times), len(signal))
-        signal, times = signal[:n], times[:n]
-        predicted = pd.DataFrame(
-            {
-                TIME_COLUMN: times.astype(np.float64),
-                BREATHING_SIGNAL_COLUMN: signal.astype(np.float64),
-            }
-        )
-        truth = truth_frame(
-            args.packaged_root, args.split, entry.session_idx, entry.part
-        )
-        score = score_clip(truth, predicted)
-        row = {
-            "clip_id": entry.clip_id,
-            "session_idx": entry.session_idx,
-            "part": entry.part,
-        } | score.to_dict()
-        rows.append(row)
-        if args.plot:
-            plot_data.append(ClipPrediction(entry, signal, times, truth))
-        print(
-            f"{entry.clip_id:16s}{entry.session_idx:<9d}"
-            f"{score.correlation:+10.3f}"
-            f"{score.inhale_f1:8.3f}{score.exhale_f1:8.3f}{score.kl_ibi:8.3f}",
-            flush=True,
-        )
-
-    print("-" * len(header))
-    # Keep the historical clip-level summary, and add the academically correct
-    # session-level result used by the benchmark harness.
-    result = build_result(rows, sessions, strata)
-    summary = result["summary"]
-    print(
-        f"{'mean':25s}{summary['correlation']:+10.3f}"
-        f"{summary['inhale_f1']:8.3f}{summary['exhale_f1']:8.3f}{summary['kl_ibi']:8.3f}"
-    )
-    print(f"\ncomposite (0.5/0.2/0.2/0.1): {result['composite']:.4f}")
-
-    if args.out:
-        args.out.parent.mkdir(parents=True, exist_ok=True)
-        args.out.write_text(
-            json.dumps(
-                {"checkpoints": [str(p) for p in args.checkpoint]} | result,
-                indent=2,
-            )
-        )
-        print(f"wrote {args.out}")
-
-    if args.plot:
-        # --plot requires exactly one --checkpoint (checked above), so its
-        # parent is unambiguously the run directory this checkpoint lives in.
-        plot_dir = args.plot_dir or (args.checkpoint[0].parent / "diagnosis")
-        plot_dir.mkdir(parents=True, exist_ok=True)
-        title_suffix = args.checkpoint[0].parent.name
-        rate_breakdown(
-            plot_data,
-            sorted(sessions),
-            plot_dir / "rate_breakdown.png",
-            title_suffix,
-            n_shifts=args.null_shifts,
-            corr_window_s=args.corr_window_s,
-            corr_hop_s=args.corr_hop_s,
-            corr_min_breaths=args.corr_min_breaths,
-        )
-        model, mean, std = models[0]
-        reserved_grid(
-            model,
-            mean,
-            std,
-            device,
-            entries,
-            sorted(sessions),
-            plot_dir / "reserved_grid.png",
-            window=args.grid_window,
-            infer_window=args.infer_window,
-            frame_chunk=args.frame_chunk,
-            amp_dtype=amp_dtype,
-        )
-        print(f"wrote diagnostic plots -> {plot_dir}")
 
 
 if __name__ == "__main__":

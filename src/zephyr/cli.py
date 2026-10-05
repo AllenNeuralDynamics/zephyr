@@ -10,17 +10,17 @@ the complete list.
 
 CLI
 ---
-    zephyr annotate ...
-    zephyr preprocess ...
-    zephyr train ...
-    zephyr evaluate ...
-    zephyr benchmark plan|run|collect ...
-    zephyr benchmark-data download|validate ...
-    zephyr benchmark-report head|report|all ...
-    zephyr baseline pixel|facemap|net|collect ...
+    zephyr clips scan <dir> --glob <pattern> -o <list.toml>
+    zephyr annotate <list.toml> [--prepare]
+    zephyr preprocess <list.toml>... --cache <dir>
+    zephyr run <fold.toml | experiment.toml> [--smoke]
+    zephyr evaluate --checkpoint <best.pt> --clips <list.toml>... --cache <dir>
+    zephyr schema <dir>
+    zephyr benchmark-report --runs <dir> --out <dir>
+    zephyr baseline pixel|facemap|timing|collect ...
 """
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from pydantic_settings import (
     BaseSettings,
     CliApp,
@@ -34,6 +34,15 @@ class _PassthroughCommand(BaseModel):
     """Forwards every argument, unparsed, to the wrapped module's ``main()``."""
 
     args: CliUnknownArgs = []
+
+
+class ClipsCommand(_PassthroughCommand):
+    """Create clip lists. See ``zephyr.clips``."""
+
+    def cli_cmd(self) -> None:
+        from . import clips
+
+        clips.main(self.args)
 
 
 class AnnotateCommand(_PassthroughCommand):
@@ -54,13 +63,13 @@ class PreprocessCommand(_PassthroughCommand):
         preprocess.main(self.args)
 
 
-class TrainCommand(_PassthroughCommand):
-    """Train a CNN-TCN checkpoint. See ``zephyr.train``."""
+class RunCommand(_PassthroughCommand):
+    """Train and evaluate a fold or an experiment. See ``zephyr.run``."""
 
     def cli_cmd(self) -> None:
-        from . import train
+        from . import run
 
-        train.main(self.args)
+        run.main(self.args)
 
 
 class EvaluateCommand(_PassthroughCommand):
@@ -72,36 +81,17 @@ class EvaluateCommand(_PassthroughCommand):
         evaluate.main(self.args)
 
 
-class BenchmarkCommand(_PassthroughCommand):
-    """Run the factorial train/test benchmark sweep. See ``zephyr.benchmark``.
-
-    Takes its own ``plan|run|collect`` sub-subcommand, e.g.
-    ``zephyr benchmark run --dry-run``.
-    """
+class SchemaCommand(_PassthroughCommand):
+    """Write JSON schemas of the config files. See ``zephyr.config``."""
 
     def cli_cmd(self) -> None:
-        from . import benchmark
+        from . import config
 
-        benchmark.main(self.args)
-
-
-class BenchmarkDataCommand(_PassthroughCommand):
-    """Download and validate the benchmark dataset. See ``zephyr.benchmark_data``.
-
-    Takes its own ``download|validate`` sub-subcommand.
-    """
-
-    def cli_cmd(self) -> None:
-        from . import benchmark_data
-
-        benchmark_data.main(self.args)
+        config.main(self.args)
 
 
 class BenchmarkReportCommand(_PassthroughCommand):
-    """Build the benchmark's final plots and summary. See ``zephyr.benchmark_report``.
-
-    Takes its own ``head|report|all`` sub-subcommand.
-    """
+    """Build benchmark figures and tables from run output. See ``zephyr.benchmark_report``."""
 
     def cli_cmd(self) -> None:
         from . import benchmark_report
@@ -112,7 +102,7 @@ class BenchmarkReportCommand(_PassthroughCommand):
 class BaselineCommand(_PassthroughCommand):
     """Run and collect the manuscript baselines. See ``zephyr.baseline``.
 
-    Takes its own ``pixel|facemap|net|collect`` sub-subcommand.
+    Takes its own ``pixel|facemap|timing|collect`` sub-subcommand.
     """
 
     def cli_cmd(self) -> None:
@@ -126,12 +116,12 @@ class Zephyr(BaseSettings):
 
     model_config = SettingsConfigDict(cli_kebab_case=True)
 
+    clips: CliSubCommand[ClipsCommand]
     annotate: CliSubCommand[AnnotateCommand]
     preprocess: CliSubCommand[PreprocessCommand]
-    train: CliSubCommand[TrainCommand]
+    run: CliSubCommand[RunCommand]
     evaluate: CliSubCommand[EvaluateCommand]
-    benchmark: CliSubCommand[BenchmarkCommand]
-    benchmark_data: CliSubCommand[BenchmarkDataCommand]
+    schema_: CliSubCommand[SchemaCommand] = Field(alias="schema")
     benchmark_report: CliSubCommand[BenchmarkReportCommand]
     baseline: CliSubCommand[BaselineCommand]
 

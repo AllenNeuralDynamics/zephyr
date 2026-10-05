@@ -19,8 +19,7 @@ def fake_entry(tmp: Path, n: int = 150) -> ClipEntry:
     np.save(tmp / "dt.npy", np.full(n, 1 / 60, np.float32))
     return ClipEntry(
         clip_id="fake",
-        session_idx=1,
-        part=1,
+        recording="rec",
         n_frames=n,
         n_output=n,
         features=tmp / "feat.npy",

@@ -1,36 +1,13 @@
 """Diagnostic plots over held-out predictions: rate breakdown and reserved grid.
 
-Library only -- there is no CLI here.  Both functions are called from
-``evaluate --plot``, which has already loaded the checkpoint(s), scored every
-held-out clip, and holds the resulting arrays in memory; neither function
-re-predicts anything :func:`rate_breakdown` did not already receive.
+Library only; ``evaluate --plot`` calls it with predictions it already computed.
+:func:`rate_breakdown` splits performance by the ground truth's instantaneous frequency,
+since one event-F1 per clip cannot say whether a model is poor in one rate regime, and
+recordings differ in time spent per rate (the standardised-recall panel reweights each
+onto the pooled distribution).
 
-Rate breakdown
---------------
-Breaks held-out performance down by the ground-truth signal's instantaneous
-frequency.  The target signal is not one regime: its rate varies within and
-across sessions, and a single event-F1 per clip averages over all of that, so
-it cannot say whether the model is uniformly mediocre or excellent in one
-regime and poor in another.
-
-Sessions also differ in how much time they spend at each rate, so "which
-session is hard" and "which rate is hard" are not separable from the marginal
-numbers -- the standardised-recall panel reweights each session's recall onto
-the pooled frequency distribution to pull those apart.
-
-Everything is on the scorer's canonical grid, with events detected on the
-resampled signal exactly as ``score_clip`` does, so the per-bin counts
-aggregate back to the scorer's ``inhale_f1``.  The windowed-correlation
-panel is the exception: it correlates against the *filtered* truth, since raw
-noise depresses a short-window correlation for reasons that have nothing to do
-with the model.
-
-Reserved grid
--------------
-Worst / typical / best 3-column grid of held-out predictions, one row per
-session.  Needs exactly one model's own onset-head probability, so it takes a
-single ``(model, mean, std)`` rather than an ensemble -- ``evaluate --plot``
-enforces that at the CLI level.
+:func:`reserved_grid` shows worst / typical / best windows per recording for one model's
+onset head.
 """
 
 import json
@@ -47,8 +24,8 @@ from scipy.signal import find_peaks
 
 from zephyr.model import BreathingNet
 
-from .dataset import ClipEntry
 from .evaluation import EVENT_TOLERANCE_S, match_events
+from .features import ClipEntry
 from .infer import predict_clip
 from .signal import (
     BREATHING_SIGNAL_COLUMN,
@@ -85,6 +62,16 @@ would sit visually off-centre on a log axis."""
 SESSION_COLOURS = ("#1f6aa5", "#e8944a", "#c0392b", "#6a3d9a", "#2e8b57")
 POOLED_COLOUR = "black"
 XTICKS = [2, 3, 4, 6, 8, 12]
+
+
+def short_label(recording: str) -> str:
+    """Folder and group of a recording id (``.../test#7`` -> ``test/7``), as a plot label.
+
+    A "session" in this module is a recording; the full id is a path and would
+    swamp every legend and axis.
+    """
+    folder, _, group = recording.rpartition("#")
+    return f"{Path(folder).name}/{group}"
 
 
 @dataclass(frozen=True)
@@ -334,7 +321,7 @@ def per_bin_events(breaths: pd.DataFrame, predictions: pd.DataFrame) -> pd.DataF
 
 
 def standardised_recall(
-    per_session: dict[int, pd.DataFrame], pooled: pd.DataFrame
+    per_session: dict[str, pd.DataFrame], pooled: pd.DataFrame
 ) -> dict:
     """Each session's recall reweighted onto the pooled frequency distribution.
 
@@ -403,8 +390,8 @@ def _log_axis(ax) -> None:
 
 def _draw_rate_breakdown(
     windows: pd.DataFrame,
-    per_session: dict[int, pd.DataFrame],
-    per_clip: dict[tuple[int, int], pd.DataFrame],
+    per_session: dict[str, pd.DataFrame],
+    per_clip: dict[tuple[str, str], pd.DataFrame],
     pooled: pd.DataFrame,
     standardised: dict,
     out: Path,
@@ -522,10 +509,10 @@ def _draw_rate_breakdown(
     # -- E: waveform fidelity, independent of the event detector -------------
     ax = axes[1, 0]
     for session in sessions:
-        w = windows[windows["session_idx"] == session]
+        w = windows[windows["recording"] == session]
         ax.plot(w["freq_hz"], w["r"], ".", ms=2.5, alpha=0.18, color=colours[session])
     for session in sessions:
-        w = windows[windows["session_idx"] == session]
+        w = windows[windows["recording"] == session]
         idx = bin_index(w["freq_hz"].to_numpy())
         values = [w["r"].to_numpy()[idx == b] for b in range(len(BIN_CENTRES))]
         keep = [len(v) >= 5 for v in values]
@@ -617,7 +604,7 @@ def _draw_rate_breakdown(
             ms=3,
             lw=1.2,
             color=colours[session],
-            label=f"{session} part {part}",
+            label=f"{session} {part}",
         )
     _log_axis(ax)
     ax.set_ylim(0, 102)
@@ -637,7 +624,7 @@ def _draw_rate_breakdown(
 
 def rate_breakdown(
     predictions: list[ClipPrediction],
-    sessions: Sequence[int],
+    sessions: Sequence[str],
     out: Path,
     title_suffix: str,
     *,
@@ -653,7 +640,7 @@ def rate_breakdown(
     behind it).  *predictions* holds one :class:`ClipPrediction` per scored
     clip -- the caller has already run inference; nothing here does.
     """
-    sessions = list(dict.fromkeys(sessions))
+    sessions = [short_label(s) for s in dict.fromkeys(sessions)]
     breath_rows, prediction_rows, window_rows = [], [], []
     for cp in predictions:
         clip = canonical_clip(cp.signal, cp.times, cp.truth)
@@ -661,8 +648,8 @@ def rate_breakdown(
         windows = window_table(clip, corr_window_s, corr_hop_s, corr_min_breaths)
         for frame in (breaths, preds, windows):
             frame["clip_id"] = cp.entry.clip_id
-            frame["session_idx"] = cp.entry.session_idx
-            frame["part"] = cp.entry.part
+            frame["recording"] = short_label(cp.entry.recording)
+            frame["clip"] = cp.entry.clip_id
         breath_rows.append(breaths)
         prediction_rows.append(preds)
         window_rows.append(windows)
@@ -673,24 +660,24 @@ def rate_breakdown(
 
     per_session = {
         s: per_bin_events(
-            breaths[breaths["session_idx"] == s],
-            preds[preds["session_idx"] == s],
+            breaths[breaths["recording"] == s],
+            preds[preds["recording"] == s],
         )
         for s in sessions
     }
     per_clip = {
         (session, part): per_bin_events(
-            breaths[(breaths["session_idx"] == session) & (breaths["part"] == part)],
-            preds[(preds["session_idx"] == session) & (preds["part"] == part)],
+            breaths[(breaths["recording"] == session) & (breaths["clip"] == part)],
+            preds[(preds["recording"] == session) & (preds["clip"] == part)],
         )
         for session in sessions
-        for part in sorted(breaths[breaths["session_idx"] == session]["part"].unique())
+        for part in sorted(breaths[breaths["recording"] == session]["clip"].unique())
     }
     pooled = per_bin_events(breaths, preds)
     standardised = standardised_recall(per_session, pooled)
     for s in sessions:
         standardised[s]["mean_freq_hz"] = float(
-            breaths[breaths["session_idx"] == s]["freq_hz"].mean()
+            breaths[breaths["recording"] == s]["freq_hz"].mean()
         )
 
     print("\n% of ground-truth breaths detected, by frequency bin (n breaths)")
@@ -761,7 +748,7 @@ def rate_breakdown(
                         s: t.to_dict("records") for s, t in per_session.items()
                     },
                     "per_clip_bins": {
-                        f"{session}_part_{part}": t.to_dict("records")
+                        f"{session}|{part}": t.to_dict("records")
                         for (session, part), t in per_clip.items()
                     },
                     "pooled_bins": pooled.to_dict("records"),
@@ -902,7 +889,7 @@ def reserved_grid(
     std: np.ndarray,
     device: torch.device,
     entries: list[ClipEntry],
-    sessions: Sequence[int],
+    sessions: Sequence[str],
     out: Path,
     *,
     window: int = 512,
@@ -927,11 +914,12 @@ def reserved_grid(
     Writes ``out`` (a PNG grid) and ``out.with_suffix(".json")`` (which chunk
     was picked for each panel).
     """
-    sessions = list(dict.fromkeys(sessions))
-    by_session: dict[int, list[ClipEntry]] = {s: [] for s in sessions}
+    sessions = [short_label(s) for s in dict.fromkeys(sessions)]
+    by_session: dict[str, list[ClipEntry]] = {s: [] for s in sessions}
     for entry in entries:
-        if entry.session_idx in by_session and entry.has_target:
-            by_session[entry.session_idx].append(entry)
+        label = short_label(entry.recording)
+        if label in by_session and entry.has_target:
+            by_session[label].append(entry)
 
     fig, axes = plt.subplots(len(sessions), 3, figsize=(15, 4.2 * len(sessions)))
     fig.suptitle(
@@ -941,9 +929,9 @@ def reserved_grid(
     )
     selections = []
     for row, session in enumerate(sessions):
-        session_entries = sorted(by_session[session], key=lambda e: e.part)
+        session_entries = sorted(by_session[session], key=lambda e: e.clip_id)
         clips = {
-            e.part: _clip_predictions(
+            e.clip_id: _clip_predictions(
                 model,
                 e,
                 mean,
@@ -958,18 +946,18 @@ def reserved_grid(
         records = []
         for part, clip in clips.items():
             for rec in _window_correlations(clip, window):
-                records.append({**rec, "part": part})
+                records.append({**rec, "clip": part})
 
         for col, (pct, label) in enumerate(WINDOW_LABELS):
             rec = _nearest_to_percentile(records, pct)
-            clip = clips[rec["part"]]
+            clip = clips[rec["clip"]]
             ax = axes[row, col] if len(sessions) > 1 else axes[col]
             _plot_panel(
                 ax,
                 clip,
                 rec["start"],
                 window,
-                f"session {session} part {rec['part']} {label}",
+                f"{session} {rec['clip']} {label}",
                 rec["r"],
             )
             if row == len(sessions) - 1:
@@ -981,7 +969,7 @@ def reserved_grid(
             selections.append(
                 {
                     "session": session,
-                    "part": rec["part"],
+                    "clip": rec["clip"],
                     "window": label,
                     "t0": float(clip["times"][rec["start"]]),
                     "r": rec["r"],

@@ -1,33 +1,13 @@
 """CNN frame encoder + dilated TCN sequence decoder.
 
-Shape of the problem
---------------------
-The input is a per-frame image crop; the output is one target sample per frame.
-The two halves do different jobs:
+``FrameEncoder`` runs on each frame independently (temporally blind, so motion channels
+are precomputed); ``TemporalNet`` sees only the sequence of vectors, with dilated
+convolutions for a wide receptive field in few layers. The encoder runs on the
+*selection* grid and the TCN on the fixed 60 Hz *output* grid, joined by
+:func:`resample_embeddings` using real frame timestamps.
 
-``FrameEncoder``
-    Runs on every frame independently and collapses the crop to a short vector.
-    It is temporally blind by construction -- which is why motion channels are
-    precomputed rather than left for the network to discover.
-``TemporalNet``
-    Sees only that sequence of vectors and reconstructs the trace.  Dilated
-    convolutions give it a wide receptive field for a fixed number of conv
-    layers, where a stack of plain k=3 convolutions would need many more layers
-    to reach the same span.
-
-Two grids, joined in embedding space
-------------------------------------
-The encoder runs on the *selection* grid (whichever source frames
-the preprocessing selected, at whatever rate); the TCN runs on the fixed 60 Hz
-*output* grid. :func:`resample_embeddings` interpolates between them using the
-real frame timestamps.
-
-Non-causal on purpose
----------------------
-Inference runs offline on complete clips, so there is no reason to hide the
-future: padding is symmetric and each output sample sees context on both sides.
-We may want to revisit this choice if we ever need causal inference or tight
-online closed-loop operation.
+Non-causal on purpose: inference is offline on complete clips, so padding is symmetric.
+Revisit for online closed-loop use.
 """
 
 import torch
