@@ -2,11 +2,40 @@
 
 Instructions for coding agents. Read this before changing anything.
 
+## Two packages, one way
+
+The repository is a uv workspace of two packages (`uv sync --all-packages
+--extra cpu`, or `--extra gpu`):
+
+| Package | Path | Import | Command |
+| --- | --- | --- | --- |
+| `zephyr` | `packages/zephyr/` | `zephyr` | `zephyr` |
+| `zephyr-benchmarks` | `packages/zephyr-benchmarks/` | `zephyr.benchmarks` | `zephyr-benchmarks` |
+
+- **`zephyr` runs only the zephyr network.** It never imports
+  `zephyr.benchmarks` and never names a comparison method (TS-CAN, PhysNet,
+  pixel, Facemap, ...); `packages/zephyr/tests/test_boundary.py` enforces both.
+  It is the only released package.
+- **`zephyr-benchmarks`** holds everything about our dataset and the methods
+  zephyr is compared against: the benchmark configs, the comparison networks
+  and baselines, timing, the collected tables and the report. It builds on
+  zephyr and is never released.
+- A new comparison method goes in zephyr-benchmarks. If it needs zephyr to do
+  something new, add a **generic** seam to zephyr (as with `Architecture` in
+  `train.py`, `Runner` in `run.py`, the `loader` of `evaluate.py`) that does
+  not know the method exists, never a special case.
+- `zephyr` lives under one import name across two distributions: core's
+  `zephyr/__init__.py` extends `__path__`. Keep that line; never add an
+  `__init__.py` at `packages/zephyr-benchmarks/src/zephyr/`.
+
 ## The rule: experiments are TOML, not code
 
 Every input zephyr uses (which clips exist, what trains, what is scored, with
-which hyperparameters and seeds) is a **TOML file of local paths** under
-`configs/`, validated by the pydantic models in `src/zephyr/config.py`.
+which hyperparameters and seeds) is a **TOML file of local paths**, validated
+by the pydantic models in `packages/zephyr/src/zephyr/config.py` (extended for
+the benchmarks by `packages/zephyr-benchmarks/src/zephyr/benchmarks/config.py`).
+The benchmark's files live in `packages/zephyr-benchmarks/configs/`;
+`examples/` holds one generic file of each type.
 
 To run a new experiment, **write or copy a TOML file. Do not edit Python.**
 Specifically, do not:
@@ -14,9 +43,9 @@ Specifically, do not:
 - add CLI flags for experiment settings (learning rate, epochs, sessions,
   weights, ...);
 - hardcode paths, split names (`train`, `test`, `ood`), camera names, session
-  numbers or dataset layout anywhere in `src/`;
+  numbers or dataset layout anywhere in either package's `src/`;
 - write one-off training or evaluation scripts that bypass `zephyr run` /
-  `zephyr evaluate`;
+  `zephyr evaluate` (or `zephyr-benchmarks run` / `evaluate`);
 - edit an existing config to repurpose it. Copy it under a new name instead,
   so earlier runs stay reproducible.
 
@@ -27,7 +56,9 @@ Change code only when a setting genuinely does not exist yet (see
 
 Paths in every file are **relative to the file they are written in**.
 `zephyr schema <dir>` writes JSON schemas of all three for editor validation.
-A misspelt key is an error, never silently ignored.
+A misspelt key is an error, never silently ignored. Examples below are from
+`packages/zephyr-benchmarks/configs/`, four levels below the repository root
+where `data/`, `benchmarks/` and `runs/` live.
 
 ### Clip list (`configs/clips/*.toml`, model `ClipList`)
 
@@ -38,7 +69,7 @@ Names videos and how to preprocess them.
 target_size = [360, 270]          # frame size the boxes are measured in
 
 [[clip]]
-video = "../../data/ood/video_side_right_13_part_1.mp4"
+video = "../../../../data/ood/video_side_right_13_part_1.mp4"
 box = [228, 85, 96, 96]           # x, y, w, h in target_size pixels
 ```
 
@@ -53,12 +84,12 @@ box = [228, 85, 96, 96]           # x, y, w, h in target_size pixels
 - Put **all sessions of a dataset in one list**; folds select sessions with
   `groups`. Do not make one file per session or per subset.
 
-### Fold (`configs/folds/*.toml`, model `Fold`)
+### Fold (`configs/folds/*.toml`, model `Fold`; `BenchmarkFold` in zephyr-benchmarks)
 
 What trains, what is scored, and how.
 
 ```toml
-init_from = "../../benchmarks/.../best.pt"   # optional: start from these weights
+init_from = "../../../../benchmarks/.../best.pt"   # optional: start from these weights
 
 [[train]]
 clips = "../clips/face_train.toml"
@@ -81,8 +112,12 @@ lr = 1e-4
 time_stretch = 1.0
 ```
 
-- Every training knob lives in `TrainParams` / `Augmentation` in
-  `src/zephyr/config.py`; read that file for the full list and defaults.
+- Every training knob lives in `TrainParams` / `Augmentation` in zephyr's
+  `config.py`; read that file for the full list and defaults.
+- zephyr-benchmarks' `BenchmarkTrainParams` adds `arch` (`zephyr`, the
+  default, `tscan` or `physnet`; the last two need `channels = "gray"`) and
+  `tscan_img_size`. zephyr's own `Fold` refuses both keys: a fold naming a
+  comparison network runs only through `zephyr-benchmarks run`.
 - Loading refuses leakage (a test clip sharing a video or recording with
   training), unlabelled training clips, clips without boxes, and lists with
   different `[preprocess]` recipes. If a fold fails to load, fix the fold,
@@ -91,15 +126,15 @@ time_stretch = 1.0
 - Leave-one-out is one fold file per held-out recording (see
   `configs/folds/ood-hold{13,14,15}.toml`); they differ only in `groups`.
 
-### Experiment (`configs/experiments/*.toml`, model `Experiment`)
+### Experiment (`configs/experiments/*.toml`, model `Experiment`; `BenchmarkExperiment`)
 
 Which folds run, with which seeds, and where.
 
 ```toml
 folds = ["../folds/ood-hold13.toml", "../folds/ood-hold14.toml"]
 seeds = [42]                      # each fold runs once per seed
-output_dir = "../../runs/my-experiment"
-features_dir = "../../data/features-v2"
+output_dir = "../../../../runs/my-experiment"
+features_dir = "../../../../data/features-v2"
 device = "cuda"                   # machine settings: optional, CLI overrides
 amp = "bf16"
 ```
@@ -108,13 +143,20 @@ Seeds belong to the experiment, never to the fold.
 
 ## Workflow
 
+From the repository root, with `C=packages/zephyr-benchmarks/configs`:
+
 ```bash
-uv run zephyr preprocess configs/clips/<list>.toml --cache data/features-v2
-uv run zephyr run configs/experiments/<exp>.toml --smoke --output-dir runs/smoke   # always first
-uv run zephyr run configs/experiments/<exp>.toml [--seeds 42]
+uv run zephyr preprocess $C/clips/<list>.toml --cache data/features-v2
+uv run zephyr run $C/experiments/<exp>.toml --smoke --output-dir runs/smoke   # always first
+uv run zephyr run $C/experiments/<exp>.toml [--seeds 42]
 uv run zephyr evaluate --checkpoint <best.pt> --clips <a>.toml <b>.toml --cache data/features-v2 --out <file>
 ```
 
+- `zephyr-benchmarks run` / `evaluate` take the same arguments and are needed
+  for folds with `arch = "tscan"` or `"physnet"` and their checkpoints;
+  `zephyr evaluate` refuses non-zephyr checkpoints. Baselines and tables:
+  `zephyr-benchmarks pixel|facemap|timing <fold> --cache <dir>`,
+  `zephyr-benchmarks collect --runs <dir>`, `zephyr-benchmarks report`.
 - **Always smoke-run** (`--smoke`, 1 epoch of 2 steps) before a full run. Smoke
   output goes to `<output_dir>/smoke/` unless `--output-dir` is given.
 - A run writes `<output_dir>/<fold stem>/seed-<n>/` with `config.json`,
@@ -129,38 +171,43 @@ uv run zephyr evaluate --checkpoint <best.pt> --clips <a>.toml <b>.toml --cache 
 - `evaluate` refuses clips a checkpoint (or the checkpoint it was initialised
   from) trained on. Do not work around the refusal.
 - To check that a new config means what you intend before training, load it:
-  `uv run python -c "from zephyr.config import load, Fold; f = load(Fold, 'configs/folds/x.toml'); print([len(c) for c in f.train_clips()], {k: len(v) for k, v in f.test_clips().items()})"`.
+  `uv run python -c "from zephyr.config import load; from zephyr.benchmarks.config import BenchmarkFold; f = load(BenchmarkFold, 'packages/zephyr-benchmarks/configs/folds/x.toml'); print([len(c) for c in f.train_clips()], {k: len(v) for k, v in f.test_clips().items()})"`.
 
 ## Reference configs: do not change their meaning
 
 `configs/folds/benchmark-gray-diff-flow-multitask.toml`,
-`configs/folds/baseline-{tscan,physnet}.toml` and their experiments reproduce
-published results; `tests/test_reproduction.py` pins them to the reference
-runs' settings. Copy them to experiment; never edit them.
+`configs/folds/baseline-{tscan,physnet}.toml` and their experiments (all in
+`packages/zephyr-benchmarks/`) reproduce published results;
+`packages/zephyr-benchmarks/tests/test_reproduction.py` pins them to the
+reference runs' settings. Copy them to experiment; never edit them.
 
 ## When code does need to change
 
 Only when an experiment needs a setting that does not exist yet:
 
-1. Add it as a field on the right pydantic model in `src/zephyr/config.py`
-   (`TrainParams`, `Augmentation`, `PreprocessParams`, `Selection`, ...), with a
-   default that keeps current behaviour, so every existing config and
-   `tests/test_reproduction.py` still pass unchanged.
+1. Add it as a field on the right pydantic model, with a default that keeps
+   current behaviour, so every existing config and `test_reproduction.py`
+   still pass unchanged. A setting of the zephyr network goes in zephyr's
+   `config.py` (`TrainParams`, `Augmentation`, `PreprocessParams`,
+   `Selection`, ...); a setting only a comparison method has goes in
+   `BenchmarkTrainParams`.
 2. Read it from the model where it is used; no new CLI flag.
-3. Add a test, keep module docstrings under 10 lines (excluding CLI examples;
-   `tests/test_module_docstrings.py` enforces it), and run
-   `uv run ruff format . && uv run ruff check . && uv run pytest -q`.
+3. Add a test in that package's `tests/`, keep module docstrings under 10
+   lines (excluding CLI examples; each package's `test_module_docstrings.py`
+   enforces it), and run
+   `uv run ruff format . && uv run ruff check . && uv run pytest -q` from the
+   repository root (it tests both packages).
 
 ## Keeping this file current
 
 This file describes the infrastructure as it is now, and it will go stale if
 nobody maintains it. Whenever a change touches the config models, the CLI, the
-run layout, the cache, or a workflow described here, **consider what the change
-means for this file and update it in the same change**. That covers, for
-example: a new or renamed field, file type or subcommand; a new validation
-rule; a moved directory; a new reference config. If a change makes a rule here
-wrong or obsolete, fix or remove the rule rather than working around it. When
-in doubt, mention the implication to the user.
+run layout, the cache, the package boundary or a workflow described here,
+**consider what the change means for this file and update it in the same
+change**. That covers, for example: a new or renamed field, file type or
+subcommand; a new validation rule; a moved directory; a new reference config.
+If a change makes a rule here wrong or obsolete, fix or remove the rule rather
+than working around it. When in doubt, mention the implication to the user.
 
 ## Hard rules
 
@@ -169,4 +216,5 @@ in doubt, mention the implication to the user.
   `new_animals` are labels a config author chose, nothing more.
 - `data/` and `benchmarks/` are read-only inputs. Write new outputs to new
   directories (`runs/...`, a new feature cache).
+- zephyr never imports zephyr-benchmarks (see above).
 - Do not commit unless asked.

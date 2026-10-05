@@ -1,0 +1,25 @@
+# Fine-tune the benchmark network on the face data plus side-profile sessions
+# 14 and 15, then score the held-out session 13 and both face groups.
+init_from = "../../../../benchmarks/input-objective-v1/runs/gray-diff-flow__multitask__seed-42/best.pt"
+
+[[train]]
+clips = "../clips/face_train.toml"
+weight = 0.5
+
+[[train]]
+clips = "../clips/ood_side_right.toml"
+groups = ["14", "15"]
+weight = 0.5
+
+[test]
+ood_held_out = { clips = "../clips/ood_side_right.toml", groups = ["13"] }
+new_animals = "../clips/face_test_new_animals.toml"
+known_animals_new_date = "../clips/face_test_known_animals_new_date.toml"
+
+[train_params]
+channels = "gray+diff+flow"
+epochs = 20
+steps_per_epoch = 200
+lr = 1e-4
+ema_decay = 0.995
+val_fraction = 0
