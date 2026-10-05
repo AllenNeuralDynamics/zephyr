@@ -64,6 +64,26 @@ def run_fold(
     )
 
 
+def choose_machine(args: argparse.Namespace, defaults: dict) -> Machine:
+    """CLI flag, else the experiment's value, else a default -- per setting.
+
+    An experiment that leaves a setting out loads it as ``None``, so each
+    fallback tests for ``None`` rather than for a missing key.
+    """
+
+    def pick(name: str, default):
+        for value in (getattr(args, name), defaults.get(name)):
+            if value is not None:
+                return value
+        return default
+
+    return Machine(
+        device=pick("device", "cuda" if torch.cuda.is_available() else "cpu"),
+        amp=pick("amp", "bf16"),
+        num_workers=pick("num_workers", 4),
+    )
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("config", type=Path, help="Experiment or fold TOML file.")
@@ -122,18 +142,7 @@ def main(argv: list[str] | None = None) -> None:
         if features_dir is None:
             raise SystemExit("running a bare fold needs --cache")
 
-    chosen = {
-        "device": args.device
-        or defaults.get("device")
-        or ("cuda" if torch.cuda.is_available() else "cpu"),
-        "amp": args.amp or defaults.get("amp") or "bf16",
-        "num_workers": (
-            args.num_workers
-            if args.num_workers is not None
-            else defaults.get("num_workers", 4)
-        ),
-    }
-    machine = Machine(**chosen)
+    machine = choose_machine(args, defaults)
     if args.smoke and args.output_dir is None:
         # A finished run is skipped straight to evaluation, so a smoke best.pt in
         # the real directory would later be reported as the trained model.

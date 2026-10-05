@@ -180,7 +180,9 @@ seeds 17, 42, 101, 202 and 314 by
    ```python
    import glob, json, statistics
 
-   runs = sorted(glob.glob("runs/benchmark-gray-diff-flow-multitask/*/seed-*/evaluation.json"))
+   runs = sorted(
+       glob.glob("runs/benchmark-gray-diff-flow-multitask/*/seed-*/evaluation.json")
+   )
    groups = [json.load(open(path))["groups"] for path in runs]
    metrics = ("correlation", "inhale_f1", "exhale_f1", "kl_ibi", "head_inhale_f1")
    print(f"{len(runs)} seeds")
