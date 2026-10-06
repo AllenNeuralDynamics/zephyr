@@ -79,7 +79,7 @@ def _():
 
 
 @app.cell
-def _(start):
+def _(start: mo.ui.slider):
     now: mo.ui.slider = mo.ui.slider(
         start.value,
         start.value + 10,
@@ -93,7 +93,13 @@ def _(start):
 
 
 @app.cell
-def _(now, start, test_clip, traces, truth):
+def _(
+    now: mo.ui.slider,
+    start: mo.ui.slider,
+    test_clip: results.TestClip,
+    traces: pd.DataFrame,
+    truth: pd.DataFrame,
+):
     t: float = now.value
     fig1 = plots.scrubber(
         results.raw_frame(test_clip, t),
@@ -246,8 +252,50 @@ def _():
 
 
 @app.cell
-def _(frames, occlusion):
+def _(frames: dict[str, NDArray], occlusion: dict[str, NDArray]):
     plots.importance_by_clip_figure(occlusion, frames)
+    return
+
+
+@app.cell
+def _():
+    mo.md("""
+    ## 7. Ablation: temporal stretch augmentation
+
+    Does temporal aug even help?
+    """)
+    return
+
+
+@app.cell
+def _():
+    stretch: pd.DataFrame = results.stretch_summary()
+    stretch["no stretch minus Zephyr"] = stretch[results.NO_STRETCH] - stretch["Zephyr"]
+    mo.ui.table(stretch.round(3).reset_index(names="metric"), selection=None)
+    return
+
+
+@app.cell
+def _(
+    start: mo.ui.slider,
+    test_clip: results.TestClip,
+    traces: pd.DataFrame,
+    truth: pd.DataFrame,
+):
+    variant: pd.DataFrame = results.no_stretch_traces(test_clip.entry)  # cpu, cached
+    v_times: NDArray = variant["Time"].to_numpy()
+    inhales: dict[str, NDArray] = {
+        "Truth": results.events(truth["Time"].to_numpy(), truth["Signal"].to_numpy())[
+            0
+        ],
+        "Zephyr": results.events(
+            traces["Time"].to_numpy(), traces["Zephyr"].to_numpy()
+        )[0],
+        results.NO_STRETCH: results.events(
+            v_times, variant[results.NO_STRETCH].to_numpy()
+        )[0],
+    }
+    plots.variant_traces_figure(traces, variant, truth, inhales, start.value, 10)
     return
 
 
