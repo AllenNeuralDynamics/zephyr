@@ -1,0 +1,8 @@
+# Five seeds of the benchmark fold.  A full run needs a GPU:
+#   zephyr run packages/zephyr-benchmarks/configs/experiments/benchmark-gray-diff-flow-multitask.toml
+folds = ["../folds/benchmark-gray-diff-flow-multitask.toml"]
+seeds = [17, 42, 101, 202, 314]
+output_dir = "../../../../runs/benchmark-gray-diff-flow-multitask"
+features_dir = "../../../../data/features-v2"
+device = "cuda"
+amp = "bf16"

@@ -1,0 +1,23 @@
+# TS-CAN baseline (Liu et al., NeurIPS 2020) on the gray channel, predicting the
+# trace's forward difference.  Settings are those of the reference runs in
+# benchmarks/baselines-v1/tscan/runs; lr 3e-3 was picked on the train split
+# (see docs/baselines-report.md).  Frame-rate augmentation is off because the
+# network's motion branch assumes a fixed frame rate.
+[[train]]
+clips = "../clips/face_train.toml"
+
+[test]
+new_animals = "../clips/face_test_new_animals.toml"
+known_animals_new_date = "../clips/face_test_known_animals_new_date.toml"
+
+[train_params]
+arch = "tscan"
+channels = "gray"
+tscan_img_size = 36
+lr = 3e-3
+w_onset = 0.0
+val_fraction = 0
+
+[train_params.augmentation]
+time_stretch = 1.0
+select_jitter = 0.0

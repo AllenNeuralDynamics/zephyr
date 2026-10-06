@@ -23,6 +23,9 @@ jobs:
   tests:
     runs-on: ubuntu-latest
     name: Zephyr unit tests (py${{ matrix.python-version }})
+    env:
+      # `uv run` would otherwise re-sync without --extra cpu and uninstall torch.
+      UV_NO_SYNC: "1"
     strategy:
       fail-fast: false
       matrix:
@@ -35,7 +38,7 @@ jobs:
           enable-cache: true
 
       - name: Install python dependencies
-        run: uv sync --python ${{ matrix.python-version }} --extra cpu
+        run: uv sync --python ${{ matrix.python-version }} --all-packages --extra cpu
 
       - name: Run ruff format
         run: uv run ruff format --check
@@ -46,8 +49,9 @@ jobs:
       - name: Run python unit tests
         run: uv run pytest
 
-      - name: Build package
-        run: uv build
+      # zephyr-benchmarks is built only to prove it still packages; it is never released.
+      - name: Build packages
+        run: uv build --all-packages
 
       - name: Check for uncommitted changes
         shell: bash
@@ -80,7 +84,7 @@ jobs:
           enable-cache: true
 
       - name: Build wheel
-        run: uv build
+        run: uv build --package zephyr
 
       - name: Upload wheel as artifact
         uses: actions/upload-artifact@v5
