@@ -1,5 +1,6 @@
 """Helpers that lay out a tiny fake dataset and write clip lists/folds for tests."""
 
+import os
 from pathlib import Path
 
 
@@ -17,7 +18,7 @@ def touch_clip(
 
 
 def _rel(target: Path, base: Path) -> str:
-    return Path(target).relative_to(base, walk_up=True).as_posix()
+    return Path(os.path.relpath(target, base)).as_posix()
 
 
 def write_list(
