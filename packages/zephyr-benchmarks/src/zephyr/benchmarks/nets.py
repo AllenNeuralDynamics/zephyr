@@ -281,11 +281,83 @@ class PhysNetBreathing(nn.Module):
         return signal, torch.zeros_like(signal)
 
 
-ARCHS = ("zephyr", "tscan", "physnet")
+class PhysNetDualHead(nn.Module):
+    """PhysNet backbone with separate signal and onset heads.
+
+    Same encoder-decoder as :class:`PhysNet` but the single output head is
+    replaced by two parallel ``Conv3d(64, 1, 1)`` heads that read from the same
+    spatially-pooled trunk features, returning ``(signal, onset_logits)`` each
+    of shape ``(B, T)``.
+    """
+
+    def __init__(self, in_channels: int = 1) -> None:
+        super().__init__()
+        self.b1 = _block(in_channels, 16, (1, 5, 5), (0, 2, 2))
+        self.b2 = _block(16, 32, 3, 1)
+        self.b3 = _block(32, 64, 3, 1)
+        self.b4, self.b5, self.b6, self.b7, self.b8, self.b9 = (
+            _block(64, 64, 3, 1) for _ in range(6)
+        )
+        self.up1, self.up2 = _up(), _up()
+        self.pool_s = nn.MaxPool3d((1, 2, 2), stride=(1, 2, 2))
+        self.pool_st = nn.MaxPool3d(2, stride=2)
+        self.spatial = nn.AdaptiveAvgPool3d((None, 1, 1))
+        self.signal_head = nn.Conv3d(64, 1, 1)
+        self.onset_head = nn.Conv3d(64, 1, 1)
+
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        b, _, t = x.shape[:3]
+        x = self.pool_s(self.b1(x))
+        x = self.pool_st(self.b3(self.b2(x)))
+        x = self.pool_st(self.b5(self.b4(x)))
+        x = self.pool_s(self.b7(self.b6(x)))
+        x = self.spatial(self.up2(self.up1(self.b9(self.b8(x)))))
+        return self.signal_head(x).view(b, t), self.onset_head(x).view(b, t)
+
+
+class PhysNetBreathingEvent(nn.Module):
+    """PhysNet on the gray channel with an added onset-detection head.
+
+    Identical to :class:`PhysNetBreathing` except that the second return value
+    is a real onset-logit sequence (trained with onset BCE loss) rather than
+    zeros.  Use ``arch = "physnet_event"`` in a benchmark fold to select it.
+    """
+
+    arch = "physnet_event"
+
+    def __init__(self, channels: ChannelSet = GRAY) -> None:
+        super().__init__()
+        if channels.names != ("gray",):
+            raise ValueError(f"PhysNet takes only the gray channel, got {channels}")
+        self.channels = channels
+        self.net = PhysNetDualHead(in_channels=1)
+
+    @property
+    def receptive_field(self) -> int:
+        return 64
+
+    def forward(self, features, t_in, t_out, chunk=None):
+        t = features.shape[1]
+        x = features.permute(0, 2, 1, 3, 4)  # (B, 1, T, H, W)
+        pad = (-t) % 4
+        if pad:
+            x = torch.cat([x, x[:, :, -1:].expand(-1, -1, pad, -1, -1)], dim=2)
+        signal_raw, onset_raw = self.net(x)
+        signal = resample_embeddings(
+            signal_raw[:, :t].unsqueeze(-1), t_in, t_out
+        ).squeeze(-1)
+        onset = resample_embeddings(
+            onset_raw[:, :t].unsqueeze(-1), t_in, t_out
+        ).squeeze(-1)
+        return signal, onset
+
+
+ARCHS = ("zephyr", "tscan", "physnet", "physnet_event")
 ARCH_OPTIONS = {
     "zephyr": set(),
     "tscan": {"img_size"},
     "physnet": set(),
+    "physnet_event": set(),
 }
 """Architecture options a checkpoint may record and :func:`build_model` accepts."""
 
@@ -319,4 +391,6 @@ def build_model(
             gray_std=float(std[gray]) if std is not None else 1.0,
             **arch_kwargs,
         )
+    if arch == "physnet_event":
+        return PhysNetBreathingEvent(channels)
     return PhysNetBreathing(channels, **arch_kwargs)

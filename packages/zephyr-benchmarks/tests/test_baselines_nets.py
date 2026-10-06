@@ -124,6 +124,27 @@ class PhysNetTests(unittest.TestCase):
         self.assertEqual(signal.shape, (1, 16))
 
 
+class PhysNetEventTests(unittest.TestCase):
+    def test_dual_head_returns_two_outputs_of_same_shape(self):
+        net = nets.PhysNetDualHead()
+        signal, onset = net(torch.randn(1, 1, 16, 32, 32))
+        self.assertEqual(signal.shape, (1, 16))
+        self.assertEqual(onset.shape, (1, 16))
+
+    def test_wrapper_returns_non_zero_onset_logits(self):
+        model = nets.PhysNetBreathingEvent(ChannelSet.parse("gray"))
+        features = torch.randn(1, 18, 1, 32, 32)
+        t_in = torch.arange(18.0).unsqueeze(0) / 60
+        signal, onset = model(features, t_in, t_in[:, 1:-1])
+        self.assertEqual(signal.shape, (1, 16))
+        self.assertEqual(onset.shape, (1, 16))
+        self.assertFalse(torch.all(onset == 0))
+
+    def test_rejects_non_gray_channels(self):
+        with self.assertRaises(ValueError):
+            nets.PhysNetBreathingEvent(ChannelSet.parse("gray+diff"))
+
+
 class BuildModelTests(unittest.TestCase):
     def test_build_each_arch(self):
         mean, std = np.full(4, 120.0), np.full(4, 30.0)
@@ -136,6 +157,10 @@ class BuildModelTests(unittest.TestCase):
         self.assertIsInstance(
             nets.build_model("physnet", ChannelSet.parse("gray")),
             nets.PhysNetBreathing,
+        )
+        self.assertIsInstance(
+            nets.build_model("physnet_event", ChannelSet.parse("gray")),
+            nets.PhysNetBreathingEvent,
         )
         with self.assertRaises(ValueError):
             nets.build_model("nope", ChannelSet.parse("gray"))
@@ -161,6 +186,6 @@ class TscanOptionsTests(unittest.TestCase):
 
     def test_there_is_no_reconstruction_delay_option(self):
         gray = ChannelSet.parse("gray")
-        for arch in ("tscan", "physnet", "zephyr"):
+        for arch in ("tscan", "physnet", "physnet_event", "zephyr"):
             with self.assertRaises(ValueError):
                 nets.build_model(arch, gray, delay=1.0)

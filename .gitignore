@@ -35,3 +35,9 @@ packages/zephyr/src/zephyr/_version.py
 /data/
 runs*/
 /benchmarks/
+
+# Notebook outputs
+notebooks/cache/
+notebooks/figures/
+notebooks/__marimo__/
+notebooks/*.html

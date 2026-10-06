@@ -27,6 +27,12 @@ The repository is a uv workspace of two packages (`uv sync --all-packages
 - `zephyr` lives under one import name across two distributions: core's
   `zephyr/__init__.py` extends `__path__`. Keep that line; never add an
   `__init__.py` at `packages/zephyr-benchmarks/src/zephyr/`.
+- **`notebooks/`** holds [marimo](https://marimo.io) notebooks (plain `.py`
+  files) for plotting runs and results; marimo is in the `dev` dependency group.
+  Notebooks are declarative, only read results, never train, and share
+  `notebooks/utils/` (`style.py` fixes figure sizes, fonts and one colour per
+  method/channel/objective; reuse it for every figure). They are not an
+  experiment path (see below).
 
 ## The rule: experiments are TOML, not code
 
@@ -157,6 +163,10 @@ uv run zephyr evaluate --checkpoint <best.pt> --clips <a>.toml <b>.toml --cache 
   `zephyr evaluate` refuses non-zephyr checkpoints. Baselines and tables:
   `zephyr-benchmarks pixel|facemap|timing <fold> --cache <dir>`,
   `zephyr-benchmarks collect --runs <dir>`, `zephyr-benchmarks report`.
+- `zephyr-benchmarks occlusion --checkpoint <best.pt> --clips <a>.toml <b>.toml --cache data/features-v2 --out <file.npz>`
+  is inference-only analysis (not an experiment): per-channel patch-occlusion
+  maps of event F1 on the first `--window-s` seconds of each clip; `--patch`,
+  `--stride`, `--window-s` are analysis args.
 - **Always smoke-run** (`--smoke`, 1 epoch of 2 steps) before a full run. Smoke
   output goes to `<output_dir>/smoke/` unless `--output-dir` is given.
 - A run writes `<output_dir>/<fold stem>/seed-<n>/` with `config.json`,
