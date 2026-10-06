@@ -31,7 +31,7 @@ htmlcov/
 packages/zephyr/src/zephyr/_version.py
 
 # Zephyr generated data and runs
-/artifacts/frames/
+/artifacts/
 /data/
 runs*/
 /benchmarks/

@@ -18,6 +18,13 @@ cd zephyr
 uv sync --locked --all-packages --extra cpu     # or --extra gpu for CUDA
 ```
 
+## Data
+
+The dataset (face-camera videos, frame timestamps and thermistor traces) is on
+a public S3 bucket; no AWS credentials are needed. The download commands are in
+the [benchmarks README, under Dataset](packages/zephyr-benchmarks/README.md#dataset).
+Everything goes into `data/` at the repository root.
+
 - `examples/` has one clip list, fold and experiment to start from; the
   [zephyr README](packages/zephyr/README.md) walks through them.
 - `packages/zephyr-benchmarks/configs/` holds the benchmark's configs; its
