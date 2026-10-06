@@ -1,0 +1,33 @@
+# Example clip list: three recordings (groups 1, 2, 3) of the face camera.
+# Paths are relative to this file. Make your own with
+#   zephyr clips scan <dir> --glob 'video_*.mp4' -o <list.toml>
+# and place the boxes with `zephyr annotate <list.toml>`.
+# timestamps, thermistor and group are derived from each video name (see [derive]
+# in zephyr.config); give them explicitly when your files are named differently.
+
+[preprocess]
+target_size = [360, 270]          # frame size the boxes are measured in
+
+[[clip]]
+video = "../data/train/video_face_1_part_1.mp4"
+box = [212, 99, 96, 96]           # x, y, w, h in target_size pixels
+
+[[clip]]
+video = "../data/train/video_face_1_part_2.mp4"
+box = [212, 99, 96, 96]
+
+[[clip]]
+video = "../data/train/video_face_2_part_1.mp4"
+box = [223, 117, 96, 96]
+
+[[clip]]
+video = "../data/train/video_face_2_part_2.mp4"
+box = [223, 117, 96, 96]
+
+[[clip]]
+video = "../data/train/video_face_3_part_1.mp4"
+box = [211, 110, 96, 96]
+
+[[clip]]
+video = "../data/train/video_face_3_part_2.mp4"
+box = [211, 110, 96, 96]

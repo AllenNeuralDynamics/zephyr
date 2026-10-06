@@ -1,0 +1,38 @@
+[project]
+name = "zephyr-benchmarks"
+dynamic = ["version"]
+description = "Benchmarks of zephyr on our dataset, and the methods it is compared against"
+authors = [{ name = "Allen Institute for Neural Dynamics" }]
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+dependencies = [
+    "zephyr",
+    "numpy>=1.26",
+    "pandas>=2.0",
+    "matplotlib>=3.8",
+    "scipy>=1.11",
+]
+
+[project.optional-dependencies]
+cpu = ["zephyr[cpu]"]
+gpu = ["zephyr[gpu]"]
+
+[project.scripts]
+zephyr-benchmarks = "zephyr.benchmarks.cli:run"
+
+[tool.uv.sources]
+zephyr = { workspace = true }
+
+[build-system]
+requires = ["hatchling", "hatch-vcs"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+source = "vcs"
+raw-options = { root = "../.." }
+
+# Ships only zephyr/benchmarks/: the zephyr package itself belongs to zephyr.
+[tool.hatch.build.targets.wheel]
+packages = ["src/zephyr"]
