@@ -154,7 +154,11 @@ def raw_frame(clip: TestClip, t_s: float) -> NDArray:
 def channel_frames(entry: features.ClipEntry, t_s: float) -> dict[str, NDArray]:
     """What the network sees at time *t_s*: each channel in physical units."""
     index = int(np.searchsorted(np.load(entry.frame_times), t_s))
-    stack = np.load(entry.features, mmap_mode="r")[index]
+    return channel_planes(np.load(entry.features, mmap_mode="r")[index])
+
+
+def channel_planes(stack: NDArray) -> dict[str, NDArray]:
+    """One stored ``(C, H, W)`` feature frame as each channel in physical units."""
     physical: dict[str, Callable[[NDArray], NDArray]] = {
         "gray": lambda x: x.astype(float),
         "diff": lambda x: x.astype(float) - 128.0,
