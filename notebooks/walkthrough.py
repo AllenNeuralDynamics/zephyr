@@ -9,7 +9,6 @@ with app.setup:
     from numpy.typing import NDArray
 
     from utils import breathing, plots, results, style
-    from zephyr.evaluate import head_event_indices
 
     style.use_style()
 
@@ -121,8 +120,9 @@ def _():
     ## 2. The network
 
     The network maps the channel stack to a breathing trace, and to the probability
-    that an inhalation starts at each time (the onset head). Events are read from
-    the trace, or from the head, and scored against the thermistor within 17 ms.
+    that an inhalation starts at each time (the onset head). Inhale events are read
+    from the head, never from the trace, and scored against the thermistor's within
+    17 ms; the triangles on both panels are the head's events.
     """)
     return
 
@@ -131,10 +131,8 @@ def _():
 def _(start: mo.ui.slider, traces: pd.DataFrame, truth: pd.DataFrame):
     t0: float = start.value
     t1: float = start.value + 10
-    times: NDArray = traces["Time"].to_numpy()
     truth_on, _ = results.events(truth["Time"].to_numpy(), truth["Signal"].to_numpy())
-    trace_on, _ = results.events(times, traces["Zephyr"].to_numpy())
-    head_on: NDArray = times[head_event_indices(traces["onset"].to_numpy(), times)]
+    head_on: NDArray = results.head_events(traces)
 
     def inside(x: NDArray) -> NDArray:
         return x[(x >= t0) & (x <= t1)]
@@ -151,7 +149,7 @@ def _(start: mo.ui.slider, traces: pd.DataFrame, truth: pd.DataFrame):
     top.plot(shown_truth.Time, z, color=style.TRUTH, label="Thermistor")
     top.plot(shown.Time, shown.Zephyr, color=style.color("Zephyr"), label="Zephyr")
     plots.mark_events(top, inside(truth_on), 3.3, style.TRUTH)
-    plots.mark_events(top, inside(trace_on), 2.8, style.color("Zephyr"), "^")
+    plots.mark_events(top, inside(head_on), 2.8, style.color("Zephyr"), "^")
     top.set_ylabel("Breathing (z-score)")
     top.legend(loc="lower right", bbox_to_anchor=(1, 1), ncol=2)
     plots.onset_head(bottom, shown.Time, shown.onset)
@@ -198,8 +196,9 @@ def _():
     ## 4. Benchmark
 
     Every method on the 24 held-out clips. Each dot is one trained network (or
-    one deterministic run); bars are means. Zephyr is scored twice on the event
-    metrics: with events detected on its trace, and with events from its onset head (green).
+    one deterministic run); bars are means. Zephyr's inhale events come from its
+    onset head; the methods without a head are scored with DSP on their trace, and
+    exhale F1 is DSP for all (tick labels say which).
     """)
     return
 
@@ -208,6 +207,12 @@ def _():
 def _():
     benchmark: pd.DataFrame = results.benchmark()
     plots.benchmark_figure(benchmark)
+    return (benchmark,)
+
+
+@app.cell
+def _(benchmark: pd.DataFrame):
+    mo.ui.table(plots.benchmark_means(benchmark).round(3), selection=None)
     return
 
 
@@ -219,7 +224,9 @@ def _():
     Each input set is trained with and without the onset-event objective, five
     networks each. Inhalations can be detected in two ways: by signal processing on
     the predicted trace (middle), or from the onset head's probability (right). The
-    head's F1 is far higher, and flow improves both.
+    head's F1 is far higher, and flow improves both. The middle column is the one
+    place inhale events come from DSP on a predicted trace: it is the comparison
+    this ablation is for, and the signal-only networks have no trained head.
     """)
     return
 
@@ -283,17 +290,12 @@ def _(
     truth: pd.DataFrame,
 ):
     variant: pd.DataFrame = results.no_stretch_traces(test_clip.entry)  # cpu, cached
-    v_times: NDArray = variant["Time"].to_numpy()
     inhales: dict[str, NDArray] = {
         "Truth": results.events(truth["Time"].to_numpy(), truth["Signal"].to_numpy())[
             0
         ],
-        "Zephyr": results.events(
-            traces["Time"].to_numpy(), traces["Zephyr"].to_numpy()
-        )[0],
-        results.NO_STRETCH: results.events(
-            v_times, variant[results.NO_STRETCH].to_numpy()
-        )[0],
+        "Zephyr": results.head_events(traces),
+        results.NO_STRETCH: results.head_events(variant),
     }
     plots.variant_traces_figure(traces, variant, truth, inhales, start.value, 10)
     return
@@ -333,12 +335,15 @@ def _():
     mo.md("""
     ## 9. The test set by breathing rate
 
-    Every thermistor breath is binned by its own rate; rows are the two test groups,
-    one line per recording (colours restart in each row), pooled dashed.
+    Every thermistor breath is binned by its own rate; rows are the two test groups
+    and, for comparison, the training clips (in-sample: the network was fitted to
+    them, so that row is a reference, not a score). One line per recording
+    (colours restart in each row), pooled dashed.
     **Breaths detected**: share matched by an onset-head event within one frame
     (17 ms); dotted is chance, the same head events circularly shifted.
-    **Local inhale F1**: misses binned by the breath's rate, false events by the
-    thermistor's rate at that time. **Waveform correlation**: Pearson r of the
+    **Local F1**: misses binned by the breath's rate, false events by the
+    thermistor's rate at that time; from the head, and next to it from DSP on the
+    trace (the only DSP column, kept as a comparison). **Waveform correlation**: Pearson r of the
     trace against the filtered thermistor in 3 s windows (dots), binned means as
     lines. **Rate distribution**: where each recording's breaths fall.
     """)
@@ -347,12 +352,13 @@ def _():
 
 @app.cell
 def _():
-    rate_tables: dict[str, pd.DataFrame] = breathing.test_tables()  # cpu, cached
+    rate_tables: dict[str, pd.DataFrame] = breathing.all_tables()  # cpu, cached
     _b: pd.DataFrame = rate_tables["breaths"]
     plots.test_rates_figure(
         breathing.recall_by_bin(_b),
         breathing.recall_by_bin(_b, "chance"),
-        breathing.f1_by_bin(_b, rate_tables["false_positives"]),
+        breathing.f1_by_bin(_b, rate_tables["false_positives"], "head"),
+        breathing.f1_by_bin(_b, rate_tables["false_positives"], "DSP"),
         rate_tables["windows"],
         breathing.share_by_bin(_b, ["recording"], within="stratum"),
         breathing.bin_centres(),

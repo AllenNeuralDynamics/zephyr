@@ -138,8 +138,10 @@ def recording_label(entry: features.ClipEntry) -> str:
 
 
 def short_name(entry: features.ClipEntry) -> str:
-    """``test/video_face_6_part_1`` -> ``face_6_part_1`` (any folder)."""
-    return entry.clip_id.rsplit("/", 1)[-1].removeprefix("video_")
+    """``test/video_face_6_part_1`` -> ``face_6_part_1``; other folders keep their
+    name as a prefix (``train_face_6_part_1``), since names repeat across folders."""
+    name = entry.clip_id.removeprefix("test/").replace("video_", "", 1)
+    return name.replace("/", "_")
 
 
 def raw_frame(clip: TestClip, t_s: float) -> NDArray:
@@ -262,8 +264,14 @@ def stretch_summary() -> pd.DataFrame:
     """Scores of the stretch-ablation networks over all 12 test recordings.
 
     One row per metric, one column per network, read from their ``evaluation.json``.
+    Inhale F1 is the onset head's; exhale F1 has no head and is DSP. KL-IBI is left
+    out: the files only hold it from DSP events.
     """
-    metrics = (*METRICS, "head_inhale_f1")
+    metrics = {
+        "correlation": "correlation",
+        "head_inhale_f1": "inhale F1 (head)",
+        "exhale_f1": "exhale F1 (DSP)",
+    }
     columns = {
         name: json.loads((run / "evaluation.json").read_text())["groups"]["all"][
             "summary"
@@ -271,12 +279,26 @@ def stretch_summary() -> pd.DataFrame:
         for name, run in STRETCH_RUNS.items()
     }
     return pd.DataFrame(
-        {name: {m: s[m] for m in metrics} for name, s in columns.items()}
+        {
+            name: {label: s[m] for m, label in metrics.items()}
+            for name, s in columns.items()
+        }
     )
 
 
+def head_events(frame: pd.DataFrame) -> NDArray:
+    """Inhale times (s) a network's onset head asserts; *frame* has ``Time`` and
+    ``onset``. The only source of inhale events for a network that has a head."""
+    times = frame[TIME_COLUMN].to_numpy()
+    return times[head_event_indices(frame["onset"].to_numpy(), times)]
+
+
 def events(times: NDArray, signal: NDArray) -> tuple[NDArray, NDArray]:
-    """Inhale and exhale onset times (s) the scorer detects in a trace."""
+    """Inhale and exhale onset times (s) the scorer detects in a trace (DSP).
+
+    For the thermistor, for methods without an onset head, and for exhalations;
+    a network with a head takes its inhalations from :func:`head_events`.
+    """
     trace = pd.DataFrame({TIME_COLUMN: times, BREATHING_SIGNAL_COLUMN: signal})
     uniform = resample_uniform(trace)
     inhale, exhale = detect_inhalation_events(
@@ -289,22 +311,26 @@ def events(times: NDArray, signal: NDArray) -> tuple[NDArray, NDArray]:
 def method_scores(entry: features.ClipEntry, traces: pd.DataFrame) -> pd.DataFrame:
     """Scores of every method on this clip, as the benchmark scores them.
 
-    ``head_inhale_f1`` is Zephyr's inhale F1 when events come from its onset head
-    rather than from the trace; it is empty for the other methods.
+    Zephyr's inhale F1 and KL-IBI use its onset head's events; methods without a
+    head use DSP on their trace (column ``inhale events`` says which). Exhale F1
+    is DSP for every method.
     """
     times = traces[TIME_COLUMN].to_numpy()
     reference = truth(entry)
-    rows: dict[str, dict[str, float | None]] = {}
+    rows: dict[str, dict[str, object]] = {}
     for method in style.METHODS:
         predicted = pd.DataFrame(
             {TIME_COLUMN: times, BREATHING_SIGNAL_COLUMN: traces[method]}
         )
-        rows[method] = score_clip(reference, predicted).to_dict()
-        if method == "Zephyr":
-            head_events = times[head_event_indices(traces["onset"].to_numpy(), times)]
-            head = score_clip(reference, predicted, predicted_onset_times_s=head_events)
-            rows[method]["head_inhale_f1"] = head.inhale_f1
-    return pd.DataFrame(rows).T[[*METRICS, "head_inhale_f1"]]
+        if method in HEADED:
+            row = score_clip(
+                reference, predicted, predicted_onset_times_s=head_events(traces)
+            ).to_dict()
+        else:
+            row = score_clip(reference, predicted).to_dict()
+        row["inhale events"] = "head" if method in HEADED else "DSP"
+        rows[method] = row
+    return pd.DataFrame(rows).T[[*METRICS, "inhale events"]]
 
 
 def head_scores(run: str) -> pd.DataFrame:
@@ -356,6 +382,8 @@ def by_stratum(scores: pd.DataFrame, column: str) -> dict[str, float]:
 
 
 METRICS: tuple[str, ...] = ("correlation", "inhale_f1", "exhale_f1", "kl_ibi")
+HEADED: frozenset[str] = frozenset({"Zephyr"})
+"""Compared methods that have an onset head; their inhale events come only from it."""
 
 
 def _stratum_rows(path: Path, **labels: object) -> list[dict[str, object]]:

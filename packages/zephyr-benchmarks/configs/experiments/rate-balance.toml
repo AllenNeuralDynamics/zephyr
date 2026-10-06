@@ -1,0 +1,8 @@
+# Zephyr trained on rate-balanced windows with time stretching off.  Smoke first:
+#   zephyr-benchmarks run packages/zephyr-benchmarks/configs/experiments/rate-balance.toml --smoke --output-dir runs/smoke-rate-balance
+folds = ["../folds/benchmark-rate-balanced.toml"]
+seeds = [42]
+output_dir = "../../../../runs/rate-balance"
+features_dir = "../../../../data/features-v2"
+device = "cuda"
+amp = "bf16"

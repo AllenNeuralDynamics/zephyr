@@ -33,6 +33,13 @@ The repository is a uv workspace of two packages (`uv sync --all-packages
   `notebooks/utils/` (`style.py` fixes figure sizes, fonts and one colour per
   method/channel/objective; reuse it for every figure). They are not an
   experiment path (see below).
+- **Inhale events of a network with an onset head come from the head, never
+  from DSP on its predicted trace**, in every plot and table: event markers,
+  inhale F1, KL-IBI, per-rate analyses (`results.head_events`). DSP
+  (`results.events`) is only for the thermistor, for methods without a head
+  (labelled "DSP"), and for exhale F1 (no head exists). A DSP view of a headed
+  network is allowed only as an explicitly labelled comparison next to the head
+  version (e.g. the §5 ablation, the "Local F1 (DSP)" column of §9).
 
 ## The rule: experiments are TOML, not code
 
@@ -120,6 +127,11 @@ time_stretch = 1.0
 
 - Every training knob lives in `TrainParams` / `Augmentation` in zephyr's
   `config.py`; read that file for the full list and defaults.
+- `rate_balance` (0 to 1, default 0 = off) draws training windows by their true
+  breathing rate, from the clips' stored inhale onsets, over `rate_bins_hz`
+  (default 2-15 Hz): each window is weighted by `share(bin) ** -rate_balance`,
+  within each `[[train]]` source. Bins under 1% of windows count as 1%. Helpers
+  are in `zephyr/rates.py`; validation windows are never balanced.
 - zephyr-benchmarks' `BenchmarkTrainParams` adds `arch` (`zephyr`, the
   default, `tscan` or `physnet`; the last two need `channels = "gray"`) and
   `tscan_img_size`. zephyr's own `Fold` refuses both keys: a fold naming a
