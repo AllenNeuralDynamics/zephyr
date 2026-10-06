@@ -11,7 +11,10 @@ uv run marimo export html notebooks/walkthrough.py -o walkthrough.html --no-incl
 
 - `walkthrough.py`: one test clip from video to breathing trace, every method on
   it, the benchmark, two ablations, and the time-stretch augmentation ablation
-  (scores and a trace comparison against the no-stretch network). Inference only (CPU is enough, about a
+  (scores and a trace comparison against the no-stretch network), the training
+  set's breathing-rate distribution, and test performance by breathing rate
+  (`utils/breathing.py`; the latter needs Zephyr's outputs on all 24 test clips,
+  cached after the first run). Inference only (CPU is enough, about a
   minute for a new clip, then cached in `cache/`); it never trains a network. A
   first cell lists any missing input with the command that produces it.
 - `utils/animation.py`: `pipeline_gif(...)` renders a clip excerpt as a GIF of the

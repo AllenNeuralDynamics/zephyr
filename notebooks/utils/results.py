@@ -36,6 +36,7 @@ CLIP_LISTS: dict[str, Path] = {
     "known_animals_new_date": ROOT
     / "packages/zephyr-benchmarks/configs/clips/face_test_known_animals_new_date.toml",
 }
+TRAIN_CLIPS: Path = ROOT / "packages/zephyr-benchmarks/configs/clips/face_train.toml"
 FEATURES: Path = ROOT / "data/features-v2"
 BASELINES: Path = ROOT / "benchmarks/baselines-v1"
 ABLATION: Path = ROOT / "benchmarks/input-objective-v1/runs"
@@ -125,9 +126,20 @@ def clips() -> dict[str, TestClip]:
     return out
 
 
+def train_entries() -> list[features.ClipEntry]:
+    """Every training clip of the benchmark, preprocessed."""
+    clip_list = load(ClipList, TRAIN_CLIPS)
+    return features.require(clip_list.resolve(), clip_list.preprocess, FEATURES)
+
+
+def recording_label(entry: features.ClipEntry) -> str:
+    """``C:/.../data/test#6`` -> ``rec 6``."""
+    return "rec " + entry.recording.rsplit("#", 1)[-1]
+
+
 def short_name(entry: features.ClipEntry) -> str:
-    """``test/video_face_6_part_1`` -> ``face_6_part_1``."""
-    return entry.clip_id.removeprefix("test/video_")
+    """``test/video_face_6_part_1`` -> ``face_6_part_1`` (any folder)."""
+    return entry.clip_id.rsplit("/", 1)[-1].removeprefix("video_")
 
 
 def raw_frame(clip: TestClip, t_s: float) -> NDArray:
@@ -192,6 +204,30 @@ def method_traces(entry: features.ClipEntry) -> pd.DataFrame:
     }
     frame = pd.DataFrame(
         {k: v if k == TIME_COLUMN else _zscore(v[:n]) for k, v in traces.items()}
+    )
+    frame["onset"] = onset[:n]
+    frame.to_parquet(cache)
+    return frame
+
+
+def zephyr_outputs(entry: features.ClipEntry) -> pd.DataFrame:
+    """Zephyr's z-scored trace and onset probability: ``Time``, ``Zephyr``, ``onset``.
+
+    Read from the all-methods cache when that clip has one; otherwise only Zephyr
+    is inferred (CPU) and cached on its own.
+    """
+    full = CACHE / f"{short_name(entry)}.parquet"
+    if full.exists():
+        return pd.read_parquet(full, columns=[TIME_COLUMN, "Zephyr", "onset"])
+    CACHE.mkdir(exist_ok=True)
+    cache = CACHE / f"{short_name(entry)}-zephyr.parquet"
+    if cache.exists():
+        return pd.read_parquet(cache)
+    print(f"No cache found in {cache}. Calculating from scratch.")
+    signal, onset = _infer("Zephyr", entry)
+    n = entry.n_output
+    frame = pd.DataFrame(
+        {TIME_COLUMN: np.load(entry.times)[:n], "Zephyr": _zscore(signal[:n])}
     )
     frame["onset"] = onset[:n]
     frame.to_parquet(cache)

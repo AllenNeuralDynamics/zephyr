@@ -354,6 +354,163 @@ def variant_traces_figure(
     return fig
 
 
+RATE_TICKS: tuple[float, ...] = (1, 2, 3, 4, 6, 8, 12)
+
+
+def rate_axis(ax: Axes, bins: Sequence[float]) -> None:
+    """Log breathing-rate x axis spanning *bins*."""
+    ax.set_xscale("log")
+    ax.set_xlim(bins[0], bins[-1])
+    ax.set_xticks(RATE_TICKS, [f"{t:g}" for t in RATE_TICKS])
+    ax.minorticks_off()
+    ax.set_xlabel("Breathing rate (Hz)")
+
+
+def _series_lines(
+    ax: Axes,
+    frame: pd.DataFrame,
+    x: str,
+    y: str,
+    colours: dict[str, str],
+    by: str = "recording",
+    **kwargs,
+) -> None:
+    """One line per *by* value, plus a heavier ``pooled`` line on top."""
+    for name, rows in frame[frame[by] != "pooled"].groupby(by):
+        rows = rows.sort_values(x)
+        ax.plot(rows[x], rows[y], color=colours[name], linewidth=0.8, **kwargs)
+    pooled = frame[frame[by] == "pooled"].sort_values(x)
+    ax.plot(
+        pooled[x], pooled[y], "s--", color=style.POOLED, markersize=2.5, linewidth=1.2
+    )
+
+
+def recording_colours(names: Sequence[str]) -> dict[str, str]:
+    """A fixed colour per recording, in sorted order."""
+    names = sorted(set(names) - {"pooled"}, key=lambda s: int(s.split()[-1]))
+    return dict(zip(names, style.series(len(names)), strict=True))
+
+
+def training_rates_figure(
+    by_recording: pd.DataFrame,
+    by_video: pd.DataFrame,
+    spectra: pd.DataFrame,
+    time_share: pd.Series,
+    bins: Sequence[float],
+) -> Figure:
+    """Training breaths by rate: per recording (with the pooled share of time), per
+    video, and power spectra."""
+    fig, axes = style.figure("double", 0.34, ncols=3)
+    colours = recording_colours(by_recording["recording"])
+    _series_lines(axes[0], by_recording, "centre", "share", colours, marker="o", ms=2)
+    axes[0].plot(
+        time_share.index, time_share.values, ":", color=style.POOLED, linewidth=1.4
+    )
+    axes[0].legend(
+        handles=[
+            Line2D([], [], ls="--", marker="s", ms=2.5, color=style.POOLED),
+            Line2D([], [], ls=":", color=style.POOLED, linewidth=1.4),
+        ],
+        labels=["pooled, share of breaths", "pooled, share of time"],
+        loc="upper left",
+    )
+    axes[0].set_title("Per recording")
+    recording_of = by_video.groupby("video")["recording"].first()
+    for video, rows in by_video[by_video.video != "pooled"].groupby("video"):
+        rows = rows.sort_values("centre")
+        part_two = video.endswith("part_2")
+        axes[1].plot(
+            rows.centre,
+            rows.share,
+            "--" if part_two else "-",
+            color=colours[recording_of[video]],
+            linewidth=0.8,
+        )
+    axes[1].set_title("Per video (part 2 dashed)")
+    for ax in axes[:2]:
+        ax.set_ylabel("Share of breaths")
+    mean = spectra.groupby("freq")["power"].mean()
+    for _, rows in spectra.groupby("video"):
+        rec = rows.recording.iloc[0]
+        axes[2].plot(
+            rows.freq, rows.power, color=colours[rec], linewidth=0.5, alpha=0.6
+        )
+    axes[2].plot(mean.index, mean.values, "--", color=style.POOLED, linewidth=1.2)
+    axes[2].set_title("Power spectrum per video")
+    axes[2].set_ylabel("Power (unit area)")
+    for ax in axes:
+        rate_axis(ax, bins)
+    axes[2].set_xlabel("Frequency (Hz)")
+    panel_letters(axes)
+    return fig
+
+
+def test_rates_figure(
+    recall: pd.DataFrame,
+    chance: pd.DataFrame,
+    f1: pd.DataFrame,
+    windows: pd.DataFrame,
+    share: pd.DataFrame,
+    centres: NDArray,
+    bins: Sequence[float],
+) -> Figure:
+    """Held-out performance by true breathing rate, one row per test group.
+
+    Columns: recall within one frame, local inhale F1, waveform correlation in
+    3 s windows, and where each recording's breaths fall.
+    """
+    fig, axes = style.figure("double", 0.62, nrows=2, ncols=4, sharex=True)
+    for row, stratum in enumerate(STRATUM_LABELS):
+        ax_a, ax_c, ax_e, ax_f = axes[row]
+        colours = recording_colours(recall[recall.stratum == stratum]["recording"])
+        r = recall[recall.stratum == stratum]
+        _series_lines(ax_a, r, "centre", "recall", colours, marker="o", ms=2)
+        c = chance[(chance.stratum == stratum) & (chance.recording == "pooled")]
+        c = c.sort_values("centre")
+        ax_a.plot(c.centre, c.recall, ":", color="0.5", label="chance (shifted)")
+        ax_a.set_ylim(0, 1.02)
+        ax_a.set_ylabel(f"{STRATUM_LABELS[stratum]}\nRecall (1 frame)")
+        _series_lines(
+            ax_c, f1[f1.stratum == stratum], "centre", "f1", colours, marker="o", ms=2
+        )
+        ax_c.set_ylim(0, 1.02)
+        ax_c.set_ylabel("Local inhale F1")
+        w = windows[windows.stratum == stratum].copy()
+        for name, rows in w.groupby("recording"):
+            ax_e.plot(rows.rate, rows.r, ".", color=colours[name], ms=1.2, alpha=0.3)
+        w["centre"] = centres[
+            np.clip(np.searchsorted(bins, w.rate) - 1, 0, len(centres) - 1)
+        ]
+        per = w.groupby(["recording", "centre"])["r"].mean().reset_index()
+        pooled = (
+            w.groupby("centre")["r"].mean().reset_index().assign(recording="pooled")
+        )
+        _series_lines(ax_e, pd.concat([per, pooled]), "centre", "r", colours)
+        ax_e.set_ylim(0, 1.02)
+        ax_e.set_ylabel("Pearson r, 3 s windows")
+        s = share[share.stratum == stratum]
+        _series_lines(ax_f, s, "centre", "share", colours, drawstyle="steps-mid")
+        ax_f.set_ylabel("Share of breaths")
+        for ax in axes[row]:
+            rate_axis(ax, bins)
+            if row == 0:
+                ax.set_xlabel("")
+    axes[0, 0].legend(loc="lower right")
+    for ax, title in zip(
+        axes[0],
+        (
+            "Breaths detected",
+            "Local inhale F1",
+            "Waveform correlation",
+            "Rate distribution",
+        ),
+        strict=True,
+    ):
+        ax.set_title(title)
+    panel_letters(axes)
+    return fig
+
+
 def _importance_row(
     axes: Sequence[Axes], maps: Sequence[NDArray], vmax: float
 ) -> AxesImage:
