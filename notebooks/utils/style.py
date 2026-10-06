@@ -18,6 +18,12 @@ METHODS: dict[str, str] = {
 }
 """Compared methods. Zephyr is always the same blue."""
 
+VARIANTS: dict[str, str] = {
+    "Zephyr": METHODS["Zephyr"],
+    "Zephyr, no stretch": "#7b3294",
+}
+"""Zephyr and its training variants, for ablations that compare networks directly."""
+
 OBJECTIVES: dict[str, str] = {
     "Signal only: F1 from signal": "#0072b2",
     "Multitask: F1 from signal": "#d55e00",
@@ -88,8 +94,8 @@ def figure(
 
 
 def color(name: str) -> str:
-    """The colour of a method, a channel, or ``"Truth"``."""
-    return {**METHODS, **CHANNELS, "Truth": TRUTH}[name]
+    """The colour of a method, a variant, a channel, or ``"Truth"``."""
+    return {**METHODS, **VARIANTS, **CHANNELS, "Truth": TRUTH}[name]
 
 
 def mosaic(

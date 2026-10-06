@@ -310,6 +310,50 @@ def onset_head(ax: Axes, times: pd.Series, probability: pd.Series) -> None:
     ax.set_ylabel("Onset probability")
 
 
+def variant_traces_figure(
+    traces: pd.DataFrame,
+    variant: pd.DataFrame,
+    truth: pd.DataFrame,
+    events: dict[str, NDArray],
+    t0: float,
+    duration: float,
+) -> Figure:
+    """Zephyr and a training variant against the thermistor over one excerpt.
+
+    *events* holds inhale times by name: ``"Truth"``, ``"Zephyr"`` and the variant's
+    column name. Rows: Zephyr, the variant, then both onset heads overlaid.
+    """
+    name = next(c for c in variant.columns if c not in ("Time", "onset"))
+    fig, axes = style.figure(
+        "double", 0.5, nrows=3, sharex=True, height_ratios=[2, 2, 1.2]
+    )
+    shown_truth = truth[(truth.Time >= t0) & (truth.Time <= t0 + duration)]
+    z = (shown_truth.Signal - shown_truth.Signal.mean()) / shown_truth.Signal.std()
+
+    def inside(x: NDArray) -> NDArray:
+        return x[(x >= t0) & (x <= t0 + duration)]
+
+    for ax, label, frame, column in zip(
+        axes[:2], ("Zephyr", name), (traces, variant), ("Zephyr", name), strict=True
+    ):
+        shown = frame[(frame.Time >= t0) & (frame.Time <= t0 + duration)]
+        ax.plot(shown_truth.Time, z, color=style.TRUTH, label="Thermistor")
+        ax.plot(shown.Time, shown[column], color=style.color(label), label=label)
+        mark_events(ax, inside(events["Truth"]), 3.3, style.TRUTH)
+        mark_events(ax, inside(events[label]), 2.8, style.color(label), "^")
+        ax.set_ylabel("Breathing (z-score)")
+        ax.legend(loc="lower right", bbox_to_anchor=(1, 1), ncol=2)
+    for label, frame in (("Zephyr", traces), (name, variant)):
+        shown = frame[(frame.Time >= t0) & (frame.Time <= t0 + duration)]
+        axes[2].plot(shown.Time, shown.onset, color=style.color(label), label=label)
+    axes[2].axhline(0.5, color="0.6", linewidth=0.5, linestyle=":")
+    axes[2].set_ylabel("Onset probability")
+    axes[2].set_xlim(t0, t0 + duration)
+    axes[2].set_xlabel("Time (s)")
+    panel_letters(axes)
+    return fig
+
+
 def _importance_row(
     axes: Sequence[Axes], maps: Sequence[NDArray], vmax: float
 ) -> AxesImage:

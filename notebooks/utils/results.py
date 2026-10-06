@@ -46,6 +46,16 @@ CHECKPOINTS: dict[str, Path] = {
     "TS-CAN": BASELINES / "tscan/runs/gray__signal__seed-42/best.pt",
     "PhysNet": BASELINES / "physnet/runs/gray__signal__seed-42/best.pt",
 }
+REFERENCE_RUN: Path = (
+    ROOT / "runs/benchmark-gray-diff-flow-multitask/benchmark-gray-diff-flow-multitask"
+)
+NO_STRETCH_RUN: Path = ROOT / "runs/stretch-ablation/benchmark-no-stretch"
+NO_STRETCH: str = "Zephyr, no stretch"
+STRETCH_RUNS: dict[str, Path] = {
+    "Zephyr": REFERENCE_RUN / "seed-42",
+    NO_STRETCH: NO_STRETCH_RUN / "seed-17",
+}
+"""The two networks of the stretch ablation: the benchmark Zephyr and its no-stretch twin."""
 PIXEL_TRACES: Path = BASELINES / "pixel/flow/traces/test"
 FACEMAP_TRACES: Path = ROOT / "runs/facemap-traces/facemap/both/traces"
 OCCLUSION: Path = ROOT / "runs/thermistor-quality/occlusion_60s_f1.npz"
@@ -72,6 +82,10 @@ INPUTS: dict[str, tuple[Path, str]] = {
     "baseline results": (
         BASELINES / "pixel",
         "zephyr-benchmarks pixel|facemap <fold>.toml",
+    ),
+    "no-stretch checkpoint": (
+        STRETCH_RUNS[NO_STRETCH] / "best.pt",
+        "zephyr-benchmarks run configs/experiments/stretch-ablation.toml",
     ),
     "ablation runs": (ABLATION, "zephyr-benchmarks run <experiment>.toml"),
     "occlusion maps": (
@@ -182,6 +196,47 @@ def method_traces(entry: features.ClipEntry) -> pd.DataFrame:
     frame["onset"] = onset[:n]
     frame.to_parquet(cache)
     return frame
+
+
+def no_stretch_traces(entry: features.ClipEntry) -> pd.DataFrame:
+    """The no-stretch network's z-scored trace and onset probability on a clip.
+
+    Inference only (CPU), cached per clip. Columns: ``Time``, ``Zephyr, no stretch``,
+    ``onset``.
+    """
+    CACHE.mkdir(exist_ok=True)
+    cache = CACHE / f"{short_name(entry)}-no-stretch.parquet"
+    if cache.exists():
+        print(f"Cache loaded from {cache}")
+        return pd.read_parquet(cache)
+    print(f"No cache found in {cache}. Calculating from scratch.")
+    device = torch.device("cpu")
+    model, mean, std, _ = load_checkpoint(STRETCH_RUNS[NO_STRETCH] / "best.pt", device)
+    signal, onset = predict_clip(model, entry, mean, std, device=device, amp_dtype=None)
+    n = entry.n_output
+    frame = pd.DataFrame(
+        {TIME_COLUMN: np.load(entry.times)[:n], NO_STRETCH: _zscore(signal[:n])}
+    )
+    frame["onset"] = onset[:n]
+    frame.to_parquet(cache)
+    return frame
+
+
+def stretch_summary() -> pd.DataFrame:
+    """Scores of the stretch-ablation networks over all 12 test recordings.
+
+    One row per metric, one column per network, read from their ``evaluation.json``.
+    """
+    metrics = (*METRICS, "head_inhale_f1")
+    columns = {
+        name: json.loads((run / "evaluation.json").read_text())["groups"]["all"][
+            "summary"
+        ]
+        for name, run in STRETCH_RUNS.items()
+    }
+    return pd.DataFrame(
+        {name: {m: s[m] for m in metrics} for name, s in columns.items()}
+    )
 
 
 def events(times: NDArray, signal: NDArray) -> tuple[NDArray, NDArray]:
