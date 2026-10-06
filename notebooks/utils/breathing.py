@@ -1,0 +1,216 @@
+"""Breathing rate of the recordings, and how well Zephyr does at each rate.
+
+A breath's rate is ``1 / (time to the next inhale onset)`` (:mod:`zephyr.rates`).
+Test breaths are the scorer's thermistor inhalations, matched to onset-head events
+within one frame. Inference only; per-clip results are cached in ``notebooks/cache``.
+"""
+
+import numpy as np
+import pandas as pd
+from scipy.signal import welch
+
+from zephyr.evaluate import head_event_indices
+from zephyr.evaluation import EVENT_TOLERANCE_S, match_events
+from zephyr.rates import DEFAULT_RATE_BINS_HZ, breath_rates, rate_bin, rate_track
+from zephyr.signal import (
+    CANONICAL_BREATHING_SAMPLING_RATE,
+    TIME_COLUMN,
+    filter_sniff_signal,
+)
+
+from . import results
+
+PLOT_BINS_HZ: tuple[float, ...] = (1.0, 1.5, *DEFAULT_RATE_BINS_HZ)
+"""Training's default bins (2-15 Hz) extended down to 1 Hz, where long pauses sit."""
+WINDOW_S: float = 3.0
+"""Length of the windows waveform correlation is measured in."""
+CHANCE_SHIFTS_S: tuple[float, ...] = (7.3, 13.1, 21.7, 34.9, 55.3)
+"""Circular shifts of the predicted events that give the chance level of recall."""
+FS: float = CANONICAL_BREATHING_SAMPLING_RATE
+
+
+def bin_centres(bins: tuple[float, ...] = PLOT_BINS_HZ) -> np.ndarray:
+    """Geometric centre of each rate bin."""
+    edges = np.asarray(bins)
+    return np.sqrt(edges[:-1] * edges[1:])
+
+
+def _with_bin(frame: pd.DataFrame) -> pd.DataFrame:
+    index = rate_bin(frame["rate"].to_numpy(), PLOT_BINS_HZ)
+    return frame.assign(bin=index, centre=bin_centres()[index])
+
+
+def share_by_bin(
+    breaths: pd.DataFrame, by: list[str], within: str | None = None
+) -> pd.DataFrame:
+    """Share of each group's breaths in each rate bin; pooled rows have ``pooled``
+    as every *by* value, pooled separately per *within* value when given."""
+    if within is not None:
+        return pd.concat(
+            [
+                share_by_bin(rows, by).assign(**{within: value})
+                for value, rows in breaths.groupby(within)
+            ],
+            ignore_index=True,
+        )
+    binned = _with_bin(breaths)
+    pooled = binned.assign(**{k: "pooled" for k in by})
+    out = []
+    for frame in (binned, pooled):
+        counts = frame.groupby([*by, "bin", "centre"]).size().rename("n").reset_index()
+        counts["share"] = counts["n"] / counts.groupby(by)["n"].transform("sum")
+        out.append(counts)
+    return pd.concat(out, ignore_index=True)
+
+
+def time_share_by_bin(breaths: pd.DataFrame) -> pd.Series:
+    """Share of breathing *time* in each rate bin, pooled: each breath weighted by
+    its duration. This is the distribution random training windows see."""
+    binned = _with_bin(breaths)
+    seconds = (1.0 / binned["rate"]).groupby(binned["centre"]).sum()
+    return seconds / seconds.sum()
+
+
+def train_breaths() -> pd.DataFrame:
+    """Every training breath: ``video``, ``recording``, ``rate`` (Hz)."""
+    rows = []
+    for entry in results.train_entries():
+        onsets = np.load(entry.events)["onset_times"]
+        rows.append(
+            pd.DataFrame(
+                {
+                    "video": results.short_name(entry),
+                    "recording": results.recording_label(entry),
+                    "rate": breath_rates(onsets),
+                }
+            )
+        )
+    return pd.concat(rows, ignore_index=True)
+
+
+def train_spectra() -> pd.DataFrame:
+    """Welch power spectrum of each training video's target, 1-15 Hz, unit area."""
+    rows = []
+    for entry in results.train_entries():
+        signal = pd.read_parquet(entry.target)["signal"].to_numpy()
+        freq, power = welch(signal, fs=FS, nperseg=int(8 * FS))
+        keep = (freq >= PLOT_BINS_HZ[0]) & (freq <= PLOT_BINS_HZ[-1])
+        power = power[keep] / np.trapezoid(power[keep], freq[keep])
+        rows.append(
+            pd.DataFrame(
+                {
+                    "video": results.short_name(entry),
+                    "recording": results.recording_label(entry),
+                    "freq": freq[keep],
+                    "power": power,
+                }
+            )
+        )
+    return pd.concat(rows, ignore_index=True)
+
+
+def _shifted(times: np.ndarray, shift: float, span: tuple[float, float]) -> np.ndarray:
+    t0, t1 = span
+    return np.sort((times - t0 + shift) % (t1 - t0) + t0)
+
+
+def _clip_tables(
+    clip: results.TestClip,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Per-breath detection, unmatched head events, and 3 s windows of one clip."""
+    entry = clip.entry
+    truth = results.truth(entry)
+    out = results.zephyr_outputs(entry)
+    times = out[TIME_COLUMN].to_numpy()
+    head = times[head_event_indices(out["onset"].to_numpy(), times)]
+    truth_on, _ = results.events(
+        truth[TIME_COLUMN].to_numpy(), truth["Signal"].to_numpy()
+    )
+    labels = {
+        "video": results.short_name(entry),
+        "recording": results.recording_label(entry),
+        "stratum": clip.stratum,
+    }
+
+    rate = breath_rates(truth_on)  # the last breath has no rate and is left out
+    detected = np.zeros(len(truth_on), bool)
+    matched_pred = np.zeros(len(head), bool)
+    for i, j in match_events(truth_on, head, EVENT_TOLERANCE_S):
+        detected[i], matched_pred[j] = True, True
+    chance = np.zeros(len(truth_on))
+    span = (float(times[0]), float(times[-1]))
+    for shift in CHANCE_SHIFTS_S:
+        for i, _ in match_events(truth_on, _shifted(head, shift, span)):
+            chance[i] += 1 / len(CHANCE_SHIFTS_S)
+    breaths = pd.DataFrame(
+        {"rate": rate, "detected": detected[:-1], "chance": chance[:-1]}
+    ).assign(**labels)
+
+    fp_times = head[~matched_pred]
+    fp_rate = rate_track(fp_times, truth_on)
+    false_pos = pd.DataFrame({"rate": fp_rate[np.isfinite(fp_rate)]}).assign(**labels)
+
+    raw_t = truth[TIME_COLUMN].to_numpy()
+    raw_fs = 1.0 / float(np.median(np.diff(raw_t)))
+    filtered = filter_sniff_signal(truth["Signal"].to_numpy(dtype=float), raw_fs)
+    reference = np.interp(times, raw_t, filtered)
+    predicted = out["Zephyr"].to_numpy()
+    track = rate_track(times, truth_on)
+    n = int(WINDOW_S * FS)
+    rows = []
+    for s in range(0, len(times) - n + 1, n):
+        a, b, r = predicted[s : s + n], reference[s : s + n], track[s : s + n]
+        if a.std() > 0 and b.std() > 0 and np.isfinite(r).any():
+            rows.append(
+                {"rate": float(np.nanmedian(r)), "r": float(np.corrcoef(a, b)[0, 1])}
+            )
+    windows = pd.DataFrame(rows).assign(**labels)
+    return breaths, false_pos, windows
+
+
+def test_tables() -> dict[str, pd.DataFrame]:
+    """``breaths``, ``false_positives`` and ``windows`` over every test clip.
+
+    Needs Zephyr's outputs on all 24 clips (about a minute each on CPU the first
+    time); the tables themselves are cached.
+    """
+    names = ("breaths", "false_positives", "windows")
+    paths = {k: results.CACHE / f"test-rates-{k}.parquet" for k in names}
+    if all(p.exists() for p in paths.values()):
+        return {k: pd.read_parquet(p) for k, p in paths.items()}
+    parts = [_clip_tables(clip) for clip in results.clips().values()]
+    tables = {k: pd.concat(t, ignore_index=True) for k, t in zip(names, zip(*parts))}
+    results.CACHE.mkdir(exist_ok=True)
+    for k, frame in tables.items():
+        frame.to_parquet(paths[k])
+    return tables
+
+
+def recall_by_bin(breaths: pd.DataFrame, column: str = "detected") -> pd.DataFrame:
+    """Share of thermistor breaths detected per rate bin, per recording and pooled
+    within each stratum (``recording == "pooled"``)."""
+    binned = _with_bin(breaths)
+    per = binned.groupby(["stratum", "recording", "bin", "centre"])[column].mean()
+    pooled = binned.groupby(["stratum", "bin", "centre"])[column].mean()
+    pooled = pooled.reset_index().assign(recording="pooled")
+    return pd.concat([per.reset_index(), pooled], ignore_index=True).rename(
+        columns={column: "recall"}
+    )
+
+
+def f1_by_bin(breaths: pd.DataFrame, false_pos: pd.DataFrame) -> pd.DataFrame:
+    """Local inhale F1 per rate bin: TP and FN binned by the breath's rate, FP by the
+    thermistor's rate at the false event. Per recording and pooled."""
+    b, f = _with_bin(breaths), _with_bin(false_pos)
+    keys = ["stratum", "recording", "bin", "centre"]
+    frames = []
+    for pooled in (False, True):
+        bb = b.assign(recording="pooled") if pooled else b
+        ff = f.assign(recording="pooled") if pooled else f
+        tp = bb.groupby(keys)["detected"].sum().rename("tp")
+        fn = (~bb["detected"]).groupby([bb[k] for k in keys]).sum().rename("fn")
+        fp = ff.groupby(keys).size().rename("fp")
+        counts = pd.concat([tp, fn, fp], axis=1).fillna(0)
+        counts["f1"] = 2 * counts.tp / (2 * counts.tp + counts.fp + counts.fn)
+        frames.append(counts.reset_index())
+    return pd.concat(frames, ignore_index=True)

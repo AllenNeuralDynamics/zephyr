@@ -42,6 +42,19 @@ CHANNELS: dict[str, str] = {
 TRUTH: str = "#000000"
 """The thermistor, wherever it is drawn."""
 
+POOLED: str = "#333333"
+"""A summary over recordings or videos, drawn over their individual lines."""
+
+SERIES_CMAP: str = "tab20"
+"""Colour map for many like series (recordings), which have no fixed colour."""
+
+
+def series(n: int) -> list[str]:
+    """*n* distinct colours for like series, in a fixed order."""
+    cmap = mpl.colormaps[SERIES_CMAP]
+    return [mpl.colors.to_hex(cmap(i % cmap.N)) for i in range(n)]
+
+
 IMPORTANCE_CMAP: str = "inferno"
 """Colour map of every importance (drop) map."""
 

@@ -11,6 +11,7 @@ label in two folders is two recordings.
 """
 
 import argparse
+import itertools
 import json
 import re
 import string
@@ -31,6 +32,7 @@ from pydantic import (
 )
 
 from .channels import FLOW_CLIP_PX, FLOW_SCALE_PX, MOTION_TAU_S, ChannelSet
+from .rates import DEFAULT_RATE_BINS_HZ
 from .signal import CANONICAL_BREATHING_SAMPLING_RATE
 
 OUTPUT_FS = CANONICAL_BREATHING_SAMPLING_RATE
@@ -336,6 +338,11 @@ class TrainParams(_Model):
     ema_decay: float = Field(0.999, ge=0, lt=1)
     """Exponential moving average of the weights; 0 disables it."""
     augmentation: Augmentation = Augmentation()
+    rate_balance: float = Field(0.0, ge=0, le=1)
+    """Draw training windows by their true breathing rate: weight ``share(bin) **
+    -rate_balance``. 0 keeps today's draw; 1 gives every rate bin equal mass."""
+    rate_bins_hz: tuple[float, ...] = DEFAULT_RATE_BINS_HZ
+    """Rate bin edges for ``rate_balance``; rates outside count in the end bins."""
     w_corr: float = Field(1.0, ge=0)
     w_onset: float = Field(0.5, ge=0)
     scales: tuple[PositiveInt, ...] = (1, 4, 16)
@@ -353,6 +360,19 @@ class TrainParams(_Model):
     @classmethod
     def _known_channels(cls, value: str) -> str:
         ChannelSet.parse(value)
+        return value
+
+    @field_validator("rate_bins_hz")
+    @classmethod
+    def _increasing_bins(cls, value: tuple[float, ...]) -> tuple[float, ...]:
+        if (
+            len(value) < 2
+            or value[0] <= 0
+            or any(b <= a for a, b in itertools.pairwise(value))
+        ):
+            raise ValueError(
+                f"rate_bins_hz {list(value)} needs two or more increasing edges > 0"
+            )
         return value
 
 

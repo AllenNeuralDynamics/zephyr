@@ -8,7 +8,7 @@ with app.setup:
     import pandas as pd
     from numpy.typing import NDArray
 
-    from utils import plots, results, style
+    from utils import breathing, plots, results, style
     from zephyr.evaluate import head_event_indices
 
     style.use_style()
@@ -296,6 +296,68 @@ def _(
         )[0],
     }
     plots.variant_traces_figure(traces, variant, truth, inhales, start.value, 10)
+    return
+
+
+@app.cell
+def _():
+    mo.md("""
+    ## 8. Is breathing rate sampled evenly? (training set)
+
+    Each breath's rate is 1 / (time to the next inhalation). (a) Share of each
+    recording's breaths per rate bin; the pooled share of *time* (dotted) is what
+    random training windows see, since fast breaths are short. (b) The same per
+    video, part 2 dashed: one colour per recording, so the spread between a pair is
+    the variation within a recording. (c) Power spectrum of each video's training
+    target. `rate_balance` in a fold's `[train_params]` draws windows evenly over
+    their true rate instead (bins 2-15 Hz by default).
+    """)
+    return
+
+
+@app.cell
+def _():
+    _breaths: pd.DataFrame = breathing.train_breaths()
+    plots.training_rates_figure(
+        breathing.share_by_bin(_breaths, ["recording"]),
+        breathing.share_by_bin(_breaths, ["video", "recording"]),
+        breathing.train_spectra(),
+        breathing.time_share_by_bin(_breaths),
+        breathing.PLOT_BINS_HZ,
+    )
+    return
+
+
+@app.cell
+def _():
+    mo.md("""
+    ## 9. The test set by breathing rate
+
+    Every thermistor breath is binned by its own rate; rows are the two test groups,
+    one line per recording (colours restart in each row), pooled dashed.
+    **Breaths detected**: share matched by an onset-head event within one frame
+    (17 ms); dotted is chance, the same head events circularly shifted.
+    **Local inhale F1**: misses binned by the breath's rate, false events by the
+    thermistor's rate at that time. **Waveform correlation**: Pearson r of the
+    trace against the filtered thermistor in 3 s windows (dots), binned means as
+    lines. **Rate distribution**: where each recording's breaths fall.
+    """)
+    return
+
+
+@app.cell
+def _():
+    rate_tables: dict[str, pd.DataFrame] = breathing.test_tables()  # cpu, cached
+    _b: pd.DataFrame = rate_tables["breaths"]
+    plots.test_rates_figure(
+        breathing.recall_by_bin(_b),
+        breathing.recall_by_bin(_b, "chance"),
+        breathing.f1_by_bin(_b, rate_tables["false_positives"]),
+        rate_tables["windows"],
+        breathing.share_by_bin(_b, ["recording"], within="stratum"),
+        breathing.bin_centres(),
+        breathing.PLOT_BINS_HZ,
+    )
     return
 
 

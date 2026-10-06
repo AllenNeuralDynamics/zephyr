@@ -315,6 +315,8 @@ def train_fold(
         span=train_span,
         channels=channel_set,
         weights=weights,
+        rate_balance=params.rate_balance,
+        rate_bins_hz=params.rate_bins_hz,
         **grids,
     )
     # Gridded and non-overlapping, so the windowed number is comparable epoch to

@@ -31,11 +31,16 @@ from zephyr.augment import (
 from zephyr.channels import ALL_CHANNELS, CHANNEL_NAMES, N_CHANNELS, ChannelSet
 
 from .features import ClipEntry
+from .rates import DEFAULT_RATE_BINS_HZ, balance_weights, rate_track, window_rates
 from .targets import onset_heatmap
 
 INTERP_MARGIN = 2
 """Extra input frames kept either side of a window's output span, so the
 selection grid's jitter never pushes an output sample outside the input span."""
+
+BALANCE_HOP_S = 0.25
+"""Spacing of the candidate window starts that rate balancing weighs; a drawn start
+is jittered uniformly within its cell, so every offset stays reachable."""
 
 
 def stats_path(cache_dir: Path, entries: Sequence[ClipEntry]) -> Path:
@@ -211,6 +216,8 @@ class WindowDataset(Dataset):
         span: tuple[float, float] = (0.0, 1.0),
         channels: ChannelSet = ALL_CHANNELS,
         weights: Sequence[float] | None = None,
+        rate_balance: float = 0.0,
+        rate_bins_hz: Sequence[float] = DEFAULT_RATE_BINS_HZ,
     ) -> None:
         entries = [e for source in sources for e in source]
         source_of = [i for i, source in enumerate(sources) for _ in source]
@@ -241,6 +248,9 @@ class WindowDataset(Dataset):
             # reported number drift with the augmentation strength rather than
             # with the model.
             raise ValueError("augmentation must not be enabled on gridded windows")
+        if rate_balance and stride is not None:
+            raise ValueError("rate balancing applies to random windows only")
+        self.rate_balance = rate_balance
         self.channels = channels
         selected_mean, selected_std = channels.take_stats(mean, std)
         # (1, C, 1, 1) so broadcasting hits the channel axis of a (T, C, H, W) window.
@@ -311,6 +321,47 @@ class WindowDataset(Dataset):
                 offsets, [source_of[i] for i in keep], weights
             )
             self.length = length if length is not None else 8 * len(usable)
+            if rate_balance > 0:
+                self._balance(
+                    [source_of[i] for i in keep], weights, rate_balance, rate_bins_hz
+                )
+
+    def _balance(
+        self,
+        source_of: Sequence[int],
+        weights: Sequence[float],
+        power: float,
+        bins_hz: Sequence[float],
+    ) -> None:
+        """Candidate starts every :data:`BALANCE_HOP_S` with draw probabilities that
+        even out their true breathing rate within each source; each source keeps
+        its share of *weights*."""
+        self.hop = max(1.0, BALANCE_HOP_S * self.select_fs)
+        share = np.asarray(weights, np.float64) / float(np.sum(weights))
+        clip_of, starts, rates = [], [], []
+        for clip_i, entry in enumerate(self.usable):
+            lo, hi = self.bounds[entry.features]
+            top = hi - 1 - self.extent(1.0)
+            grid = np.arange(lo, top, self.hop) if top > lo else np.array([float(lo)])
+            target_times, _, onsets = _load_target_frame(entry)
+            first = np.load(entry.frame_times)[grid.astype(int)]
+            index = np.searchsorted(target_times, first)
+            track = rate_track(target_times, onsets)
+            clip_of.append(np.full(len(grid), clip_i))
+            starts.append(grid)
+            rates.append(window_rates(track, index, self.window))
+        clip_of, starts, rates = map(np.concatenate, (clip_of, starts, rates))
+        source = np.asarray(source_of)[clip_of]
+        probability = np.zeros(len(starts))
+        for s, fraction in enumerate(share):
+            members = source == s
+            probability[members] = fraction * balance_weights(
+                rates[members], bins_hz, power
+            )
+        self.candidate_clip = clip_of
+        self.candidate_start = starts
+        self.candidate_rate = rates
+        self._candidate_cdf = np.cumsum(probability) / probability.sum()
 
     def extent(self, stretch: float) -> float:
         """Selection-grid span one window covers at *stretch*, incl. margin."""
@@ -366,10 +417,20 @@ class WindowDataset(Dataset):
             return None, clip_i, start, stretch
 
         rng = np.random.default_rng((self.seed, i))
-        clip_i = int(rng.choice(len(self.usable), p=self.weights))
-        entry = self.usable[clip_i]
-        lo, hi = self.bounds[entry.features]
-        start = self._draw_start(rng, lo, hi, 1.0)
+        balanced = self.rate_balance > 0
+        if balanced:
+            c = int(np.searchsorted(self._candidate_cdf, rng.random(), side="right"))
+            c = min(c, len(self._candidate_cdf) - 1)
+            clip_i = int(self.candidate_clip[c])
+            entry = self.usable[clip_i]
+            lo, hi = self.bounds[entry.features]
+            top = max(float(lo), hi - 1 - self.extent(1.0))
+            start = min(float(self.candidate_start[c] + rng.uniform(0, self.hop)), top)
+        else:
+            clip_i = int(rng.choice(len(self.usable), p=self.weights))
+            entry = self.usable[clip_i]
+            lo, hi = self.bounds[entry.features]
+            start = self._draw_start(rng, lo, hi, 1.0)
         if self.augment.time_stretch > 1.0:
             # Measure the rate on a provisional window first, then choose
             # the stretch: the target is already in memory, so this costs a
@@ -389,7 +450,10 @@ class WindowDataset(Dataset):
                 self.augment,
                 self.output_fs,
             )
-            start = self._draw_start(rng, lo, hi, stretch)
+            if balanced:  # keep the balanced start; only make the window fit
+                start = min(start, max(float(lo), hi - 1 - self.extent(stretch)))
+            else:
+                start = self._draw_start(rng, lo, hi, stretch)
         return rng, clip_i, start, stretch
 
     def draw(self, i: int) -> tuple[int, float, float]:
