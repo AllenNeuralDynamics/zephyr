@@ -11,6 +11,7 @@ CLI
     zephyr-benchmarks pixel|facemap|timing <fold.toml> --cache <dir> ...
     zephyr-benchmarks collect --runs <dir>
     zephyr-benchmarks report --runs <dir> --out <dir>
+    zephyr-benchmarks occlusion --checkpoint <best.pt> --clips <list.toml>... --cache <dir> --out <file.npz>
 """
 
 import argparse
@@ -41,6 +42,12 @@ def _collect(command: str):
     return forward
 
 
+def _occlusion(args: list[str]) -> None:
+    from . import occlusion
+
+    occlusion.main(args)
+
+
 def _report(args: list[str]) -> None:
     from . import report
 
@@ -55,6 +62,7 @@ COMMANDS = {
     "timing": _collect("timing"),
     "collect": _collect("collect"),
     "report": _report,
+    "occlusion": _occlusion,
 }
 
 

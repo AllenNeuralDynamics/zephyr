@@ -215,6 +215,10 @@ def run_facemap(
             @ w
             for e in test
         }
+        trace_dir = out_root / "facemap" / variant / "traces"
+        trace_dir.mkdir(parents=True, exist_ok=True)
+        for key, trace in traces.items():
+            np.save(trace_dir / f"{key}.npy", trace)
         write_json(
             out_root / "facemap" / variant / "evaluation.json",
             score_traces(traces, groups)
