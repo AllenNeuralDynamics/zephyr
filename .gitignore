@@ -28,10 +28,10 @@ htmlcov/
 .vscode/
 
 # Zephyr generated version file (hatch-vcs)
-src/zephyr/_version.py
+packages/zephyr/src/zephyr/_version.py
 
 # Zephyr generated data and runs
-artifacts/frames/
-data/
+/artifacts/frames/
+/data/
 runs*/
-benchmarks/
+/benchmarks/

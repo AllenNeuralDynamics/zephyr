@@ -1,0 +1,147 @@
+"""Whole-clip prediction by stitching overlapping windows.
+
+A 300 s clip is 2.5 GB as float32, so inference runs in windows although the model has
+no length limit. Windows overlap and their edges are discarded rather than butt-joined:
+within ~126 frames (half the TCN's receptive field) of an edge a prediction comes from
+zero-padding, which would stamp an artefact into the trace every window. With the margin
+trimmed the stitched trace equals an unbounded forward pass. Each window reads the
+selection frames covering its span; there is no time-stretch.
+"""
+
+import numpy as np
+import torch
+
+from zephyr.model import BreathingNet
+
+from .dataset import INTERP_MARGIN, ClipEntry
+
+INPUT_MARGIN = INTERP_MARGIN
+"""Same slack the training windows keep."""
+
+
+def window_starts(n_frames: int, window: int, hop: int) -> list[int]:
+    """Window start offsets covering ``[0, n_frames)`` with the last one flush.
+
+    The final window is snapped back to ``n_frames - window`` so the tail is
+    covered by real data instead of padding, which costs a little extra overlap
+    and nothing else.
+    """
+    if n_frames <= window:
+        return [0]
+    starts = list(range(0, n_frames - window + 1, hop))
+    if starts[-1] != n_frames - window:
+        starts.append(n_frames - window)
+    return starts
+
+
+@torch.no_grad()
+def predict_clip(
+    model: BreathingNet,
+    entry: ClipEntry,
+    mean: np.ndarray,
+    std: np.ndarray,
+    *,
+    window: int = 1024,
+    margin: int | None = None,
+    device: torch.device | str = "cuda",
+    frame_chunk: int = 256,
+    amp_dtype: torch.dtype | None = torch.bfloat16,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Predict the full trace for one clip.
+
+    *mean* and *std* cover every stored channel; both they and the stored array
+    are sliced to ``model.channels`` here.
+
+    Returns
+    -------
+    (signal, onset_prob)
+        Both aligned with ``np.load(entry.times)``, the clip's 60 Hz output
+        grid.  *signal* is z-scored over the clip -- the scorer's ``correlation``
+        is amplitude-invariant, and a per-clip z-score is the closest thing to
+        a canonical choice.
+    """
+    model.eval()
+    if margin is None:
+        margin = model.receptive_field // 2
+
+    channels = model.channels
+    array = np.load(entry.features, mmap_mode="r")
+    frame_times = np.load(entry.frame_times)
+    grid = np.load(entry.times)
+    n_out = len(grid)
+    window = min(window, n_out)
+    # A margin at or past half the window would leave no interior to keep.
+    margin = min(margin, (window - 1) // 2)
+    hop = max(1, window - 2 * margin)
+
+    selected_mean, selected_std = channels.take_stats(mean, std)
+    mean_t = torch.from_numpy(np.asarray(selected_mean, np.float32)).view(1, -1, 1, 1)
+    std_t = torch.from_numpy(np.asarray(selected_std, np.float32)).view(1, -1, 1, 1)
+
+    signal = np.zeros(n_out, np.float32)
+    onset = np.zeros(n_out, np.float32)
+    filled = np.zeros(n_out, bool)
+
+    for start in window_starts(n_out, window, hop):
+        stop = start + window
+        out_times = grid[start:stop]
+        # Whichever selection frames cover this window's span, plus slack.
+        first = max(0, int(np.searchsorted(frame_times, out_times[0])) - INPUT_MARGIN)
+        last = min(
+            len(frame_times),
+            int(np.searchsorted(frame_times, out_times[-1])) + 1 + INPUT_MARGIN,
+        )
+
+        # Cast in numpy: the memmap slice is read-only, and torch.from_numpy
+        # warns on non-writable storage.  The cast has to copy anyway.
+        block = torch.from_numpy(
+            channels.take(np.asarray(array[first:last])).astype(np.float32)
+        )
+        block = ((block - mean_t) / std_t).unsqueeze(0).to(device, non_blocking=True)
+
+        origin = out_times[0]
+        t_in = (
+            torch.from_numpy((frame_times[first:last] - origin).astype(np.float32))
+            .unsqueeze(0)
+            .to(device, non_blocking=True)
+        )
+        t_out = (
+            torch.from_numpy((out_times - origin).astype(np.float32))
+            .unsqueeze(0)
+            .to(device, non_blocking=True)
+        )
+
+        if amp_dtype is not None:
+            with torch.autocast(device_type=torch.device(device).type, dtype=amp_dtype):
+                pred_signal, pred_onset = model(block, t_in, t_out, chunk=frame_chunk)
+        else:
+            pred_signal, pred_onset = model(block, t_in, t_out, chunk=frame_chunk)
+
+        pred_signal = pred_signal.float().squeeze(0).cpu().numpy()
+        pred_onset = torch.sigmoid(pred_onset.float()).squeeze(0).cpu().numpy()
+
+        # Trim the padding-contaminated edges, except where the window sits
+        # against the true start or end of the clip -- there the padding is real.
+        lo = start + (margin if start > 0 else 0)
+        hi = stop - (margin if stop < n_out else 0)
+        signal[lo:hi] = pred_signal[lo - start : hi - start]
+        onset[lo:hi] = pred_onset[lo - start : hi - start]
+        filled[lo:hi] = True
+
+    if not filled.all():
+        raise RuntimeError(
+            f"{entry.clip_id}: {int((~filled).sum())} samples were never predicted "
+            f"(window={window}, margin={margin}, hop={hop})"
+        )
+
+    # Part of the model interface, unused by zephyr: a network trained on a
+    # transformed target may define postprocess(signal, fs) to rebuild the trace,
+    # once, on the stitched whole clip and before the z-score.
+    postprocess = getattr(model, "postprocess", None)
+    if postprocess is not None:
+        fs = 1.0 / float(np.median(np.diff(grid)))
+        signal = postprocess(signal, fs).astype(np.float32)
+
+    scale = signal.std()
+    signal = (signal - signal.mean()) / (scale if scale > 0 else 1.0)
+    return signal, onset
