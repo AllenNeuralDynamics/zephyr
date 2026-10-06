@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 from scipy.signal import welch
 
-from zephyr.evaluate import head_event_indices
+from zephyr import features
 from zephyr.evaluation import EVENT_TOLERANCE_S, match_events
 from zephyr.rates import DEFAULT_RATE_BINS_HZ, breath_rates, rate_bin, rate_track
 from zephyr.signal import (
@@ -20,8 +20,8 @@ from zephyr.signal import (
 
 from . import results
 
-PLOT_BINS_HZ: tuple[float, ...] = (1.0, 1.5, *DEFAULT_RATE_BINS_HZ)
-"""Training's default bins (2-15 Hz) extended down to 1 Hz, where long pauses sit."""
+PLOT_BINS_HZ: tuple[float, ...] = DEFAULT_RATE_BINS_HZ
+"""Training's default bins, 2-15 Hz; breaths outside them are not plotted."""
 WINDOW_S: float = 3.0
 """Length of the windows waveform correlation is measured in."""
 CHANCE_SHIFTS_S: tuple[float, ...] = (7.3, 13.1, 21.7, 34.9, 55.3)
@@ -36,6 +36,8 @@ def bin_centres(bins: tuple[float, ...] = PLOT_BINS_HZ) -> np.ndarray:
 
 
 def _with_bin(frame: pd.DataFrame) -> pd.DataFrame:
+    rate = frame["rate"]
+    frame = frame[(rate >= PLOT_BINS_HZ[0]) & (rate < PLOT_BINS_HZ[-1])]
     index = rate_bin(frame["rate"].to_numpy(), PLOT_BINS_HZ)
     return frame.assign(bin=index, centre=bin_centres()[index])
 
@@ -114,41 +116,55 @@ def _shifted(times: np.ndarray, shift: float, span: tuple[float, float]) -> np.n
     return np.sort((times - t0 + shift) % (t1 - t0) + t0)
 
 
+TRAINING: str = "training"
+"""Stratum label of the training clips, scored in-sample for comparison only."""
+
+
 def _clip_tables(
-    clip: results.TestClip,
+    entry: features.ClipEntry, stratum: str
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Per-breath detection, unmatched head events, and 3 s windows of one clip."""
-    entry = clip.entry
     truth = results.truth(entry)
     out = results.zephyr_outputs(entry)
     times = out[TIME_COLUMN].to_numpy()
-    head = times[head_event_indices(out["onset"].to_numpy(), times)]
+    head = results.head_events(out)
     truth_on, _ = results.events(
         truth[TIME_COLUMN].to_numpy(), truth["Signal"].to_numpy()
     )
     labels = {
         "video": results.short_name(entry),
         "recording": results.recording_label(entry),
-        "stratum": clip.stratum,
+        "stratum": stratum,
     }
 
     rate = breath_rates(truth_on)  # the last breath has no rate and is left out
-    detected = np.zeros(len(truth_on), bool)
-    matched_pred = np.zeros(len(head), bool)
-    for i, j in match_events(truth_on, head, EVENT_TOLERANCE_S):
-        detected[i], matched_pred[j] = True, True
+    # DSP on the trace is kept only as a comparison column for local F1.
+    dsp = results.events(times, out["Zephyr"].to_numpy())[0]
+    detected, false_rows = {}, []
+    for source, predicted in (("head", head), ("DSP", dsp)):
+        hit = np.zeros(len(truth_on), bool)
+        matched = np.zeros(len(predicted), bool)
+        for i, j in match_events(truth_on, predicted, EVENT_TOLERANCE_S):
+            hit[i], matched[j] = True, True
+        detected[source] = hit
+        fp_rate = rate_track(predicted[~matched], truth_on)
+        false_rows.append(
+            pd.DataFrame({"rate": fp_rate[np.isfinite(fp_rate)], "source": source})
+        )
     chance = np.zeros(len(truth_on))
     span = (float(times[0]), float(times[-1]))
     for shift in CHANCE_SHIFTS_S:
         for i, _ in match_events(truth_on, _shifted(head, shift, span)):
             chance[i] += 1 / len(CHANCE_SHIFTS_S)
     breaths = pd.DataFrame(
-        {"rate": rate, "detected": detected[:-1], "chance": chance[:-1]}
+        {
+            "rate": rate,
+            "detected": detected["head"][:-1],
+            "detected_dsp": detected["DSP"][:-1],
+            "chance": chance[:-1],
+        }
     ).assign(**labels)
-
-    fp_times = head[~matched_pred]
-    fp_rate = rate_track(fp_times, truth_on)
-    false_pos = pd.DataFrame({"rate": fp_rate[np.isfinite(fp_rate)]}).assign(**labels)
+    false_pos = pd.concat(false_rows, ignore_index=True).assign(**labels)
 
     raw_t = truth[TIME_COLUMN].to_numpy()
     raw_fs = 1.0 / float(np.median(np.diff(raw_t)))
@@ -168,22 +184,43 @@ def _clip_tables(
     return breaths, false_pos, windows
 
 
+def _tables(
+    prefix: str, clips: list[tuple[features.ClipEntry, str]]
+) -> dict[str, pd.DataFrame]:
+    names = ("breaths", "false_positives", "windows")
+    paths = {k: results.CACHE / f"{prefix}-rates-v2-{k}.parquet" for k in names}
+    if all(p.exists() for p in paths.values()):
+        return {k: pd.read_parquet(p) for k, p in paths.items()}
+    parts = [_clip_tables(entry, stratum) for entry, stratum in clips]
+    tables = {k: pd.concat(t, ignore_index=True) for k, t in zip(names, zip(*parts))}
+    results.CACHE.mkdir(exist_ok=True)
+    for k, frame in tables.items():
+        frame.to_parquet(paths[k])
+    return tables
+
+
 def test_tables() -> dict[str, pd.DataFrame]:
     """``breaths``, ``false_positives`` and ``windows`` over every test clip.
 
     Needs Zephyr's outputs on all 24 clips (about a minute each on CPU the first
     time); the tables themselves are cached.
     """
-    names = ("breaths", "false_positives", "windows")
-    paths = {k: results.CACHE / f"test-rates-{k}.parquet" for k in names}
-    if all(p.exists() for p in paths.values()):
-        return {k: pd.read_parquet(p) for k, p in paths.items()}
-    parts = [_clip_tables(clip) for clip in results.clips().values()]
-    tables = {k: pd.concat(t, ignore_index=True) for k, t in zip(names, zip(*parts))}
-    results.CACHE.mkdir(exist_ok=True)
-    for k, frame in tables.items():
-        frame.to_parquet(paths[k])
-    return tables
+    return _tables("test", [(c.entry, c.stratum) for c in results.clips().values()])
+
+
+def train_tables() -> dict[str, pd.DataFrame]:
+    """The same over the 32 training clips, stratum ``training``.
+
+    In-sample: the network was fitted to these clips, so this is a reference for
+    the held-out rows, never a score. Inference as for :func:`test_tables`.
+    """
+    return _tables("train", [(e, TRAINING) for e in results.train_entries()])
+
+
+def all_tables() -> dict[str, pd.DataFrame]:
+    """Test and training tables stacked; ``stratum`` tells them apart."""
+    test, train = test_tables(), train_tables()
+    return {k: pd.concat([test[k], train[k]], ignore_index=True) for k in test}
 
 
 def recall_by_bin(breaths: pd.DataFrame, column: str = "detected") -> pd.DataFrame:
@@ -198,17 +235,22 @@ def recall_by_bin(breaths: pd.DataFrame, column: str = "detected") -> pd.DataFra
     )
 
 
-def f1_by_bin(breaths: pd.DataFrame, false_pos: pd.DataFrame) -> pd.DataFrame:
+def f1_by_bin(
+    breaths: pd.DataFrame, false_pos: pd.DataFrame, source: str = "head"
+) -> pd.DataFrame:
     """Local inhale F1 per rate bin: TP and FN binned by the breath's rate, FP by the
-    thermistor's rate at the false event. Per recording and pooled."""
-    b, f = _with_bin(breaths), _with_bin(false_pos)
+    thermistor's rate at the false event. Per recording and pooled. *source* is
+    ``head`` or ``DSP`` (on the trace, for comparison only)."""
+    column = "detected" if source == "head" else "detected_dsp"
+    b = _with_bin(breaths)
+    f = _with_bin(false_pos[false_pos["source"] == source])
     keys = ["stratum", "recording", "bin", "centre"]
     frames = []
     for pooled in (False, True):
         bb = b.assign(recording="pooled") if pooled else b
         ff = f.assign(recording="pooled") if pooled else f
-        tp = bb.groupby(keys)["detected"].sum().rename("tp")
-        fn = (~bb["detected"]).groupby([bb[k] for k in keys]).sum().rename("fn")
+        tp = bb.groupby(keys)[column].sum().rename("tp")
+        fn = (~bb[column]).groupby([bb[k] for k in keys]).sum().rename("fn")
         fp = ff.groupby(keys).size().rename("fp")
         counts = pd.concat([tp, fn, fp], axis=1).fillna(0)
         counts["f1"] = 2 * counts.tp / (2 * counts.tp + counts.fp + counts.fn)

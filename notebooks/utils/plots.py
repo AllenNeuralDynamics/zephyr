@@ -37,6 +37,8 @@ HEAD_COLUMNS: dict[str, str] = {
     "kl_ibi": "head_kl_ibi",
 }
 """Metrics Zephyr can also be scored on with events from its onset head."""
+RATE_ROWS: dict[str, str] = {**STRATUM_LABELS, "training": "Training (in-sample)"}
+"""Rows of the by-rate figure: the test groups, then the clips the network fit."""
 STRATUM_MARKERS: dict[str, str] = {"new_animals": "o", "known_animals_new_date": "s"}
 CHANNEL_RANGES: dict[str, tuple[float, float]] = {
     "gray": (0, 255),
@@ -122,7 +124,7 @@ def ablation_figure(df: pd.DataFrame) -> Figure:
     }
     ylabels = {
         "correlation": METRIC_LABELS["correlation"],
-        "inhale_f1": "Inhalation F1\nfrom trace (DSP)",
+        "inhale_f1": "Inhalation F1 from trace\n(DSP, for comparison only)",
         "head_inhale_f1": "Inhalation F1\nfrom onset head",
     }
     for row, stratum in enumerate(STRATUM_LABELS):
@@ -155,28 +157,46 @@ def ablation_figure(df: pd.DataFrame) -> Figure:
     return fig
 
 
+def benchmark_means(df: pd.DataFrame) -> pd.DataFrame:
+    """The means :func:`benchmark_figure` draws as bars: one row per method and
+    test group, one column per metric, from the same columns (Zephyr's inhale F1
+    and KL-IBI from its onset head), plus each method's inhale-event source."""
+    rows = []
+    for method in style.METHODS:
+        for stratum, label in STRATUM_LABELS.items():
+            runs = df[(df.method == method) & (df.stratum == stratum)]
+            row: dict[str, object] = {"method": method, "test group": label}
+            for metric, name in METRIC_LABELS.items():
+                headed = method == "Zephyr" and metric in HEAD_COLUMNS
+                row[name] = runs[HEAD_COLUMNS[metric] if headed else metric].mean()
+            row["inhale events"] = "head" if method == "Zephyr" else "DSP"
+            row["runs"] = len(runs)
+            rows.append(row)
+    return pd.DataFrame(rows)
+
+
 def benchmark_figure(df: pd.DataFrame) -> Figure:
     """Every method on each metric; dots are runs, marker shape is the stratum.
 
-    The inhale and KL-IBI panels add Zephyr scored with the onset head's events.
+    On the inhale and KL-IBI panels Zephyr is scored with its onset head's events
+    and the headless methods with DSP on their trace; exhale F1 is DSP for all.
+    Tick labels name the event source.
     """
     fig, axes = style.figure("double", 0.62, nrows=2, ncols=2)
     for ax, (metric, label) in zip(axes.flat, METRIC_LABELS.items(), strict=True):
-        columns = {method: (metric, style.METHODS[method]) for method in style.METHODS}
-        if metric in HEAD_COLUMNS:
-            columns["Zephyr (event head)"] = (
-                HEAD_COLUMNS[metric],
-                style.OBJECTIVES[HEAD],
-            )
-        for i, (name, (column, color)) in enumerate(columns.items()):
-            method = name.removesuffix(" (event head)")
+        ticks = []
+        for i, method in enumerate(style.METHODS):
+            headed = method == "Zephyr" and metric in HEAD_COLUMNS
+            column = HEAD_COLUMNS[metric] if headed else metric
             for offset, stratum in zip((-0.2, 0.2), STRATUM_MARKERS, strict=True):
                 values = df[(df.method == method) & (df.stratum == stratum)][column]
                 points(
-                    ax, i + offset, values.to_numpy(), color,
+                    ax, i + offset, values.to_numpy(), style.METHODS[method],
                     STRATUM_MARKERS[stratum], spread=0.05,
                 )  # fmt: skip
-        ax.set_xticks(range(len(columns)), list(columns), rotation=30, ha="right")
+            source = "head" if headed else "DSP"
+            ticks.append(method if metric == "correlation" else f"{method} ({source})")
+        ax.set_xticks(range(len(ticks)), ticks, rotation=30, ha="right")
         ax.set_ylabel(label)
     handles = [
         Line2D(
@@ -354,7 +374,7 @@ def variant_traces_figure(
     return fig
 
 
-RATE_TICKS: tuple[float, ...] = (1, 2, 3, 4, 6, 8, 12)
+RATE_TICKS: tuple[float, ...] = (2, 3, 4, 6, 8, 12)
 
 
 def rate_axis(ax: Axes, bins: Sequence[float]) -> None:
@@ -449,35 +469,52 @@ def test_rates_figure(
     recall: pd.DataFrame,
     chance: pd.DataFrame,
     f1: pd.DataFrame,
+    f1_dsp: pd.DataFrame,
     windows: pd.DataFrame,
     share: pd.DataFrame,
     centres: NDArray,
     bins: Sequence[float],
 ) -> Figure:
-    """Held-out performance by true breathing rate, one row per test group.
+    """Performance by true breathing rate, one row per group in :data:`RATE_ROWS`
+    present in *recall*: the two test groups, then the training clips (in-sample).
 
-    Columns: recall within one frame, local inhale F1, waveform correlation in
-    3 s windows, and where each recording's breaths fall.
+    Columns: recall within one frame (head), local inhale F1 from the head and,
+    for comparison, from DSP on the trace, waveform correlation in 3 s windows,
+    and where each recording's breaths fall.
     """
-    fig, axes = style.figure("double", 0.62, nrows=2, ncols=4, sharex=True)
-    for row, stratum in enumerate(STRATUM_LABELS):
-        ax_a, ax_c, ax_e, ax_f = axes[row]
-        colours = recording_colours(recall[recall.stratum == stratum]["recording"])
+    groups = {k: v for k, v in RATE_ROWS.items() if k in set(recall.stratum)}
+    fig, axes = style.figure(
+        "double",
+        0.26 * len(groups),
+        nrows=len(groups),
+        ncols=5,
+        sharex=True,
+        squeeze=False,
+    )
+    for row, stratum in enumerate(groups):
+        ax_a, ax_c, ax_d, ax_e, ax_f = axes[row]
         r = recall[recall.stratum == stratum]
+        colours = recording_colours(r["recording"])
         _series_lines(ax_a, r, "centre", "recall", colours, marker="o", ms=2)
         c = chance[(chance.stratum == stratum) & (chance.recording == "pooled")]
         c = c.sort_values("centre")
         ax_a.plot(c.centre, c.recall, ":", color="0.5", label="chance (shifted)")
-        ax_a.set_ylim(0, 1.02)
-        ax_a.set_ylabel(f"{STRATUM_LABELS[stratum]}\nRecall (1 frame)")
-        _series_lines(
-            ax_c, f1[f1.stratum == stratum], "centre", "f1", colours, marker="o", ms=2
-        )
-        ax_c.set_ylim(0, 1.02)
-        ax_c.set_ylabel("Local inhale F1")
-        w = windows[windows.stratum == stratum].copy()
-        for name, rows in w.groupby("recording"):
-            ax_e.plot(rows.rate, rows.r, ".", color=colours[name], ms=1.2, alpha=0.3)
+        ax_a.set_ylabel(f"{groups[stratum]}\nRecall (1 frame)")
+        for ax, table in ((ax_c, f1), (ax_d, f1_dsp)):
+            part = table[table.stratum == stratum]
+            _series_lines(ax, part, "centre", "f1", colours, marker="o", ms=2)
+            ax.set_ylabel("Local inhale F1")
+        for ax in (ax_a, ax_c, ax_d):
+            ax.set_ylim(0, 1.02)
+        w = windows[
+            (windows.stratum == stratum)
+            & (windows.rate >= bins[0])
+            & (windows.rate < bins[-1])
+        ].copy()
+        for name, points_ in w.groupby("recording"):
+            ax_e.plot(
+                points_.rate, points_.r, ".", color=colours[name], ms=1.2, alpha=0.3
+            )
         w["centre"] = centres[
             np.clip(np.searchsorted(bins, w.rate) - 1, 0, len(centres) - 1)
         ]
@@ -493,20 +530,21 @@ def test_rates_figure(
         ax_f.set_ylabel("Share of breaths")
         for ax in axes[row]:
             rate_axis(ax, bins)
-            if row == 0:
+            if row < len(groups) - 1:
                 ax.set_xlabel("")
     axes[0, 0].legend(loc="lower right")
     for ax, title in zip(
         axes[0],
         (
-            "Breaths detected",
-            "Local inhale F1",
+            "Breaths detected (head)",
+            "Local F1 (head)",
+            "Local F1 (DSP)",
             "Waveform correlation",
             "Rate distribution",
         ),
         strict=True,
     ):
-        ax.set_title(title)
+        ax.set_title(title, pad=12)
     panel_letters(axes)
     return fig
 

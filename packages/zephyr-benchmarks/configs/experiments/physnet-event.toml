@@ -1,0 +1,8 @@
+# PhysNet with an onset-event head, two seeds as the baselines.  Smoke first:
+#   zephyr-benchmarks run packages/zephyr-benchmarks/configs/experiments/physnet-event.toml --smoke --output-dir runs/smoke-physnet-event
+folds = ["../folds/physnet-event.toml"]
+seeds = [42]
+output_dir = "../../../../runs/physnet-event"
+features_dir = "../../../../data/features-v2"
+device = "cuda"
+amp = "bf16"
