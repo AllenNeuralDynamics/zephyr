@@ -146,8 +146,10 @@ def train_spectra() -> pd.DataFrame:
     return pd.concat(rows, ignore_index=True)
 
 
-BANDS_HZ: tuple[float, ...] = (2.0, 4.0, 8.0, 15.0)
-"""Edges of the frequency bands correlation is broken down by (octaves, 2-15 Hz)."""
+BANDS_HZ: tuple[float, ...] = tuple(
+    float(e) for e in np.geomspace(PLOT_BINS_HZ[0], PLOT_BINS_HZ[-1], 11)
+)
+"""Edges of the 10 log-spaced bands correlation is broken down by, 2-15 Hz."""
 
 
 def band_correlations(
@@ -157,25 +159,55 @@ def band_correlations(
 
     Both are band-passed (zero-phase, so no lag is added) to a band of *edges* and
     correlated over the whole clip. The thermistor is filtered as the training
-    target is and resampled onto the traces' grid. Rows are bands labelled
-    ``"lo-hi"`` (Hz), columns are methods.
+    target is and resampled onto the traces' grid. Rows are bands, indexed by their
+    geometric centre (Hz); columns are methods.
     """
     times = traces[TIME_COLUMN].to_numpy()
     raw_t = truth[TIME_COLUMN].to_numpy()
     raw_fs = 1.0 / float(np.median(np.diff(raw_t)))
     filtered = filter_sniff_signal(truth["Signal"].to_numpy(dtype=float), raw_fs)
     reference = np.interp(times, raw_t, filtered)
-    rows = {}
+    rows = []
     for lo, hi in zip(edges[:-1], edges[1:]):
         sos = butter(4, (lo, hi), btype="bandpass", fs=FS, output="sos")
         band_reference = sosfiltfilt(sos, reference)
-        rows[f"{lo:g}-{hi:g}"] = {
-            method: float(
-                np.corrcoef(band_reference, sosfiltfilt(sos, traces[method]))[0, 1]
-            )
-            for method in style.METHODS
-        }
-    return pd.DataFrame(rows).T
+        rows.append(
+            {
+                method: float(
+                    np.corrcoef(band_reference, sosfiltfilt(sos, traces[method]))[0, 1]
+                )
+                for method in style.METHODS
+            }
+        )
+    return pd.DataFrame(rows, index=bin_centres(edges))
+
+
+def band_correlation_summary(n_boot: int = 2000, seed: int = 0) -> pd.DataFrame:
+    """Mean band correlation of every method over all test clips, with a 95%
+    bootstrap interval (clips resampled with replacement).
+
+    Index is the band centre (Hz); columns are ``(method, stat)`` with stat one of
+    ``mean``, ``lo``, ``hi``. Needs every test clip's traces (cached per clip).
+    """
+    per_clip = np.stack(
+        [
+            band_correlations(
+                results.method_traces(c.entry), results.truth(c.entry)
+            ).to_numpy()
+            for c in results.clips().values()
+        ]
+    )  # clip, band, method
+    rng = np.random.default_rng(seed)
+    resampled = per_clip[rng.integers(0, len(per_clip), (n_boot, len(per_clip)))]
+    boot = np.nanmean(resampled, axis=1)  # boot, band, method
+    lo, hi = np.nanpercentile(boot, [2.5, 97.5], axis=0)
+    mean = np.nanmean(per_clip, axis=0)
+    columns = {
+        (method, stat): values[:, i]
+        for i, method in enumerate(style.METHODS)
+        for stat, values in (("mean", mean), ("lo", lo), ("hi", hi))
+    }
+    return pd.DataFrame(columns, index=bin_centres(BANDS_HZ))
 
 
 def _shifted(times: np.ndarray, shift: float, span: tuple[float, float]) -> np.ndarray:

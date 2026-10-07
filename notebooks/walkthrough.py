@@ -193,17 +193,18 @@ def _(scores: pd.DataFrame):
 @app.cell
 def _():
     mo.md("""
-    Seen in frequency, over the whole clip: each trace and the thermistor are
-    band-passed to octave bands and correlated within each band. The score table's
-    correlation is dominated by whichever band holds the most power; this shows how
-    each method does in each band.
+    Seen in frequency, over all test clips: each trace and the thermistor are
+    band-passed to ten log-spaced bands (2-15 Hz) and correlated within each band.
+    Lines are the mean over clips, shaded areas the 95% bootstrap interval across
+    clips. The score table's correlation is dominated by whichever band holds the
+    most power; this shows how each method does in each band.
     """)
     return
 
 
 @app.cell
-def _(traces: pd.DataFrame, truth: pd.DataFrame):
-    band_r: pd.DataFrame = breathing.band_correlations(traces, truth)
+def _():
+    band_r: pd.DataFrame = breathing.band_correlation_summary()
     fig3b = plots.band_correlation_figure(band_r)
     fig3b
     return

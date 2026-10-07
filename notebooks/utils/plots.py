@@ -323,25 +323,29 @@ def trace_stack(
     ax.grid(False)
 
 
-def band_correlation_figure(correlations: pd.DataFrame) -> Figure:
-    """Grouped bars: each method's correlation with the thermistor in each band."""
-    fig, ax = style.figure("double", 0.35)
-    n = len(correlations.columns)
-    width = 0.8 / n
-    x = np.arange(len(correlations), dtype=float)
-    for i, method in enumerate(map(str, correlations)):
-        ax.bar(
-            x + (i - (n - 1) / 2) * width,
-            correlations[method],
-            width,
-            color=style.color(method),
+def band_correlation_figure(summary: pd.DataFrame) -> Figure:
+    """Each method's mean correlation with the thermistor by frequency band, over
+    the test clips, with its 95% interval shaded (``summary`` from
+    :func:`breathing.band_correlation_summary`)."""
+    fig, ax = style.figure("double", 0.4)
+    for method in style.METHODS:
+        s = summary[method]
+        colour = style.color(method)
+        ax.fill_between(s.index, s["lo"], s["hi"], color=colour, alpha=0.2, linewidth=0)
+        ax.plot(
+            s.index,
+            s["mean"],
+            "o-",
+            color=colour,
+            markersize=2.5,
+            linewidth=1.4 if method == "Zephyr" else 0.9,
             label=method,
         )
-    ax.set_xticks(x, correlations.index)
     ax.axhline(0, color="0.6", linewidth=0.5)
-    ax.set_xlabel("Frequency band (Hz)")
     ax.set_ylabel("Pearson correlation")
-    ax.legend(loc="lower right", bbox_to_anchor=(1, 1), ncol=n)
+    rate_axis(ax, (summary.index[0], summary.index[-1]))
+    ax.set_xlabel("Frequency (Hz)")
+    ax.legend(loc="lower right", bbox_to_anchor=(1, 1), ncol=len(style.METHODS))
     return fig
 
 
