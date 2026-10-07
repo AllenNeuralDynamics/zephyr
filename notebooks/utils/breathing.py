@@ -6,6 +6,7 @@ within one frame. Inference only; per-clip results are cached in ``notebooks/cac
 """
 
 import json
+from itertools import pairwise
 
 import numpy as np
 import pandas as pd
@@ -168,7 +169,7 @@ def band_correlations(
     filtered = filter_sniff_signal(truth["Signal"].to_numpy(dtype=float), raw_fs)
     reference = np.interp(times, raw_t, filtered)
     rows = []
-    for lo, hi in zip(edges[:-1], edges[1:]):
+    for lo, hi in pairwise(edges):
         sos = butter(4, (lo, hi), btype="bandpass", fs=FS, output="sos")
         band_reference = sosfiltfilt(sos, reference)
         rows.append(
