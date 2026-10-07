@@ -1,7 +1,10 @@
 import argparse
 import unittest
+from pathlib import Path
 
+from zephyr.config import TrainParams
 from zephyr.run import choose_machine
+from zephyr.train import snapshot_path
 
 
 def _args(**flags) -> argparse.Namespace:
@@ -29,6 +32,20 @@ class ChooseMachineTests(unittest.TestCase):
 
     def test_bare_fold_has_no_experiment_settings(self):
         self.assertEqual(choose_machine(_args(device="cpu"), {}).num_workers, 4)
+
+
+class SnapshotTests(unittest.TestCase):
+    def test_every_nth_epoch_is_kept_under_its_one_based_number(self):
+        run = Path("run")
+        kept = [snapshot_path(run, e, 50) for e in range(200)]
+        self.assertEqual(
+            [p.name for p in kept if p is not None],
+            ["epoch-050.pt", "epoch-100.pt", "epoch-150.pt", "epoch-200.pt"],
+        )
+
+    def test_off_by_default(self):
+        self.assertEqual(TrainParams().save_every, 0)
+        self.assertIsNone(snapshot_path(Path("run"), 49, 0))
 
 
 if __name__ == "__main__":

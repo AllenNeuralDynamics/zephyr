@@ -12,8 +12,8 @@ import pandas as pd
 from scipy.signal import butter, sosfiltfilt, welch
 
 from zephyr import features
-from zephyr.evaluation import EVENT_TOLERANCE_S, match_events
 from zephyr.dataset import BALANCE_HOP_S
+from zephyr.evaluation import EVENT_TOLERANCE_S, match_events
 from zephyr.rates import (
     DEFAULT_RATE_BINS_HZ,
     balance_weights,

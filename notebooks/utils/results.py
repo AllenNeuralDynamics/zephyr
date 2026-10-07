@@ -224,9 +224,7 @@ def method_traces(entry: features.ClipEntry) -> pd.DataFrame:
     return pd.concat([frame, zephyr], axis=1)
 
 
-def zephyr_outputs(
-    entry: features.ClipEntry, run: Path = ZEPHYR_RUN
-) -> pd.DataFrame:
+def zephyr_outputs(entry: features.ClipEntry, run: Path = ZEPHYR_RUN) -> pd.DataFrame:
     """Zephyr's z-scored trace and onset probability: ``Time``, ``Zephyr``, ``onset``.
 
     Inference only (CPU), cached per clip and per network (*run*, by its experiment

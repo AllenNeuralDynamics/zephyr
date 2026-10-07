@@ -69,15 +69,38 @@ class Architecture:
     kwargs: Callable[[TrainParams], dict] = lambda params: {}
 
 
+def _zephyr_kwargs(params: TrainParams) -> dict:
+    """Network options that differ from the default, as ``arch_kwargs``; only those
+    are recorded, so checkpoints of the default network are written as before."""
+    kwargs: dict = {}
+    if params.signal_pool > 1:
+        kwargs["signal_pool"] = params.signal_pool
+    if params.onset_input != "full":
+        kwargs["onset_input"] = params.onset_input
+    return kwargs
+
+
 ZEPHYR = Architecture(
     name="zephyr",
-    build=lambda channels, params, mean, std: BreathingNet(
-        channels=channels, dropout=params.dropout
+    build=lambda channels, params, mean, std, **kwargs: BreathingNet(
+        channels=channels, dropout=params.dropout, **kwargs
     ),
     criterion=lambda params: BreathingLoss(
         params.w_corr, params.w_onset, tuple(params.scales)
     ),
+    kwargs=_zephyr_kwargs,
 )
+
+
+def snapshot_path(run_dir: Path, epoch: int, save_every: int) -> Path | None:
+    """Where the weights after 0-based *epoch* are kept, or ``None``.
+
+    Every *save_every*-th epoch is kept as ``epoch-<n>.pt`` (``n`` 1-based), with
+    the weights a final ``best.pt`` would hold, so ``evaluate`` scores it as is.
+    """
+    if save_every and (epoch + 1) % save_every == 0:
+        return run_dir / f"epoch-{epoch + 1:03d}.pt"
+    return None
 
 
 def _mean(values: list[dict], key: str) -> float:
@@ -632,6 +655,9 @@ def train_fold(
         (run_dir / "history.json").write_text(json.dumps(history, indent=2))
         # Written every epoch, scored or not, so a crash costs one epoch.
         save(last_path, epoch, row, [])
+        snapshot = snapshot_path(run_dir, epoch, params.save_every)
+        if snapshot is not None:
+            save(snapshot, epoch, row, [], weights=ema.module if ema else None)
 
         message = (
             f"[{epoch + 1:3d}/{params.epochs}] train corr {row['train_corr']:+.3f}"

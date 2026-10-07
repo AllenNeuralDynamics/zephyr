@@ -1,0 +1,9 @@
+# rate-balance with the pooled signal branch (signal_pool = 2) and the onset head
+# reading both streams.  Compare against runs/rate-balance.  Smoke first:
+#   zephyr run packages/zephyr-benchmarks/configs/experiments/rate-balance-pool2-both.toml --smoke --output-dir runs/smoke-rate-balance-pool2-both
+folds = ["../folds/benchmark-rate-balanced-pool2-both.toml"]
+seeds = [42]
+output_dir = "../../../../runs/rate-balance-pool2-both"
+features_dir = "../../../../data/features-v2"
+device = "cuda"
+amp = "bf16"

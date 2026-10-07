@@ -132,6 +132,12 @@ time_stretch = 1.0
   (default 2-15 Hz): each window is weighted by `share(bin) ** -rate_balance`,
   within each `[[train]]` source. Bins under 1% of windows count as 1%. Helpers
   are in `zephyr/rates.py`; validation windows are never balanced.
+- `signal_pool` (default 1 = off) makes the signal head read the TCN's output
+  average-pooled by that factor in time and upsampled back to 60 Hz (a smoother
+  trace). `onset_input` (`full`, the default, `pooled` or `both`) says what the
+  onset head reads: the full-rate features, the branch's, or both concatenated;
+  the last two need `signal_pool > 1`. Both are recorded in the checkpoint's
+  `arch_kwargs`, and both packages' loaders rebuild from them.
 - zephyr-benchmarks' `BenchmarkTrainParams` adds `arch` (`zephyr`, the
   default, `tscan` or `physnet`; the last two need `channels = "gray"`) and
   `tscan_img_size`. zephyr's own `Fold` refuses both keys: a fold naming a
@@ -182,7 +188,11 @@ uv run zephyr evaluate --checkpoint <best.pt> --clips <a>.toml <b>.toml --cache 
 - **Always smoke-run** (`--smoke`, 1 epoch of 2 steps) before a full run. Smoke
   output goes to `<output_dir>/smoke/` unless `--output-dir` is given.
 - A run writes `<output_dir>/<fold stem>/seed-<n>/` with `config.json`,
-  `train_videos.json`, checkpoints and `evaluation.json`. A seed whose `best.pt`
+  `train_videos.json`, checkpoints and `evaluation.json`. With
+  `train_params.save_every = N` it also keeps `epoch-<n>.pt` every N epochs
+  (same weights a final `best.pt` would hold); score one with `evaluate
+  --checkpoint`. These were trained mid-schedule (learning rate not yet
+  decayed), so they show how the score evolves, not what a shorter run gives. A seed whose `best.pt`
   exists is re-scored, not retrained; use a new `output_dir` for a new
   experiment rather than deleting results.
 - Without a GPU add `--device cpu --amp off --num-workers 0`; expect ~1.7 s

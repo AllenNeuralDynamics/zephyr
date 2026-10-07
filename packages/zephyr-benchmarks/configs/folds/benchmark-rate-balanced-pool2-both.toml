@@ -1,0 +1,27 @@
+# benchmark-rate-balanced with a pooled signal branch: the signal head reads the
+# TCN's output averaged over 2 frames (30 Hz) and upsampled back to 60 Hz
+# (signal_pool = 2), and the onset head reads both the full-rate and the pooled
+# features (onset_input = "both").  Weights are also kept every 50 epochs
+# (save_every) to see how the score evolves over training.  Everything else is
+# benchmark-rate-balanced.
+[[train]]
+clips = "../clips/face_train.toml"
+
+[test]
+new_animals = "../clips/face_test_new_animals.toml"
+known_animals_new_date = "../clips/face_test_known_animals_new_date.toml"
+
+[train_params]
+channels = "gray+diff+flow"
+epochs = 200
+steps_per_epoch = 200
+val_fraction = 0
+w_corr = 1.0
+w_onset = 0.5
+rate_balance = 1.0
+signal_pool = 2
+onset_input = "both"
+save_every = 50
+
+[train_params.augmentation]
+time_stretch = 1.0

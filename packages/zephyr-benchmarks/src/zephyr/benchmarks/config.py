@@ -25,6 +25,12 @@ class BenchmarkTrainParams(TrainParams):
     def _baseline_archs_read_gray(self) -> "BenchmarkTrainParams":
         if self.arch != "zephyr" and ChannelSet.parse(self.channels).names != ("gray",):
             raise ValueError(f"arch {self.arch!r} needs channels = 'gray'")
+        if self.arch != "zephyr" and (
+            self.signal_pool != 1 or self.onset_input != "full"
+        ):
+            raise ValueError(
+                f"signal_pool and onset_input are zephyr options; arch {self.arch!r}"
+            )
         return self
 
 

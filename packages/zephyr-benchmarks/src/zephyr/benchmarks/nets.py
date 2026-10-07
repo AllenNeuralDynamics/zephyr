@@ -354,7 +354,7 @@ class PhysNetBreathingEvent(nn.Module):
 
 ARCHS = ("zephyr", "tscan", "physnet", "physnet_event")
 ARCH_OPTIONS = {
-    "zephyr": set(),
+    "zephyr": {"signal_pool", "onset_input"},
     "tscan": {"img_size"},
     "physnet": set(),
     "physnet_event": set(),
@@ -373,8 +373,9 @@ def build_model(
 ) -> nn.Module:
     """Construct any supported network.  *mean*/*std* are full-width channel stats.
 
-    *arch_kwargs* are architecture options (TS-CAN: ``img_size``) that a
-    checkpoint records so it can be rebuilt; the other networks take none.
+    *arch_kwargs* are architecture options (TS-CAN: ``img_size``, zephyr:
+    ``signal_pool``, ``onset_input``) that a checkpoint records so it can be rebuilt; the other
+    networks take none.
     """
     if arch not in ARCHS:
         raise ValueError(f"unknown arch {arch!r}; choose from {ARCHS}")
@@ -382,7 +383,7 @@ def build_model(
     if unsupported:
         raise ValueError(f"--arch {arch} does not take {sorted(unsupported)}")
     if arch == "zephyr":
-        return BreathingNet(channels=channels, dropout=dropout)
+        return BreathingNet(channels=channels, dropout=dropout, **arch_kwargs)
     if arch == "tscan":
         gray = CHANNEL_NAMES.index("gray")
         return TSCANBreathing(
