@@ -278,7 +278,10 @@ def score_clip(
     """Compute all metrics for one clip and assemble a :class:`Score`.
 
     Both signals are resampled onto the canonical scoring grid
-    (``CANONICAL_BREATHING_SAMPLING_RATE``) before any metric is computed.
+    (``CANONICAL_BREATHING_SAMPLING_RATE``) before any metric is computed, and
+    only the time span both cover is scored.  Correlation compares the two at the
+    prediction's own sample times, so a clip whose video starts before or after
+    its thermistor is still compared instant by instant.
 
     Parameters
     ----------
@@ -307,7 +310,8 @@ def score_clip(
     """
     fs = CANONICAL_BREATHING_SAMPLING_RATE
 
-    # Resample both signals onto the canonical scoring grid
+    # Each signal on the canonical grid from its own first sample.  Events are
+    # detected there and matched as times, so the two grids need not coincide.
     truth_resampled = resample_uniform(truth_thermistor)
     truth = truth_resampled[BREATHING_SIGNAL_COLUMN].to_numpy()
     truth_time = truth_resampled[TIME_COLUMN].to_numpy()
@@ -315,13 +319,25 @@ def score_clip(
     predicted = predicted_resampled[BREATHING_SIGNAL_COLUMN].to_numpy()
     predicted_time = predicted_resampled[TIME_COLUMN].to_numpy()
 
-    # Truncate to shortest length (defensive)
-    n = min(len(truth), len(predicted))
-    truth, predicted = truth[:n], predicted[:n]
-    truth_time, predicted_time = truth_time[:n], predicted_time[:n]
+    # Score only the span both signals cover.  Video and thermistor need not
+    # start together (side-camera clips can start ~1 s apart), so this is cut by
+    # time, never by sample count.
+    start = max(truth_time[0], predicted_time[0])
+    stop = min(truth_time[-1], predicted_time[-1])
+    keep = (truth_time >= start) & (truth_time <= stop)
+    truth, truth_time = truth[keep], truth_time[keep]
+    keep = (predicted_time >= start) & (predicted_time <= stop)
+    predicted, predicted_time = predicted[keep], predicted_time[keep]
 
     # ── Signal-level ─────────────────────────────────────────────────────
-    corr = zero_lag_correlation(truth, predicted)
+    # Correlation pairs samples, so both must be at the same instants: the
+    # thermistor is interpolated onto the prediction's own grid.
+    truth_on_predicted = np.interp(
+        predicted_time,
+        truth_thermistor[TIME_COLUMN].to_numpy(dtype=float),
+        truth_thermistor[BREATHING_SIGNAL_COLUMN].to_numpy(dtype=float),
+    )
+    corr = zero_lag_correlation(truth_on_predicted, predicted)
 
     # ── Events ───────────────────────────────────────────────────────────
     # Defaults for whichever side/type isn't overridden below. Indices are

@@ -202,6 +202,13 @@ uv run zephyr evaluate --checkpoint <best.pt> --clips <a>.toml <b>.toml --cache 
   under chosen names, put them in a fold's `[test]` instead.
 - `evaluate` refuses clips a checkpoint (or the checkpoint it was initialised
   from) trained on. Do not work around the refusal.
+- Scoring and training targets go by time, never by sample index: a clip's video
+  and thermistor need not start together (side-camera clips start up to ~0.9 s
+  apart, face clips a few ms). `score_clip` compares the two at the prediction's
+  timestamps over the span both cover, and `load_target` holds the thermistor's
+  edge value outside its span instead of extrapolating. Correlation against the
+  raw thermistor moves by several hundredths for a few ms of misalignment, so
+  never compare correlations scored before and after this rule.
 - To check that a new config means what you intend before training, load it:
   `uv run python -c "from zephyr.config import load; from zephyr.benchmarks.config import BenchmarkFold; f = load(BenchmarkFold, 'packages/zephyr-benchmarks/configs/folds/x.toml'); print([len(c) for c in f.train_clips()], {k: len(v) for k, v in f.test_clips().items()})"`.
 

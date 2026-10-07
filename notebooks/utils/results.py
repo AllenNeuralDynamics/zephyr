@@ -83,8 +83,6 @@ OOD_RUNS: dict[str, Path] = {
 }
 """The out-of-distribution networks: the face benchmark network, that network
 fine-tuned on two side sessions as well, and one trained on two side sessions only."""
-OOD_ZERO_SHOT: Path = ROOT / "runs/ood-eval-benchmark/evaluation.json"
-"""The face-only network scored on every side clip (it never saw any)."""
 
 INPUTS: dict[str, tuple[Path, str]] = {
     "feature cache": (
@@ -497,43 +495,38 @@ def benchmark() -> pd.DataFrame:
 OOD_METRICS: tuple[str, ...] = ("correlation", "head_inhale_f1")
 
 
-def _held_out_rows(path: Path, network: str, side: set[str]) -> list[dict]:
-    """Per-clip scores an ``evaluate`` run wrote, labelled by camera."""
+def _face_rows(run: Path, network: str, side: set[str]) -> list[dict]:
+    """Per-clip face scores the run's own evaluation wrote (its side clips, if any,
+    are rescored by :func:`_side_rows`)."""
     return [
         {
             "network": network,
             "clip": c["clip_id"],
-            "data": ("Side" if c["clip_id"] in side else "Face") + ", held out",
+            "data": "Face, held out",
             **{m: c[m] for m in OOD_METRICS},
         }
-        for c in json.loads(path.read_text())["clips"]
+        for c in json.loads((run / "evaluation.json").read_text())["clips"]
+        if c["clip_id"] not in side
     ]
 
 
-def _trained_side_entries(run: Path) -> list[features.ClipEntry]:
-    """The side clips *run* trained on, from the videos it recorded training on."""
-    trained = {
-        Path(v).resolve() for v in json.loads((run / "train_videos.json").read_text())
-    }
-    side = clips(OOD_CLIPS).values()
-    return [c.entry for c in side if c.video.resolve() in trained]
+def _side_rows(run: Path, network: str) -> list[dict]:
+    """Every side clip scored with zephyr's per-clip scorer, labelled by whether
+    *run* trained on it (from the videos it recorded training on).
 
-
-def _in_sample_rows(run: Path, network: str) -> list[dict]:
-    """The scorer on the side clips *run* trained on: in-sample, so a reference and
-    never a score. ``evaluate`` refuses these clips; this calls its per-clip scorer
-    directly. Inference only (CPU), cached per run."""
-    entries = _trained_side_entries(run)
-    if not entries:
-        return []
-    cache = CACHE / f"ood-in-sample-{run.parent.parent.name}.parquet"
+    Trained-on clips are in-sample, a reference and never a score; ``evaluate``
+    refuses them, so its scorer is called directly. Inference only (CPU), cached
+    per run.
+    """
+    side = list(clips(OOD_CLIPS).values())
+    cache = CACHE / f"ood-side-{run.parent.parent.name}-{run.parent.name}.parquet"
     if not cache.exists():
         CACHE.mkdir(exist_ok=True)
         device = torch.device("cpu")
         model, mean, std, _ = load_checkpoint(run / "best.pt", device)
         rows = score_entries(
             [(model, mean, std)],
-            entries,
+            [c.entry for c in side],
             device,
             window=1024,
             frame_chunk=256,
@@ -542,20 +535,25 @@ def _in_sample_rows(run: Path, network: str) -> list[dict]:
         )
         frame = pd.DataFrame(rows)[["clip_id", *OOD_METRICS]]
         frame.rename(columns={"clip_id": "clip"}).to_parquet(cache)
+    trained = {
+        Path(v).resolve() for v in json.loads((run / "train_videos.json").read_text())
+    }
+    trained_ids = {c.entry.clip_id for c in side if c.video.resolve() in trained}
     frame = pd.read_parquet(cache)
-    return frame.assign(network=network, data="Side, trained on").to_dict("records")
+    frame["data"] = [
+        "Side, trained on" if c in trained_ids else "Side, held out"
+        for c in frame["clip"]
+    ]
+    return frame.assign(network=network).to_dict("records")
 
 
 def ood_scores() -> pd.DataFrame:
     """Correlation and head inhale F1 of every network of :data:`OOD_RUNS`, per clip:
     ``network``, ``clip``, ``data`` (face or side, held out or trained on)."""
     side = {c.entry.clip_id for c in clips(OOD_CLIPS).values()}
-    zero_shot = {"Face only": [OOD_ZERO_SHOT]}
     rows: list[dict] = []
     for network, run in OOD_RUNS.items():
-        for path in [run / "evaluation.json", *zero_shot.get(network, [])]:
-            rows += _held_out_rows(path, network, side)
-        rows += _in_sample_rows(run, network)
+        rows += _face_rows(run, network, side) + _side_rows(run, network)
     return pd.DataFrame(rows)
 
 

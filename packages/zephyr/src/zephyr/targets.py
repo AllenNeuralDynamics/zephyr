@@ -12,7 +12,6 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from scipy.interpolate import interp1d
 
 from .signal import (
     BREATHING_SIGNAL_COLUMN,
@@ -72,12 +71,17 @@ def load_target(thermistor: Path, times: np.ndarray) -> Target:
     v_uniform = np.interp(t_uniform, t, v)
     filtered = filter_sniff_signal(v_uniform, native_fs)
 
-    resampled = interp1d(
-        t_uniform, filtered, kind="linear", bounds_error=False, fill_value="extrapolate"
-    )(times)
+    # Outside the thermistor's span the edge value is held, never extrapolated:
+    # a video can start ~1 s before its thermistor, and a line extended that far
+    # from the first two samples is not breathing.  The z-score statistics come
+    # from the covered span only, so the held stretch cannot skew them.
+    resampled = np.interp(times, t_uniform, filtered)
+    covered = (times >= t_uniform[0]) & (times <= t_uniform[-1])
+    if not covered.any():
+        raise ValueError(f"{thermistor} does not overlap the clip's output grid")
 
-    offset = float(resampled.mean())
-    scale = float(resampled.std())
+    offset = float(resampled[covered].mean())
+    scale = float(resampled[covered].std())
     signal = (resampled - offset) / (scale if scale > 0 else 1.0)
 
     out_fs = 1.0 / float(np.median(np.diff(times)))

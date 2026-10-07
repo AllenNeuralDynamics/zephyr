@@ -660,8 +660,11 @@ def _():
     3. **Side 14, 15 only**: trained from scratch on two side sessions. It fits
        those (in-sample, a reference, not a score) yet is at chance on session 13.
 
-    Held-out scores are the runs' own evaluations; the trained-on scores call the
-    same scorer directly, since `evaluate` refuses clips a network trained on.
+    Face scores are the runs' own evaluations. Every side clip is scored here with
+    the same per-clip scorer (`evaluate` refuses clips a network trained on, so
+    trained-on clips cannot come from it), which compares prediction and
+    thermistor at the same instants: two side clips start almost 1 s before their
+    thermistor.
     """)
     return
 
