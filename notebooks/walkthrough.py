@@ -1,7 +1,7 @@
 import marimo
 
 __generated_with = "0.25.1"
-app = marimo.App(width="medium")
+app = marimo.App(width="medium", layout_file="layouts/walkthrough.slides.json")
 
 with app.setup:
     import marimo as mo
@@ -188,9 +188,15 @@ def _():
     3. **Time**: the vectors are interpolated onto a fixed 60 Hz grid using the real
        frame timestamps.
     4. **TCN** (temporal only): six residual blocks with dilations 1 to 32 see about
-       0.5 s of context each side, with symmetric padding (offline, non-causal).
-    5. **Two heads**: the breathing trace, and the probability that an inhalation
-       starts. Trained with a multi-scale correlation loss on the trace plus a
+       2 s of context each side, with symmetric padding (offline, non-causal).
+    5. **Pooled branch**: the TCN's output averaged over pairs of frames (30 Hz),
+       a convolution, and a learned upsampling back to 60 Hz. Averaging removes
+       the frame-to-frame noise of an encoder that sees each frame alone, so the
+       trace comes out smooth (`signal_pool = 2`).
+    6. **Two heads**: the breathing trace, read from the pooled branch, and the
+       probability that an inhalation starts, read from the full-rate and the
+       pooled features together (`onset_input = "both"`), so it keeps frame-level
+       timing. Trained with a multi-scale correlation loss on the trace plus a
        weighted cross-entropy on the onset head. Inhale events come from that head.
     """)
     return
@@ -211,8 +217,14 @@ def _():
             direction TB
             D1["1x1 Conv1d, 128 ch"] --> D2["6 x residual block<br/>2 x dilated Conv1d, k = 3<br/>dilation 1, 2, 4, 8, 16, 32"]
         end
-        D --> E["Signal head<br/>1x1 Conv1d"]
-        D --> F["Onset head<br/>1x1 Conv1d"]
+        D --> P
+        subgraph P["Pooled branch"]
+            direction TB
+            P1["Avg-pool x 2 (30 Hz)"] --> P2["Conv1d, k = 3"] --> P3["ConvTranspose1d<br/>back to 60 Hz"]
+        end
+        P --> E["Signal head<br/>1x1 Conv1d"]
+        P --> F["Onset head<br/>1x1 Conv1d"]
+        D -- "full rate" --> F
         E --> G(["Breathing trace"])
         F --> H(["P(inhale onset)"])
     """)
@@ -589,6 +601,74 @@ def _():
         breathing.bin_centres(),
         breathing.PLOT_BINS_HZ,
     )
+    return
+
+
+@app.cell
+def _():
+    mo.md("""
+    ## 10. Out of distribution: the side camera
+
+    A second rig films the face from the side: three sessions (13, 14, 15), two
+    clips each, with the same nostril thermistor. Zephyr never trained on it.
+    Below, two face test clips and two side clips: the full frame with the crop
+    (orange), the 96 x 96 crop the network sees, and the filtered thermistor over
+    the excerpt chosen at the top (same amplitude scale in every panel). The side
+    view shows the nose in profile, and those mice breathe slower (about 2 Hz,
+    against about 5 Hz on the face rig).
+    """)
+    return
+
+
+@app.cell
+def _(start: mo.ui.slider):
+    _columns: dict[str, str] = {
+        "face_6_part_1": "Face, held-out animal",
+        "face_9_part_1": "Face, held-out session",
+        "ood_side_right_13_part_1": "Side, session 13",
+        "ood_side_right_15_part_1": "Side, session 15",
+    }
+    _all: dict[str, results.TestClip] = {
+        **results.clips(),
+        **results.clips(results.OOD_CLIPS),
+    }
+    _panels: list[plots.DomainPanel] = [
+        plots.DomainPanel(
+            title=f"{title}\n{name}",
+            frame=results.raw_frame(_all[name], start.value),
+            box=_all[name].box,
+            thermistor=results.filtered_truth(_all[name].entry),
+            rate_hz=results.breathing_rate(_all[name].entry),
+        )
+        for name, title in _columns.items()
+    ]
+    plots.domain_figure(_panels, start.value, 8)
+    return
+
+
+@app.cell
+def _():
+    mo.md("""
+    Three networks, scored on what each could see (one dot per clip):
+
+    1. **Face only**: the face benchmark network. Near-perfect on held-out face
+       clips, at chance on every side clip.
+    2. **Face + side 13, 14**: that network fine-tuned on the face data plus two
+       side sessions. Still fine on the face, still at chance on held-out
+       session 15: more data from the new rig does not transfer to another
+       session of it.
+    3. **Side 14, 15 only**: trained from scratch on two side sessions. It fits
+       those (in-sample, a reference, not a score) yet is at chance on session 13.
+
+    Held-out scores are the runs' own evaluations; the trained-on scores call the
+    same scorer directly, since `evaluate` refuses clips a network trained on.
+    """)
+    return
+
+
+@app.cell
+def _():
+    plots.ood_figure(results.ood_scores())  # cpu, cached
     return
 
 

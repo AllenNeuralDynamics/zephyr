@@ -3,6 +3,7 @@
 import string
 from collections.abc import Sequence
 from pathlib import Path
+from typing import NamedTuple
 
 import numpy as np
 import pandas as pd
@@ -46,6 +47,8 @@ CHANNEL_RANGES: dict[str, tuple[float, float]] = {
     "flow_x": (-2, 2),
     "flow_y": (-2, 2),
 }
+CROP_EDGE: str = "#d55e00"
+"""Outline of the crop the network sees, on the frame and around the crop itself."""
 OBJECTIVE_MARKERS: dict[str, str] = dict(zip(style.OBJECTIVES, "oD^", strict=True))
 SIGNAL, MULTI, HEAD = style.OBJECTIVES
 """Series of the ablation: ``(objective, column)`` of each is in :func:`ablation_figure`."""
@@ -216,9 +219,103 @@ def frame_with_box(
     """A video frame with the crop the network sees outlined."""
     image = ax.imshow(frame, cmap="gray", vmin=0, vmax=255)
     x, y, w, h = box
-    ax.add_patch(Rectangle((x, y), w, h, fill=False, edgecolor="#d55e00", linewidth=1))
+    ax.add_patch(Rectangle((x, y), w, h, fill=False, edgecolor=CROP_EDGE, linewidth=1))
     ax.axis("off")
     return image
+
+
+class DomainPanel(NamedTuple):
+    """One column of :func:`domain_figure`."""
+
+    title: str
+    frame: NDArray
+    """The full video frame, at the working frame size the box is measured in."""
+    box: tuple[int, int, int, int]
+    thermistor: pd.DataFrame
+    """``Time`` and ``Signal`` (filtered, ADC units)."""
+    rate_hz: float
+    """The clip's mean breathing rate."""
+
+
+def domain_figure(panels: Sequence[DomainPanel], t0: float, duration: float) -> Figure:
+    """What each recording looks like: one column per clip, rows are the full frame
+    at *t0* with the crop outlined, the crop the network sees, and the thermistor
+    from *t0* for *duration* seconds on a shared amplitude scale."""
+    fig, axes = style.figure(
+        "double",
+        0.75,
+        nrows=3,
+        ncols=len(panels),
+        height_ratios=[0.75, 1, 0.7],
+        squeeze=False,
+    )
+    for col, panel in enumerate(panels):
+        top, middle, bottom = axes[:, col]
+        frame_with_box(top, panel.frame, panel.box)
+        top.set_title(panel.title)
+        x, y, w, h = panel.box
+        middle.imshow(panel.frame[y : y + h, x : x + w], cmap="gray", vmin=0, vmax=255)
+        middle.set_xticks([])
+        middle.set_yticks([])
+        middle.grid(False)
+        for spine in middle.spines.values():
+            spine.set_visible(True)
+            spine.set_edgecolor(CROP_EDGE)
+        shown = panel.thermistor[
+            (panel.thermistor.Time >= t0) & (panel.thermistor.Time <= t0 + duration)
+        ]
+        bottom.plot(shown.Time, shown.Signal, color=style.TRUTH, linewidth=0.7)
+        bottom.set_xlim(t0, t0 + duration)
+        bottom.set_xlabel("Time (s)")
+        bottom.set_title(f"{panel.rate_hz:.1f} breaths/s", fontweight="normal")
+        if col:
+            bottom.tick_params(labelleft=False)
+    # One amplitude scale for every clip, from every excerpt's own range.
+    low = min(ax.dataLim.y0 for ax in axes[2])
+    high = max(ax.dataLim.y1 for ax in axes[2])
+    pad = 0.05 * (high - low)
+    for ax in axes[2]:
+        ax.set_ylim(low - pad, high + pad)
+    axes[2, 0].set_ylabel("Thermistor\n(ADC, filtered)")
+    panel_letters(axes[:, 0])
+    return fig
+
+
+OOD_METRIC_LABELS: dict[str, str] = {
+    "correlation": METRIC_LABELS["correlation"],
+    "head_inhale_f1": "Inhalation F1 (head)",
+}
+
+
+def ood_figure(scores: pd.DataFrame) -> Figure:
+    """Each out-of-distribution network on each kind of data it can be scored on:
+    one dot per clip, bars are means; correlation, then head inhale F1."""
+    networks = list(dict.fromkeys(scores["network"]))
+    fig, axes = style.figure("double", 0.36, ncols=len(OOD_METRIC_LABELS))
+    width = 0.8 / len(style.OOD_DATA)
+    rng = np.random.default_rng(0)  # fixed jitter, so the figure never changes
+    for ax, (metric, label) in zip(axes, OOD_METRIC_LABELS.items(), strict=True):
+        for i, network in enumerate(networks):
+            mine = scores[scores.network == network]
+            present = [d for d in style.OOD_DATA if (mine.data == d).any()]
+            for j, data in enumerate(present):
+                x = i + (j - (len(present) - 1) / 2) * width
+                values = mine.loc[mine.data == data, metric].to_numpy()
+                colour = style.OOD_DATA[data]
+                ax.bar(x, values.mean(), width * 0.9, color=colour, alpha=0.35)
+                jitter = rng.uniform(-0.25, 0.25, len(values)) * width
+                ax.plot(x + jitter, values, "o", color=colour, ms=2.5)
+        ax.set_xticks(range(len(networks)), networks)
+        ax.set_xlabel("Trained on")
+        ax.set_ylabel(label)
+        ax.set_ylim(min(0.0, scores[metric].min() - 0.05), 1)
+        ax.axhline(0, color="0.6", linewidth=0.5)
+    handles = [
+        Rectangle((0, 0), 1, 1, color=c, alpha=0.6) for c in style.OOD_DATA.values()
+    ]
+    fig.legend(handles, style.OOD_DATA, loc="outside upper center", ncol=3)
+    panel_letters(axes)
+    return fig
 
 
 def channel_image(ax: Axes, name: str, plane: NDArray) -> AxesImage:

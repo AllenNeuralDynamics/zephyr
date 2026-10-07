@@ -39,6 +39,14 @@ CHANNELS: dict[str, str] = {
 }
 """The four input channels."""
 
+OOD_DATA: dict[str, str] = {
+    "Face, held out": "#0072b2",
+    "Side, trained on": "#e69f00",
+    "Side, held out": "#d55e00",
+}
+"""What an out-of-distribution network is scored on: which camera, and whether it
+trained on those clips."""
+
 TRUTH: str = "#000000"
 """The thermistor, wherever it is drawn."""
 
