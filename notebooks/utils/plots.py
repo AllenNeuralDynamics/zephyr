@@ -624,7 +624,8 @@ def channel_importance_figure(
     frame, for orientation.
     """
     rows = {**STRATUM_LABELS, "all": "All 24 clips"}
-    groups = np.asarray(occlusion["groups"])
+    # occlusion names groups after the clip-list stem (face_test_<stratum>)
+    groups = np.array([str(g).removeprefix("face_test_") for g in occlusion["groups"]])
     mean_frames = np.stack([frames[name] for name in _clip_names(occlusion)])
     fig, axes = style.figure("double", 0.62, nrows=len(rows), ncols=5)
     vmax = max(occlusion[c].mean(0).max() for c in style.CHANNELS)

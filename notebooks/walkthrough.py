@@ -166,6 +166,193 @@ def _(start: mo.ui.slider, traces: pd.DataFrame, truth: pd.DataFrame):
 def _():
     mo.md("""
     ## 3. Every method on the same clip
+
+    Five methods turn the same face video into a breathing trace. Two are
+    non-learned (Pixel, Facemap-style ridge), two are published video networks
+    refitted to mouse breathing (TS-CAN, PhysNet), and one is Zephyr. All see the
+    same 96 x 96 nose crop at 60 Hz and are scored against the thermistor.
+    """)
+    return
+
+
+@app.cell
+def _():
+    mo.md("""
+    ### Zephyr
+
+    1. **Input**: four channels per frame (gray, frame difference, optical flow x and y),
+       so the network never has to compute motion itself.
+    2. **Frame encoder** (spatial only): four stride-2 convolutions, then a 2 x 2
+       pooled grid (not a global mean, so opposite motion in different parts of the
+       nose cannot cancel) and a linear layer give one 128-d vector per frame.
+    3. **Time**: the vectors are interpolated onto a fixed 60 Hz grid using the real
+       frame timestamps.
+    4. **TCN** (temporal only): six residual blocks with dilations 1 to 32 see about
+       0.5 s of context each side, with symmetric padding (offline, non-causal).
+    5. **Two heads**: the breathing trace, and the probability that an inhalation
+       starts. Trained with a multi-scale correlation loss on the trace plus a
+       weighted cross-entropy on the onset head. Inhale events come from that head.
+    """)
+    return
+
+
+@app.cell
+def _():
+    mo.mermaid("""
+    flowchart LR
+        A["Crop<br/>T x 4 x 96 x 96<br/>gray, diff, flow x, flow y"] --> B
+        subgraph B["Frame encoder (per frame)"]
+            direction TB
+            B1["4 x Conv2d, stride 2<br/>32, 64, 96, 128 ch<br/>BatchNorm + GELU"] --> B2["Avg-pool to 2 x 2<br/>Linear, 128-d"]
+        end
+        B --> C["Resample to 60 Hz grid<br/>(frame timestamps)"]
+        C --> D
+        subgraph D["Temporal net (TCN)"]
+            direction TB
+            D1["1x1 Conv1d, 128 ch"] --> D2["6 x residual block<br/>2 x dilated Conv1d, k = 3<br/>dilation 1, 2, 4, 8, 16, 32"]
+        end
+        D --> E["Signal head<br/>1x1 Conv1d"]
+        D --> F["Onset head<br/>1x1 Conv1d"]
+        E --> G(["Breathing trace"])
+        F --> H(["P(inhale onset)"])
+    """)
+    return
+
+
+@app.cell
+def _():
+    mo.md("""
+    ### TS-CAN (Liu et al., 2020)
+
+    A published two-stream network for pulse from video, refitted here to mouse
+    breathing on the **gray channel only**.
+
+    1. **Input**: the crop is shrunk to 36 x 36. A *motion* stream gets the
+       normalised frame difference (I(t+1) - I(t)) / (I(t+1) + I(t)); an
+       *appearance* stream gets the gray frame.
+    2. **Attention**: the appearance stream produces a soft spatial mask that
+       re-weights the motion stream twice, so motion is read mostly where the
+       nose is.
+    3. **Temporal shift**: no temporal convolution. In every motion convolution a
+       third of the channels are shifted one frame forward and a third one back,
+       over segments of 10 frames.
+    4. **Output**: it predicts the *derivative* of the breathing trace. Inference
+       integrates it, removes slow drift (smoothness-priors detrend) and band-passes
+       to 1-15 Hz. It has no onset head, so inhale events are found by DSP.
+    """)
+    return
+
+
+@app.cell
+def _():
+    mo.mermaid("""
+    flowchart LR
+        A["Gray crop, 36 x 36<br/>T frames"] --> M["Normalised frame difference"]
+        A --> P["Appearance frame"]
+        subgraph S["Two streams, shared 10-frame segments"]
+            direction TB
+            M --> M1["Conv + temporal shift<br/>32 ch, tanh"]
+            P --> P1["Conv, 32 ch, tanh"]
+            P1 -- "attention mask 1" --> M2
+            M1 --> M2["x mask, avg-pool"]
+            M2 --> M3["Conv + temporal shift<br/>64 ch, tanh"]
+            P1 --> P2["avg-pool, Conv, 64 ch, tanh"]
+            P2 -- "attention mask 2" --> M4
+            M3 --> M4["x mask, avg-pool"]
+        end
+        M4 --> D["Dense 128, tanh<br/>Dense 1"]
+        D --> E["Predicted derivative"]
+        E --> F["Integrate, detrend,<br/>band-pass 1-15 Hz"]
+        F --> G(["Breathing trace"])
+    """)
+    return
+
+
+@app.cell
+def _():
+    mo.md("""
+    ### PhysNet (Yu et al., 2019)
+
+    A published 3-D convolutional encoder-decoder for pulse from video, also on the
+    **gray channel only**.
+
+    1. **Input**: the whole gray clip as a video volume (time x 96 x 96).
+    2. **Encoder**: 3-D convolutions mix space and time together; max-pooling halves
+       the space, and twice also the time (4x shorter).
+    3. **Decoder**: two transposed convolutions along time restore the original
+       frame count.
+    4. **Output**: average over space, then a 1x1 convolution gives the breathing
+       trace directly. No onset head, so inhale events are found by DSP.
+    """)
+    return
+
+
+@app.cell
+def _():
+    mo.mermaid("""
+    flowchart LR
+        A["Gray clip<br/>1 x T x 96 x 96"] --> B["Conv3d 1x5x5, 16 ch<br/>pool space"]
+        B --> C["2 x Conv3d 3x3x3<br/>32, 64 ch<br/>pool space + time"]
+        C --> D["2 x Conv3d 3x3x3, 64 ch<br/>pool space + time"]
+        D --> E["2 x Conv3d 3x3x3, 64 ch<br/>pool space"]
+        E --> F["2 x Conv3d 3x3x3, 64 ch"]
+        F --> G["2 x ConvTranspose3d<br/>upsample time x 4"]
+        G --> H["Mean over space<br/>1x1 Conv"]
+        H --> I(["Breathing trace"])
+    """)
+    return
+
+
+@app.cell
+def _():
+    mo.md("""
+    ### Pixel (non-learned floor)
+
+    No training and no thermistor. Mean optical flow over the crop gives one
+    (x, y) velocity per frame; both are band-passed to 1-15 Hz, projected on their
+    dominant direction (first principal axis), integrated to a displacement and
+    band-passed again. The sign is unknown, so it is fixed afterwards using only
+    the traces themselves. Anything a network does better than this is not just
+    "the nose moves".
+    """)
+    return
+
+
+@app.cell
+def _():
+    mo.mermaid("""
+    flowchart LR
+        P1["Optical flow<br/>over crop"] --> P2["Mean (x, y)<br/>per frame"]
+        P2 --> P3["Band-pass,<br/>dominant axis"]
+        P3 --> P4["Integrate,<br/>band-pass"]
+        P4 --> P5(["Breathing trace"])
+    """)
+    return
+
+
+@app.cell
+def _():
+    mo.md("""
+    ### Facemap-style ridge (field-standard baseline)
+
+    The way breathing is usually read out of mouse face video. Two 100-component
+    SVD bases are fitted on training frames: the *motion* (absolute frame
+    difference) and the *movie* (raw pixels). Each frame is projected on both,
+    z-scored, copied at several time lags, and a ridge regression maps that to the
+    thermistor. The ridge strength is chosen leaving one recording out. It is
+    linear and has no memory beyond the lags; no onset head, so DSP finds events.
+    """)
+    return
+
+
+@app.cell
+def _():
+    mo.mermaid("""
+    flowchart LR
+        F1["Frames"] --> F2["Motion + movie<br/>PCA, 100 comp. each"]
+        F2 --> F3["z-score,<br/>time lags"]
+        F3 --> F4["Ridge regression<br/>to thermistor"]
+        F4 --> F5(["Breathing trace"])
     """)
     return
 
@@ -314,11 +501,7 @@ def _():
 
 
 @app.cell
-def _(
-    start: mo.ui.slider,
-    test_clip: results.TestClip,
-    truth: pd.DataFrame,
-):
+def _(start: mo.ui.slider, test_clip: results.TestClip, truth: pd.DataFrame):
     _stretch: pd.DataFrame = results.zephyr_outputs(  # the stretch network, as "Zephyr"
         test_clip.entry, results.REFERENCE_RUN / "seed-42"
     )
