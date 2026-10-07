@@ -193,6 +193,25 @@ def _(scores: pd.DataFrame):
 @app.cell
 def _():
     mo.md("""
+    Seen in frequency, over the whole clip: each trace and the thermistor are
+    band-passed to octave bands and correlated within each band. The score table's
+    correlation is dominated by whichever band holds the most power; this shows how
+    each method does in each band.
+    """)
+    return
+
+
+@app.cell
+def _(traces: pd.DataFrame, truth: pd.DataFrame):
+    band_r: pd.DataFrame = breathing.band_correlations(traces, truth)
+    fig3b = plots.band_correlation_figure(band_r)
+    fig3b
+    return
+
+
+@app.cell
+def _():
+    mo.md("""
     ## 4. Benchmark
 
     Every method on the 24 held-out clips. Each dot is one trained network (or
@@ -255,7 +274,9 @@ def _():
     mo.stop(
         not results.OCCLUSION.exists(),
         mo.callout(
-            mo.md(f"Occlusion maps missing. Produce them with `{results.OCCLUSION_COMMAND}`"),
+            mo.md(
+                f"Occlusion maps missing. Produce them with `{results.OCCLUSION_COMMAND}`"
+            ),
             kind="warn",
         ),
     )

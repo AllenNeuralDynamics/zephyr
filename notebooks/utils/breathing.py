@@ -9,7 +9,7 @@ import json
 
 import numpy as np
 import pandas as pd
-from scipy.signal import welch
+from scipy.signal import butter, sosfiltfilt, welch
 
 from zephyr import features
 from zephyr.evaluation import EVENT_TOLERANCE_S, match_events
@@ -28,7 +28,7 @@ from zephyr.signal import (
     filter_sniff_signal,
 )
 
-from . import results
+from . import results, style
 
 PLOT_BINS_HZ: tuple[float, ...] = DEFAULT_RATE_BINS_HZ
 """Training's default bins, 2-15 Hz; breaths outside them are not plotted."""
@@ -144,6 +144,38 @@ def train_spectra() -> pd.DataFrame:
             )
         )
     return pd.concat(rows, ignore_index=True)
+
+
+BANDS_HZ: tuple[float, ...] = (2.0, 4.0, 8.0, 15.0)
+"""Edges of the frequency bands correlation is broken down by (octaves, 2-15 Hz)."""
+
+
+def band_correlations(
+    traces: pd.DataFrame, truth: pd.DataFrame, edges: tuple[float, ...] = BANDS_HZ
+) -> pd.DataFrame:
+    """Pearson correlation of every method with the thermistor within each band.
+
+    Both are band-passed (zero-phase, so no lag is added) to a band of *edges* and
+    correlated over the whole clip. The thermistor is filtered as the training
+    target is and resampled onto the traces' grid. Rows are bands labelled
+    ``"lo-hi"`` (Hz), columns are methods.
+    """
+    times = traces[TIME_COLUMN].to_numpy()
+    raw_t = truth[TIME_COLUMN].to_numpy()
+    raw_fs = 1.0 / float(np.median(np.diff(raw_t)))
+    filtered = filter_sniff_signal(truth["Signal"].to_numpy(dtype=float), raw_fs)
+    reference = np.interp(times, raw_t, filtered)
+    rows = {}
+    for lo, hi in zip(edges[:-1], edges[1:]):
+        sos = butter(4, (lo, hi), btype="bandpass", fs=FS, output="sos")
+        band_reference = sosfiltfilt(sos, reference)
+        rows[f"{lo:g}-{hi:g}"] = {
+            method: float(
+                np.corrcoef(band_reference, sosfiltfilt(sos, traces[method]))[0, 1]
+            )
+            for method in style.METHODS
+        }
+    return pd.DataFrame(rows).T
 
 
 def _shifted(times: np.ndarray, shift: float, span: tuple[float, float]) -> np.ndarray:

@@ -323,6 +323,28 @@ def trace_stack(
     ax.grid(False)
 
 
+def band_correlation_figure(correlations: pd.DataFrame) -> Figure:
+    """Grouped bars: each method's correlation with the thermistor in each band."""
+    fig, ax = style.figure("double", 0.35)
+    n = len(correlations.columns)
+    width = 0.8 / n
+    x = np.arange(len(correlations), dtype=float)
+    for i, method in enumerate(map(str, correlations)):
+        ax.bar(
+            x + (i - (n - 1) / 2) * width,
+            correlations[method],
+            width,
+            color=style.color(method),
+            label=method,
+        )
+    ax.set_xticks(x, correlations.index)
+    ax.axhline(0, color="0.6", linewidth=0.5)
+    ax.set_xlabel("Frequency band (Hz)")
+    ax.set_ylabel("Pearson correlation")
+    ax.legend(loc="lower right", bbox_to_anchor=(1, 1), ncol=n)
+    return fig
+
+
 def onset_head(ax: Axes, times: pd.Series, probability: pd.Series) -> None:
     """The onset head's probability, with its 0.5 threshold."""
     ax.plot(times, probability, color=style.OBJECTIVES[HEAD])
