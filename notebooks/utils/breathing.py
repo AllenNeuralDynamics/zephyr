@@ -5,13 +5,23 @@ Test breaths are the scorer's thermistor inhalations, matched to onset-head even
 within one frame. Inference only; per-clip results are cached in ``notebooks/cache``.
 """
 
+import json
+
 import numpy as np
 import pandas as pd
 from scipy.signal import welch
 
 from zephyr import features
 from zephyr.evaluation import EVENT_TOLERANCE_S, match_events
-from zephyr.rates import DEFAULT_RATE_BINS_HZ, breath_rates, rate_bin, rate_track
+from zephyr.dataset import BALANCE_HOP_S
+from zephyr.rates import (
+    DEFAULT_RATE_BINS_HZ,
+    balance_weights,
+    breath_rates,
+    rate_bin,
+    rate_track,
+    window_rates,
+)
 from zephyr.signal import (
     CANONICAL_BREATHING_SAMPLING_RATE,
     TIME_COLUMN,
@@ -88,6 +98,31 @@ def train_breaths() -> pd.DataFrame:
             )
         )
     return pd.concat(rows, ignore_index=True)
+
+
+def drawn_share_by_bin(power: float | None = None) -> pd.Series:
+    """Share of training windows drawn in each rate bin, by the network's own
+    ``rate_balance`` and bins (``config.json`` of :data:`results.ZEPHYR_RUN`) unless
+    *power* is given; 0 is the unbalanced draw.
+
+    Candidate windows every :data:`BALANCE_HOP_S` of each training clip, each with
+    its median rate, weighted as the training dataset weights them (one source).
+    """
+    params = json.loads((results.ZEPHYR_RUN / "config.json").read_text())["fold"][
+        "train_params"
+    ]
+    power = params["rate_balance"] if power is None else power
+    bins, window = params["rate_bins_hz"], params["window"]
+    rates = []
+    for entry in results.train_entries():
+        times = np.load(entry.times)[: entry.n_output]
+        track = rate_track(times, np.load(entry.events)["onset_times"])
+        starts = np.arange(0, len(times) - window, round(BALANCE_HOP_S * FS))
+        rates.append(window_rates(track, starts, window))
+    rates = np.concatenate(rates)
+    weights = balance_weights(rates, bins, power)
+    mass = np.bincount(rate_bin(rates, bins), weights, minlength=len(bins) - 1)
+    return pd.Series(mass, index=np.sqrt(np.array(bins[:-1]) * np.array(bins[1:])))
 
 
 def train_spectra() -> pd.DataFrame:
@@ -188,7 +223,10 @@ def _tables(
     prefix: str, clips: list[tuple[features.ClipEntry, str]]
 ) -> dict[str, pd.DataFrame]:
     names = ("breaths", "false_positives", "windows")
-    paths = {k: results.CACHE / f"{prefix}-rates-v2-{k}.parquet" for k in names}
+    paths = {
+        k: results.CACHE / f"{prefix}-rates-{results.ZEPHYR_TAG}-{k}.parquet"
+        for k in names
+    }
     if all(p.exists() for p in paths.values()):
         return {k: pd.read_parquet(p) for k, p in paths.items()}
     parts = [_clip_tables(entry, stratum) for entry, stratum in clips]

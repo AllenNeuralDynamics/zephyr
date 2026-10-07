@@ -40,26 +40,31 @@ TRAIN_CLIPS: Path = ROOT / "packages/zephyr-benchmarks/configs/clips/face_train.
 FEATURES: Path = ROOT / "data/features-v2"
 BASELINES: Path = ROOT / "benchmarks/baselines-v1"
 ABLATION: Path = ROOT / "benchmarks/input-objective-v1/runs"
-CHECKPOINTS: dict[str, Path] = {
-    "Zephyr": ROOT
-    / "runs/benchmark-gray-diff-flow-multitask/benchmark-gray-diff-flow-multitask"
-    / "seed-42/best.pt",
-    "TS-CAN": BASELINES / "tscan/runs/gray__signal__seed-42/best.pt",
-    "PhysNet": BASELINES / "physnet/runs/gray__signal__seed-42/best.pt",
-}
+ZEPHYR_RUN: Path = ROOT / "runs/rate-balance/benchmark-rate-balanced/seed-42"
+"""The network every plot uses as Zephyr."""
+ZEPHYR_TAG: str = ZEPHYR_RUN.parent.name
+"""Names Zephyr's caches, so those of another network are never read."""
 REFERENCE_RUN: Path = (
     ROOT / "runs/benchmark-gray-diff-flow-multitask/benchmark-gray-diff-flow-multitask"
 )
+"""The benchmark network, trained with time stretching: the stretch ablation's
+baseline. Not :data:`ZEPHYR_RUN`, which was trained without stretching."""
+CHECKPOINTS: dict[str, Path] = {
+    "Zephyr": ZEPHYR_RUN / "best.pt",
+    "TS-CAN": BASELINES / "tscan/runs/gray__signal__seed-42/best.pt",
+    "PhysNet": BASELINES / "physnet/runs/gray__signal__seed-42/best.pt",
+}
 NO_STRETCH_RUN: Path = ROOT / "runs/stretch-ablation/benchmark-no-stretch"
+STRETCH: str = "Zephyr, stretch"
 NO_STRETCH: str = "Zephyr, no stretch"
 STRETCH_RUNS: dict[str, Path] = {
-    "Zephyr": REFERENCE_RUN / "seed-42",
+    STRETCH: REFERENCE_RUN / "seed-42",
     NO_STRETCH: NO_STRETCH_RUN / "seed-17",
 }
-"""The two networks of the stretch ablation: the benchmark Zephyr and its no-stretch twin."""
+"""The two networks of the stretch ablation: Zephyr with stretch and its no-stretch twin."""
 PIXEL_TRACES: Path = BASELINES / "pixel/flow/traces/test"
 FACEMAP_TRACES: Path = ROOT / "runs/facemap-traces/facemap/both/traces"
-OCCLUSION: Path = ROOT / "runs/thermistor-quality/occlusion_60s_f1.npz"
+OCCLUSION: Path = ROOT / "runs/rate-balance/occlusion_60s_f1.npz"
 
 INPUTS: dict[str, tuple[Path, str]] = {
     "feature cache": (
@@ -89,13 +94,16 @@ INPUTS: dict[str, tuple[Path, str]] = {
         "zephyr-benchmarks run configs/experiments/stretch-ablation.toml",
     ),
     "ablation runs": (ABLATION, "zephyr-benchmarks run <experiment>.toml"),
-    "occlusion maps": (
-        OCCLUSION,
-        "zephyr-benchmarks occlusion --checkpoint <best.pt> ...",
-    ),
 }
 
 STRATA: tuple[str, ...] = ("new_animals", "known_animals_new_date")
+
+
+OCCLUSION_COMMAND: str = (
+    "zephyr-benchmarks occlusion --checkpoint runs/rate-balance/"
+    "benchmark-rate-balanced/seed-42/best.pt --clips <both test lists> "
+    "--cache data/features-v2 --out runs/rate-balance/occlusion_60s_f1.npz"
+)
 
 
 def missing() -> dict[str, str]:
@@ -188,49 +196,50 @@ def method_traces(entry: features.ClipEntry) -> pd.DataFrame:
     """One z-scored breathing trace per method on the clip's 60 Hz output grid.
 
     Networks run inference only and the result is cached, so a clip is
-    computed once.  Also holds Zephyr's onset-head probability as ``onset``.
+    computed once. Also holds Zephyr's onset-head probability as ``onset``.
     """
     CACHE.mkdir(exist_ok=True)
     cache = CACHE / f"{short_name(entry)}.parquet"
+    others = [m for m in style.METHODS if m != "Zephyr"]
     if cache.exists():
         print(f"Cache loaded from {cache}")
-        return pd.read_parquet(cache)
-    print(f"No cache found in {cache}. Calculating from scratch.")
-    n = entry.n_output
-    key = Path(entry.features).stem
-    old_key = f"test_{short_name(entry).removeprefix('face_')}"
-    zephyr_signal, onset = _infer("Zephyr", entry)
-    traces: dict[str, NDArray] = {
-        TIME_COLUMN: np.load(entry.times)[:n],
-        "Pixel": blind_polarity(np.load(PIXEL_TRACES / f"{old_key}.npy")),
-        "Facemap": np.load(FACEMAP_TRACES / f"{key}.npy"),
-        "TS-CAN": _infer("TS-CAN", entry)[0],
-        "PhysNet": _infer("PhysNet", entry)[0],
-        "Zephyr": zephyr_signal,
-    }
-    frame = pd.DataFrame(
-        {k: v if k == TIME_COLUMN else _zscore(v[:n]) for k, v in traces.items()}
-    )
-    frame["onset"] = onset[:n]
-    frame.to_parquet(cache)
-    return frame
+        frame = pd.read_parquet(cache, columns=[TIME_COLUMN, *others])
+    else:
+        print(f"No cache found in {cache}. Calculating from scratch.")
+        n = entry.n_output
+        key = Path(entry.features).stem
+        old_key = f"test_{short_name(entry).removeprefix('face_')}"
+        traces: dict[str, NDArray] = {
+            TIME_COLUMN: np.load(entry.times)[:n],
+            "Pixel": blind_polarity(np.load(PIXEL_TRACES / f"{old_key}.npy")),
+            "Facemap": np.load(FACEMAP_TRACES / f"{key}.npy"),
+            "TS-CAN": _infer("TS-CAN", entry)[0],
+            "PhysNet": _infer("PhysNet", entry)[0],
+        }
+        frame = pd.DataFrame(
+            {k: v if k == TIME_COLUMN else _zscore(v[:n]) for k, v in traces.items()}
+        )
+        frame.to_parquet(cache)
+    zephyr = zephyr_outputs(entry).drop(columns=TIME_COLUMN)
+    return pd.concat([frame, zephyr], axis=1)
 
 
-def zephyr_outputs(entry: features.ClipEntry) -> pd.DataFrame:
+def zephyr_outputs(
+    entry: features.ClipEntry, run: Path = ZEPHYR_RUN
+) -> pd.DataFrame:
     """Zephyr's z-scored trace and onset probability: ``Time``, ``Zephyr``, ``onset``.
 
-    Read from the all-methods cache when that clip has one; otherwise only Zephyr
-    is inferred (CPU) and cached on its own.
+    Inference only (CPU), cached per clip and per network (*run*, by its experiment
+    name).
     """
-    full = CACHE / f"{short_name(entry)}.parquet"
-    if full.exists():
-        return pd.read_parquet(full, columns=[TIME_COLUMN, "Zephyr", "onset"])
     CACHE.mkdir(exist_ok=True)
-    cache = CACHE / f"{short_name(entry)}-zephyr.parquet"
+    cache = CACHE / f"{short_name(entry)}-zephyr-{run.parent.name}.parquet"
     if cache.exists():
         return pd.read_parquet(cache)
     print(f"No cache found in {cache}. Calculating from scratch.")
-    signal, onset = _infer("Zephyr", entry)
+    device = torch.device("cpu")
+    model, mean, std, _ = load_checkpoint(run / "best.pt", device)
+    signal, onset = predict_clip(model, entry, mean, std, device=device, amp_dtype=None)
     n = entry.n_output
     frame = pd.DataFrame(
         {TIME_COLUMN: np.load(entry.times)[:n], "Zephyr": _zscore(signal[:n])}

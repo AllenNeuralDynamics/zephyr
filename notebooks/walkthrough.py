@@ -252,6 +252,13 @@ def _():
 
 @app.cell
 def _():
+    mo.stop(
+        not results.OCCLUSION.exists(),
+        mo.callout(
+            mo.md(f"Occlusion maps missing. Produce them with `{results.OCCLUSION_COMMAND}`"),
+            kind="warn",
+        ),
+    )
     occlusion: dict[str, NDArray] = results.occlusion()
     frames: dict[str, NDArray] = results.mean_frames()
     plots.channel_importance_figure(occlusion, frames)
@@ -277,7 +284,9 @@ def _():
 @app.cell
 def _():
     stretch: pd.DataFrame = results.stretch_summary()
-    stretch["no stretch minus Zephyr"] = stretch[results.NO_STRETCH] - stretch["Zephyr"]
+    stretch["no stretch minus stretch"] = (
+        stretch[results.NO_STRETCH] - stretch[results.STRETCH]
+    )
     mo.ui.table(stretch.round(3).reset_index(names="metric"), selection=None)
     return
 
@@ -286,18 +295,20 @@ def _():
 def _(
     start: mo.ui.slider,
     test_clip: results.TestClip,
-    traces: pd.DataFrame,
     truth: pd.DataFrame,
 ):
+    _stretch: pd.DataFrame = results.zephyr_outputs(  # the stretch network, as "Zephyr"
+        test_clip.entry, results.REFERENCE_RUN / "seed-42"
+    )
     variant: pd.DataFrame = results.no_stretch_traces(test_clip.entry)  # cpu, cached
     inhales: dict[str, NDArray] = {
         "Truth": results.events(truth["Time"].to_numpy(), truth["Signal"].to_numpy())[
             0
         ],
-        "Zephyr": results.head_events(traces),
+        "Zephyr": results.head_events(_stretch),
         results.NO_STRETCH: results.head_events(variant),
     }
-    plots.variant_traces_figure(traces, variant, truth, inhales, start.value, 10)
+    plots.variant_traces_figure(_stretch, variant, truth, inhales, start.value, 10)
     return
 
 
@@ -312,7 +323,8 @@ def _():
     video, part 2 dashed: one colour per recording, so the spread between a pair is
     the variation within a recording. (c) Power spectrum of each video's training
     target. `rate_balance` in a fold's `[train_params]` draws windows evenly over
-    their true rate instead (bins 2-15 Hz by default).
+    their true rate instead (bins 2-15 Hz by default). (d) below is what the
+    plotted network was trained on: windows drawn with its own `rate_balance`.
     """)
     return
 
@@ -326,6 +338,14 @@ def _():
         breathing.train_spectra(),
         breathing.time_share_by_bin(_breaths),
         breathing.PLOT_BINS_HZ,
+    )
+    return
+
+
+@app.cell
+def _():
+    plots.drawn_rates_figure(
+        breathing.drawn_share_by_bin(0), breathing.drawn_share_by_bin()
     )
     return
 

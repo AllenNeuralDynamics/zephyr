@@ -465,6 +465,17 @@ def training_rates_figure(
     return fig
 
 
+def drawn_rates_figure(natural: pd.Series, balanced: pd.Series) -> Figure:
+    """Share of training windows drawn per rate bin, without and with rate balancing."""
+    fig, ax = style.figure("single", 0.8)
+    ax.plot(natural.index, natural.values, "o--", ms=2.5, color=style.POOLED)
+    ax.plot(balanced.index, balanced.values, "o-", ms=2.5, color=style.color("Zephyr"))
+    ax.legend(["rate_balance 0", "as trained"], loc="upper right")
+    ax.set_ylabel("Share of drawn windows")
+    rate_axis(ax, [natural.index[0] * 0.8, natural.index[-1] * 1.25])
+    return fig
+
+
 def test_rates_figure(
     recall: pd.DataFrame,
     chance: pd.DataFrame,
