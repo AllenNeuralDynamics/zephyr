@@ -38,7 +38,11 @@ HEAD_COLUMNS: dict[str, str] = {
     "kl_ibi": "head_kl_ibi",
 }
 """Metrics Zephyr can also be scored on with events from its onset head."""
-RATE_ROWS: dict[str, str] = {**STRATUM_LABELS, "training": "Training (in-sample)"}
+RATE_ROWS: dict[str, str] = {
+    **STRATUM_LABELS,
+    "side_held_out": "Held-out side session",
+    "training": "Training (in-sample)",
+}
 """Rows of the by-rate figure: the test groups, then the clips the network fit."""
 STRATUM_MARKERS: dict[str, str] = {"new_animals": "o", "known_animals_new_date": "s"}
 CHANNEL_RANGES: dict[str, tuple[float, float]] = {
@@ -283,15 +287,16 @@ def domain_figure(panels: Sequence[DomainPanel], t0: float, duration: float) -> 
 
 OOD_METRIC_LABELS: dict[str, str] = {
     "correlation": METRIC_LABELS["correlation"],
-    "head_inhale_f1": "Inhalation F1 (head)",
+    "inhale_f1": "Inhalation F1\n(head; DSP where marked)",
 }
 
 
 def ood_figure(scores: pd.DataFrame) -> Figure:
     """Each out-of-distribution network on each kind of data it can be scored on:
-    one dot per clip, bars are means; correlation, then head inhale F1."""
+    one dot per clip, bars are means; correlation, then inhale F1 (the onset head's,
+    or DSP for a network named "(DSP)")."""
     networks = list(dict.fromkeys(scores["network"]))
-    fig, axes = style.figure("double", 0.36, ncols=len(OOD_METRIC_LABELS))
+    fig, axes = style.figure("double", 0.55, nrows=len(OOD_METRIC_LABELS), sharex=True)
     width = 0.8 / len(style.OOD_DATA)
     rng = np.random.default_rng(0)  # fixed jitter, so the figure never changes
     for ax, (metric, label) in zip(axes, OOD_METRIC_LABELS.items(), strict=True):
@@ -305,11 +310,12 @@ def ood_figure(scores: pd.DataFrame) -> Figure:
                 ax.bar(x, values.mean(), width * 0.9, color=colour, alpha=0.35)
                 jitter = rng.uniform(-0.25, 0.25, len(values)) * width
                 ax.plot(x + jitter, values, "o", color=colour, ms=2.5)
-        ax.set_xticks(range(len(networks)), networks)
-        ax.set_xlabel("Trained on")
+        labels = [n.replace("), ", "),\n") for n in networks]  # "PhysNet (DSP),"
+        ax.set_xticks(range(len(networks)), labels)
         ax.set_ylabel(label)
         ax.set_ylim(min(0.0, scores[metric].min() - 0.05), 1)
         ax.axhline(0, color="0.6", linewidth=0.5)
+    axes[-1].set_xlabel("Trained on")
     handles = [
         Rectangle((0, 0), 1, 1, color=c, alpha=0.6) for c in style.OOD_DATA.values()
     ]
@@ -518,16 +524,21 @@ def band_correlation_figure(summary: pd.DataFrame) -> Figure:
     return fig
 
 
-def band_comparison_figure(correlation: pd.DataFrame, f1: pd.DataFrame) -> Figure:
+def band_comparison_figure(
+    correlation: pd.DataFrame,
+    f1: pd.DataFrame,
+    methods: Sequence[str] = tuple(style.METHODS),
+) -> Figure:
     """Waveform correlation and local inhale F1 by frequency band, side by side.
 
     *correlation* is :func:`breathing.band_correlation_summary`, *f1* is
     :func:`breathing.event_f1_band_summary`; both are means over the test clips with
     95% bootstrap intervals. Zephyr's F1 is shown from its onset head and, dashed,
-    from DSP on its trace; the methods without a head are scored with DSP.
+    from DSP on its trace; the methods without a head are scored with DSP. *methods*
+    are the correlation series (the columns of *correlation*).
     """
     fig, axes = style.figure("double", 0.4, ncols=2)
-    _band_lines(axes[0], correlation, list(style.METHODS), "Pearson correlation")
+    _band_lines(axes[0], correlation, list(methods), "Pearson correlation")
     axes[0].axhline(0, color="0.6", linewidth=0.5)
     axes[0].set_xlabel("Frequency (Hz)")
     series = [name for name in f1.columns.get_level_values(0).unique()]
@@ -599,14 +610,15 @@ def variant_traces_figure(
     return fig
 
 
-RATE_TICKS: tuple[float, ...] = (2, 3, 4, 6, 8, 12)
+RATE_TICKS: tuple[float, ...] = (1, 1.5, 2, 3, 4, 6, 8, 12)
 
 
 def rate_axis(ax: Axes, bins: Sequence[float]) -> None:
     """Log breathing-rate x axis spanning *bins*."""
     ax.set_xscale("log")
     ax.set_xlim(bins[0], bins[-1])
-    ax.set_xticks(RATE_TICKS, [f"{t:g}" for t in RATE_TICKS])
+    ticks = [t for t in RATE_TICKS if bins[0] <= t <= bins[-1]]
+    ax.set_xticks(ticks, [f"{t:g}" for t in ticks])
     ax.minorticks_off()
     ax.set_xlabel("Breathing rate (Hz)")
 
@@ -882,4 +894,72 @@ def importance_by_clip_figure(
             axes[top, j].set_title(titles[i], size=5)
             for channel, row in zip(maps, axes[top + 1 : top + rows], strict=True):
                 _importance_row([row[j]], [maps[channel][i] / peak[i]], 1.0)
+    return fig
+
+
+def embedding_smoothness_figure(
+    times: NDArray,
+    embeddings: NDArray,
+    reference: NDArray,
+    spectra: dict[str, tuple[NDArray, NDArray]],
+    r2: dict[str, NDArray],
+    t0: float,
+    duration: float,
+) -> Figure:
+    """Are the CNN's frame embeddings smooth enough to interpolate linearly?
+
+    (a) The filtered thermistor at the frame times (*reference*) above (b) every
+    embedding dimension, z-scored and ordered by its first-PC loading, from *t0* for
+    *duration* s; the PCA is fitted on all of *embeddings*, not only that span.
+    (c) *spectra*: name -> (frequency, power density, unit area).
+    (d) *r2*: name -> per-dimension R² of rebuilding each frame from its two
+    neighbours.
+    """
+    fig, ax = style.mosaic(
+        [["truth"] * 2, ["heat"] * 2, ["psd", "r2"]],
+        aspect=0.7,
+        height_ratios=[0.5, 1.6, 1.4],
+    )
+    shown = (times >= t0) & (times <= t0 + duration)
+    z = (embeddings - embeddings.mean(0)) / embeddings.std(0)
+    _, _, vt = np.linalg.svd(z, full_matrices=False)
+    order = np.argsort(vt[0])
+    ax["truth"].plot(times[shown], reference[shown], color=style.TRUTH)
+    ax["truth"].set_ylabel("Thermistor")
+    ax["truth"].set_yticks([])
+    ax["truth"].tick_params(labelbottom=False)
+    ax["truth"].set_xlim(t0, t0 + duration)
+    image = ax["heat"].imshow(
+        z[shown][:, order].T,
+        aspect="auto",
+        cmap=style.EMBEDDING_CMAP,
+        vmin=-3,
+        vmax=3,
+        interpolation="nearest",
+        extent=(times[shown][0], times[shown][-1], len(order), 0),
+    )
+    ax["heat"].grid(False)
+    ax["heat"].set_xlim(t0, t0 + duration)
+    ax["heat"].set_xlabel("Time (s)")
+    ax["heat"].set_ylabel("Embedding dim\n(by PC1 loading)")
+    fig.colorbar(image, ax=ax["heat"], label="z-score", pad=0.01, aspect=15)
+    colours = [style.color("Zephyr"), style.TRUTH, "0.6"]
+    for (name, (freq, power)), colour in zip(spectra.items(), colours, strict=False):
+        ax["psd"].semilogy(freq, power, color=colour, label=name)
+    ax["psd"].set_xlabel("Frequency (Hz)")
+    ax["psd"].set_ylabel("Power density")
+    ax["psd"].legend(loc="lower left")
+    bins = np.linspace(-1, 1, 41)
+    for (name, values), colour in zip(r2.items(), colours, strict=False):
+        if np.size(values) == 1:
+            ax["r2"].axvline(float(np.ravel(values)[0]), color=colour, label=name)
+        else:
+            ax["r2"].hist(
+                np.clip(values, -1, 1), bins, color=colour, alpha=0.6, label=name
+            )
+    ax["r2"].axvline(0, color="0.6", linewidth=0.5)
+    ax["r2"].set_xlabel("R² of neighbour interpolation")
+    ax["r2"].set_ylabel("Dimensions")
+    ax["r2"].legend(loc="upper left")
+    panel_letters([ax[k] for k in ("truth", "heat", "psd", "r2")])
     return fig

@@ -36,7 +36,8 @@ from .rates import DEFAULT_RATE_BINS_HZ
 from .signal import CANONICAL_BREATHING_SAMPLING_RATE
 
 OUTPUT_FS = CANONICAL_BREATHING_SAMPLING_RATE
-"""The scorer's grid, and therefore the model's.  Not configurable."""
+"""The default output grid (``PreprocessParams.output_fs``), and always the scorer's:
+predictions on another grid are resampled to it before any metric."""
 
 Box = tuple[int, int, int, int]
 """Crop box ``(x, y, width, height)`` in ``target_size`` pixels."""
@@ -90,12 +91,21 @@ class PreprocessParams(_Model):
     """Working frame size ``(width, height)``; the video is scaled to this
     before cropping, and clip boxes are expressed in these pixels.  No default:
     a box means nothing without the frame it was placed on."""
-    select_fs: float = Field(OUTPUT_FS, ge=OUTPUT_FS)
-    """Rate of the frames the CNN sees, in Hz; at least the output rate."""
+    select_fs: float = Field(OUTPUT_FS, gt=0)
+    """Rate of the frames the CNN sees, in Hz. Below the output rate, the TCN's input
+    is interpolated up to it (half the CNN work at 30 Hz)."""
     motion_tau_s: float = Field(MOTION_TAU_S, gt=0)
     flow_scale_px: float = Field(FLOW_SCALE_PX, gt=0)
     flow_clip_px: float = Field(FLOW_CLIP_PX, gt=0)
     onset_sigma_s: float = Field(0.020, gt=0)
+    output_fs: float = Field(OUTPUT_FS, gt=0)
+    """Rate of the grid the network predicts on and trains against, in Hz. The TCN's
+    dilations count samples of this grid, so its context in seconds scales with
+    1 / output_fs. Scoring is always on the 60 Hz grid."""
+
+    KEY_DEFAULTS: ClassVar[dict[str, float]] = {"output_fs": OUTPUT_FS}
+    """Fields added after caches existed: left out of the cache key at these values,
+    so the caches made before them still match."""
 
 
 class Derive(_Model):

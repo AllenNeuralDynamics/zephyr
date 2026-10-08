@@ -6,7 +6,9 @@ within one frame. Inference only; per-clip results are cached in ``notebooks/cac
 """
 
 import json
+from collections.abc import Sequence
 from itertools import pairwise
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -32,6 +34,9 @@ from zephyr.signal import (
 from . import results, style
 
 PLOT_BINS_HZ: tuple[float, ...] = DEFAULT_RATE_BINS_HZ
+SIDE_BINS_HZ: tuple[float, ...] = (1, 1.25, 1.5, 2, 2.5, 3, 4, 5, 6, 8)
+"""Rate bins for the side rig, whose mice breathe about 2 Hz: half their breaths
+fall below :data:`PLOT_BINS_HZ`."""
 """Training's default bins, 2-15 Hz; breaths outside them are not plotted."""
 WINDOW_S: float = 3.0
 """Length of the windows waveform correlation is measured in."""
@@ -46,27 +51,32 @@ def bin_centres(bins: tuple[float, ...] = PLOT_BINS_HZ) -> np.ndarray:
     return np.sqrt(edges[:-1] * edges[1:])
 
 
-def _with_bin(frame: pd.DataFrame) -> pd.DataFrame:
+def _with_bin(
+    frame: pd.DataFrame, bins: tuple[float, ...] = PLOT_BINS_HZ
+) -> pd.DataFrame:
     rate = frame["rate"]
-    frame = frame[(rate >= PLOT_BINS_HZ[0]) & (rate < PLOT_BINS_HZ[-1])]
-    index = rate_bin(frame["rate"].to_numpy(), PLOT_BINS_HZ)
-    return frame.assign(bin=index, centre=bin_centres()[index])
+    frame = frame[(rate >= bins[0]) & (rate < bins[-1])]
+    index = rate_bin(frame["rate"].to_numpy(), bins)
+    return frame.assign(bin=index, centre=bin_centres(bins)[index])
 
 
 def share_by_bin(
-    breaths: pd.DataFrame, by: list[str], within: str | None = None
+    breaths: pd.DataFrame,
+    by: list[str],
+    within: str | None = None,
+    bins: tuple[float, ...] = PLOT_BINS_HZ,
 ) -> pd.DataFrame:
     """Share of each group's breaths in each rate bin; pooled rows have ``pooled``
     as every *by* value, pooled separately per *within* value when given."""
     if within is not None:
         return pd.concat(
             [
-                share_by_bin(rows, by).assign(**{within: value})
+                share_by_bin(rows, by, bins=bins).assign(**{within: value})
                 for value, rows in breaths.groupby(within)
             ],
             ignore_index=True,
         )
-    binned = _with_bin(breaths)
+    binned = _with_bin(breaths, bins)
     pooled = binned.assign(**{k: "pooled" for k in by})
     out = []
     for frame in (binned, pooled):
@@ -154,14 +164,17 @@ BANDS_HZ: tuple[float, ...] = tuple(
 
 
 def band_correlations(
-    traces: pd.DataFrame, truth: pd.DataFrame, edges: tuple[float, ...] = BANDS_HZ
+    traces: pd.DataFrame,
+    truth: pd.DataFrame,
+    edges: tuple[float, ...] = BANDS_HZ,
+    methods: Sequence[str] = tuple(style.METHODS),
 ) -> pd.DataFrame:
     """Pearson correlation of every method with the thermistor within each band.
 
     Both are band-passed (zero-phase, so no lag is added) to a band of *edges* and
     correlated over the whole clip. The thermistor is filtered as the training
     target is and resampled onto the traces' grid. Rows are bands, indexed by their
-    geometric centre (Hz); columns are methods.
+    geometric centre (Hz); columns are the *methods* (columns of *traces*).
     """
     times = traces[TIME_COLUMN].to_numpy()
     raw_t = truth[TIME_COLUMN].to_numpy()
@@ -177,7 +190,7 @@ def band_correlations(
                 method: float(
                     np.corrcoef(band_reference, sosfiltfilt(sos, traces[method]))[0, 1]
                 )
-                for method in style.METHODS
+                for method in methods
             }
         )
     return pd.DataFrame(rows, index=bin_centres(edges))
@@ -198,6 +211,13 @@ def band_correlation_summary(n_boot: int = 2000, seed: int = 0) -> pd.DataFrame:
             for c in results.clips().values()
         ]
     )  # clip, band, method
+    return _correlation_summary(per_clip, list(style.METHODS), n_boot, seed)
+
+
+def _correlation_summary(
+    per_clip: np.ndarray, names: Sequence[str], n_boot: int, seed: int
+) -> pd.DataFrame:
+    """Mean and 95% bootstrap interval of ``(clip, band, name)`` correlations."""
     rng = np.random.default_rng(seed)
     resampled = per_clip[rng.integers(0, len(per_clip), (n_boot, len(per_clip)))]
     boot = np.nanmean(resampled, axis=1)  # boot, band, method
@@ -205,7 +225,7 @@ def band_correlation_summary(n_boot: int = 2000, seed: int = 0) -> pd.DataFrame:
     mean = np.nanmean(per_clip, axis=0)
     columns = {
         (method, stat): values[:, i]
-        for i, method in enumerate(style.METHODS)
+        for i, method in enumerate(names)
         for stat, values in (("mean", mean), ("lo", lo), ("hi", hi))
     }
     return pd.DataFrame(columns, index=bin_centres(BANDS_HZ))
@@ -233,15 +253,20 @@ def _predicted_inhales(traces: pd.DataFrame) -> dict[str, np.ndarray]:
 
 
 def event_band_counts(
-    entry: features.ClipEntry, edges: tuple[float, ...] = BANDS_HZ
+    entry: features.ClipEntry,
+    edges: tuple[float, ...] = BANDS_HZ,
+    inhales: dict[str, np.ndarray] | None = None,
 ) -> np.ndarray:
     """True positives, misses and false events of each source, per rate band.
 
     Shape ``(series, band, 3)`` for the counts ``(tp, fn, fp)``. A thermistor breath
     is a hit when an event falls within one frame (17 ms) of its onset, and counts in
     the band of its own rate; a false event counts in the band of the thermistor's
-    rate at that time (as in :func:`f1_by_bin`).
+    rate at that time (as in :func:`f1_by_bin`). *inhales* gives each source's inhale
+    times by name; the default is :data:`EVENT_SERIES` on the clip's own traces.
     """
+    if inhales is None:
+        inhales = _predicted_inhales(results.method_traces(entry))
     truth = results.truth(entry)
     truth_on, _ = results.events(
         truth[TIME_COLUMN].to_numpy(), truth["Signal"].to_numpy()
@@ -249,10 +274,8 @@ def event_band_counts(
     rate = breath_rates(truth_on)  # the last breath has no rate
     band = rate_bin(rate, edges)
     inside = (rate >= edges[0]) & (rate < edges[-1])
-    counts = np.zeros((len(EVENT_SERIES), len(edges) - 1, 3))
-    for i, predicted in enumerate(
-        _predicted_inhales(results.method_traces(entry)).values()
-    ):
+    counts = np.zeros((len(inhales), len(edges) - 1, 3))
+    for i, predicted in enumerate(inhales.values()):
         hit = np.zeros(len(truth_on), bool)
         matched = np.zeros(len(predicted), bool)
         for t, p in match_events(truth_on, predicted, EVENT_TOLERANCE_S):
@@ -295,6 +318,18 @@ def event_f1_band_summary(
     per_clip = np.stack(
         [event_band_counts(c.entry) for c in results.clips().values()]
     )  # clip, series, band, count
+    return _f1_summary(per_clip, EVENT_SERIES, n_boot, seed, min_breaths)
+
+
+def _f1_summary(
+    per_clip: np.ndarray,
+    names: Sequence[str],
+    n_boot: int,
+    seed: int,
+    min_breaths: int,
+) -> pd.DataFrame:
+    """Pooled local F1 and 95% bootstrap interval of ``(clip, series, band, 3)``
+    counts; bands with fewer than *min_breaths* thermistor breaths are NaN."""
     rng = np.random.default_rng(seed)
     resampled = per_clip[rng.integers(0, len(per_clip), (n_boot, len(per_clip)))]
     with np.errstate(all="ignore"):
@@ -305,10 +340,65 @@ def event_f1_band_summary(
     mean[:, sparse], lo[:, sparse], hi[:, sparse] = np.nan, np.nan, np.nan
     columns = {
         (name, stat): values[i]
-        for i, name in enumerate(EVENT_SERIES)
+        for i, name in enumerate(names)
         for stat, values in (("mean", mean), ("lo", lo), ("hi", hi))
     }
     return pd.DataFrame(columns, index=bin_centres(BANDS_HZ))
+
+
+FRAME_RATE_SERIES: dict[str, tuple[Path, dict[str, Path], Path]] = {
+    "Zephyr": (results.ZEPHYR_RUN, results.CLIP_LISTS, results.FEATURES),
+    "Zephyr, 30 Hz frames": (
+        results.ZEPHYR_30HZ_RUN,
+        results.CLIP_LISTS_30HZ,
+        results.FEATURES_30HZ,
+    ),
+}
+"""The networks compared by the frame rate they see: run, the clip lists preprocessed
+at that rate, and their feature cache."""
+
+
+def frame_rate_summaries(
+    n_boot: int = 2000, seed: int = 0
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Band correlation and local inhale F1 of the 60 and 30 Hz networks.
+
+    Same bands, clips, pooling and bootstrap as :func:`band_correlation_summary` and
+    :func:`event_f1_band_summary`; both networks' F1 is from their onset heads.
+    """
+    outputs = {
+        name: {
+            key: results.zephyr_outputs(clip.entry, run)
+            for key, clip in results.clips(lists, cache).items()
+        }
+        for name, (run, lists, cache) in FRAME_RATE_SERIES.items()
+    }
+    names = list(FRAME_RATE_SERIES)
+    correlation, counts = [], []
+    for key, clip in results.clips().items():  # one thermistor serves both networks
+        frames = [outputs[n][key] for n in names]
+        # same start, but the 30 Hz clips can end a frame earlier: compare the overlap
+        n = min(len(f) for f in frames)
+        traces = pd.DataFrame(
+            {TIME_COLUMN: frames[0][TIME_COLUMN].to_numpy()[:n]}
+            | {
+                name: f["Zephyr"].to_numpy()[:n]
+                for name, f in zip(names, frames, strict=True)
+            }
+        )
+        correlation.append(
+            band_correlations(
+                traces, results.truth(clip.entry), methods=names
+            ).to_numpy()
+        )
+        inhales = {
+            n: results.head_events(f) for n, f in zip(names, frames, strict=True)
+        }
+        counts.append(event_band_counts(clip.entry, inhales=inhales))
+    return (
+        _correlation_summary(np.stack(correlation), names, n_boot, seed),
+        _f1_summary(np.stack(counts), names, n_boot, seed, MIN_BAND_BREATHS),
+    )
 
 
 def _shifted(times: np.ndarray, shift: float, span: tuple[float, float]) -> np.ndarray:
@@ -321,11 +411,12 @@ TRAINING: str = "training"
 
 
 def _clip_tables(
-    entry: features.ClipEntry, stratum: str
+    entry: features.ClipEntry, stratum: str, run: Path = results.ZEPHYR_RUN
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """Per-breath detection, unmatched head events, and 3 s windows of one clip."""
+    """Per-breath detection, unmatched head events, and 3 s windows of one clip,
+    for the Zephyr network of *run*."""
     truth = results.truth(entry)
-    out = results.zephyr_outputs(entry)
+    out = results.zephyr_outputs(entry, run)
     times = out[TIME_COLUMN].to_numpy()
     head = results.head_events(out)
     truth_on, _ = results.events(
@@ -385,16 +476,18 @@ def _clip_tables(
 
 
 def _tables(
-    prefix: str, clips: list[tuple[features.ClipEntry, str]]
+    prefix: str,
+    clips: list[tuple[features.ClipEntry, str]],
+    run: Path = results.ZEPHYR_RUN,
 ) -> dict[str, pd.DataFrame]:
     names = ("breaths", "false_positives", "windows")
     paths = {
-        k: results.CACHE / f"{prefix}-rates-{results.ZEPHYR_TAG}-{k}.parquet"
+        k: results.CACHE / f"{prefix}-rates-{run.parent.name}-{k}.parquet"
         for k in names
     }
     if all(p.exists() for p in paths.values()):
         return {k: pd.read_parquet(p) for k, p in paths.items()}
-    parts = [_clip_tables(entry, stratum) for entry, stratum in clips]
+    parts = [_clip_tables(entry, stratum, run) for entry, stratum in clips]
     tables = {k: pd.concat(t, ignore_index=True) for k, t in zip(names, zip(*parts))}
     results.CACHE.mkdir(exist_ok=True)
     for k, frame in tables.items():
@@ -420,16 +513,36 @@ def train_tables() -> dict[str, pd.DataFrame]:
     return _tables("train", [(e, TRAINING) for e in results.train_entries()])
 
 
+SIDE_HELD_OUT: str = "side_held_out"
+"""Stratum label of the side clips a side network did not train on."""
+
+
+def side_tables(run: Path) -> dict[str, pd.DataFrame]:
+    """The tables of :func:`test_tables` for a side-camera Zephyr network (*run*)
+    over the six side clips: stratum :data:`SIDE_HELD_OUT` for the session it did
+    not train on, ``training`` (in-sample) for the rest. Inference as there."""
+    trained = results.trained_videos(run)
+    clips = [
+        (c.entry, TRAINING if c.video.resolve() in trained else SIDE_HELD_OUT)
+        for c in results.clips(results.OOD_CLIPS).values()
+    ]
+    return _tables("side", clips, run)
+
+
 def all_tables() -> dict[str, pd.DataFrame]:
     """Test and training tables stacked; ``stratum`` tells them apart."""
     test, train = test_tables(), train_tables()
     return {k: pd.concat([test[k], train[k]], ignore_index=True) for k in test}
 
 
-def recall_by_bin(breaths: pd.DataFrame, column: str = "detected") -> pd.DataFrame:
+def recall_by_bin(
+    breaths: pd.DataFrame,
+    column: str = "detected",
+    bins: tuple[float, ...] = PLOT_BINS_HZ,
+) -> pd.DataFrame:
     """Share of thermistor breaths detected per rate bin, per recording and pooled
     within each stratum (``recording == "pooled"``)."""
-    binned = _with_bin(breaths)
+    binned = _with_bin(breaths, bins)
     per = binned.groupby(["stratum", "recording", "bin", "centre"])[column].mean()
     pooled = binned.groupby(["stratum", "bin", "centre"])[column].mean()
     pooled = pooled.reset_index().assign(recording="pooled")
@@ -439,14 +552,17 @@ def recall_by_bin(breaths: pd.DataFrame, column: str = "detected") -> pd.DataFra
 
 
 def f1_by_bin(
-    breaths: pd.DataFrame, false_pos: pd.DataFrame, source: str = "head"
+    breaths: pd.DataFrame,
+    false_pos: pd.DataFrame,
+    source: str = "head",
+    bins: tuple[float, ...] = PLOT_BINS_HZ,
 ) -> pd.DataFrame:
     """Local inhale F1 per rate bin: TP and FN binned by the breath's rate, FP by the
     thermistor's rate at the false event. Per recording and pooled. *source* is
     ``head`` or ``DSP`` (on the trace, for comparison only)."""
     column = "detected" if source == "head" else "detected_dsp"
-    b = _with_bin(breaths)
-    f = _with_bin(false_pos[false_pos["source"] == source])
+    b = _with_bin(breaths, bins)
+    f = _with_bin(false_pos[false_pos["source"] == source], bins)
     keys = ["stratum", "recording", "bin", "centre"]
     frames = []
     for pooled in (False, True):

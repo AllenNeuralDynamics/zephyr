@@ -5,6 +5,7 @@ app = marimo.App(width="medium")
 
 with app.setup:
     import marimo as mo
+    import numpy as np
     import pandas as pd
     from numpy.typing import NDArray
 
@@ -39,7 +40,7 @@ def _():
 
 
 @app.cell
-def _(video: mo.ui.dropdown):
+def _(video):
     mo.video(src=str(video.value), controls=True) if video.value else mo.md(
         "No videos in `notebooks/figures/`."
     )
@@ -249,6 +250,50 @@ def _():
         E --> G(["Breathing trace"])
         F --> H(["P(inhale onset)"])
     """)
+    return
+
+
+@app.cell
+def _():
+    mo.md("""
+    ### Are the frame embeddings smooth?
+
+    Step 3 interpolates the 128-d frame embeddings onto the 60 Hz grid, which
+    assumes they change smoothly from frame to frame. Below, the embeddings over
+    the first 60 s of the clip chosen at the top. (a, b) Three seconds of every
+    dimension under the thermistor. (c) Their average spectrum against the
+    filtered thermistor's (the training target), both scaled to unit area.
+    (d) Per dimension, how well each frame is rebuilt by linear interpolation
+    between its two neighbours: 1 is smooth, 0 is no better than the mean, and
+    the same frames in shuffled order give about -0.5.
+    """)
+    return
+
+
+@app.cell
+def _(test_clip: results.TestClip):
+    _times, _emb = results.frame_embeddings(test_clip.entry)  # cpu, cached
+    _truth: pd.DataFrame = results.filtered_truth(test_clip.entry)
+    _reference: NDArray = np.interp(
+        _times, _truth["Time"].to_numpy(), _truth["Signal"].to_numpy()
+    )
+    _shuffled: NDArray = _emb[np.random.default_rng(0).permutation(len(_emb))]
+    plots.embedding_smoothness_figure(
+        _times,
+        _emb,
+        _reference,
+        {
+            "Embeddings": results.mean_spectrum(_times, _emb),
+            "Thermistor": results.mean_spectrum(_times, _reference),
+        },
+        {
+            "Embeddings": results.interpolation_r2(_times, _emb),
+            "Thermistor": results.interpolation_r2(_times, _reference),
+            "Shuffled": results.interpolation_r2(_times, _shuffled),
+        },
+        _times[0] + 10,
+        3,
+    )
     return
 
 
@@ -699,7 +744,7 @@ def _(thermistor_table: pd.DataFrame):
 @app.cell
 def _():
     mo.md("""
-    Three networks, scored on what each could see (one dot per clip):
+    Four kinds of network, scored on what each could see (one dot per clip):
 
     1. **Face only**: the face benchmark network. Near-perfect on held-out face
        clips, at chance on every side clip.
@@ -711,6 +756,15 @@ def _():
        side sessions each, one session held out (13, then 15). Both fit the
        sessions they trained on (in-sample, a reference, not a score) yet are at
        chance on the held-out one.
+    4. **PhysNet (DSP)**: PhysNet trained the same way, on the same two pairs of
+       side sessions with the same training budget, on the gray channel as in the
+       benchmark. It has no onset head, so its inhale F1 is DSP on its trace. It
+       does not learn this rig at all: correlation about 0.05 even on the
+       sessions it trained on, against about 0.78 for Zephyr. Not for lack of
+       training: on the face rig the same PhysNet reaches 0.67 after one epoch
+       and 0.95 by epoch 50. Most likely the profile view's nostril motion is
+       too small to find in raw gray pixels, where Zephyr is given frame
+       difference and optical flow; this is untested.
 
     Face scores are the runs' own evaluations. Every side clip is scored here with
     the same per-clip scorer (`evaluate` refuses clips a network trained on, so
@@ -724,6 +778,69 @@ def _():
 @app.cell
 def _():
     plots.ood_figure(results.ood_scores())  # cpu, cached
+    return
+
+
+@app.cell
+def _():
+    mo.md("""
+    ### The side-only network by breathing rate
+
+    The figure of §9 for the full Zephyr network trained on side sessions 14 and
+    15 only (**Side 14, 15 only** above): the top row is the held-out session 13,
+    the bottom row the sessions it trained on (in-sample, a reference, not a
+    score). The rate bins start at 1 Hz rather than 2 Hz: these mice breathe at
+    about 2 Hz, and a third to two thirds of each clip's breaths are slower than 2 Hz.
+    """)
+    return
+
+
+@app.cell
+def _():
+    _bins = breathing.SIDE_BINS_HZ
+    _side = breathing.side_tables(results.OOD_RUNS["Side 14, 15 only"])  # cpu, cached
+    _b = _side["breaths"]
+    plots.test_rates_figure(
+        breathing.recall_by_bin(_b, bins=_bins),
+        breathing.recall_by_bin(_b, "chance", bins=_bins),
+        breathing.f1_by_bin(_b, _side["false_positives"], "head", bins=_bins),
+        breathing.f1_by_bin(_b, _side["false_positives"], "DSP", bins=_bins),
+        _side["windows"],
+        breathing.share_by_bin(_b, ["recording"], within="stratum", bins=_bins),
+        breathing.bin_centres(_bins),
+        _bins,
+    )
+    return
+
+
+@app.cell
+def _():
+    mo.md("""
+    ## 11. Half the frame rate
+
+    Can the network work from 30 Hz video? The same full network, trained from
+    scratch with the CNN seeing every other frame (30 Hz instead of 60). The TCN, the
+    heads and the scored output stay on the 60 Hz grid: the frame embeddings are
+    interpolated up to it, so the two networks are scored on the same instants.
+    """)
+    return
+
+
+@app.cell
+def _():
+    tables.table(
+        results.frame_rate_scores().round(3).reset_index(names="metric"),
+        across_columns=["Zephyr, 60 Hz frames", "Zephyr, 30 Hz frames"],
+    )
+    return
+
+
+@app.cell
+def _():
+    rate_r, rate_f1 = breathing.frame_rate_summaries()  # cpu, cached
+    plots.band_comparison_figure(
+        rate_r, rate_f1, methods=list(breathing.FRAME_RATE_SERIES)
+    )
     return
 
 

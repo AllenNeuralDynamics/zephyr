@@ -21,6 +21,7 @@ METHODS: dict[str, str] = {
 VARIANTS: dict[str, str] = {
     "Zephyr": METHODS["Zephyr"],
     "Zephyr, no stretch": "#7b3294",
+    "Zephyr, 30 Hz frames": "#d55e00",
 }
 """Zephyr and its training variants, for ablations that compare networks directly."""
 
@@ -72,6 +73,9 @@ def series(n: int) -> list[str]:
 
 IMPORTANCE_CMAP: str = "inferno"
 """Colour map of every importance (drop) map."""
+
+EMBEDDING_CMAP: str = "RdBu_r"
+"""Colour map of z-scored network features (diverging around 0)."""
 
 
 def use_style() -> None:

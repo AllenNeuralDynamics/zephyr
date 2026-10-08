@@ -35,11 +35,13 @@ The repository is a uv workspace of two packages (`uv sync --all-packages
   experiment path (see below).
 - **Inhale events of a network with an onset head come from the head, never
   from DSP on its predicted trace**, in every plot and table: event markers,
-  inhale F1, KL-IBI, per-rate analyses (`results.head_events`). DSP
-  (`results.events`) is only for the thermistor, for methods without a head
-  (labelled "DSP"), and for exhale F1 (no head exists). A DSP view of a headed
-  network is allowed only as an explicitly labelled comparison next to the head
-  version (e.g. the §5 ablation, the "Local F1 (DSP)" column of §9).
+  inhale F1, KL-IBI, per-rate analyses (`head_events` in
+  `notebooks/utils/results.py`). DSP (`results.events`) is only for the
+  thermistor, for methods without a head (labelled "DSP"), and for exhale F1
+  (no head exists). A DSP view of a headed network is allowed only as an
+  explicitly labelled comparison next to the head version (e.g. in
+  `notebooks/walkthrough.py`, the §5 ablation and the "Local F1 (DSP)" column
+  of §9).
 
 ## The rule: experiments are TOML, not code
 
@@ -94,6 +96,12 @@ box = [228, 85, 96, 96]           # x, y, w, h in target_size pixels
 - Create lists with `zephyr clips scan <dir> --glob 'video_*.mp4' -o <file>`,
   then place boxes with `zephyr annotate <file>` (it writes `box =` back).
   Never hand-edit boxes in bulk with a script.
+- `[preprocess]` also sets `select_fs` (rate of the frames the CNN sees) and
+  `output_fs` (rate of the grid the network predicts and trains on; both
+  default 60 Hz). The TCN's dilations count output samples, so its context in
+  seconds scales with `1 / output_fs`. Scoring always resamples to 60 Hz.
+  `output_fs` enters the cache key only off its default, so caches made before
+  it existed still match.
 - Put **all sessions of a dataset in one list**; folds select sessions with
   `groups`. Do not make one file per session or per subset.
 
@@ -139,8 +147,9 @@ time_stretch = 1.0
   the last two need `signal_pool > 1`. Both are recorded in the checkpoint's
   `arch_kwargs`, and both packages' loaders rebuild from them.
 - zephyr-benchmarks' `BenchmarkTrainParams` adds `arch` (`zephyr`, the
-  default, `tscan` or `physnet`; the last two need `channels = "gray"`) and
-  `tscan_img_size`. zephyr's own `Fold` refuses both keys: a fold naming a
+  default, `tscan`, `physnet` or `physnet_event`; every arch but `zephyr` needs
+  `channels = "gray"` and leaves `signal_pool` / `onset_input` at their
+  defaults) and `tscan_img_size`. zephyr's own `Fold` refuses both keys: a fold naming a
   comparison network runs only through `zephyr-benchmarks run`.
 - Loading refuses leakage (a test clip sharing a video or recording with
   training), unlabelled training clips, clips without boxes, and lists with
@@ -177,10 +186,11 @@ uv run zephyr evaluate --checkpoint <best.pt> --clips <a>.toml <b>.toml --cache 
 ```
 
 - `zephyr-benchmarks run` / `evaluate` take the same arguments and are needed
-  for folds with `arch = "tscan"` or `"physnet"` and their checkpoints;
+  for folds with any `arch` other than `zephyr`, and for their checkpoints;
   `zephyr evaluate` refuses non-zephyr checkpoints. Baselines and tables:
   `zephyr-benchmarks pixel|facemap|timing <fold> --cache <dir>`,
-  `zephyr-benchmarks collect --runs <dir>`, `zephyr-benchmarks report`.
+  `zephyr-benchmarks collect --runs <dir>`,
+  `zephyr-benchmarks report --runs <dir> --out <dir>`.
 - `zephyr-benchmarks occlusion --checkpoint <best.pt> --clips <a>.toml <b>.toml --cache data/features-v2 --out <file.npz>`
   is inference-only analysis (not an experiment): per-channel patch-occlusion
   maps of event F1 on the first `--window-s` seconds of each clip; `--patch`,
@@ -189,10 +199,10 @@ uv run zephyr evaluate --checkpoint <best.pt> --clips <a>.toml <b>.toml --cache 
   output goes to `<output_dir>/smoke/` unless `--output-dir` is given.
 - A run writes `<output_dir>/<fold stem>/seed-<n>/` with `config.json`,
   `train_videos.json`, checkpoints and `evaluation.json`. With
-  `train_params.save_every = N` it also keeps `epoch-<n>.pt` every N epochs
-  (same weights a final `best.pt` would hold); score one with `evaluate
-  --checkpoint`. These were trained mid-schedule (learning rate not yet
-  decayed), so they show how the score evolves, not what a shorter run gives. A seed whose `best.pt`
+  `train_params.save_every = N` it also keeps `epoch-<nnn>.pt` every N epochs,
+  in the same form as `best.pt`, so `evaluate --checkpoint` scores one as is.
+  They were trained mid-schedule (learning rate not yet decayed), so they show
+  how the score evolves, not what a shorter run gives. A seed whose `best.pt`
   exists is re-scored, not retrained; use a new `output_dir` for a new
   experiment rather than deleting results.
 - Without a GPU add `--device cpu --amp off --num-workers 0`; expect ~1.7 s
@@ -259,6 +269,7 @@ than working around it. When in doubt, mention the implication to the user.
   `benchmarks/` too, may be re-scored in place, only after the original is kept
   beside it as `evaluation.old-scorer.json` and only for a run whose checkpoint,
   re-scored with the old scorer, reproduces the stored values. Checkpoints,
-  `args.json`, histories and traces are never touched.
+  `config.json` (or older runs' `args.json`), histories and traces are never
+  touched.
 - zephyr never imports zephyr-benchmarks (see above).
 - Do not commit unless asked.

@@ -323,7 +323,7 @@ def train_fold(
     horizon = params.epochs * params.steps_per_epoch * params.batch_size
     grids = {
         "select_fs": recipe.select_fs,
-        "output_fs": OUTPUT_FS,
+        "output_fs": recipe.output_fs,
         "motion_tau_s": recipe.motion_tau_s,
         "onset_sigma_s": recipe.onset_sigma_s,
     }
@@ -420,7 +420,7 @@ def train_fold(
     n_params = sum(p.numel() for p in model.parameters())
     print(
         f"{n_params / 1e6:.2f} M params | receptive field {model.receptive_field} "
-        f"frames ({model.receptive_field / 60:.1f} s) | window {params.window} "
+        f"frames ({model.receptive_field / recipe.output_fs:.1f} s) | window {params.window} "
         f"x batch {params.batch_size} | amp {machine.amp}",
         flush=True,
     )
@@ -491,7 +491,7 @@ def train_fold(
             "params": dump(params),
             "config": resolved,
             "feature_config": dump(recipe)
-            | {"channel_names": list(CHANNEL_NAMES), "output_fs_hz": OUTPUT_FS},
+            | {"channel_names": list(CHANNEL_NAMES), "output_fs_hz": recipe.output_fs},
             "metrics": metrics,
             "per_clip": per_clip,
         }
@@ -605,6 +605,7 @@ def train_fold(
                 window=params.infer_window,
                 frame_chunk=params.frame_chunk,
                 amp_dtype=amp_dtype,
+                fs=recipe.output_fs,
                 span=val_span,
             )
             row |= summary
@@ -624,6 +625,7 @@ def train_fold(
                     window=params.infer_window,
                     frame_chunk=params.frame_chunk,
                     amp_dtype=amp_dtype,
+                    fs=recipe.output_fs,
                     span=val_span,
                 )
                 row |= {f"ema_{k}": v for k, v in ema_summary.items()}

@@ -238,7 +238,7 @@ def preprocess_clip(
             f"{n_written} were reached before decoding ended"
         )
 
-    out_times = output_times(anchor_times)
+    out_times = output_times(anchor_times, params.output_fs)
     np.save(files["frame_times"], anchor_times)
     np.save(files["baselines"], baselines.astype(np.float32))
     np.save(files["times"], out_times)
@@ -309,7 +309,7 @@ def preprocess_clips(
     print(
         f"{len(unique)} clip(s), {len(unique) - len(pending)} already cached | "
         f"target {params.target_size[0]}x{params.target_size[1]} | select "
-        f"{params.select_fs:.1f} Hz -> output {OUTPUT_FS:.0f} Hz | tau "
+        f"{params.select_fs:.1f} Hz -> output {params.output_fs:g} Hz | tau "
         f"{params.motion_tau_s * 1e3:.1f} ms | {workers} worker(s)",
         flush=True,
     )
