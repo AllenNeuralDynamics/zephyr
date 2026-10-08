@@ -2,12 +2,14 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import numpy as np
 from _clipfiles import touch_clip, write_list
 
 from zephyr import features
 from zephyr.annotate import BoxState, initial_state, recordings_of
 from zephyr.clips import scan, write_boxes
-from zephyr.config import ClipList, load
+from zephyr.config import OUTPUT_FS, ClipList, dump, load
+from zephyr.preprocess import output_times
 
 
 class _Tmp(unittest.TestCase):
@@ -98,6 +100,33 @@ class FeatureKeyTests(_Tmp):
         other = cl.preprocess.model_copy(update={"motion_tau_s": 0.02})
         self.assertNotEqual(base, features.prefix(clip, other))
         self.assertTrue(base.startswith(video.stem + "-"))
+
+    def test_output_fs_keys_only_off_its_default(self):
+        # Caches made before output_fs existed must keep matching at 60 Hz.
+        video = touch_clip(self.root / "d", 1, 1)
+        cl = load(ClipList, write_list(self.root / "l.toml", [video]))
+        clip = cl.resolve()[0]
+        self.assertEqual(cl.preprocess.output_fs, OUTPUT_FS)
+        key = features.cache_key(clip, cl.preprocess)["preprocess"]
+        self.assertNotIn("output_fs", key)
+        recipe = dump(cl.preprocess)
+        del recipe["output_fs"]
+        self.assertEqual(key, recipe)
+        faster = cl.preprocess.model_copy(update={"output_fs": 120.0})
+        self.assertEqual(
+            features.cache_key(clip, faster)["preprocess"]["output_fs"], 120.0
+        )
+        self.assertNotEqual(
+            features.prefix(clip, cl.preprocess), features.prefix(clip, faster)
+        )
+
+    def test_output_grid_follows_output_fs(self):
+        anchors = np.array([0.5, 1.0, 1.5])
+        np.testing.assert_allclose(np.diff(output_times(anchors)), 1 / OUTPUT_FS)
+        grid = output_times(anchors, 120.0)
+        self.assertEqual(len(grid), 121)
+        np.testing.assert_allclose(np.diff(grid), 1 / 120.0)
+        self.assertEqual(grid[0], 0.5)
 
     def test_require_names_what_is_missing(self):
         video = touch_clip(self.root / "d", 1, 1)

@@ -94,6 +94,12 @@ box = [228, 85, 96, 96]           # x, y, w, h in target_size pixels
 - Create lists with `zephyr clips scan <dir> --glob 'video_*.mp4' -o <file>`,
   then place boxes with `zephyr annotate <file>` (it writes `box =` back).
   Never hand-edit boxes in bulk with a script.
+- `[preprocess]` also sets `select_fs` (rate of the frames the CNN sees) and
+  `output_fs` (rate of the grid the network predicts and trains on; both
+  default 60 Hz). The TCN's dilations count output samples, so its context in
+  seconds scales with `1 / output_fs`. Scoring always resamples to 60 Hz.
+  `output_fs` enters the cache key only off its default, so caches made before
+  it existed still match.
 - Put **all sessions of a dataset in one list**; folds select sessions with
   `groups`. Do not make one file per session or per subset.
 

@@ -20,7 +20,7 @@ from pathlib import Path
 import numpy as np
 
 from zephyr import features
-from zephyr.config import OUTPUT_FS, Fold, load
+from zephyr.config import Fold, load
 
 from .config import BenchmarkFold
 
@@ -354,7 +354,7 @@ def main(argv: list[str] | None = None) -> None:
             methods=args.methods,
             out_root=args.out_root,
             fs=fold.preprocess.select_fs,
-            output_fs=OUTPUT_FS,
+            output_fs=fold.preprocess.output_fs,
             bin_factor=args.bin,
         )
     else:

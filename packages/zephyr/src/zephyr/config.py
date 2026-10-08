@@ -36,7 +36,8 @@ from .rates import DEFAULT_RATE_BINS_HZ
 from .signal import CANONICAL_BREATHING_SAMPLING_RATE
 
 OUTPUT_FS = CANONICAL_BREATHING_SAMPLING_RATE
-"""The scorer's grid, and therefore the model's.  Not configurable."""
+"""The default output grid (``PreprocessParams.output_fs``), and always the scorer's:
+predictions on another grid are resampled to it before any metric."""
 
 Box = tuple[int, int, int, int]
 """Crop box ``(x, y, width, height)`` in ``target_size`` pixels."""
@@ -97,6 +98,14 @@ class PreprocessParams(_Model):
     flow_scale_px: float = Field(FLOW_SCALE_PX, gt=0)
     flow_clip_px: float = Field(FLOW_CLIP_PX, gt=0)
     onset_sigma_s: float = Field(0.020, gt=0)
+    output_fs: float = Field(OUTPUT_FS, gt=0)
+    """Rate of the grid the network predicts on and trains against, in Hz. The TCN's
+    dilations count samples of this grid, so its context in seconds scales with
+    1 / output_fs. Scoring is always on the 60 Hz grid."""
+
+    KEY_DEFAULTS: ClassVar[dict[str, float]] = {"output_fs": OUTPUT_FS}
+    """Fields added after caches existed: left out of the cache key at these values,
+    so the caches made before them still match."""
 
 
 class Derive(_Model):

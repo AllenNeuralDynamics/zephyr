@@ -1,9 +1,9 @@
 """The on-disk feature cache: one entry per (video, preprocessing, box).
 
 Files share a prefix ``{video stem}-{hash}``; the hash covers the video and timestamp
-paths, every PreprocessParams field and the box, so changing any gives a new entry and
-nothing is overwritten with different content. Per entry: ``feat-`` (uint8 T x 4 x h x
-w), ``ftime-``, ``dt-``, ``time-`` (60 Hz grid), ``target-`` and ``events-`` for
+paths, every PreprocessParams field (a later one only off its default, see KEY_DEFAULTS)
+and the box, so changing any gives a new entry and nothing is overwritten. Per entry: ``feat-`` (uint8 T x 4 x h x
+w), ``ftime-``, ``dt-``, ``time-`` (output grid), ``target-`` and ``events-`` for
 labelled clips, and a ``{prefix}.json`` sidecar (full key, stats, thermistor used),
 written last so its presence means the arrays are complete.
 """
@@ -21,7 +21,7 @@ class ClipEntry:
     """One preprocessed clip: where its arrays live and what it is.
 
     *n_frames* is on the selection grid (``features``/``frame_times``);
-    *n_output* on the 60 Hz output grid (``times``/``target``).  *clip_id* is a
+    *n_output* on the output grid (``times``/``target``).  *clip_id* is a
     human label (folder and file stem); *recording* is the leakage identity,
     see :attr:`zephyr.config.ResolvedClip.recording_id`.  *thermistor* is the raw
     ground-truth trace scoring uses, ``None`` for an unlabelled clip.
@@ -49,10 +49,15 @@ def cache_key(clip: ResolvedClip, params: PreprocessParams) -> dict:
     """Everything that determines a clip's arrays."""
     if clip.box is None:
         raise ValueError(f"{clip.name} has no box; place it with `zephyr annotate`")
+    recipe = {
+        k: v
+        for k, v in dump(params).items()
+        if params.KEY_DEFAULTS.get(k, object()) != v
+    }
     return {
         "video": clip.video.as_posix(),
         "timestamps": clip.timestamps.as_posix(),
-        "preprocess": dump(params),
+        "preprocess": recipe,
         "box": list(clip.box),
     }
 
