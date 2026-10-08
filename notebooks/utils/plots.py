@@ -3,6 +3,7 @@
 import string
 from collections.abc import Sequence
 from pathlib import Path
+from typing import NamedTuple
 
 import numpy as np
 import pandas as pd
@@ -46,6 +47,8 @@ CHANNEL_RANGES: dict[str, tuple[float, float]] = {
     "flow_x": (-2, 2),
     "flow_y": (-2, 2),
 }
+CROP_EDGE: str = "#d55e00"
+"""Outline of the crop the network sees, on the frame and around the crop itself."""
 OBJECTIVE_MARKERS: dict[str, str] = dict(zip(style.OBJECTIVES, "oD^", strict=True))
 SIGNAL, MULTI, HEAD = style.OBJECTIVES
 """Series of the ablation: ``(objective, column)`` of each is in :func:`ablation_figure`."""
@@ -216,9 +219,166 @@ def frame_with_box(
     """A video frame with the crop the network sees outlined."""
     image = ax.imshow(frame, cmap="gray", vmin=0, vmax=255)
     x, y, w, h = box
-    ax.add_patch(Rectangle((x, y), w, h, fill=False, edgecolor="#d55e00", linewidth=1))
+    ax.add_patch(Rectangle((x, y), w, h, fill=False, edgecolor=CROP_EDGE, linewidth=1))
     ax.axis("off")
     return image
+
+
+class DomainPanel(NamedTuple):
+    """One column of :func:`domain_figure`."""
+
+    title: str
+    frame: NDArray
+    """The full video frame, at the working frame size the box is measured in."""
+    box: tuple[int, int, int, int]
+    thermistor: pd.DataFrame
+    """``Time`` and ``Signal`` (filtered, ADC units)."""
+    rate_hz: float
+    """The clip's mean breathing rate."""
+
+
+def domain_figure(panels: Sequence[DomainPanel], t0: float, duration: float) -> Figure:
+    """What each recording looks like: one column per clip, rows are the full frame
+    at *t0* with the crop outlined, the crop the network sees, and the thermistor
+    from *t0* for *duration* seconds on a shared amplitude scale."""
+    fig, axes = style.figure(
+        "double",
+        0.75,
+        nrows=3,
+        ncols=len(panels),
+        height_ratios=[0.75, 1, 0.7],
+        squeeze=False,
+    )
+    for col, panel in enumerate(panels):
+        top, middle, bottom = axes[:, col]
+        frame_with_box(top, panel.frame, panel.box)
+        top.set_title(panel.title)
+        x, y, w, h = panel.box
+        middle.imshow(panel.frame[y : y + h, x : x + w], cmap="gray", vmin=0, vmax=255)
+        middle.set_xticks([])
+        middle.set_yticks([])
+        middle.grid(False)
+        for spine in middle.spines.values():
+            spine.set_visible(True)
+            spine.set_edgecolor(CROP_EDGE)
+        shown = panel.thermistor[
+            (panel.thermistor.Time >= t0) & (panel.thermistor.Time <= t0 + duration)
+        ]
+        bottom.plot(shown.Time, shown.Signal, color=style.TRUTH, linewidth=0.7)
+        bottom.set_xlim(t0, t0 + duration)
+        bottom.set_xlabel("Time (s)")
+        bottom.set_title(f"{panel.rate_hz:.1f} breaths/s", fontweight="normal")
+        if col:
+            bottom.tick_params(labelleft=False)
+    # One amplitude scale for every clip, from every excerpt's own range.
+    low = min(ax.dataLim.y0 for ax in axes[2])
+    high = max(ax.dataLim.y1 for ax in axes[2])
+    pad = 0.05 * (high - low)
+    for ax in axes[2]:
+        ax.set_ylim(low - pad, high + pad)
+    axes[2, 0].set_ylabel("Thermistor\n(ADC, filtered)")
+    panel_letters(axes[:, 0])
+    return fig
+
+
+OOD_METRIC_LABELS: dict[str, str] = {
+    "correlation": METRIC_LABELS["correlation"],
+    "head_inhale_f1": "Inhalation F1 (head)",
+}
+
+
+def ood_figure(scores: pd.DataFrame) -> Figure:
+    """Each out-of-distribution network on each kind of data it can be scored on:
+    one dot per clip, bars are means; correlation, then head inhale F1."""
+    networks = list(dict.fromkeys(scores["network"]))
+    fig, axes = style.figure("double", 0.36, ncols=len(OOD_METRIC_LABELS))
+    width = 0.8 / len(style.OOD_DATA)
+    rng = np.random.default_rng(0)  # fixed jitter, so the figure never changes
+    for ax, (metric, label) in zip(axes, OOD_METRIC_LABELS.items(), strict=True):
+        for i, network in enumerate(networks):
+            mine = scores[scores.network == network]
+            present = [d for d in style.OOD_DATA if (mine.data == d).any()]
+            for j, data in enumerate(present):
+                x = i + (j - (len(present) - 1) / 2) * width
+                values = mine.loc[mine.data == data, metric].to_numpy()
+                colour = style.OOD_DATA[data]
+                ax.bar(x, values.mean(), width * 0.9, color=colour, alpha=0.35)
+                jitter = rng.uniform(-0.25, 0.25, len(values)) * width
+                ax.plot(x + jitter, values, "o", color=colour, ms=2.5)
+        ax.set_xticks(range(len(networks)), networks)
+        ax.set_xlabel("Trained on")
+        ax.set_ylabel(label)
+        ax.set_ylim(min(0.0, scores[metric].min() - 0.05), 1)
+        ax.axhline(0, color="0.6", linewidth=0.5)
+    handles = [
+        Rectangle((0, 0), 1, 1, color=c, alpha=0.6) for c in style.OOD_DATA.values()
+    ]
+    fig.legend(handles, style.OOD_DATA, loc="outside upper center", ncol=3)
+    panel_letters(axes)
+    return fig
+
+
+SHIFT_LIMIT: float = 6.0
+"""Distances beyond this many robust z are drawn at the edge, with an arrow."""
+
+
+def thermistor_figure(shifts: pd.DataFrame, labels: dict[str, str]) -> Figure:
+    """Every clip's thermistor features as a distance from the training clips.
+
+    One row per feature (*labels*, feature -> name), one lane per set of clips
+    (``set`` column of *shifts*, from :func:`thermistor.shift_from_train`); a dot is
+    a clip, a bar the set's median, the shaded band the training clips' usual range
+    (2 robust z either side).
+    """
+    sets = list(style.CLIP_SETS)
+    fig, ax = style.figure("double", 0.42)
+    rng = np.random.default_rng(0)  # fixed jitter, so the figure never changes
+    lane = 0.26
+    ax.axvspan(-2, 2, color="0.92", linewidth=0)
+    ax.axvline(0, color="0.6", linewidth=0.5)
+    for row, feature in enumerate(labels):
+        for j, name in enumerate(sets):
+            y = row + (j - 1) * lane
+            z = shifts.loc[shifts["set"] == name, feature].to_numpy()
+            colour = style.CLIP_SETS[name]
+            shown = np.clip(z, -SHIFT_LIMIT, SHIFT_LIMIT)
+            jitter = rng.uniform(-0.06, 0.06, len(z))
+            inside = np.abs(z) <= SHIFT_LIMIT
+            ax.plot(
+                shown[inside], y + jitter[inside], "o", color=colour, ms=2.4, alpha=0.8
+            )
+            if (~inside).any():  # off the scale: parked at the edge, pointing out
+                ax.plot(
+                    shown[~inside],
+                    y + jitter[~inside],
+                    ">",
+                    color=colour,
+                    ms=3,
+                    alpha=0.8,
+                )
+            ax.plot(
+                [np.median(z).clip(-SHIFT_LIMIT, SHIFT_LIMIT)] * 2,
+                [y - 0.1, y + 0.1],
+                color="black",
+                linewidth=1.2,
+            )
+    ax.set_yticks(range(len(labels)), list(labels.values()))
+    ax.set_ylim(len(labels) - 0.5, -0.5)
+    ax.set_xlim(-SHIFT_LIMIT - 0.4, SHIFT_LIMIT + 0.4)
+    ax.set_xlabel(
+        "Distance from the training clips (robust z; log10 for amplitude and resolution)"
+    )
+    ax.grid(False, axis="y")
+    ax.grid(True, axis="x")
+    ax.spines["left"].set_visible(False)
+    ax.tick_params(axis="y", length=0)
+    handles = [
+        Line2D([], [], marker="o", linestyle="", color=c, markersize=3.5, label=n)
+        for n, c in style.CLIP_SETS.items()
+    ]
+    handles.append(Line2D([], [], color="black", linewidth=1.2, label="median"))
+    fig.legend(handles=handles, loc="outside upper center", ncol=4)
+    return fig
 
 
 def channel_image(ax: Axes, name: str, plane: NDArray) -> AxesImage:
@@ -323,29 +483,68 @@ def trace_stack(
     ax.grid(False)
 
 
-def band_correlation_figure(summary: pd.DataFrame) -> Figure:
-    """Each method's mean correlation with the thermistor by frequency band, over
-    the test clips, with its 95% interval shaded (``summary`` from
-    :func:`breathing.band_correlation_summary`)."""
-    fig, ax = style.figure("double", 0.4)
-    for method in style.METHODS:
-        s = summary[method]
+def _band_lines(
+    ax: Axes, summary: pd.DataFrame, series: Sequence[str], ylabel: str
+) -> None:
+    """One line per series over frequency bands, its 95% interval shaded. A series
+    named ``<method> (DSP)`` is that method's colour, dashed."""
+    for name in series:
+        s = summary[name]
+        method = name.split(" (")[0]
         colour = style.color(method)
         ax.fill_between(s.index, s["lo"], s["hi"], color=colour, alpha=0.2, linewidth=0)
         ax.plot(
             s.index,
             s["mean"],
-            "o-",
+            "o--" if name.endswith("(DSP)") else "o-",
             color=colour,
             markersize=2.5,
             linewidth=1.4 if method == "Zephyr" else 0.9,
-            label=method,
+            label=name,
         )
+    ax.set_ylabel(ylabel)
+
+
+def band_correlation_figure(summary: pd.DataFrame) -> Figure:
+    """Each method's mean correlation with the thermistor by frequency band, over
+    the test clips, with its 95% interval shaded (``summary`` from
+    :func:`breathing.band_correlation_summary`)."""
+    fig, ax = style.figure("double", 0.4)
+    _band_lines(ax, summary, list(style.METHODS), "Pearson correlation")
     ax.axhline(0, color="0.6", linewidth=0.5)
-    ax.set_ylabel("Pearson correlation")
     rate_axis(ax, (summary.index[0], summary.index[-1]))
     ax.set_xlabel("Frequency (Hz)")
     ax.legend(loc="lower right", bbox_to_anchor=(1, 1), ncol=len(style.METHODS))
+    return fig
+
+
+def band_comparison_figure(correlation: pd.DataFrame, f1: pd.DataFrame) -> Figure:
+    """Waveform correlation and local inhale F1 by frequency band, side by side.
+
+    *correlation* is :func:`breathing.band_correlation_summary`, *f1* is
+    :func:`breathing.event_f1_band_summary`; both are means over the test clips with
+    95% bootstrap intervals. Zephyr's F1 is shown from its onset head and, dashed,
+    from DSP on its trace; the methods without a head are scored with DSP.
+    """
+    fig, axes = style.figure("double", 0.4, ncols=2)
+    _band_lines(axes[0], correlation, list(style.METHODS), "Pearson correlation")
+    axes[0].axhline(0, color="0.6", linewidth=0.5)
+    axes[0].set_xlabel("Frequency (Hz)")
+    series = [name for name in f1.columns.get_level_values(0).unique()]
+    _band_lines(axes[1], f1, series, "Local inhale F1")
+    axes[1].set_xlabel("Breathing rate (Hz)")
+    axes[1].set_ylim(0, 1.02)
+    for ax in axes:
+        rate_axis(ax, (correlation.index[0], correlation.index[-1]))
+    axes[0].set_xlabel("Frequency (Hz)")
+    handles: dict[str, Line2D] = {}
+    for ax in axes:
+        for handle, label in zip(*ax.get_legend_handles_labels(), strict=True):
+            handles.setdefault(label, handle)
+    fig.legend(
+        list(handles.values()), list(handles), loc="outside upper center", ncol=4
+    )
+    panel_letters(axes)
     return fig
 
 
@@ -624,7 +823,8 @@ def channel_importance_figure(
     frame, for orientation.
     """
     rows = {**STRATUM_LABELS, "all": "All 24 clips"}
-    groups = np.asarray(occlusion["groups"])
+    # occlusion names groups after the clip-list stem (face_test_<stratum>)
+    groups = np.array([str(g).removeprefix("face_test_") for g in occlusion["groups"]])
     mean_frames = np.stack([frames[name] for name in _clip_names(occlusion)])
     fig, axes = style.figure("double", 0.62, nrows=len(rows), ncols=5)
     vmax = max(occlusion[c].mean(0).max() for c in style.CHANNELS)
@@ -646,24 +846,40 @@ def channel_importance_figure(
 
 
 def importance_by_clip_figure(
-    occlusion: dict[str, NDArray], frames: dict[str, NDArray]
+    occlusion: dict[str, NDArray], frames: dict[str, NDArray], per_block: int = 13
 ) -> Figure:
     """Per clip (columns), then the mean: its frame, then each channel's importance
-    map (colour scale per channel)."""
+    map. Each column is divided by its own largest value across all four channels, so
+    channels compare within a clip and clips compare in where, not how much (no colour
+    bar: every column runs 0 to 1). Clips wrap into blocks of *per_block* columns; the
+    mean closes the last block."""
     names = _clip_names(occlusion)
-    fig, axes = style.figure("double", 0.3, nrows=5, ncols=len(names) + 1)
     clip_frames = [frames[name] for name in names]
-    for ax, frame in zip(
-        axes[0], [*clip_frames, np.mean(clip_frames, axis=0)], strict=True
-    ):
-        ax.imshow(frame, cmap="gray")
+    maps = {c: [*occlusion[c], occlusion[c].mean(0)] for c in style.CHANNELS}
+    peak = [max(maps[c][i].max() for c in maps) for i in range(len(names) + 1)]
+    titles = [n.removeprefix("face_").replace("_part_", ".") for n in names] + ["mean"]
+    columns = [*clip_frames, np.mean(clip_frames, axis=0)]
+    blocks = [
+        range(i, min(i + per_block, len(columns)))
+        for i in range(0, len(columns), per_block)
+    ]
+    rows = 1 + len(maps)
+    fig, axes = style.figure(
+        "double",
+        0.07 * rows * len(blocks) + 0.1,
+        nrows=rows * len(blocks),
+        ncols=per_block,
+    )
+    for ax in axes.flat:
         ax.axis("off")
-    _row_label(axes[0, 0], "frame", size=5)
-    for row, channel in zip(axes[1:], style.CHANNELS, strict=True):
-        maps = [*occlusion[channel], occlusion[channel].mean(0)]
-        _importance_row(row, maps, max(m.max() for m in maps))
-        _row_label(row[0], channel, size=5)
-    titles = [name.removeprefix("face_").replace("_part_", ".") for name in names]
-    for ax, title in zip(axes[0], [*titles, "mean"], strict=True):
-        ax.set_title(title, size=5)
+    for k, block in enumerate(blocks):
+        top = k * rows
+        _row_label(axes[top, 0], "frame", size=5)
+        for channel, row in zip(maps, axes[top + 1 : top + rows], strict=True):
+            _row_label(row[0], channel, size=5)
+        for j, i in enumerate(block):
+            axes[top, j].imshow(columns[i], cmap="gray")
+            axes[top, j].set_title(titles[i], size=5)
+            for channel, row in zip(maps, axes[top + 1 : top + rows], strict=True):
+                _importance_row([row[j]], [maps[channel][i] / peak[i]], 1.0)
     return fig

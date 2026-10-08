@@ -15,7 +15,7 @@ from zephyr.benchmarks.common import blind_polarity
 from zephyr.benchmarks.runner import load_checkpoint
 from zephyr.channels import CHANNEL_NAMES, decode_flow
 from zephyr.config import ClipList, load
-from zephyr.evaluate import head_event_indices
+from zephyr.evaluate import head_event_indices, score_entries
 from zephyr.evaluation import score_clip
 from zephyr.infer import predict_clip
 from zephyr.signal import (
@@ -23,6 +23,7 @@ from zephyr.signal import (
     CANONICAL_BREATHING_SAMPLING_RATE,
     TIME_COLUMN,
     detect_inhalation_events,
+    filter_sniff_signal,
     resample_uniform,
 )
 
@@ -37,11 +38,19 @@ CLIP_LISTS: dict[str, Path] = {
     / "packages/zephyr-benchmarks/configs/clips/face_test_known_animals_new_date.toml",
 }
 TRAIN_CLIPS: Path = ROOT / "packages/zephyr-benchmarks/configs/clips/face_train.toml"
+OOD_CLIPS: dict[str, Path] = {
+    "side_camera": ROOT
+    / "packages/zephyr-benchmarks/configs/clips/ood_side_right.toml",
+}
+"""The out-of-distribution rig: a side view of the face, never trained on by Zephyr."""
 FEATURES: Path = ROOT / "data/features-v2"
 BASELINES: Path = ROOT / "benchmarks/baselines-v1"
 ABLATION: Path = ROOT / "benchmarks/input-objective-v1/runs"
-ZEPHYR_RUN: Path = ROOT / "runs/rate-balance/benchmark-rate-balanced/seed-42"
-"""The network every plot uses as Zephyr."""
+ZEPHYR_RUN: Path = (
+    ROOT / "runs/rate-balance-pool2-both/benchmark-rate-balanced-pool2-both/seed-42"
+)
+"""The network every plot uses as Zephyr: rate-balanced, no stretch, pooled signal
+branch (``signal_pool = 2``) with the onset head reading both streams."""
 ZEPHYR_TAG: str = ZEPHYR_RUN.parent.name
 """Names Zephyr's caches, so those of another network are never read."""
 REFERENCE_RUN: Path = (
@@ -64,7 +73,18 @@ STRETCH_RUNS: dict[str, Path] = {
 """The two networks of the stretch ablation: Zephyr with stretch and its no-stretch twin."""
 PIXEL_TRACES: Path = BASELINES / "pixel/flow/traces/test"
 FACEMAP_TRACES: Path = ROOT / "runs/facemap-traces/facemap/both/traces"
-OCCLUSION: Path = ROOT / "runs/rate-balance/occlusion_60s_f1.npz"
+OCCLUSION: Path = ZEPHYR_RUN.parents[1] / "occlusion_60s_f1.npz"
+"""Occlusion maps of :data:`ZEPHYR_RUN`, next to its experiment's runs."""
+OOD_RUNS: dict[str, Path] = {
+    "Face only": REFERENCE_RUN / "seed-42",
+    "Face + side 13, 14": ROOT
+    / "runs/ood-finetune-hold15/ood-hold15-retrain-init/seed-42",
+    "Side 14, 15 only": ROOT / "runs/ood-scratch/ood-scratch-hold13/seed-42",
+    "Side 13, 14 only": ROOT / "runs/ood-scratch/ood-scratch-hold15/seed-42",
+}
+"""The out-of-distribution networks: the face benchmark network, that network
+fine-tuned on two side sessions as well, and two trained from scratch on two side
+sessions each (a leave-one-session-out pair: held out 13, held out 15)."""
 
 INPUTS: dict[str, tuple[Path, str]] = {
     "feature cache": (
@@ -100,9 +120,9 @@ STRATA: tuple[str, ...] = ("new_animals", "known_animals_new_date")
 
 
 OCCLUSION_COMMAND: str = (
-    "zephyr-benchmarks occlusion --checkpoint runs/rate-balance/"
-    "benchmark-rate-balanced/seed-42/best.pt --clips <both test lists> "
-    "--cache data/features-v2 --out runs/rate-balance/occlusion_60s_f1.npz"
+    f"zephyr-benchmarks occlusion --checkpoint {ZEPHYR_RUN.relative_to(ROOT).as_posix()}"
+    "/best.pt --clips <both test lists> --cache data/features-v2 "
+    f"--out {OCCLUSION.relative_to(ROOT).as_posix()}"
 )
 
 
@@ -120,10 +140,11 @@ class TestClip:
     target_size: tuple[int, int]
 
 
-def clips() -> dict[str, TestClip]:
-    """Every test clip by name, with its stratum and crop box."""
+def clips(lists: dict[str, Path] = CLIP_LISTS) -> dict[str, TestClip]:
+    """Every clip of *lists* (the test clips by default) by name, with its stratum
+    (the list's key) and crop box."""
     out: dict[str, TestClip] = {}
-    for stratum, path in CLIP_LISTS.items():
+    for stratum, path in lists.items():
         clip_list = load(ClipList, path)
         resolved = clip_list.resolve()
         entries = features.require(resolved, clip_list.preprocess, FEATURES)
@@ -181,6 +202,23 @@ def truth(entry: features.ClipEntry) -> pd.DataFrame:
     return pd.read_parquet(entry.thermistor)
 
 
+def filtered_truth(entry: features.ClipEntry) -> pd.DataFrame:
+    """The thermistor filtered as the training target is, still in ADC units."""
+    frame = truth(entry)
+    t = frame[TIME_COLUMN].to_numpy()
+    fs = 1.0 / float(np.median(np.diff(t)))
+    signal = filter_sniff_signal(frame[BREATHING_SIGNAL_COLUMN].to_numpy(float), fs)
+    return pd.DataFrame({TIME_COLUMN: t, BREATHING_SIGNAL_COLUMN: signal})
+
+
+def breathing_rate(entry: features.ClipEntry) -> float:
+    """Mean breathing rate of a clip (Hz): the thermistor's inhalations per second."""
+    frame = truth(entry)
+    t = frame[TIME_COLUMN].to_numpy()
+    inhales, _ = events(t, frame[BREATHING_SIGNAL_COLUMN].to_numpy())
+    return len(inhales) / float(t[-1] - t[0])
+
+
 def _zscore(x: NDArray) -> NDArray:
     return (x - x.mean()) / x.std()
 
@@ -225,21 +263,23 @@ def method_traces(entry: features.ClipEntry) -> pd.DataFrame:
 
 
 def zephyr_outputs(
-    entry: features.ClipEntry, run: Path = ZEPHYR_RUN
+    entry: features.ClipEntry, run: Path = ZEPHYR_RUN, device: str = "cpu"
 ) -> pd.DataFrame:
     """Zephyr's z-scored trace and onset probability: ``Time``, ``Zephyr``, ``onset``.
 
-    Inference only (CPU), cached per clip and per network (*run*, by its experiment
-    name).
+    Inference only (CPU unless *device* says otherwise, in fp32 either way), cached
+    per clip and per network (*run*, by its experiment name).
     """
     CACHE.mkdir(exist_ok=True)
     cache = CACHE / f"{short_name(entry)}-zephyr-{run.parent.name}.parquet"
     if cache.exists():
         return pd.read_parquet(cache)
     print(f"No cache found in {cache}. Calculating from scratch.")
-    device = torch.device("cpu")
-    model, mean, std, _ = load_checkpoint(run / "best.pt", device)
-    signal, onset = predict_clip(model, entry, mean, std, device=device, amp_dtype=None)
+    torch_device = torch.device(device)
+    model, mean, std, _ = load_checkpoint(run / "best.pt", torch_device)
+    signal, onset = predict_clip(
+        model, entry, mean, std, device=torch_device, amp_dtype=None
+    )
     n = entry.n_output
     frame = pd.DataFrame(
         {TIME_COLUMN: np.load(entry.times)[:n], "Zephyr": _zscore(signal[:n])}
@@ -344,6 +384,17 @@ def method_scores(entry: features.ClipEntry, traces: pd.DataFrame) -> pd.DataFra
         row["inhale events"] = "head" if method in HEADED else "DSP"
         rows[method] = row
     return pd.DataFrame(rows).T[[*METRICS, "inhale events"]]
+
+
+def mean_scores() -> pd.DataFrame:
+    """:func:`method_scores` averaged over every test clip: one row per method, the
+    mean of each metric over the clips (``inhale events`` says where they come from)."""
+    per_clip = [
+        method_scores(c.entry, method_traces(c.entry)) for c in clips().values()
+    ]
+    stacked = pd.concat(per_clip, keys=range(len(per_clip)))
+    mean = stacked[list(METRICS)].astype(float).groupby(level=1, sort=False).mean()
+    return mean.assign(**{"inhale events": per_clip[0]["inhale events"]})
 
 
 def head_scores(run: str) -> pd.DataFrame:
@@ -455,6 +506,71 @@ def benchmark() -> pd.DataFrame:
                         row["stratum"]
                     ]
                 rows.append(row)
+    return pd.DataFrame(rows)
+
+
+OOD_METRICS: tuple[str, ...] = ("correlation", "head_inhale_f1")
+
+
+def _face_rows(run: Path, network: str, side: set[str]) -> list[dict]:
+    """Per-clip face scores the run's own evaluation wrote (its side clips, if any,
+    are rescored by :func:`_side_rows`)."""
+    return [
+        {
+            "network": network,
+            "clip": c["clip_id"],
+            "data": "Face, held out",
+            **{m: c[m] for m in OOD_METRICS},
+        }
+        for c in json.loads((run / "evaluation.json").read_text())["clips"]
+        if c["clip_id"] not in side
+    ]
+
+
+def _side_rows(run: Path, network: str) -> list[dict]:
+    """Every side clip scored with zephyr's per-clip scorer, labelled by whether
+    *run* trained on it (from the videos it recorded training on).
+
+    Trained-on clips are in-sample, a reference and never a score; ``evaluate``
+    refuses them, so its scorer is called directly. Inference only (CPU), cached
+    per run.
+    """
+    side = list(clips(OOD_CLIPS).values())
+    cache = CACHE / f"ood-side-{run.parent.parent.name}-{run.parent.name}.parquet"
+    if not cache.exists():
+        CACHE.mkdir(exist_ok=True)
+        device = torch.device("cpu")
+        model, mean, std, _ = load_checkpoint(run / "best.pt", device)
+        rows = score_entries(
+            [(model, mean, std)],
+            [c.entry for c in side],
+            device,
+            window=1024,
+            frame_chunk=256,
+            amp_dtype=None,
+            head=True,
+        )
+        frame = pd.DataFrame(rows)[["clip_id", *OOD_METRICS]]
+        frame.rename(columns={"clip_id": "clip"}).to_parquet(cache)
+    trained = {
+        Path(v).resolve() for v in json.loads((run / "train_videos.json").read_text())
+    }
+    trained_ids = {c.entry.clip_id for c in side if c.video.resolve() in trained}
+    frame = pd.read_parquet(cache)
+    frame["data"] = [
+        "Side, trained on" if c in trained_ids else "Side, held out"
+        for c in frame["clip"]
+    ]
+    return frame.assign(network=network).to_dict("records")
+
+
+def ood_scores() -> pd.DataFrame:
+    """Correlation and head inhale F1 of every network of :data:`OOD_RUNS`, per clip:
+    ``network``, ``clip``, ``data`` (face or side, held out or trained on)."""
+    side = {c.entry.clip_id for c in clips(OOD_CLIPS).values()}
+    rows: list[dict] = []
+    for network, run in OOD_RUNS.items():
+        rows += _face_rows(run, network, side) + _side_rows(run, network)
     return pd.DataFrame(rows)
 
 

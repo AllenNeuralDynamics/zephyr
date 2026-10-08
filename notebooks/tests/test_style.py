@@ -13,7 +13,14 @@ def test_every_entity_has_a_colour() -> None:
 
 
 def test_colours_are_unique_within_a_group() -> None:
-    for group in (style.METHODS, style.CHANNELS, style.OBJECTIVES, style.VARIANTS):
+    for group in (
+        style.METHODS,
+        style.CHANNELS,
+        style.OBJECTIVES,
+        style.VARIANTS,
+        style.OOD_DATA,
+        style.CLIP_SETS,
+    ):
         assert len(set(group.values())) == len(group)
 
 

@@ -42,6 +42,11 @@ class ConfigTests(unittest.TestCase):
             BenchmarkTrainParams(arch="tscan", channels="gray+diff")
         BenchmarkTrainParams(arch="physnet", channels="gray")
 
+    def test_signal_pool_is_zephyr_only(self):
+        with self.assertRaisesRegex(ValueError, "are zephyr options"):
+            BenchmarkTrainParams(arch="physnet", channels="gray", signal_pool=2)
+        BenchmarkTrainParams(signal_pool=2, onset_input="both")
+
     def test_experiment_loads_its_folds_as_benchmark_folds(self):
         self.assertIs(BenchmarkExperiment.fold_model, BenchmarkFold)
         self.assertIs(RUNNER.experiment, BenchmarkExperiment)
@@ -102,6 +107,8 @@ class LoadCheckpointTests(unittest.TestCase):
 
     def test_rebuilds_every_network(self):
         self.assertIsInstance(self._roundtrip("zephyr", "gray"), BreathingNet)
+        pooled = self._roundtrip("zephyr", "gray", signal_pool=2, onset_input="both")
+        self.assertEqual(pooled.temporal.onset_input, "both")
         tscan = self._roundtrip("tscan", "gray", img_size=24)
         self.assertEqual(tscan.img_size, 24)
         self.assertIsInstance(self._roundtrip("physnet", "gray"), nets.PhysNetBreathing)

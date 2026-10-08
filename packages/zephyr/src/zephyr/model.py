@@ -125,8 +125,65 @@ class ResidualBlock(nn.Module):
         return self.act(x + self.body(x))
 
 
+class PooledBranch(nn.Module):
+    """Re-derive features at ``1 / factor`` of the frame rate, then return to it.
+
+    The encoder sees each frame alone, so its estimation noise is independent from
+    frame to frame and the correlation loss barely notices it.  Averaging over
+    *factor* frames removes that noise; a stride-*factor* transposed convolution
+    brings the sequence back with a smooth learned kernel.  The upsampling kernel
+    of each pooled sample is centred on the frames it averaged, so the branch adds
+    no lag.
+    """
+
+    def __init__(self, channels: int, factor: int, kernel: int = 3) -> None:
+        super().__init__()
+        if factor < 2:
+            raise ValueError(f"pooling factor must be at least 2, got {factor}")
+        self.factor = factor
+        self.pool = nn.AvgPool1d(factor, factor)
+        self.body = nn.Sequential(
+            nn.Conv1d(channels, channels, kernel, padding=kernel // 2, bias=False),
+            nn.BatchNorm1d(channels),
+            nn.GELU(),
+        )
+        # Kernel 2k (even k) or 2k - 1 (odd k) with padding k // 2 gives exactly
+        # k outputs per pooled sample, centred on the frames that sample averaged.
+        self.up = nn.Sequential(
+            nn.ConvTranspose1d(
+                channels,
+                channels,
+                2 * factor - factor % 2,
+                stride=factor,
+                padding=factor // 2,
+                bias=False,
+            ),
+            nn.BatchNorm1d(channels),
+            nn.GELU(),
+        )
+
+    @property
+    def receptive_field(self) -> int:
+        """Extra output frames the branch adds to the trunk's span (an upper bound)."""
+        return 5 * self.factor
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """(B, C, T) -> (B, C, T)."""
+        t = x.shape[-1]
+        pad = (-t) % self.factor
+        if pad:
+            x = F.pad(x, (0, pad), mode="replicate")
+        return self.up(self.body(self.pool(x)))[..., :t]
+
+
 class TemporalNet(nn.Module):
-    """Dilated residual stack over the frame-embedding sequence."""
+    """Dilated residual stack over the frame-embedding sequence.
+
+    With ``signal_pool > 1`` the signal head reads the stack's output through a
+    :class:`PooledBranch`.  *onset_input* says what the onset head reads: the
+    full-rate output (``full``), the branch's (``pooled``), or both concatenated
+    (``both``), so it can take timing from one and stability from the other.
+    """
 
     def __init__(
         self,
@@ -135,26 +192,44 @@ class TemporalNet(nn.Module):
         dilations: tuple[int, ...] = (1, 2, 4, 8, 16, 32),
         kernel: int = 3,
         dropout: float = 0.1,
+        signal_pool: int = 1,
+        onset_input: str = "full",
     ) -> None:
         super().__init__()
+        if onset_input not in ("full", "pooled", "both"):
+            raise ValueError(f"unknown onset_input {onset_input!r}")
+        if onset_input != "full" and signal_pool < 2:
+            raise ValueError(f"onset_input {onset_input!r} needs signal_pool > 1")
+        self.onset_input = onset_input
         self.project = nn.Conv1d(embed, channels, 1)
         self.blocks = nn.Sequential(
             *[ResidualBlock(channels, d, kernel, dropout) for d in dilations]
         )
+        # Only built when used, so a signal_pool = 1 network has exactly the
+        # parameters (and checkpoint keys) it had before the option existed.
+        self.signal_branch = (
+            PooledBranch(channels, signal_pool) if signal_pool > 1 else None
+        )
         self.signal_head = nn.Conv1d(channels, 1, 1)
-        self.onset_head = nn.Conv1d(channels, 1, 1)
+        onset_width = 2 * channels if onset_input == "both" else channels
+        self.onset_head = nn.Conv1d(onset_width, 1, 1)
         self.kernel = kernel
         self.dilations = dilations
 
     @property
     def receptive_field(self) -> int:
         """Output-frame span each prediction depends on."""
-        return 1 + 2 * (self.kernel - 1) * sum(self.dilations)
+        trunk = 1 + 2 * (self.kernel - 1) * sum(self.dilations)
+        if self.signal_branch is None:
+            return trunk
+        return trunk + self.signal_branch.receptive_field
 
     def forward(self, embeddings: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """(B, T, embed) -> signal (B, T) and onset logits (B, T)."""
         x = self.blocks(self.project(embeddings.transpose(1, 2)))
-        return self.signal_head(x).squeeze(1), self.onset_head(x).squeeze(1)
+        s = x if self.signal_branch is None else self.signal_branch(x)
+        o = {"full": x, "pooled": s, "both": torch.cat([x, s], dim=1)}[self.onset_input]
+        return self.signal_head(s).squeeze(1), self.onset_head(o).squeeze(1)
 
 
 class BreathingNet(nn.Module):
@@ -175,6 +250,8 @@ class BreathingNet(nn.Module):
         dilations: tuple[int, ...] = (1, 2, 4, 8, 16, 32),
         dropout: float = 0.1,
         encoder_dropout: float = 0.0,
+        signal_pool: int = 1,
+        onset_input: str = "full",
     ) -> None:
         super().__init__()
         self.channels = channels
@@ -182,7 +259,12 @@ class BreathingNet(nn.Module):
             len(channels), widths, embed=embed, dropout=encoder_dropout
         )
         self.temporal = TemporalNet(
-            embed, channels=tcn_channels, dilations=dilations, dropout=dropout
+            embed,
+            channels=tcn_channels,
+            dilations=dilations,
+            dropout=dropout,
+            signal_pool=signal_pool,
+            onset_input=onset_input,
         )
 
     @property

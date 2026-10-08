@@ -337,12 +337,23 @@ class TrainParams(_Model):
     dropout: float = Field(0.1, ge=0, lt=1)
     ema_decay: float = Field(0.999, ge=0, lt=1)
     """Exponential moving average of the weights; 0 disables it."""
+    save_every: int = Field(0, ge=0)
+    """Also keep the weights every this many epochs as ``epoch-<n>.pt``, scorable
+    with ``evaluate``; 0 keeps only ``best.pt`` and ``last.pt``.  Mid-run weights
+    were trained with the learning rate not yet decayed."""
     augmentation: Augmentation = Augmentation()
     rate_balance: float = Field(0.0, ge=0, le=1)
     """Draw training windows by their true breathing rate: weight ``share(bin) **
     -rate_balance``. 0 keeps today's draw; 1 gives every rate bin equal mass."""
     rate_bins_hz: tuple[float, ...] = DEFAULT_RATE_BINS_HZ
     """Rate bin edges for ``rate_balance``; rates outside count in the end bins."""
+    signal_pool: PositiveInt = 1
+    """The signal head reads the TCN's output average-pooled by this factor in
+    time and upsampled back (smoother trace). 1 is the network without the
+    branch."""
+    onset_input: Literal["full", "pooled", "both"] = "full"
+    """What the onset head reads: the TCN's full-rate output, the pooled branch's,
+    or both concatenated. ``pooled`` and ``both`` need ``signal_pool > 1``."""
     w_corr: float = Field(1.0, ge=0)
     w_onset: float = Field(0.5, ge=0)
     scales: tuple[PositiveInt, ...] = (1, 4, 16)
@@ -374,6 +385,15 @@ class TrainParams(_Model):
                 f"rate_bins_hz {list(value)} needs two or more increasing edges > 0"
             )
         return value
+
+    @model_validator(mode="after")
+    def _onset_input_needs_the_branch(self) -> "TrainParams":
+        if self.onset_input != "full" and self.signal_pool < 2:
+            raise ValueError(
+                f"onset_input = {self.onset_input!r} reads the pooled branch, "
+                "which needs signal_pool > 1"
+            )
+        return self
 
 
 def _load_list(path: Path) -> ClipList:

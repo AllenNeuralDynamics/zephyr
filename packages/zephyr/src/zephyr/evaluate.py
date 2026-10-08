@@ -65,7 +65,9 @@ def load_checkpoint(
             f"{path} is a {arch} checkpoint; this loads only zephyr checkpoints, "
             "so score it with the loader of the package that trained it"
         )
-    model = BreathingNet(channels=checkpoint_channels(state)).to(device)
+    model = BreathingNet(
+        channels=checkpoint_channels(state), **state.get("arch_kwargs", {})
+    ).to(device)
     model.load_state_dict(state["model"])
     model.eval()
     return model, state["mean"], state["std"], state

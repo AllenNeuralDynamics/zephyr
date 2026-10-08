@@ -8,7 +8,7 @@ with app.setup:
     import pandas as pd
     from numpy.typing import NDArray
 
-    from utils import breathing, plots, results, style
+    from utils import breathing, plots, results, style, tables, thermistor
 
     style.use_style()
 
@@ -21,7 +21,28 @@ def _():
     Zephyr recovers a mouse's breathing trace from face video alone. This notebook
     follows one test clip through the pipeline, compares every method on it, and
     reports the benchmark and two ablations. It runs inference only; nothing is trained.
+
+    The task and the dataset come from the Breathing CodaBench challenge: see the
+    [challenge repository](https://github.com/AllenNeuralDynamics/breathing-codabench-challenge)
+    and its [documentation site](https://allenneuraldynamics.github.io/breathing-codabench-challenge/)
+    for the dataset, the evaluation protocol and how to submit.
     """)
+    return
+
+
+@app.cell
+def _():
+    videos = {p.stem: p for p in sorted((mo.notebook_dir() / "figures").glob("*.mp4"))}
+    video = mo.ui.dropdown(videos, value=next(iter(videos), None), label="Video")
+    video
+    return (video,)
+
+
+@app.cell
+def _(video: mo.ui.dropdown):
+    mo.video(src=str(video.value), controls=True) if video.value else mo.md(
+        "No videos in `notebooks/figures/`."
+    )
     return
 
 
@@ -45,10 +66,10 @@ def _():
 @app.cell
 def _(clips: dict[str, results.TestClip]):
     clip: mo.ui.dropdown = mo.ui.dropdown(
-        list(clips), value="face_6_part_1", label="Test clip"
+        list(clips), value="face_3_part_2", label="Test clip"
     )
     start: mo.ui.slider = mo.ui.slider(
-        0, 285, step=5, value=60, label="Excerpt start (s)", debounce=True
+        0, 285, step=5, value=30, label="Excerpt start (s)", debounce=True
     )
     mo.hstack([clip, start], justify="start")
     return clip, start
@@ -166,6 +187,205 @@ def _(start: mo.ui.slider, traces: pd.DataFrame, truth: pd.DataFrame):
 def _():
     mo.md("""
     ## 3. Every method on the same clip
+
+    Five methods turn the same face video into a breathing trace. Two are
+    non-learned (Pixel, Facemap-style ridge), two are published video networks
+    refitted to mouse breathing (TS-CAN, PhysNet), and one is Zephyr. All see the
+    same 96 x 96 nose crop at 60 Hz and are scored against the thermistor.
+    """)
+    return
+
+
+@app.cell
+def _():
+    mo.md("""
+    ### Zephyr
+
+    1. **Input**: four channels per frame (gray, frame difference, optical flow x and y),
+       so the network never has to compute motion itself.
+    2. **Frame encoder** (spatial only): four stride-2 convolutions, then a 2 x 2
+       pooled grid (not a global mean, so opposite motion in different parts of the
+       nose cannot cancel) and a linear layer give one 128-d vector per frame.
+    3. **Time**: the vectors are interpolated onto a fixed 60 Hz grid using the real
+       frame timestamps.
+    4. **TCN** (temporal only): six residual blocks with dilations 1 to 32 see about
+       2 s of context each side, with symmetric padding (offline, non-causal).
+    5. **Pooled branch**: the TCN's output averaged over pairs of frames (30 Hz),
+       a convolution, and a learned upsampling back to 60 Hz. Averaging removes
+       the frame-to-frame noise of an encoder that sees each frame alone, so the
+       trace comes out smooth (`signal_pool = 2`).
+    6. **Two heads**: the breathing trace, read from the pooled branch, and the
+       probability that an inhalation starts, read from the full-rate and the
+       pooled features together (`onset_input = "both"`), so it keeps frame-level
+       timing. Trained with a multi-scale correlation loss on the trace plus a
+       weighted cross-entropy on the onset head. Inhale events come from that head.
+    """)
+    return
+
+
+@app.cell
+def _():
+    mo.mermaid("""
+    flowchart LR
+        A["Crop<br/>T x 4 x 96 x 96<br/>gray, diff, flow x, flow y"] --> B
+        subgraph B["Frame encoder (per frame)"]
+            direction TB
+            B1["4 x Conv2d, stride 2<br/>32, 64, 96, 128 ch<br/>BatchNorm + GELU"] --> B2["Avg-pool to 2 x 2<br/>Linear, 128-d"]
+        end
+        B --> C["Resample to 60 Hz grid<br/>(frame timestamps)"]
+        C --> D
+        subgraph D["Temporal net (TCN)"]
+            direction TB
+            D1["1x1 Conv1d, 128 ch"] --> D2["6 x residual block<br/>2 x dilated Conv1d, k = 3<br/>dilation 1, 2, 4, 8, 16, 32"]
+        end
+        D --> P
+        subgraph P["Pooled branch"]
+            direction TB
+            P1["Avg-pool x 2 (30 Hz)"] --> P2["Conv1d, k = 3"] --> P3["ConvTranspose1d<br/>back to 60 Hz"]
+        end
+        P --> E["Signal head<br/>1x1 Conv1d"]
+        P --> F["Onset head<br/>1x1 Conv1d"]
+        D -- "full rate" --> F
+        E --> G(["Breathing trace"])
+        F --> H(["P(inhale onset)"])
+    """)
+    return
+
+
+@app.cell
+def _():
+    mo.md("""
+    ### TS-CAN (Liu et al., 2020)
+
+    A published two-stream network for pulse from video, refitted here to mouse
+    breathing on the **gray channel only**.
+
+    1. **Input**: the crop is shrunk to 36 x 36. A *motion* stream gets the
+       normalised frame difference (I(t+1) - I(t)) / (I(t+1) + I(t)); an
+       *appearance* stream gets the gray frame.
+    2. **Attention**: the appearance stream produces a soft spatial mask that
+       re-weights the motion stream twice, so motion is read mostly where the
+       nose is.
+    3. **Temporal shift**: no temporal convolution. In every motion convolution a
+       third of the channels are shifted one frame forward and a third one back,
+       over segments of 10 frames.
+    4. **Output**: it predicts the *derivative* of the breathing trace. Inference
+       integrates it, removes slow drift (smoothness-priors detrend) and band-passes
+       to 1-15 Hz. It has no onset head, so inhale events are found by DSP.
+    """)
+    return
+
+
+@app.cell
+def _():
+    mo.mermaid("""
+    flowchart LR
+        A["Gray crop, 36 x 36<br/>T frames"] --> M["Normalised frame difference"]
+        A --> P["Appearance frame"]
+        subgraph S["Two streams, shared 10-frame segments"]
+            direction TB
+            M --> M1["Conv + temporal shift<br/>32 ch, tanh"]
+            P --> P1["Conv, 32 ch, tanh"]
+            P1 -- "attention mask 1" --> M2
+            M1 --> M2["x mask, avg-pool"]
+            M2 --> M3["Conv + temporal shift<br/>64 ch, tanh"]
+            P1 --> P2["avg-pool, Conv, 64 ch, tanh"]
+            P2 -- "attention mask 2" --> M4
+            M3 --> M4["x mask, avg-pool"]
+        end
+        M4 --> D["Dense 128, tanh<br/>Dense 1"]
+        D --> E["Predicted derivative"]
+        E --> F["Integrate, detrend,<br/>band-pass 1-15 Hz"]
+        F --> G(["Breathing trace"])
+    """)
+    return
+
+
+@app.cell
+def _():
+    mo.md("""
+    ### PhysNet (Yu et al., 2019)
+
+    A published 3-D convolutional encoder-decoder for pulse from video, also on the
+    **gray channel only**.
+
+    1. **Input**: the whole gray clip as a video volume (time x 96 x 96).
+    2. **Encoder**: 3-D convolutions mix space and time together; max-pooling halves
+       the space, and twice also the time (4x shorter).
+    3. **Decoder**: two transposed convolutions along time restore the original
+       frame count.
+    4. **Output**: average over space, then a 1x1 convolution gives the breathing
+       trace directly. No onset head, so inhale events are found by DSP.
+    """)
+    return
+
+
+@app.cell
+def _():
+    mo.mermaid("""
+    flowchart LR
+        A["Gray clip<br/>1 x T x 96 x 96"] --> B["Conv3d 1x5x5, 16 ch<br/>pool space"]
+        B --> C["2 x Conv3d 3x3x3<br/>32, 64 ch<br/>pool space + time"]
+        C --> D["2 x Conv3d 3x3x3, 64 ch<br/>pool space + time"]
+        D --> E["2 x Conv3d 3x3x3, 64 ch<br/>pool space"]
+        E --> F["2 x Conv3d 3x3x3, 64 ch"]
+        F --> G["2 x ConvTranspose3d<br/>upsample time x 4"]
+        G --> H["Mean over space<br/>1x1 Conv"]
+        H --> I(["Breathing trace"])
+    """)
+    return
+
+
+@app.cell
+def _():
+    mo.md("""
+    ### Pixel (non-learned floor)
+
+    No training and no thermistor. Mean optical flow over the crop gives one
+    (x, y) velocity per frame; both are band-passed to 1-15 Hz, projected on their
+    dominant direction (first principal axis), integrated to a displacement and
+    band-passed again. The sign is unknown, so it is fixed afterwards using only
+    the traces themselves. Anything a network does better than this is not just
+    "the nose moves".
+    """)
+    return
+
+
+@app.cell
+def _():
+    mo.mermaid("""
+    flowchart LR
+        P1["Optical flow<br/>over crop"] --> P2["Mean (x, y)<br/>per frame"]
+        P2 --> P3["Band-pass,<br/>dominant axis"]
+        P3 --> P4["Integrate,<br/>band-pass"]
+        P4 --> P5(["Breathing trace"])
+    """)
+    return
+
+
+@app.cell
+def _():
+    mo.md("""
+    ### Facemap-style ridge (field-standard baseline)
+
+    The way breathing is usually read out of mouse face video. Two 100-component
+    SVD bases are fitted on training frames: the *motion* (absolute frame
+    difference) and the *movie* (raw pixels). Each frame is projected on both,
+    z-scored, copied at several time lags, and a ridge regression maps that to the
+    thermistor. The ridge strength is chosen leaving one recording out. It is
+    linear and has no memory beyond the lags; no onset head, so DSP finds events.
+    """)
+    return
+
+
+@app.cell
+def _():
+    mo.mermaid("""
+    flowchart LR
+        F1["Frames"] --> F2["Motion + movie<br/>PCA, 100 comp. each"]
+        F2 --> F3["z-score,<br/>time lags"]
+        F3 --> F4["Ridge regression<br/>to thermistor"]
+        F4 --> F5(["Breathing trace"])
     """)
     return
 
@@ -184,28 +404,17 @@ def _(
 
 
 @app.cell
-def _(scores: pd.DataFrame):
-    table: pd.DataFrame = scores.round(3).reset_index(names="method")
-    mo.ui.table(table, selection=None)
-    return
-
-
-@app.cell
 def _():
-    mo.md("""
-    Seen in frequency, over all test clips: each trace and the thermistor are
-    band-passed to ten log-spaced bands (2-15 Hz) and correlated within each band.
-    Lines are the mean over clips, shaded areas the 95% bootstrap interval across
-    clips. The score table's correlation is dominated by whichever band holds the
-    most power; this shows how each method does in each band.
-    """)
+    mean_table: pd.DataFrame = results.mean_scores()  # cached traces, scored here
+    tables.table(mean_table.round(3).reset_index(names="method"), lower=["kl_ibi"])
     return
 
 
 @app.cell
 def _():
     band_r: pd.DataFrame = breathing.band_correlation_summary()
-    fig3b = plots.band_correlation_figure(band_r)
+    band_f1: pd.DataFrame = breathing.event_f1_band_summary()
+    fig3b = plots.band_comparison_figure(band_r, band_f1)
     fig3b
     return
 
@@ -232,7 +441,11 @@ def _():
 
 @app.cell
 def _(benchmark: pd.DataFrame):
-    mo.ui.table(plots.benchmark_means(benchmark).round(3), selection=None)
+    tables.table(
+        plots.benchmark_means(benchmark).round(3),
+        lower=["KL-IBI (lower is better)"],
+        skip=["runs"],
+    )
     return
 
 
@@ -309,16 +522,15 @@ def _():
     stretch["no stretch minus stretch"] = (
         stretch[results.NO_STRETCH] - stretch[results.STRETCH]
     )
-    mo.ui.table(stretch.round(3).reset_index(names="metric"), selection=None)
+    tables.table(
+        stretch.round(3).reset_index(names="metric"),
+        across_columns=[results.STRETCH, results.NO_STRETCH],
+    )
     return
 
 
 @app.cell
-def _(
-    start: mo.ui.slider,
-    test_clip: results.TestClip,
-    truth: pd.DataFrame,
-):
+def _(start: mo.ui.slider, test_clip: results.TestClip, truth: pd.DataFrame):
     _stretch: pd.DataFrame = results.zephyr_outputs(  # the stretch network, as "Zephyr"
         test_clip.entry, results.REFERENCE_RUN / "seed-42"
     )
@@ -406,6 +618,112 @@ def _():
         breathing.bin_centres(),
         breathing.PLOT_BINS_HZ,
     )
+    return
+
+
+@app.cell
+def _():
+    mo.md("""
+    ## 10. Out of distribution: the side camera
+
+    A second rig films the face from the side: three sessions (13, 14, 15), two
+    clips each, with the same nostril thermistor. Zephyr never trained on it.
+    Below, two face test clips and two side clips: the full frame with the crop
+    (orange), the 96 x 96 crop the network sees, and the filtered thermistor over
+    the excerpt chosen at the top (same amplitude scale in every panel). The side
+    view shows the nose in profile, and those mice breathe slower (about 2 Hz,
+    against about 5 Hz on the face rig).
+    """)
+    return
+
+
+@app.cell
+def _(start: mo.ui.slider):
+    _columns: dict[str, str] = {
+        "face_6_part_1": "Face, held-out animal",
+        "face_9_part_1": "Face, held-out session",
+        "ood_side_right_13_part_1": "Side, session 13",
+        "ood_side_right_15_part_1": "Side, session 15",
+    }
+    _all: dict[str, results.TestClip] = {
+        **results.clips(),
+        **results.clips(results.OOD_CLIPS),
+    }
+    _panels: list[plots.DomainPanel] = [
+        plots.DomainPanel(
+            title=f"{title}\n{name}",
+            frame=results.raw_frame(_all[name], start.value),
+            box=_all[name].box,
+            thermistor=results.filtered_truth(_all[name].entry),
+            rate_hz=results.breathing_rate(_all[name].entry),
+        )
+        for name, title in _columns.items()
+    ]
+    plots.domain_figure(_panels, start.value, 8)
+    return
+
+
+@app.cell
+def _():
+    mo.md("""
+    ### The thermistor itself
+
+    Six features of every thermistor recording, for the 32 training clips, the 24
+    test clips and the 6 side clips. Each clip is placed by its distance from the
+    training clips in robust z (median and MAD of the training set; log10 for
+    amplitude and resolution, which span decades); the grey band is the training
+    clips' usual range (2 z either side). The side clips breathe about twice as
+    slowly, with much more regular intervals, and a rate outside anything the
+    network trained on. Signal to noise is the 0.5-15 Hz against the 25-100 Hz power
+    of the filtered trace; breath size is each breath's peak-to-trough range.
+    """)
+    return
+
+
+@app.cell
+def _():
+    thermistor_table: pd.DataFrame = thermistor.features()
+    plots.thermistor_figure(
+        thermistor.shift_from_train(thermistor_table),
+        {k: label for k, (label, *_) in thermistor.FEATURES.items()},
+    )
+    return (thermistor_table,)
+
+
+@app.cell
+def _(thermistor_table: pd.DataFrame):
+    mo.ui.table(thermistor.summary_table(thermistor_table), selection=None)
+    return
+
+
+@app.cell
+def _():
+    mo.md("""
+    Three networks, scored on what each could see (one dot per clip):
+
+    1. **Face only**: the face benchmark network. Near-perfect on held-out face
+       clips, at chance on every side clip.
+    2. **Face + side 13, 14**: that network fine-tuned on the face data plus two
+       side sessions. Still fine on the face, still at chance on held-out
+       session 15: more data from the new rig does not transfer to another
+       session of it.
+    3. **Side 14, 15 only** and **Side 13, 14 only**: trained from scratch on two
+       side sessions each, one session held out (13, then 15). Both fit the
+       sessions they trained on (in-sample, a reference, not a score) yet are at
+       chance on the held-out one.
+
+    Face scores are the runs' own evaluations. Every side clip is scored here with
+    the same per-clip scorer (`evaluate` refuses clips a network trained on, so
+    trained-on clips cannot come from it), which compares prediction and
+    thermistor at the same instants: two side clips start almost 1 s before their
+    thermistor.
+    """)
+    return
+
+
+@app.cell
+def _():
+    plots.ood_figure(results.ood_scores())  # cpu, cached
     return
 
 
