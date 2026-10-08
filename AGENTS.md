@@ -254,6 +254,11 @@ than working around it. When in doubt, mention the implication to the user.
   similar) anywhere: code, configs, logs. Test group names like
   `new_animals` are labels a config author chose, nothing more.
 - `data/` and `benchmarks/` are read-only inputs. Write new outputs to new
-  directories (`runs/...`, a new feature cache).
+  directories (`runs/...`, a new feature cache). One exception: when the scorer
+  itself is corrected, the score files (`evaluation.json`) of existing runs, in
+  `benchmarks/` too, may be re-scored in place, only after the original is kept
+  beside it as `evaluation.old-scorer.json` and only for a run whose checkpoint,
+  re-scored with the old scorer, reproduces the stored values. Checkpoints,
+  `args.json`, histories and traces are never touched.
 - zephyr never imports zephyr-benchmarks (see above).
 - Do not commit unless asked.

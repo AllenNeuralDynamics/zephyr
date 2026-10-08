@@ -80,9 +80,11 @@ OOD_RUNS: dict[str, Path] = {
     "Face + side 13, 14": ROOT
     / "runs/ood-finetune-hold15/ood-hold15-retrain-init/seed-42",
     "Side 14, 15 only": ROOT / "runs/ood-scratch/ood-scratch-hold13/seed-42",
+    "Side 13, 14 only": ROOT / "runs/ood-scratch/ood-scratch-hold15/seed-42",
 }
 """The out-of-distribution networks: the face benchmark network, that network
-fine-tuned on two side sessions as well, and one trained on two side sessions only."""
+fine-tuned on two side sessions as well, and two trained from scratch on two side
+sessions each (a leave-one-session-out pair: held out 13, held out 15)."""
 
 INPUTS: dict[str, tuple[Path, str]] = {
     "feature cache": (
@@ -260,20 +262,24 @@ def method_traces(entry: features.ClipEntry) -> pd.DataFrame:
     return pd.concat([frame, zephyr], axis=1)
 
 
-def zephyr_outputs(entry: features.ClipEntry, run: Path = ZEPHYR_RUN) -> pd.DataFrame:
+def zephyr_outputs(
+    entry: features.ClipEntry, run: Path = ZEPHYR_RUN, device: str = "cpu"
+) -> pd.DataFrame:
     """Zephyr's z-scored trace and onset probability: ``Time``, ``Zephyr``, ``onset``.
 
-    Inference only (CPU), cached per clip and per network (*run*, by its experiment
-    name).
+    Inference only (CPU unless *device* says otherwise, in fp32 either way), cached
+    per clip and per network (*run*, by its experiment name).
     """
     CACHE.mkdir(exist_ok=True)
     cache = CACHE / f"{short_name(entry)}-zephyr-{run.parent.name}.parquet"
     if cache.exists():
         return pd.read_parquet(cache)
     print(f"No cache found in {cache}. Calculating from scratch.")
-    device = torch.device("cpu")
-    model, mean, std, _ = load_checkpoint(run / "best.pt", device)
-    signal, onset = predict_clip(model, entry, mean, std, device=device, amp_dtype=None)
+    torch_device = torch.device(device)
+    model, mean, std, _ = load_checkpoint(run / "best.pt", torch_device)
+    signal, onset = predict_clip(
+        model, entry, mean, std, device=torch_device, amp_dtype=None
+    )
     n = entry.n_output
     frame = pd.DataFrame(
         {TIME_COLUMN: np.load(entry.times)[:n], "Zephyr": _zscore(signal[:n])}
@@ -378,6 +384,17 @@ def method_scores(entry: features.ClipEntry, traces: pd.DataFrame) -> pd.DataFra
         row["inhale events"] = "head" if method in HEADED else "DSP"
         rows[method] = row
     return pd.DataFrame(rows).T[[*METRICS, "inhale events"]]
+
+
+def mean_scores() -> pd.DataFrame:
+    """:func:`method_scores` averaged over every test clip: one row per method, the
+    mean of each metric over the clips (``inhale events`` says where they come from)."""
+    per_clip = [
+        method_scores(c.entry, method_traces(c.entry)) for c in clips().values()
+    ]
+    stacked = pd.concat(per_clip, keys=range(len(per_clip)))
+    mean = stacked[list(METRICS)].astype(float).groupby(level=1, sort=False).mean()
+    return mean.assign(**{"inhale events": per_clip[0]["inhale events"]})
 
 
 def head_scores(run: str) -> pd.DataFrame:

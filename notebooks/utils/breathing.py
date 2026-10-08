@@ -211,6 +211,106 @@ def band_correlation_summary(n_boot: int = 2000, seed: int = 0) -> pd.DataFrame:
     return pd.DataFrame(columns, index=bin_centres(BANDS_HZ))
 
 
+EVENT_SERIES: tuple[str, ...] = (
+    "Pixel",
+    "Facemap",
+    "TS-CAN",
+    "PhysNet",
+    "Zephyr (DSP)",
+    "Zephyr (head)",
+)
+"""Inhale-event sources compared by rate: DSP on the trace for every method, and
+Zephyr's onset head next to its own DSP (the only place the two sit side by side)."""
+
+
+def _predicted_inhales(traces: pd.DataFrame) -> dict[str, np.ndarray]:
+    """Inhale times (s) of every :data:`EVENT_SERIES` source on one clip."""
+    times = traces[TIME_COLUMN].to_numpy()
+    found = {m: results.events(times, traces[m].to_numpy())[0] for m in style.METHODS}
+    found["Zephyr (DSP)"] = found.pop("Zephyr")
+    found["Zephyr (head)"] = results.head_events(traces)
+    return {name: found[name] for name in EVENT_SERIES}
+
+
+def event_band_counts(
+    entry: features.ClipEntry, edges: tuple[float, ...] = BANDS_HZ
+) -> np.ndarray:
+    """True positives, misses and false events of each source, per rate band.
+
+    Shape ``(series, band, 3)`` for the counts ``(tp, fn, fp)``. A thermistor breath
+    is a hit when an event falls within one frame (17 ms) of its onset, and counts in
+    the band of its own rate; a false event counts in the band of the thermistor's
+    rate at that time (as in :func:`f1_by_bin`).
+    """
+    truth = results.truth(entry)
+    truth_on, _ = results.events(
+        truth[TIME_COLUMN].to_numpy(), truth["Signal"].to_numpy()
+    )
+    rate = breath_rates(truth_on)  # the last breath has no rate
+    band = rate_bin(rate, edges)
+    inside = (rate >= edges[0]) & (rate < edges[-1])
+    counts = np.zeros((len(EVENT_SERIES), len(edges) - 1, 3))
+    for i, predicted in enumerate(
+        _predicted_inhales(results.method_traces(entry)).values()
+    ):
+        hit = np.zeros(len(truth_on), bool)
+        matched = np.zeros(len(predicted), bool)
+        for t, p in match_events(truth_on, predicted, EVENT_TOLERANCE_S):
+            hit[t], matched[p] = True, True
+        hit = hit[:-1]
+        np.add.at(counts[i, :, 0], band[inside & hit], 1)
+        np.add.at(counts[i, :, 1], band[inside & ~hit], 1)
+        false_rate = rate_track(predicted[~matched], truth_on)
+        ok = (
+            np.isfinite(false_rate)
+            & (false_rate >= edges[0])
+            & (false_rate < edges[-1])
+        )
+        np.add.at(counts[i, :, 2], rate_bin(false_rate[ok], edges), 1)
+    return counts
+
+
+def _f1(counts: np.ndarray) -> np.ndarray:
+    """F1 from ``(..., 3)`` counts ``(tp, fn, fp)``; NaN where nothing was there."""
+    tp, fn, fp = counts[..., 0], counts[..., 1], counts[..., 2]
+    denominator = 2 * tp + fp + fn
+    return np.where(denominator > 0, 2 * tp / np.maximum(denominator, 1), np.nan)
+
+
+MIN_BAND_BREATHS: int = 30
+"""Fewest thermistor breaths, pooled over the test clips, a band needs to be scored."""
+
+
+def event_f1_band_summary(
+    n_boot: int = 2000, seed: int = 0, min_breaths: int = MIN_BAND_BREATHS
+) -> pd.DataFrame:
+    """Local inhale F1 of every :data:`EVENT_SERIES` source by breathing-rate band
+    (the bands of :func:`band_correlations`), pooled over all test clips, with a 95%
+    bootstrap interval (clips resampled with replacement). Bands with fewer than
+    *min_breaths* thermistor breaths are NaN: a handful of breaths is not a score.
+
+    Index is the band centre (Hz); columns are ``(series, stat)`` with stat one of
+    ``mean``, ``lo``, ``hi``.
+    """
+    per_clip = np.stack(
+        [event_band_counts(c.entry) for c in results.clips().values()]
+    )  # clip, series, band, count
+    rng = np.random.default_rng(seed)
+    resampled = per_clip[rng.integers(0, len(per_clip), (n_boot, len(per_clip)))]
+    with np.errstate(all="ignore"):
+        boot = _f1(resampled.sum(axis=1))  # boot, series, band
+        lo, hi = np.nanpercentile(boot, [2.5, 97.5], axis=0)
+    mean = _f1(per_clip.sum(axis=0))
+    sparse = per_clip[:, 0, :, :2].sum(axis=(0, 2)) < min_breaths  # tp + fn per band
+    mean[:, sparse], lo[:, sparse], hi[:, sparse] = np.nan, np.nan, np.nan
+    columns = {
+        (name, stat): values[i]
+        for i, name in enumerate(EVENT_SERIES)
+        for stat, values in (("mean", mean), ("lo", lo), ("hi", hi))
+    }
+    return pd.DataFrame(columns, index=bin_centres(BANDS_HZ))
+
+
 def _shifted(times: np.ndarray, shift: float, span: tuple[float, float]) -> np.ndarray:
     t0, t1 = span
     return np.sort((times - t0 + shift) % (t1 - t0) + t0)

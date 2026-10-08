@@ -47,6 +47,13 @@ OOD_DATA: dict[str, str] = {
 """What an out-of-distribution network is scored on: which camera, and whether it
 trained on those clips."""
 
+CLIP_SETS: dict[str, str] = {
+    "Train": "#7f7f7f",
+    "Test": "#009e73",
+    "OOD (side camera)": "#d55e00",
+}
+"""The sets of clips the thermistor is compared across."""
+
 TRUTH: str = "#000000"
 """The thermistor, wherever it is drawn."""
 

@@ -19,6 +19,7 @@ def test_colours_are_unique_within_a_group() -> None:
         style.OBJECTIVES,
         style.VARIANTS,
         style.OOD_DATA,
+        style.CLIP_SETS,
     ):
         assert len(set(group.values())) == len(group)
 

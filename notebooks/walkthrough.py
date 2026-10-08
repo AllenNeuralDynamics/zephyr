@@ -1,14 +1,14 @@
 import marimo
 
 __generated_with = "0.25.1"
-app = marimo.App(width="medium", layout_file="layouts/walkthrough.slides.json")
+app = marimo.App(width="medium")
 
 with app.setup:
     import marimo as mo
     import pandas as pd
     from numpy.typing import NDArray
 
-    from utils import breathing, plots, results, style
+    from utils import breathing, plots, results, style, tables, thermistor
 
     style.use_style()
 
@@ -21,7 +21,26 @@ def _():
     Zephyr recovers a mouse's breathing trace from face video alone. This notebook
     follows one test clip through the pipeline, compares every method on it, and
     reports the benchmark and two ablations. It runs inference only; nothing is trained.
+
+    The task and the dataset come from the Breathing CodaBench challenge: see the
+    [challenge repository](https://github.com/AllenNeuralDynamics/breathing-codabench-challenge)
+    and its [documentation site](https://allenneuraldynamics.github.io/breathing-codabench-challenge/)
+    for the dataset, the evaluation protocol and how to submit.
     """)
+    return
+
+
+@app.cell
+def _():
+    videos = {p.stem: p for p in sorted((mo.notebook_dir() / "figures").glob("*.mp4"))}
+    video = mo.ui.dropdown(videos, value=next(iter(videos), None), label="Video")
+    video
+    return (video,)
+
+
+@app.cell
+def _(video: mo.ui.dropdown):
+    mo.video(src=str(video.value), controls=True) if video.value else mo.md("No videos in `notebooks/figures/`.")
     return
 
 
@@ -45,10 +64,10 @@ def _():
 @app.cell
 def _(clips: dict[str, results.TestClip]):
     clip: mo.ui.dropdown = mo.ui.dropdown(
-        list(clips), value="face_6_part_1", label="Test clip"
+        list(clips), value="face_3_part_2", label="Test clip"
     )
     start: mo.ui.slider = mo.ui.slider(
-        0, 285, step=5, value=60, label="Excerpt start (s)", debounce=True
+        0, 285, step=5, value=30, label="Excerpt start (s)", debounce=True
     )
     mo.hstack([clip, start], justify="start")
     return clip, start
@@ -383,28 +402,17 @@ def _(
 
 
 @app.cell
-def _(scores: pd.DataFrame):
-    table: pd.DataFrame = scores.round(3).reset_index(names="method")
-    mo.ui.table(table, selection=None)
-    return
-
-
-@app.cell
 def _():
-    mo.md("""
-    Seen in frequency, over all test clips: each trace and the thermistor are
-    band-passed to ten log-spaced bands (2-15 Hz) and correlated within each band.
-    Lines are the mean over clips, shaded areas the 95% bootstrap interval across
-    clips. The score table's correlation is dominated by whichever band holds the
-    most power; this shows how each method does in each band.
-    """)
+    mean_table: pd.DataFrame = results.mean_scores()  # cached traces, scored here
+    tables.table(mean_table.round(3).reset_index(names="method"), lower=["kl_ibi"])
     return
 
 
 @app.cell
 def _():
     band_r: pd.DataFrame = breathing.band_correlation_summary()
-    fig3b = plots.band_correlation_figure(band_r)
+    band_f1: pd.DataFrame = breathing.event_f1_band_summary()
+    fig3b = plots.band_comparison_figure(band_r, band_f1)
     fig3b
     return
 
@@ -431,7 +439,11 @@ def _():
 
 @app.cell
 def _(benchmark: pd.DataFrame):
-    mo.ui.table(plots.benchmark_means(benchmark).round(3), selection=None)
+    tables.table(
+        plots.benchmark_means(benchmark).round(3),
+        lower=["KL-IBI (lower is better)"],
+        skip=["runs"],
+    )
     return
 
 
@@ -508,7 +520,10 @@ def _():
     stretch["no stretch minus stretch"] = (
         stretch[results.NO_STRETCH] - stretch[results.STRETCH]
     )
-    mo.ui.table(stretch.round(3).reset_index(names="metric"), selection=None)
+    tables.table(
+        stretch.round(3).reset_index(names="metric"),
+        across_columns=[results.STRETCH, results.NO_STRETCH],
+    )
     return
 
 
@@ -649,6 +664,39 @@ def _(start: mo.ui.slider):
 @app.cell
 def _():
     mo.md("""
+    ### The thermistor itself
+
+    Six features of every thermistor recording, for the 32 training clips, the 24
+    test clips and the 6 side clips. Each clip is placed by its distance from the
+    training clips in robust z (median and MAD of the training set; log10 for
+    amplitude and resolution, which span decades); the grey band is the training
+    clips' usual range (2 z either side). The side clips breathe about twice as
+    slowly, with much more regular intervals, and a rate outside anything the
+    network trained on. Signal to noise is the 0.5-15 Hz against the 25-100 Hz power
+    of the filtered trace; breath size is each breath's peak-to-trough range.
+    """)
+    return
+
+
+@app.cell
+def _():
+    thermistor_table: pd.DataFrame = thermistor.features()
+    plots.thermistor_figure(
+        thermistor.shift_from_train(thermistor_table),
+        {k: label for k, (label, *_) in thermistor.FEATURES.items()},
+    )
+    return (thermistor_table,)
+
+
+@app.cell
+def _(thermistor_table: pd.DataFrame):
+    mo.ui.table(thermistor.summary_table(thermistor_table), selection=None)
+    return
+
+
+@app.cell
+def _():
+    mo.md("""
     Three networks, scored on what each could see (one dot per clip):
 
     1. **Face only**: the face benchmark network. Near-perfect on held-out face
@@ -657,8 +705,10 @@ def _():
        side sessions. Still fine on the face, still at chance on held-out
        session 15: more data from the new rig does not transfer to another
        session of it.
-    3. **Side 14, 15 only**: trained from scratch on two side sessions. It fits
-       those (in-sample, a reference, not a score) yet is at chance on session 13.
+    3. **Side 14, 15 only** and **Side 13, 14 only**: trained from scratch on two
+       side sessions each, one session held out (13, then 15). Both fit the
+       sessions they trained on (in-sample, a reference, not a score) yet are at
+       chance on the held-out one.
 
     Face scores are the runs' own evaluations. Every side clip is scored here with
     the same per-clip scorer (`evaluate` refuses clips a network trained on, so
