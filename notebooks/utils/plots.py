@@ -38,7 +38,11 @@ HEAD_COLUMNS: dict[str, str] = {
     "kl_ibi": "head_kl_ibi",
 }
 """Metrics Zephyr can also be scored on with events from its onset head."""
-RATE_ROWS: dict[str, str] = {**STRATUM_LABELS, "training": "Training (in-sample)"}
+RATE_ROWS: dict[str, str] = {
+    **STRATUM_LABELS,
+    "side_held_out": "Held-out side session",
+    "training": "Training (in-sample)",
+}
 """Rows of the by-rate figure: the test groups, then the clips the network fit."""
 STRATUM_MARKERS: dict[str, str] = {"new_animals": "o", "known_animals_new_date": "s"}
 CHANNEL_RANGES: dict[str, tuple[float, float]] = {
@@ -606,14 +610,15 @@ def variant_traces_figure(
     return fig
 
 
-RATE_TICKS: tuple[float, ...] = (2, 3, 4, 6, 8, 12)
+RATE_TICKS: tuple[float, ...] = (1, 1.5, 2, 3, 4, 6, 8, 12)
 
 
 def rate_axis(ax: Axes, bins: Sequence[float]) -> None:
     """Log breathing-rate x axis spanning *bins*."""
     ax.set_xscale("log")
     ax.set_xlim(bins[0], bins[-1])
-    ax.set_xticks(RATE_TICKS, [f"{t:g}" for t in RATE_TICKS])
+    ticks = [t for t in RATE_TICKS if bins[0] <= t <= bins[-1]]
+    ax.set_xticks(ticks, [f"{t:g}" for t in ticks])
     ax.minorticks_off()
     ax.set_xlabel("Breathing rate (Hz)")
 

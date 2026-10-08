@@ -34,6 +34,9 @@ from zephyr.signal import (
 from . import results, style
 
 PLOT_BINS_HZ: tuple[float, ...] = DEFAULT_RATE_BINS_HZ
+SIDE_BINS_HZ: tuple[float, ...] = (1, 1.25, 1.5, 2, 2.5, 3, 4, 5, 6, 8)
+"""Rate bins for the side rig, whose mice breathe about 2 Hz: half their breaths
+fall below :data:`PLOT_BINS_HZ`."""
 """Training's default bins, 2-15 Hz; breaths outside them are not plotted."""
 WINDOW_S: float = 3.0
 """Length of the windows waveform correlation is measured in."""
@@ -48,27 +51,32 @@ def bin_centres(bins: tuple[float, ...] = PLOT_BINS_HZ) -> np.ndarray:
     return np.sqrt(edges[:-1] * edges[1:])
 
 
-def _with_bin(frame: pd.DataFrame) -> pd.DataFrame:
+def _with_bin(
+    frame: pd.DataFrame, bins: tuple[float, ...] = PLOT_BINS_HZ
+) -> pd.DataFrame:
     rate = frame["rate"]
-    frame = frame[(rate >= PLOT_BINS_HZ[0]) & (rate < PLOT_BINS_HZ[-1])]
-    index = rate_bin(frame["rate"].to_numpy(), PLOT_BINS_HZ)
-    return frame.assign(bin=index, centre=bin_centres()[index])
+    frame = frame[(rate >= bins[0]) & (rate < bins[-1])]
+    index = rate_bin(frame["rate"].to_numpy(), bins)
+    return frame.assign(bin=index, centre=bin_centres(bins)[index])
 
 
 def share_by_bin(
-    breaths: pd.DataFrame, by: list[str], within: str | None = None
+    breaths: pd.DataFrame,
+    by: list[str],
+    within: str | None = None,
+    bins: tuple[float, ...] = PLOT_BINS_HZ,
 ) -> pd.DataFrame:
     """Share of each group's breaths in each rate bin; pooled rows have ``pooled``
     as every *by* value, pooled separately per *within* value when given."""
     if within is not None:
         return pd.concat(
             [
-                share_by_bin(rows, by).assign(**{within: value})
+                share_by_bin(rows, by, bins=bins).assign(**{within: value})
                 for value, rows in breaths.groupby(within)
             ],
             ignore_index=True,
         )
-    binned = _with_bin(breaths)
+    binned = _with_bin(breaths, bins)
     pooled = binned.assign(**{k: "pooled" for k in by})
     out = []
     for frame in (binned, pooled):
@@ -403,11 +411,12 @@ TRAINING: str = "training"
 
 
 def _clip_tables(
-    entry: features.ClipEntry, stratum: str
+    entry: features.ClipEntry, stratum: str, run: Path = results.ZEPHYR_RUN
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """Per-breath detection, unmatched head events, and 3 s windows of one clip."""
+    """Per-breath detection, unmatched head events, and 3 s windows of one clip,
+    for the Zephyr network of *run*."""
     truth = results.truth(entry)
-    out = results.zephyr_outputs(entry)
+    out = results.zephyr_outputs(entry, run)
     times = out[TIME_COLUMN].to_numpy()
     head = results.head_events(out)
     truth_on, _ = results.events(
@@ -467,16 +476,18 @@ def _clip_tables(
 
 
 def _tables(
-    prefix: str, clips: list[tuple[features.ClipEntry, str]]
+    prefix: str,
+    clips: list[tuple[features.ClipEntry, str]],
+    run: Path = results.ZEPHYR_RUN,
 ) -> dict[str, pd.DataFrame]:
     names = ("breaths", "false_positives", "windows")
     paths = {
-        k: results.CACHE / f"{prefix}-rates-{results.ZEPHYR_TAG}-{k}.parquet"
+        k: results.CACHE / f"{prefix}-rates-{run.parent.name}-{k}.parquet"
         for k in names
     }
     if all(p.exists() for p in paths.values()):
         return {k: pd.read_parquet(p) for k, p in paths.items()}
-    parts = [_clip_tables(entry, stratum) for entry, stratum in clips]
+    parts = [_clip_tables(entry, stratum, run) for entry, stratum in clips]
     tables = {k: pd.concat(t, ignore_index=True) for k, t in zip(names, zip(*parts))}
     results.CACHE.mkdir(exist_ok=True)
     for k, frame in tables.items():
@@ -502,16 +513,36 @@ def train_tables() -> dict[str, pd.DataFrame]:
     return _tables("train", [(e, TRAINING) for e in results.train_entries()])
 
 
+SIDE_HELD_OUT: str = "side_held_out"
+"""Stratum label of the side clips a side network did not train on."""
+
+
+def side_tables(run: Path) -> dict[str, pd.DataFrame]:
+    """The tables of :func:`test_tables` for a side-camera Zephyr network (*run*)
+    over the six side clips: stratum :data:`SIDE_HELD_OUT` for the session it did
+    not train on, ``training`` (in-sample) for the rest. Inference as there."""
+    trained = results.trained_videos(run)
+    clips = [
+        (c.entry, TRAINING if c.video.resolve() in trained else SIDE_HELD_OUT)
+        for c in results.clips(results.OOD_CLIPS).values()
+    ]
+    return _tables("side", clips, run)
+
+
 def all_tables() -> dict[str, pd.DataFrame]:
     """Test and training tables stacked; ``stratum`` tells them apart."""
     test, train = test_tables(), train_tables()
     return {k: pd.concat([test[k], train[k]], ignore_index=True) for k in test}
 
 
-def recall_by_bin(breaths: pd.DataFrame, column: str = "detected") -> pd.DataFrame:
+def recall_by_bin(
+    breaths: pd.DataFrame,
+    column: str = "detected",
+    bins: tuple[float, ...] = PLOT_BINS_HZ,
+) -> pd.DataFrame:
     """Share of thermistor breaths detected per rate bin, per recording and pooled
     within each stratum (``recording == "pooled"``)."""
-    binned = _with_bin(breaths)
+    binned = _with_bin(breaths, bins)
     per = binned.groupby(["stratum", "recording", "bin", "centre"])[column].mean()
     pooled = binned.groupby(["stratum", "bin", "centre"])[column].mean()
     pooled = pooled.reset_index().assign(recording="pooled")
@@ -521,14 +552,17 @@ def recall_by_bin(breaths: pd.DataFrame, column: str = "detected") -> pd.DataFra
 
 
 def f1_by_bin(
-    breaths: pd.DataFrame, false_pos: pd.DataFrame, source: str = "head"
+    breaths: pd.DataFrame,
+    false_pos: pd.DataFrame,
+    source: str = "head",
+    bins: tuple[float, ...] = PLOT_BINS_HZ,
 ) -> pd.DataFrame:
     """Local inhale F1 per rate bin: TP and FN binned by the breath's rate, FP by the
     thermistor's rate at the false event. Per recording and pooled. *source* is
     ``head`` or ``DSP`` (on the trace, for comparison only)."""
     column = "detected" if source == "head" else "detected_dsp"
-    b = _with_bin(breaths)
-    f = _with_bin(false_pos[false_pos["source"] == source])
+    b = _with_bin(breaths, bins)
+    f = _with_bin(false_pos[false_pos["source"] == source], bins)
     keys = ["stratum", "recording", "bin", "centre"]
     frames = []
     for pooled in (False, True):

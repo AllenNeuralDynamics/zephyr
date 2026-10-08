@@ -665,9 +665,7 @@ def _side_rows(run: Path, network: str) -> list[dict]:
         )
         frame = pd.DataFrame(rows)[["clip_id", "correlation", f1]]
         frame.rename(columns={"clip_id": "clip"}).to_parquet(cache)
-    trained = {
-        Path(v).resolve() for v in json.loads((run / "train_videos.json").read_text())
-    }
+    trained = trained_videos(run)
     trained_ids = {c.entry.clip_id for c in side if c.video.resolve() in trained}
     frame = pd.read_parquet(cache).rename(columns={f1: "inhale_f1"})
     frame["data"] = [
@@ -675,6 +673,12 @@ def _side_rows(run: Path, network: str) -> list[dict]:
         for c in frame["clip"]
     ]
     return frame.assign(network=network).to_dict("records")
+
+
+def trained_videos(run: Path) -> set[Path]:
+    """The videos *run* trained on, from the list it recorded."""
+    recorded = json.loads((run / "train_videos.json").read_text())
+    return {Path(v).resolve() for v in recorded}
 
 
 def ood_scores() -> pd.DataFrame:
