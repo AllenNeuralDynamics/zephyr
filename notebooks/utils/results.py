@@ -93,10 +93,17 @@ OOD_RUNS: dict[str, Path] = {
     / "runs/ood-finetune-hold15/ood-hold15-retrain-init/seed-42",
     "Side 14, 15 only": ROOT / "runs/ood-scratch/ood-scratch-hold13/seed-42",
     "Side 13, 14 only": ROOT / "runs/ood-scratch/ood-scratch-hold15/seed-42",
+    "PhysNet (DSP), side 14, 15 only": ROOT
+    / "runs/physnet-ood-scratch/physnet-ood-scratch-hold13/seed-42",
+    "PhysNet (DSP), side 13, 14 only": ROOT
+    / "runs/physnet-ood-scratch/physnet-ood-scratch-hold15/seed-42",
 }
 """The out-of-distribution networks: the face benchmark network, that network
-fine-tuned on two side sessions as well, and two trained from scratch on two side
-sessions each (a leave-one-session-out pair: held out 13, held out 15)."""
+fine-tuned on two side sessions as well, two trained from scratch on two side
+sessions each (a leave-one-session-out pair: held out 13, held out 15), and PhysNet
+trained as that pair."""
+OOD_NO_HEAD: frozenset[str] = frozenset(n for n in OOD_RUNS if n.startswith("PhysNet"))
+"""Networks without an onset head: their inhale F1 is DSP on the trace."""
 
 INPUTS: dict[str, tuple[Path, str]] = {
     "feature cache": (
@@ -606,7 +613,14 @@ def benchmark() -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-OOD_METRICS: tuple[str, ...] = ("correlation", "head_inhale_f1")
+OOD_METRICS: tuple[str, ...] = ("correlation", "inhale_f1")
+"""What the OOD figure shows. ``inhale_f1`` is the onset head's, or DSP on the trace
+for the networks of :data:`OOD_NO_HEAD`."""
+
+
+def _f1_column(network: str) -> str:
+    """The scorer's column holding *network*'s inhale F1."""
+    return "inhale_f1" if network in OOD_NO_HEAD else "head_inhale_f1"
 
 
 def _face_rows(run: Path, network: str, side: set[str]) -> list[dict]:
@@ -617,7 +631,8 @@ def _face_rows(run: Path, network: str, side: set[str]) -> list[dict]:
             "network": network,
             "clip": c["clip_id"],
             "data": "Face, held out",
-            **{m: c[m] for m in OOD_METRICS},
+            "correlation": c["correlation"],
+            "inhale_f1": c[_f1_column(network)],
         }
         for c in json.loads((run / "evaluation.json").read_text())["clips"]
         if c["clip_id"] not in side
@@ -632,6 +647,7 @@ def _side_rows(run: Path, network: str) -> list[dict]:
     refuses them, so its scorer is called directly. Inference only (CPU), cached
     per run.
     """
+    f1 = _f1_column(network)
     side = list(clips(OOD_CLIPS).values())
     cache = CACHE / f"ood-side-{run.parent.parent.name}-{run.parent.name}.parquet"
     if not cache.exists():
@@ -645,15 +661,15 @@ def _side_rows(run: Path, network: str) -> list[dict]:
             window=1024,
             frame_chunk=256,
             amp_dtype=None,
-            head=True,
+            head=network not in OOD_NO_HEAD,
         )
-        frame = pd.DataFrame(rows)[["clip_id", *OOD_METRICS]]
+        frame = pd.DataFrame(rows)[["clip_id", "correlation", f1]]
         frame.rename(columns={"clip_id": "clip"}).to_parquet(cache)
     trained = {
         Path(v).resolve() for v in json.loads((run / "train_videos.json").read_text())
     }
     trained_ids = {c.entry.clip_id for c in side if c.video.resolve() in trained}
-    frame = pd.read_parquet(cache)
+    frame = pd.read_parquet(cache).rename(columns={f1: "inhale_f1"})
     frame["data"] = [
         "Side, trained on" if c in trained_ids else "Side, held out"
         for c in frame["clip"]
@@ -662,7 +678,7 @@ def _side_rows(run: Path, network: str) -> list[dict]:
 
 
 def ood_scores() -> pd.DataFrame:
-    """Correlation and head inhale F1 of every network of :data:`OOD_RUNS`, per clip:
+    """Correlation and inhale F1 of every network of :data:`OOD_RUNS`, per clip:
     ``network``, ``clip``, ``data`` (face or side, held out or trained on)."""
     side = {c.entry.clip_id for c in clips(OOD_CLIPS).values()}
     rows: list[dict] = []

@@ -283,15 +283,16 @@ def domain_figure(panels: Sequence[DomainPanel], t0: float, duration: float) -> 
 
 OOD_METRIC_LABELS: dict[str, str] = {
     "correlation": METRIC_LABELS["correlation"],
-    "head_inhale_f1": "Inhalation F1 (head)",
+    "inhale_f1": "Inhalation F1\n(head; DSP where marked)",
 }
 
 
 def ood_figure(scores: pd.DataFrame) -> Figure:
     """Each out-of-distribution network on each kind of data it can be scored on:
-    one dot per clip, bars are means; correlation, then head inhale F1."""
+    one dot per clip, bars are means; correlation, then inhale F1 (the onset head's,
+    or DSP for a network named "(DSP)")."""
     networks = list(dict.fromkeys(scores["network"]))
-    fig, axes = style.figure("double", 0.36, ncols=len(OOD_METRIC_LABELS))
+    fig, axes = style.figure("double", 0.55, nrows=len(OOD_METRIC_LABELS), sharex=True)
     width = 0.8 / len(style.OOD_DATA)
     rng = np.random.default_rng(0)  # fixed jitter, so the figure never changes
     for ax, (metric, label) in zip(axes, OOD_METRIC_LABELS.items(), strict=True):
@@ -305,11 +306,12 @@ def ood_figure(scores: pd.DataFrame) -> Figure:
                 ax.bar(x, values.mean(), width * 0.9, color=colour, alpha=0.35)
                 jitter = rng.uniform(-0.25, 0.25, len(values)) * width
                 ax.plot(x + jitter, values, "o", color=colour, ms=2.5)
-        ax.set_xticks(range(len(networks)), networks)
-        ax.set_xlabel("Trained on")
+        labels = [n.replace("), ", "),\n") for n in networks]  # "PhysNet (DSP),"
+        ax.set_xticks(range(len(networks)), labels)
         ax.set_ylabel(label)
         ax.set_ylim(min(0.0, scores[metric].min() - 0.05), 1)
         ax.axhline(0, color="0.6", linewidth=0.5)
+    axes[-1].set_xlabel("Trained on")
     handles = [
         Rectangle((0, 0), 1, 1, color=c, alpha=0.6) for c in style.OOD_DATA.values()
     ]
