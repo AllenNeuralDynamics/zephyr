@@ -5,6 +5,7 @@ app = marimo.App(width="medium")
 
 with app.setup:
     import marimo as mo
+    import numpy as np
     import pandas as pd
     from numpy.typing import NDArray
 
@@ -249,6 +250,50 @@ def _():
         E --> G(["Breathing trace"])
         F --> H(["P(inhale onset)"])
     """)
+    return
+
+
+@app.cell
+def _():
+    mo.md("""
+    ### Are the frame embeddings smooth?
+
+    Step 3 interpolates the 128-d frame embeddings onto the 60 Hz grid, which
+    assumes they change smoothly from frame to frame. Below, the embeddings over
+    the first 60 s of the clip chosen at the top. (a, b) Three seconds of every
+    dimension under the thermistor. (c) Their average spectrum against the
+    filtered thermistor's (the training target), both scaled to unit area.
+    (d) Per dimension, how well each frame is rebuilt by linear interpolation
+    between its two neighbours: 1 is smooth, 0 is no better than the mean, and
+    the same frames in shuffled order give about -0.5.
+    """)
+    return
+
+
+@app.cell
+def _(test_clip: results.TestClip):
+    _times, _emb = results.frame_embeddings(test_clip.entry)  # cpu, cached
+    _truth: pd.DataFrame = results.filtered_truth(test_clip.entry)
+    _reference: NDArray = np.interp(
+        _times, _truth["Time"].to_numpy(), _truth["Signal"].to_numpy()
+    )
+    _shuffled: NDArray = _emb[np.random.default_rng(0).permutation(len(_emb))]
+    plots.embedding_smoothness_figure(
+        _times,
+        _emb,
+        _reference,
+        {
+            "Embeddings": results.mean_spectrum(_times, _emb),
+            "Thermistor": results.mean_spectrum(_times, _reference),
+        },
+        {
+            "Embeddings": results.interpolation_r2(_times, _emb),
+            "Thermistor": results.interpolation_r2(_times, _reference),
+            "Shuffled": results.interpolation_r2(_times, _shuffled),
+        },
+        _times[0] + 10,
+        3,
+    )
     return
 
 

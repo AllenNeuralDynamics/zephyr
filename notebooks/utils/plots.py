@@ -888,3 +888,71 @@ def importance_by_clip_figure(
             for channel, row in zip(maps, axes[top + 1 : top + rows], strict=True):
                 _importance_row([row[j]], [maps[channel][i] / peak[i]], 1.0)
     return fig
+
+
+def embedding_smoothness_figure(
+    times: NDArray,
+    embeddings: NDArray,
+    reference: NDArray,
+    spectra: dict[str, tuple[NDArray, NDArray]],
+    r2: dict[str, NDArray],
+    t0: float,
+    duration: float,
+) -> Figure:
+    """Are the CNN's frame embeddings smooth enough to interpolate linearly?
+
+    (a) The filtered thermistor at the frame times (*reference*) above (b) every
+    embedding dimension, z-scored and ordered by its first-PC loading, from *t0* for
+    *duration* s; the PCA is fitted on all of *embeddings*, not only that span.
+    (c) *spectra*: name -> (frequency, power density, unit area).
+    (d) *r2*: name -> per-dimension R² of rebuilding each frame from its two
+    neighbours.
+    """
+    fig, ax = style.mosaic(
+        [["truth"] * 2, ["heat"] * 2, ["psd", "r2"]],
+        aspect=0.7,
+        height_ratios=[0.5, 1.6, 1.4],
+    )
+    shown = (times >= t0) & (times <= t0 + duration)
+    z = (embeddings - embeddings.mean(0)) / embeddings.std(0)
+    _, _, vt = np.linalg.svd(z, full_matrices=False)
+    order = np.argsort(vt[0])
+    ax["truth"].plot(times[shown], reference[shown], color=style.TRUTH)
+    ax["truth"].set_ylabel("Thermistor")
+    ax["truth"].set_yticks([])
+    ax["truth"].tick_params(labelbottom=False)
+    ax["truth"].set_xlim(t0, t0 + duration)
+    image = ax["heat"].imshow(
+        z[shown][:, order].T,
+        aspect="auto",
+        cmap=style.EMBEDDING_CMAP,
+        vmin=-3,
+        vmax=3,
+        interpolation="nearest",
+        extent=(times[shown][0], times[shown][-1], len(order), 0),
+    )
+    ax["heat"].grid(False)
+    ax["heat"].set_xlim(t0, t0 + duration)
+    ax["heat"].set_xlabel("Time (s)")
+    ax["heat"].set_ylabel("Embedding dim\n(by PC1 loading)")
+    fig.colorbar(image, ax=ax["heat"], label="z-score", pad=0.01, aspect=15)
+    colours = [style.color("Zephyr"), style.TRUTH, "0.6"]
+    for (name, (freq, power)), colour in zip(spectra.items(), colours, strict=False):
+        ax["psd"].semilogy(freq, power, color=colour, label=name)
+    ax["psd"].set_xlabel("Frequency (Hz)")
+    ax["psd"].set_ylabel("Power density")
+    ax["psd"].legend(loc="lower left")
+    bins = np.linspace(-1, 1, 41)
+    for (name, values), colour in zip(r2.items(), colours, strict=False):
+        if np.size(values) == 1:
+            ax["r2"].axvline(float(np.ravel(values)[0]), color=colour, label=name)
+        else:
+            ax["r2"].hist(
+                np.clip(values, -1, 1), bins, color=colour, alpha=0.6, label=name
+            )
+    ax["r2"].axvline(0, color="0.6", linewidth=0.5)
+    ax["r2"].set_xlabel("R² of neighbour interpolation")
+    ax["r2"].set_ylabel("Dimensions")
+    ax["r2"].legend(loc="upper left")
+    panel_letters([ax[k] for k in ("truth", "heat", "psd", "r2")])
+    return fig

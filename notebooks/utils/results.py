@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 import torch
 from numpy.typing import NDArray
+from scipy.signal import welch
 
 from zephyr import features, video
 from zephyr.benchmarks.common import blind_polarity
@@ -376,6 +377,63 @@ def frame_rate_scores() -> pd.DataFrame:
             for name, s in columns.items()
         }
     )
+
+
+def frame_embeddings(
+    entry: features.ClipEntry, run: Path = ZEPHYR_RUN, seconds: float = 60.0
+) -> tuple[NDArray, NDArray]:
+    """The CNN's per-frame embeddings over the first *seconds* of a clip.
+
+    Returns ``(frame_times, embeddings)``, ``(T,)`` and ``(T, embed)``, before any
+    resampling to the output grid: what the TCN's input is interpolated from.
+    Inference only (CPU), cached per clip and per network.
+    """
+    CACHE.mkdir(exist_ok=True)
+    cache = CACHE / f"{short_name(entry)}-embeddings-{run.parent.name}-{seconds:g}s.npz"
+    if cache.exists():
+        stored = np.load(cache)
+        return stored["times"], stored["embeddings"]
+    print(f"No cache found in {cache}. Calculating from scratch.")
+    model, mean, std, _ = load_checkpoint(run / "best.pt", torch.device("cpu"))
+    model.eval()
+    frame_times = np.load(entry.frame_times)
+    n = int(np.searchsorted(frame_times, frame_times[0] + seconds))
+    channels = model.channels
+    shape = (1, -1, 1, 1)
+    mu, sd = (
+        np.asarray(s, np.float32).reshape(shape) for s in channels.take_stats(mean, std)
+    )
+    stack = channels.take(np.asarray(np.load(entry.features, mmap_mode="r")[:n]))
+    frames = torch.from_numpy((stack.astype(np.float32) - mu) / sd)
+    with torch.no_grad():
+        embeddings = model.encode(frames.unsqueeze(0), chunk=256)[0].numpy()
+    np.savez(cache, times=frame_times[:n], embeddings=embeddings)
+    return frame_times[:n], embeddings
+
+
+def interpolation_r2(times: NDArray, x: NDArray) -> NDArray:
+    """Per column of ``(T, D)`` *x*: R² of rebuilding each sample by linear
+    interpolation between its two neighbours (at the real *times*).
+
+    1 for a smooth signal, about -0.5 for white noise (the error of a midpoint
+    between two independent samples is 1.5 times the variance).
+    """
+    x = x.reshape(len(x), -1)
+    weight = ((times[1:-1] - times[:-2]) / (times[2:] - times[:-2]))[:, None]
+    rebuilt = x[:-2] + (x[2:] - x[:-2]) * weight
+    middle = x[1:-1]
+    return 1 - ((middle - rebuilt) ** 2).mean(0) / middle.var(0)
+
+
+def mean_spectrum(times: NDArray, x: NDArray) -> tuple[NDArray, NDArray]:
+    """Welch power density of each z-scored column of *x*, averaged over columns
+    and scaled to unit area, so signals of any amplitude compare by shape."""
+    x = x.reshape(len(x), -1)
+    fs = 1.0 / float(np.median(np.diff(times)))
+    z = (x - x.mean(0)) / x.std(0)
+    freq, power = welch(z, fs=fs, nperseg=int(4 * fs), axis=0)
+    power = power.mean(1)
+    return freq, power / np.trapezoid(power, freq)
 
 
 def head_events(frame: pd.DataFrame) -> NDArray:

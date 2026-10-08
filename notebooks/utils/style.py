@@ -74,6 +74,9 @@ def series(n: int) -> list[str]:
 IMPORTANCE_CMAP: str = "inferno"
 """Colour map of every importance (drop) map."""
 
+EMBEDDING_CMAP: str = "RdBu_r"
+"""Colour map of z-scored network features (diverging around 0)."""
+
 
 def use_style() -> None:
     """Apply the shared matplotlib settings; call once at the top of a notebook."""
