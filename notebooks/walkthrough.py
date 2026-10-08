@@ -40,7 +40,9 @@ def _():
 
 @app.cell
 def _(video: mo.ui.dropdown):
-    mo.video(src=str(video.value), controls=True) if video.value else mo.md("No videos in `notebooks/figures/`.")
+    mo.video(src=str(video.value), controls=True) if video.value else mo.md(
+        "No videos in `notebooks/figures/`."
+    )
     return
 
 
