@@ -518,16 +518,21 @@ def band_correlation_figure(summary: pd.DataFrame) -> Figure:
     return fig
 
 
-def band_comparison_figure(correlation: pd.DataFrame, f1: pd.DataFrame) -> Figure:
+def band_comparison_figure(
+    correlation: pd.DataFrame,
+    f1: pd.DataFrame,
+    methods: Sequence[str] = tuple(style.METHODS),
+) -> Figure:
     """Waveform correlation and local inhale F1 by frequency band, side by side.
 
     *correlation* is :func:`breathing.band_correlation_summary`, *f1* is
     :func:`breathing.event_f1_band_summary`; both are means over the test clips with
     95% bootstrap intervals. Zephyr's F1 is shown from its onset head and, dashed,
-    from DSP on its trace; the methods without a head are scored with DSP.
+    from DSP on its trace; the methods without a head are scored with DSP. *methods*
+    are the correlation series (the columns of *correlation*).
     """
     fig, axes = style.figure("double", 0.4, ncols=2)
-    _band_lines(axes[0], correlation, list(style.METHODS), "Pearson correlation")
+    _band_lines(axes[0], correlation, list(methods), "Pearson correlation")
     axes[0].axhline(0, color="0.6", linewidth=0.5)
     axes[0].set_xlabel("Frequency (Hz)")
     series = [name for name in f1.columns.get_level_values(0).unique()]

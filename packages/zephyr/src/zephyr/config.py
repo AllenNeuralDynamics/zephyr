@@ -90,8 +90,9 @@ class PreprocessParams(_Model):
     """Working frame size ``(width, height)``; the video is scaled to this
     before cropping, and clip boxes are expressed in these pixels.  No default:
     a box means nothing without the frame it was placed on."""
-    select_fs: float = Field(OUTPUT_FS, ge=OUTPUT_FS)
-    """Rate of the frames the CNN sees, in Hz; at least the output rate."""
+    select_fs: float = Field(OUTPUT_FS, gt=0)
+    """Rate of the frames the CNN sees, in Hz. Below the output rate, the TCN's input
+    is interpolated up to it (half the CNN work at 30 Hz)."""
     motion_tau_s: float = Field(MOTION_TAU_S, gt=0)
     flow_scale_px: float = Field(FLOW_SCALE_PX, gt=0)
     flow_clip_px: float = Field(FLOW_CLIP_PX, gt=0)

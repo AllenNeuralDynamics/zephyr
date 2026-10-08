@@ -39,7 +39,7 @@ def _():
 
 
 @app.cell
-def _(video: mo.ui.dropdown):
+def _(video):
     mo.video(src=str(video.value), controls=True) if video.value else mo.md(
         "No videos in `notebooks/figures/`."
     )
@@ -724,6 +724,37 @@ def _():
 @app.cell
 def _():
     plots.ood_figure(results.ood_scores())  # cpu, cached
+    return
+
+
+@app.cell
+def _():
+    mo.md("""
+    ## 11. Half the frame rate
+
+    Can the network work from 30 Hz video? The same full network, trained from
+    scratch with the CNN seeing every other frame (30 Hz instead of 60). The TCN, the
+    heads and the scored output stay on the 60 Hz grid: the frame embeddings are
+    interpolated up to it, so the two networks are scored on the same instants.
+    """)
+    return
+
+
+@app.cell
+def _():
+    tables.table(
+        results.frame_rate_scores().round(3).reset_index(names="metric"),
+        across_columns=["Zephyr, 60 Hz frames", "Zephyr, 30 Hz frames"],
+    )
+    return
+
+
+@app.cell
+def _():
+    rate_r, rate_f1 = breathing.frame_rate_summaries()  # cpu, cached
+    plots.band_comparison_figure(
+        rate_r, rate_f1, methods=list(breathing.FRAME_RATE_SERIES)
+    )
     return
 
 

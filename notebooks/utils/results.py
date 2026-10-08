@@ -37,6 +37,11 @@ CLIP_LISTS: dict[str, Path] = {
     "known_animals_new_date": ROOT
     / "packages/zephyr-benchmarks/configs/clips/face_test_known_animals_new_date.toml",
 }
+CLIP_LISTS_30HZ: dict[str, Path] = {
+    stratum: path.with_name(f"{path.stem}_30hz.toml")
+    for stratum, path in CLIP_LISTS.items()
+}
+"""The test clip lists preprocessed with the CNN seeing 30 Hz frames."""
 TRAIN_CLIPS: Path = ROOT / "packages/zephyr-benchmarks/configs/clips/face_train.toml"
 OOD_CLIPS: dict[str, Path] = {
     "side_camera": ROOT
@@ -44,6 +49,7 @@ OOD_CLIPS: dict[str, Path] = {
 }
 """The out-of-distribution rig: a side view of the face, never trained on by Zephyr."""
 FEATURES: Path = ROOT / "data/features-v2"
+FEATURES_30HZ: Path = ROOT / "data/features-v2-30hz"
 BASELINES: Path = ROOT / "benchmarks/baselines-v1"
 ABLATION: Path = ROOT / "benchmarks/input-objective-v1/runs"
 ZEPHYR_RUN: Path = (
@@ -53,6 +59,11 @@ ZEPHYR_RUN: Path = (
 branch (``signal_pool = 2``) with the onset head reading both streams."""
 ZEPHYR_TAG: str = ZEPHYR_RUN.parent.name
 """Names Zephyr's caches, so those of another network are never read."""
+ZEPHYR_30HZ_RUN: Path = (
+    ROOT
+    / "runs/rate-balance-pool2-both-30hz/benchmark-rate-balanced-pool2-both-30hz/seed-42"
+)
+"""The same network trained and run on 30 Hz frames (output still at 60 Hz)."""
 REFERENCE_RUN: Path = (
     ROOT / "runs/benchmark-gray-diff-flow-multitask/benchmark-gray-diff-flow-multitask"
 )
@@ -140,14 +151,16 @@ class TestClip:
     target_size: tuple[int, int]
 
 
-def clips(lists: dict[str, Path] = CLIP_LISTS) -> dict[str, TestClip]:
+def clips(
+    lists: dict[str, Path] = CLIP_LISTS, cache: Path = FEATURES
+) -> dict[str, TestClip]:
     """Every clip of *lists* (the test clips by default) by name, with its stratum
-    (the list's key) and crop box."""
+    (the list's key) and crop box; features are read from *cache*."""
     out: dict[str, TestClip] = {}
     for stratum, path in lists.items():
         clip_list = load(ClipList, path)
         resolved = clip_list.resolve()
-        entries = features.require(resolved, clip_list.preprocess, FEATURES)
+        entries = features.require(resolved, clip_list.preprocess, cache)
         for clip, entry in zip(resolved, entries, strict=True):
             out[short_name(entry)] = TestClip(
                 entry, stratum, clip.box, clip.video, clip_list.preprocess.target_size
@@ -330,6 +343,32 @@ def stretch_summary() -> pd.DataFrame:
             "summary"
         ]
         for name, run in STRETCH_RUNS.items()
+    }
+    return pd.DataFrame(
+        {
+            name: {label: s[m] for m, label in metrics.items()}
+            for name, s in columns.items()
+        }
+    )
+
+
+def frame_rate_scores() -> pd.DataFrame:
+    """Scores of Zephyr trained on 60 Hz frames and on 30 Hz frames (all 24 test clips).
+
+    One row per metric, one column per network, from their ``evaluation.json``.
+    Inhale F1 is the onset head's; exhale F1 has no head and is DSP.
+    """
+    metrics = {
+        "correlation": "correlation",
+        "head_inhale_f1": "inhale F1 (head)",
+        "exhale_f1": "exhale F1 (DSP)",
+    }
+    runs = {"Zephyr, 60 Hz frames": ZEPHYR_RUN, "Zephyr, 30 Hz frames": ZEPHYR_30HZ_RUN}
+    columns = {
+        name: json.loads((run / "evaluation.json").read_text())["groups"]["all"][
+            "summary"
+        ]
+        for name, run in runs.items()
     }
     return pd.DataFrame(
         {
