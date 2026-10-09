@@ -21,6 +21,7 @@ METHODS: dict[str, str] = {
 VARIANTS: dict[str, str] = {
     "Zephyr": METHODS["Zephyr"],
     "Zephyr, no stretch": "#7b3294",
+    "Zephyr, 60 Hz frames": METHODS["Zephyr"],
     "Zephyr, 30 Hz frames": "#d55e00",
 }
 """Zephyr and its training variants, for ablations that compare networks directly."""

@@ -38,11 +38,9 @@ CLIP_LISTS: dict[str, Path] = {
     "known_animals_new_date": ROOT
     / "packages/zephyr-benchmarks/configs/clips/face_test_known_animals_new_date.toml",
 }
-CLIP_LISTS_30HZ: dict[str, Path] = {
-    stratum: path.with_name(f"{path.stem}_30hz.toml")
-    for stratum, path in CLIP_LISTS.items()
-}
-"""The test clip lists preprocessed with the CNN seeing 30 Hz frames."""
+SELECT_FS_30HZ: float = 30.0
+"""Frame-selection rate of :data:`FEATURES_30HZ`: the same clips as
+:data:`CLIP_LISTS`, preprocessed with the CNN seeing every other frame."""
 TRAIN_CLIPS: Path = ROOT / "packages/zephyr-benchmarks/configs/clips/face_train.toml"
 OOD_CLIPS: dict[str, Path] = {
     "side_camera": ROOT
@@ -65,6 +63,9 @@ ZEPHYR_30HZ_RUN: Path = (
     / "runs/rate-balance-pool2-both-30hz/benchmark-rate-balanced-pool2-both-30hz/seed-42"
 )
 """The same network trained and run on 30 Hz frames (output still at 60 Hz)."""
+FRAME_RATE_60: str = "Zephyr, 60 Hz frames"
+FRAME_RATE_30: str = "Zephyr, 30 Hz frames"
+"""The two networks of the frame-rate ablation, wherever they are named."""
 REFERENCE_RUN: Path = (
     ROOT / "runs/benchmark-gray-diff-flow-multitask/benchmark-gray-diff-flow-multitask"
 )
@@ -160,13 +161,27 @@ class TestClip:
 
 
 def clips(
-    lists: dict[str, Path] = CLIP_LISTS, cache: Path = FEATURES
+    lists: dict[str, Path] = CLIP_LISTS,
+    cache: Path = FEATURES,
+    select_fs: float | None = None,
 ) -> dict[str, TestClip]:
     """Every clip of *lists* (the test clips by default) by name, with its stratum
-    (the list's key) and crop box; features are read from *cache*."""
+    (the list's key) and crop box; features are read from *cache*.
+
+    *select_fs* overrides the lists' frame-selection rate, so the same clips can be
+    read from a cache preprocessed at another rate (:data:`SELECT_FS_30HZ`).
+    """
     out: dict[str, TestClip] = {}
     for stratum, path in lists.items():
         clip_list = load(ClipList, path)
+        if select_fs is not None:
+            clip_list = clip_list.model_copy(
+                update={
+                    "preprocess": clip_list.preprocess.model_copy(
+                        update={"select_fs": select_fs}
+                    )
+                }
+            )
         resolved = clip_list.resolve()
         entries = features.require(resolved, clip_list.preprocess, cache)
         for clip, entry in zip(resolved, entries, strict=True):
@@ -371,7 +386,7 @@ def frame_rate_scores() -> pd.DataFrame:
         "head_inhale_f1": "inhale F1 (head)",
         "exhale_f1": "exhale F1 (DSP)",
     }
-    runs = {"Zephyr, 60 Hz frames": ZEPHYR_RUN, "Zephyr, 30 Hz frames": ZEPHYR_30HZ_RUN}
+    runs = {FRAME_RATE_60: ZEPHYR_RUN, FRAME_RATE_30: ZEPHYR_30HZ_RUN}
     columns = {
         name: json.loads((run / "evaluation.json").read_text())["groups"]["all"][
             "summary"

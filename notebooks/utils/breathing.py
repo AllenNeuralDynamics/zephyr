@@ -346,16 +346,17 @@ def _f1_summary(
     return pd.DataFrame(columns, index=bin_centres(BANDS_HZ))
 
 
-FRAME_RATE_SERIES: dict[str, tuple[Path, dict[str, Path], Path]] = {
-    "Zephyr": (results.ZEPHYR_RUN, results.CLIP_LISTS, results.FEATURES),
-    "Zephyr, 30 Hz frames": (
+FRAME_RATE_SERIES: dict[str, tuple[Path, Path, float]] = {
+    results.FRAME_RATE_60: (results.ZEPHYR_RUN, results.FEATURES, 60.0),
+    results.FRAME_RATE_30: (
         results.ZEPHYR_30HZ_RUN,
-        results.CLIP_LISTS_30HZ,
         results.FEATURES_30HZ,
+        results.SELECT_FS_30HZ,
     ),
 }
-"""The networks compared by the frame rate they see: run, the clip lists preprocessed
-at that rate, and their feature cache."""
+"""The networks compared by the frame rate their CNN sees: the run, the feature cache
+preprocessed at that rate, and the rate itself. Both read :data:`results.CLIP_LISTS`:
+the same clips, preprocessed twice."""
 
 
 def frame_rate_summaries(
@@ -369,9 +370,9 @@ def frame_rate_summaries(
     outputs = {
         name: {
             key: results.zephyr_outputs(clip.entry, run)
-            for key, clip in results.clips(lists, cache).items()
+            for key, clip in results.clips(cache=cache, select_fs=select_fs).items()
         }
-        for name, (run, lists, cache) in FRAME_RATE_SERIES.items()
+        for name, (run, cache, select_fs) in FRAME_RATE_SERIES.items()
     }
     names = list(FRAME_RATE_SERIES)
     correlation, counts = [], []
@@ -533,6 +534,31 @@ def all_tables() -> dict[str, pd.DataFrame]:
     """Test and training tables stacked; ``stratum`` tells them apart."""
     test, train = test_tables(), train_tables()
     return {k: pd.concat([test[k], train[k]], ignore_index=True) for k in test}
+
+
+def frame_rate_tables() -> dict[str, pd.DataFrame]:
+    """The tables of :func:`test_tables` for both networks of
+    :data:`FRAME_RATE_SERIES`, stacked, with ``stratum`` naming the network: the
+    by-rate figure then draws one network per row, over all 24 test clips.
+
+    The 60 Hz rows are :func:`test_tables` relabelled; the 30 Hz rows are the same
+    clips read from the 30 Hz feature cache, scored against the same thermistor by
+    the network trained on them. Inference as for :func:`test_tables`.
+    """
+    sixty = {
+        key: frame.assign(stratum=results.FRAME_RATE_60)
+        for key, frame in test_tables().items()
+    }
+    run, cache, select_fs = FRAME_RATE_SERIES[results.FRAME_RATE_30]
+    thirty = _tables(
+        "test",
+        [
+            (clip.entry, results.FRAME_RATE_30)
+            for clip in results.clips(cache=cache, select_fs=select_fs).values()
+        ],
+        run,
+    )
+    return {k: pd.concat([sixty[k], thirty[k]], ignore_index=True) for k in sixty}
 
 
 def recall_by_bin(

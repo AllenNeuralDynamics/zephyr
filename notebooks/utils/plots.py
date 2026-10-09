@@ -41,9 +41,13 @@ HEAD_COLUMNS: dict[str, str] = {
 RATE_ROWS: dict[str, str] = {
     **STRATUM_LABELS,
     "side_held_out": "Held-out side session",
+    "Zephyr, 60 Hz frames": "60 Hz frames",
+    "Zephyr, 30 Hz frames": "30 Hz frames",
     "training": "Training (in-sample)",
 }
-"""Rows of the by-rate figure: the test groups, then the clips the network fit."""
+"""Rows of the by-rate figure, in the order they are drawn: the test groups, the
+held-out side session, the two frame-rate networks (each over every test clip),
+then the clips the network fit. Only the rows present in the tables are drawn."""
 STRATUM_MARKERS: dict[str, str] = {"new_animals": "o", "known_animals_new_date": "s"}
 CHANNEL_RANGES: dict[str, tuple[float, float]] = {
     "gray": (0, 255),
@@ -606,6 +610,49 @@ def variant_traces_figure(
     axes[2].set_ylabel("Onset probability")
     axes[2].set_xlim(t0, t0 + duration)
     axes[2].set_xlabel("Time (s)")
+    panel_letters(axes)
+    return fig
+
+
+def frame_rate_traces_figure(
+    frames: dict[str, pd.DataFrame],
+    truth: pd.DataFrame,
+    events: dict[str, NDArray],
+    t0: float,
+    duration: float,
+) -> Figure:
+    """Both frame-rate networks over one excerpt, drawn on top of each other.
+
+    *frames* maps each network's label to its ``zephyr_outputs`` (``Time``,
+    ``Zephyr``, ``onset``) and *events* the inhale times of ``"Truth"`` and of each
+    label. Rows: the two traces over the thermistor, each source's inhales ticked
+    above them, then both onset heads.
+    """
+    fig, axes = style.figure(
+        "double", 0.45, nrows=2, sharex=True, height_ratios=[2, 1.2]
+    )
+
+    def excerpt(frame: pd.DataFrame) -> pd.DataFrame:
+        return frame[(frame.Time >= t0) & (frame.Time <= t0 + duration)]
+
+    def inside(times: NDArray) -> NDArray:
+        return times[(times >= t0) & (times <= t0 + duration)]
+
+    shown_truth = excerpt(truth)
+    z = (shown_truth.Signal - shown_truth.Signal.mean()) / shown_truth.Signal.std()
+    axes[0].plot(shown_truth.Time, z, color=style.TRUTH, label="Thermistor")
+    mark_events(axes[0], inside(events["Truth"]), 3.6, style.TRUTH)
+    for row, (label, frame) in enumerate(frames.items()):
+        shown, colour = excerpt(frame), style.color(label)
+        axes[0].plot(shown.Time, shown.Zephyr, color=colour, label=label)
+        mark_events(axes[0], inside(events[label]), 3.1 - 0.5 * row, colour, "^")
+        axes[1].plot(shown.Time, shown.onset, color=colour, label=label)
+    axes[0].set_ylabel("Breathing (z-score)")
+    axes[0].legend(loc="lower right", bbox_to_anchor=(1, 1), ncol=3)
+    axes[1].axhline(0.5, color="0.6", linewidth=0.5, linestyle=":")
+    axes[1].set_ylabel("Onset probability")
+    axes[1].set_xlim(t0, t0 + duration)
+    axes[1].set_xlabel("Time (s)")
     panel_letters(axes)
     return fig
 

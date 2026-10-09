@@ -837,10 +837,50 @@ def _():
 
 
 @app.cell
-def _():
-    rate_r, rate_f1 = breathing.frame_rate_summaries()  # cpu, cached
-    plots.band_comparison_figure(
-        rate_r, rate_f1, methods=list(breathing.FRAME_RATE_SERIES)
+def _(
+    clip: mo.ui.dropdown,
+    start: mo.ui.slider,
+    traces: pd.DataFrame,
+    truth: pd.DataFrame,
+):
+    _tabs: dict[str, pd.DataFrame] = breathing.frame_rate_tables()  # cpu, cached
+    _b: pd.DataFrame = _tabs["breaths"]
+    _thirty: pd.DataFrame = results.zephyr_outputs(  # cpu, cached
+        results.clips(cache=results.FEATURES_30HZ, select_fs=results.SELECT_FS_30HZ)[
+            clip.value
+        ].entry,
+        results.ZEPHYR_30HZ_RUN,
+    )
+    _rate_r, _rate_f1 = breathing.frame_rate_summaries()  # cpu, cached
+    mo.vstack(
+        [
+            plots.test_rates_figure(
+                breathing.recall_by_bin(_b),
+                breathing.recall_by_bin(_b, "chance"),
+                breathing.f1_by_bin(_b, _tabs["false_positives"], "head"),
+                breathing.f1_by_bin(_b, _tabs["false_positives"], "DSP"),
+                _tabs["windows"],
+                breathing.share_by_bin(_b, ["recording"], within="stratum"),
+                breathing.bin_centres(),
+                breathing.PLOT_BINS_HZ,
+            ),
+            plots.frame_rate_traces_figure(
+                {results.FRAME_RATE_60: traces, results.FRAME_RATE_30: _thirty},
+                truth,
+                {
+                    "Truth": results.events(
+                        truth["Time"].to_numpy(), truth["Signal"].to_numpy()
+                    )[0],
+                    results.FRAME_RATE_60: results.head_events(traces),
+                    results.FRAME_RATE_30: results.head_events(_thirty),
+                },
+                start.value,
+                10,
+            ),
+            plots.band_comparison_figure(
+                _rate_r, _rate_f1, methods=list(breathing.FRAME_RATE_SERIES)
+            ),
+        ]
     )
     return
 
