@@ -1,7 +1,7 @@
 import marimo
 
 __generated_with = "0.25.1"
-app = marimo.App(width="medium")
+app = marimo.App(width="full")
 
 with app.setup:
     import marimo as mo
@@ -87,11 +87,11 @@ def _(clip: mo.ui.dropdown, clips: dict[str, results.TestClip]):
 
 @app.cell
 def _():
-    mo.md("""
+    mo.md(r"""
     ## 1. The data
 
     A face video, cropped to the box around the nose (orange), and a thermistor
-    in the nostril as ground truth. The network sees the 96 x 96 crop as four
+    in the nostril as ground truth. The network sees the $96 \times 96$ crop as four
     channels: gray level, frame difference, and horizontal and vertical optical flow.
     Drag the time slider to scrub through the excerpt: the video and the four
     channels follow the cursor on the traces.
@@ -186,30 +186,30 @@ def _(start: mo.ui.slider, traces: pd.DataFrame, truth: pd.DataFrame):
 
 @app.cell
 def _():
-    mo.md("""
+    mo.md(r"""
     ## 3. Every method on the same clip
 
     Five methods turn the same face video into a breathing trace. Two are
     non-learned (Pixel, Facemap-style ridge), two are published video networks
     refitted to mouse breathing (TS-CAN, PhysNet), and one is Zephyr. All see the
-    same 96 x 96 nose crop at 60 Hz and are scored against the thermistor.
+    same $96 \times 96$ nose crop at 60 Hz and are scored against the thermistor.
     """)
     return
 
 
 @app.cell
 def _():
-    mo.md("""
+    mo.md(r"""
     ### Zephyr
 
-    1. **Input**: four channels per frame (gray, frame difference, optical flow x and y),
+    1. **Input**: four channels per frame (gray, frame difference, optical flow $x$ and $y$),
        so the network never has to compute motion itself.
-    2. **Frame encoder** (spatial only): four stride-2 convolutions, then a 2 x 2
+    2. **Frame encoder** (spatial only): four stride-2 convolutions, then a $2 \times 2$
        pooled grid (not a global mean, so opposite motion in different parts of the
-       nose cannot cancel) and a linear layer give one 128-d vector per frame.
+       nose cannot cancel) and a linear layer give one vector in $\mathbb{R}^{128}$ per frame.
     3. **Time**: the vectors are interpolated onto a fixed 60 Hz grid using the real
        frame timestamps.
-    4. **TCN** (temporal only): six residual blocks with dilations 1 to 32 see about
+    4. **TCN** (temporal only): six residual blocks with dilations $1, 2, 4, \dots, 32$ see about
        2 s of context each side, with symmetric padding (offline, non-causal).
     5. **Pooled branch**: the TCN's output averaged over pairs of frames (30 Hz),
        a convolution, and a learned upsampling back to 60 Hz. Averaging removes
@@ -255,17 +255,17 @@ def _():
 
 @app.cell
 def _():
-    mo.md("""
+    mo.md(r"""
     ### Are the frame embeddings smooth?
 
-    Step 3 interpolates the 128-d frame embeddings onto the 60 Hz grid, which
+    Step 3 interpolates the frame embeddings ($\mathbb{R}^{128}$) onto the 60 Hz grid, which
     assumes they change smoothly from frame to frame. Below, the embeddings over
     the first 60 s of the clip chosen at the top. (a, b) Three seconds of every
     dimension under the thermistor. (c) Their average spectrum against the
     filtered thermistor's (the training target), both scaled to unit area.
-    (d) Per dimension, how well each frame is rebuilt by linear interpolation
-    between its two neighbours: 1 is smooth, 0 is no better than the mean, and
-    the same frames in shuffled order give about -0.5.
+    (d) Per dimension, the $R^2$ of rebuilding each frame by linear interpolation
+    between its two neighbours: $R^2 = 1$ is smooth, $R^2 = 0$ is no better than
+    the mean, and the same frames in shuffled order give about $-0.5$.
     """)
     return
 
@@ -299,14 +299,14 @@ def _(test_clip: results.TestClip):
 
 @app.cell
 def _():
-    mo.md("""
+    mo.md(r"""
     ### TS-CAN (Liu et al., 2020)
 
     A published two-stream network for pulse from video, refitted here to mouse
     breathing on the **gray channel only**.
 
-    1. **Input**: the crop is shrunk to 36 x 36. A *motion* stream gets the
-       normalised frame difference (I(t+1) - I(t)) / (I(t+1) + I(t)); an
+    1. **Input**: the crop is shrunk to $36 \times 36$. A *motion* stream gets the
+       normalised frame difference $\dfrac{I(t+1) - I(t)}{I(t+1) + I(t)}$; an
        *appearance* stream gets the gray frame.
     2. **Attention**: the appearance stream produces a soft spatial mask that
        re-weights the motion stream twice, so motion is read mostly where the
@@ -348,18 +348,18 @@ def _():
 
 @app.cell
 def _():
-    mo.md("""
+    mo.md(r"""
     ### PhysNet (Yu et al., 2019)
 
     A published 3-D convolutional encoder-decoder for pulse from video, also on the
     **gray channel only**.
 
-    1. **Input**: the whole gray clip as a video volume (time x 96 x 96).
+    1. **Input**: the whole gray clip as a video volume ($T \times 96 \times 96$).
     2. **Encoder**: 3-D convolutions mix space and time together; max-pooling halves
        the space, and twice also the time (4x shorter).
     3. **Decoder**: two transposed convolutions along time restore the original
        frame count.
-    4. **Output**: average over space, then a 1x1 convolution gives the breathing
+    4. **Output**: average over space, then a $1 \times 1$ convolution gives the breathing
        trace directly. No onset head, so inhale events are found by DSP.
     """)
     return
@@ -383,11 +383,11 @@ def _():
 
 @app.cell
 def _():
-    mo.md("""
+    mo.md(r"""
     ### Pixel (non-learned floor)
 
     No training and no thermistor. Mean optical flow over the crop gives one
-    (x, y) velocity per frame; both are band-passed to 1-15 Hz, projected on their
+    $(x, y)$ velocity per frame; both are band-passed to 1-15 Hz, projected on their
     dominant direction (first principal axis), integrated to a displacement and
     band-passed again. The sign is unknown, so it is fixed afterwards using only
     the traces themselves. Anything a network does better than this is not just
@@ -518,10 +518,10 @@ def _():
 
 @app.cell
 def _():
-    mo.md("""
+    mo.md(r"""
     ## 6. Ablation: what the network uses
 
-    For the full network, one 16 x 16 patch of one channel at a time is replaced by
+    For the full network, one $16 \times 16$ patch of one channel at a time is replaced by
     the training mean and the drop in event F1 is measured. A dark region is not
     needed, not necessarily uninformative: channels can compensate for each other.
     """)
@@ -593,10 +593,11 @@ def _(start: mo.ui.slider, test_clip: results.TestClip, truth: pd.DataFrame):
 
 @app.cell
 def _():
-    mo.md("""
+    mo.md(r"""
     ## 8. Is breathing rate sampled evenly? (training set)
 
-    Each breath's rate is 1 / (time to the next inhalation). (a) Share of each
+    Each breath's rate is $1 / \Delta t$, with $\Delta t$ the time to the next
+    inhalation. (a) Share of each
     recording's breaths per rate bin; the pooled share of *time* (dotted) is what
     random training windows see, since fast breaths are short. (b) The same per
     video, part 2 dashed: one colour per recording, so the spread between a pair is
@@ -631,7 +632,7 @@ def _():
 
 @app.cell
 def _():
-    mo.md("""
+    mo.md(r"""
     ## 9. The test set by breathing rate
 
     Every thermistor breath is binned by its own rate; rows are the two test groups
@@ -642,7 +643,7 @@ def _():
     (17 ms); dotted is chance, the same head events circularly shifted.
     **Local F1**: misses binned by the breath's rate, false events by the
     thermistor's rate at that time; from the head, and next to it from DSP on the
-    trace (the only DSP column, kept as a comparison). **Waveform correlation**: Pearson r of the
+    trace (the only DSP column, kept as a comparison). **Waveform correlation**: Pearson $r$ of the
     trace against the filtered thermistor in 3 s windows (dots), binned means as
     lines. **Rate distribution**: where each recording's breaths fall.
     """)
@@ -668,13 +669,13 @@ def _():
 
 @app.cell
 def _():
-    mo.md("""
+    mo.md(r"""
     ## 10. Out of distribution: the side camera
 
     A second rig films the face from the side: three sessions (13, 14, 15), two
     clips each, with the same nostril thermistor. Zephyr never trained on it.
     Below, two face test clips and two side clips: the full frame with the crop
-    (orange), the 96 x 96 crop the network sees, and the filtered thermistor over
+    (orange), the $96 \times 96$ crop the network sees, and the filtered thermistor over
     the excerpt chosen at the top (same amplitude scale in every panel). The side
     view shows the nose in profile, and those mice breathe slower (about 2 Hz,
     against about 5 Hz on the face rig).
@@ -710,14 +711,14 @@ def _(start: mo.ui.slider):
 
 @app.cell
 def _():
-    mo.md("""
+    mo.md(r"""
     ### The thermistor itself
 
     Six features of every thermistor recording, for the 32 training clips, the 24
     test clips and the 6 side clips. Each clip is placed by its distance from the
-    training clips in robust z (median and MAD of the training set; log10 for
+    training clips in robust $z$ (median and MAD of the training set; $\log_{10}$ for
     amplitude and resolution, which span decades); the grey band is the training
-    clips' usual range (2 z either side). The side clips breathe about twice as
+    clips' usual range ($\pm 2$ robust $z$). The side clips breathe about twice as
     slowly, with much more regular intervals, and a rate outside anything the
     network trained on. Signal to noise is the 0.5-15 Hz against the 25-100 Hz power
     of the filtered trace; breath size is each breath's peak-to-trough range.
@@ -743,7 +744,7 @@ def _(thermistor_table: pd.DataFrame):
 
 @app.cell
 def _():
-    mo.md("""
+    mo.md(r"""
     Four kinds of network, scored on what each could see (one dot per clip):
 
     1. **Face only**: the face benchmark network. Near-perfect on held-out face
@@ -759,10 +760,10 @@ def _():
     4. **PhysNet (DSP)**: PhysNet trained the same way, on the same two pairs of
        side sessions with the same training budget, on the gray channel as in the
        benchmark. It has no onset head, so its inhale F1 is DSP on its trace. It
-       does not learn this rig at all: correlation about 0.05 even on the
-       sessions it trained on, against about 0.78 for Zephyr. Not for lack of
-       training: on the face rig the same PhysNet reaches 0.67 after one epoch
-       and 0.95 by epoch 50. Most likely the profile view's nostril motion is
+       does not learn this rig at all: correlation $r \approx 0.05$ even on the
+       sessions it trained on, against $r \approx 0.78$ for Zephyr. Not for lack of
+       training: on the face rig the same PhysNet reaches $r = 0.67$ after one epoch
+       and $0.95$ by epoch 50. Most likely the profile view's nostril motion is
        too small to find in raw gray pixels, where Zephyr is given frame
        difference and optical flow; this is untested.
 
