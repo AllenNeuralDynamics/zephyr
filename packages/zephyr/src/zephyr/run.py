@@ -1,6 +1,6 @@
-"""Run a fold or an experiment: train each (fold, seed), then score its test groups.
+"""Run an experiment: train each of its (fold, seed), then score the fold's test groups.
 
-Each (fold, seed) trains into ``{output_dir}/{fold stem}/seed-{seed}/``, which receives
+Each (fold, seed) trains into ``{output_dir}/{fold name}/seed-{seed}/``, which receives
 the resolved config, training video list, checkpoints and ``evaluation.json``. Machine
 settings (device, precision, workers) come from the experiment or CLI, never a fold:
 they change how fast a result arrives, not what it is. What is trained and how it is
@@ -10,11 +10,10 @@ CLI
 ---
     zephyr run examples/experiment.toml
     zephyr run examples/experiment.toml --smoke
-    zephyr run examples/fold.toml --cache data/features-example --seeds 1
+    zephyr run examples/experiment.toml --folds fold --seeds 1
 """
 
 import argparse
-import tomllib
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -28,9 +27,8 @@ from .train import ZEPHYR, Architecture, Machine, train_fold
 
 @dataclass(frozen=True)
 class Runner:
-    """What the config files load as, what trains, and how checkpoints load."""
+    """What the experiment file loads as, what trains, and how checkpoints load."""
 
-    fold: type[Fold] = Fold
     experiment: type[Experiment] = Experiment
     architecture: Callable[[Fold], Architecture] = lambda fold: ZEPHYR
     loader: Loader = load_checkpoint
@@ -46,7 +44,7 @@ def smoke_fold(fold: Fold) -> Fold:
 
 
 def run_fold(
-    fold_path: Path,
+    fold: Fold,
     seed: int,
     run_dir: Path,
     features_dir: Path,
@@ -57,7 +55,6 @@ def run_fold(
     runner: Runner = ZEPHYR_RUNNER,
 ) -> None:
     """Train one fold with one seed, then evaluate its test groups."""
-    fold = load(runner.fold, fold_path)
     if smoke:
         fold = smoke_fold(fold)
     if fold.init_from is not None and not fold.init_from.is_file():
@@ -112,7 +109,10 @@ def choose_machine(args: argparse.Namespace, defaults: dict) -> Machine:
 
 def main(argv: list[str] | None = None, *, runner: Runner = ZEPHYR_RUNNER) -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.add_argument("config", type=Path, help="Experiment or fold TOML file.")
+    parser.add_argument("config", type=Path, help="Experiment TOML file.")
+    parser.add_argument(
+        "--folds", nargs="+", help="Run only the folds with these names (default: all)."
+    )
     parser.add_argument(
         "--cache", type=Path, help="Feature cache (default: the experiment's)."
     )
@@ -125,7 +125,7 @@ def main(argv: list[str] | None = None, *, runner: Runner = ZEPHYR_RUNNER) -> No
         "--seeds",
         type=int,
         nargs="+",
-        help="Seeds to run (default: the experiment's; 0 for a bare fold).",
+        help="Seeds to run (default: the experiment's).",
     )
     parser.add_argument("--device", help="Default: the experiment's, else cuda if any.")
     parser.add_argument("--amp", choices=["bf16", "fp16", "off"])
@@ -143,30 +143,19 @@ def main(argv: list[str] | None = None, *, runner: Runner = ZEPHYR_RUNNER) -> No
     )
     args = parser.parse_args(argv)
 
-    config_path = args.config.resolve()
-    with config_path.open("rb") as handle:
-        is_experiment = "folds" in tomllib.load(handle)
-
-    if is_experiment:
-        experiment = load(runner.experiment, config_path)
-        folds = experiment.folds
-        seeds = args.seeds or experiment.seeds
-        features_dir = args.cache or experiment.features_dir
-        output_dir = args.output_dir or experiment.output_dir
-        defaults = {
-            "device": experiment.device,
-            "amp": experiment.amp,
-            "num_workers": experiment.num_workers,
-        }
-    else:
-        load(runner.fold, config_path)  # validate before any work starts
-        folds = [config_path]
-        seeds = args.seeds or [0]
-        features_dir = args.cache
-        output_dir = args.output_dir or Path("runs")
-        defaults = {}
-        if features_dir is None:
-            raise SystemExit("running a bare fold needs --cache")
+    experiment = load(runner.experiment, args.config)
+    try:
+        folds = experiment.folds(args.folds)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    seeds = args.seeds or experiment.seeds
+    features_dir = args.cache or experiment.features_dir
+    output_dir = args.output_dir or experiment.output_dir
+    defaults = {
+        "device": experiment.device,
+        "amp": experiment.amp,
+        "num_workers": experiment.num_workers,
+    }
 
     machine = choose_machine(args, defaults)
     if args.smoke and args.output_dir is None:
@@ -174,12 +163,12 @@ def main(argv: list[str] | None = None, *, runner: Runner = ZEPHYR_RUNNER) -> No
         # the real directory would later be reported as the trained model.
         output_dir = output_dir / "smoke"
 
-    for fold_path in folds:
+    for fold in folds:
         for seed in seeds:
-            run_dir = output_dir.resolve() / fold_path.stem / f"seed-{seed}"
-            print(f"\n=== {fold_path.stem}  seed {seed}  -> {run_dir}", flush=True)
+            run_dir = output_dir.resolve() / fold.name / f"seed-{seed}"
+            print(f"\n=== {fold.name}  seed {seed}  -> {run_dir}", flush=True)
             run_fold(
-                fold_path,
+                fold,
                 seed,
                 run_dir,
                 features_dir.resolve(),

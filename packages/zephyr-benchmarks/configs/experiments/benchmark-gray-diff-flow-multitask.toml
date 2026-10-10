@@ -1,8 +1,27 @@
 # Five seeds of the benchmark fold.  A full run needs a GPU:
 #   zephyr run packages/zephyr-benchmarks/configs/experiments/benchmark-gray-diff-flow-multitask.toml
-folds = ["../folds/benchmark-gray-diff-flow-multitask.toml"]
 seeds = [17, 42, 101, 202, 314]
 output_dir = "../../../../runs/benchmark-gray-diff-flow-multitask"
 features_dir = "../../../../data/features-v2"
 device = "cuda"
 amp = "bf16"
+
+[[fold]]
+name = "benchmark-gray-diff-flow-multitask"
+# The high-F1 benchmark network: gray + diff + flow input, signal + onset
+# objective, trained on every labelled face clip with a fixed budget (no
+# validation, no early stopping) and scored on two test groups.
+[[fold.train]]
+clips = "../clips/face_train.toml"
+
+[fold.test]
+new_animals = "../clips/face_test_new_animals.toml"
+known_animals_new_date = "../clips/face_test_known_animals_new_date.toml"
+
+[fold.train_params]
+channels = "gray+diff+flow"
+epochs = 200
+steps_per_epoch = 200
+val_fraction = 0
+w_corr = 1.0
+w_onset = 0.5

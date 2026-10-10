@@ -1,15 +1,15 @@
 """Benchmark baselines for the manuscript, run on the same fold as the networks.
 
-A fold file supplies the clips: its training lists fit each baseline and its
-test groups score it, so every method sees the protocol the networks do.
+A fold of an experiment supplies the clips: its training lists fit each baseline and
+its test groups score it, so every method sees the protocol the networks do.
 Network baselines (TS-CAN, PhysNet) are trained with ``zephyr-benchmarks run`` on
 a fold whose ``train_params.arch`` names them.
 
 CLI
 ---
-    zephyr-benchmarks pixel   FOLD --cache DIR [--methods flow pca snr]
-    zephyr-benchmarks facemap FOLD --cache DIR [--n-components 100]
-    zephyr-benchmarks timing  FOLD --cache DIR --checkpoint NAME=best.pt ...
+    zephyr-benchmarks pixel   EXPERIMENT [--fold NAME] [--methods flow pca snr]
+    zephyr-benchmarks facemap EXPERIMENT [--fold NAME] [--n-components 100]
+    zephyr-benchmarks timing  EXPERIMENT [--fold NAME] --checkpoint NAME=best.pt ...
     zephyr-benchmarks collect --runs EXPERIMENT_OUTPUT_DIR
 """
 
@@ -22,7 +22,7 @@ import numpy as np
 from zephyr import features
 from zephyr.config import Fold, load
 
-from .config import BenchmarkFold
+from .config import BenchmarkExperiment
 
 METRICS = ("correlation", "inhale_f1", "exhale_f1", "kl_ibi")
 DEFAULT_OUT = Path("benchmarks/baselines")
@@ -295,8 +295,13 @@ def main(argv: list[str] | None = None) -> None:
     for name in ("pixel", "facemap", "timing"):
         command = sub.add_parser(name)
         command.add_argument("--out-root", type=Path, default=DEFAULT_OUT)
-        command.add_argument("fold", type=Path)
-        command.add_argument("--cache", type=Path, required=True)
+        command.add_argument("experiment", type=Path)
+        command.add_argument(
+            "--fold", help="Which of its folds (needed when it has several)."
+        )
+        command.add_argument(
+            "--cache", type=Path, help="Feature cache (default: the experiment's)."
+        )
         if name == "pixel":
             command.add_argument("--methods", nargs="+", default=["flow", "pca", "snr"])
             command.add_argument("--bin", type=int, default=2)
@@ -328,7 +333,17 @@ def main(argv: list[str] | None = None) -> None:
         collect(args.out_root, args.runs)
         return
 
-    fold = load(BenchmarkFold, args.fold)
+    experiment = load(BenchmarkExperiment, args.experiment)
+    if args.fold is None and len(experiment.fold) > 1:
+        raise SystemExit(
+            f"{args.experiment} has folds {[f.name for f in experiment.fold]}; "
+            "choose one with --fold"
+        )
+    try:
+        (fold,) = experiment.folds(None if args.fold is None else [args.fold])
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    args.cache = args.cache or experiment.features_dir
     if args.command == "timing":
         checkpoints = {
             name: Path(path)

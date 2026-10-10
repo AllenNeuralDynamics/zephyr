@@ -3,10 +3,30 @@
 #   zephyr run examples/experiment.toml --smoke     # always first
 #   zephyr run examples/experiment.toml
 
-folds = ["fold.toml"]
 seeds = [42]                      # each fold runs once per seed
 output_dir = "../runs/example"
 features_dir = "../data/features-example"
 # Machine settings are optional; CLI flags override them.
 # device = "cuda"
 # amp = "bf16"
+
+[[fold]]
+name = "fold"
+# Example fold: train on recordings 1 and 2 of clips.toml, score recording 3.
+# A recording never goes to both sides; loading the fold refuses it if it does.
+# Every [train_params] key is optional (see TrainParams in zephyr.config).
+
+[[fold.train]]
+clips = "clips.toml"
+groups = ["1", "2"]               # optional: only these recordings
+
+[fold.test]                       # report group name -> clips to score
+held_out = { clips = "clips.toml", groups = ["3"] }
+
+[fold.train_params]
+channels = "gray+diff+flow"
+epochs = 20
+val_fraction = 0                  # no validation tail: train the full budget
+
+[fold.train_params.augmentation]
+time_stretch = 3.0

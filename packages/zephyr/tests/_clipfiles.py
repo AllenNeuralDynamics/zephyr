@@ -43,7 +43,9 @@ def write_list(
 def write_fold(
     path: Path, train: list[tuple[Path, float]], test: dict[str, Path]
 ) -> Path:
-    lines = [
+    """A fold on its own, for ``load(Fold, ...)``: experiments hold folds inline,
+    so this only exercises the fold's own checks."""
+    lines = [f'name = "{path.stem}"\n'] + [
         f'[[train]]\nclips = "{_rel(clips, path.parent)}"\nweight = {weight}\n'
         for clips, weight in train
     ]

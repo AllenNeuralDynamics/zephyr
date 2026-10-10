@@ -6,9 +6,9 @@ are zephyr's own, taking the same files plus ``train_params.arch``.
 
 CLI
 ---
-    zephyr-benchmarks run <fold.toml | experiment.toml> [--smoke]
+    zephyr-benchmarks run <experiment.toml> [--smoke] [--folds <name>...]
     zephyr-benchmarks evaluate --checkpoint <best.pt> --clips <list.toml>... --cache <dir>
-    zephyr-benchmarks pixel|facemap|timing <fold.toml> --cache <dir> ...
+    zephyr-benchmarks pixel|facemap|timing <experiment.toml> [--fold <name>] ...
     zephyr-benchmarks collect --runs <dir>
     zephyr-benchmarks report --runs <dir> --out <dir>
     zephyr-benchmarks occlusion --checkpoint <best.pt> --clips <list.toml>... --cache <dir> --out <file.npz>

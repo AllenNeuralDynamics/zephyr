@@ -5,7 +5,7 @@ data, and the methods it is compared against: TS-CAN, PhysNet, pixel methods
 and a Facemap-style ridge regression. Imported as `zephyr.benchmarks`; run as
 `zephyr-benchmarks <subcommand>`. Not released: it lives in this workspace.
 
-- `configs/` holds every clip list, fold and experiment of the benchmark.
+- `configs/` holds every clip list and experiment (with its folds inline) of the benchmark.
 - `zephyr-benchmarks run` and `evaluate` are zephyr's own `run` and `evaluate`,
   taking the same files plus `train_params.arch` (`zephyr`, `tscan` or
   `physnet`), so every network trains and scores under one protocol. zephyr
@@ -47,9 +47,8 @@ heads: the breathing trace (correlation loss, weight 1.0) and inhalation onsets
 budget of 200 epochs x 200 steps, with no validation split and no early
 stopping. It is then scored on the 12 test sessions, reported as two groups of
 6: animals not seen in training, and known animals recorded on new dates. The
-recipe is `configs/folds/benchmark-gray-diff-flow-multitask.toml`, run with
-seeds 17, 42, 101, 202 and 314 by
-`configs/experiments/benchmark-gray-diff-flow-multitask.toml`.
+recipe is the fold of `configs/experiments/benchmark-gray-diff-flow-multitask.toml`,
+run with seeds 17, 42, 101, 202 and 314.
 
 1. **Download the face data** into `data/train/` and `data/test/`: the first
    three commands under [Dataset](#dataset). The `side_right` data is not
@@ -111,7 +110,7 @@ reproduces their stored results exactly.
 
 ## Comparison methods
 
-- **TS-CAN and PhysNet** (`configs/folds/baseline-{tscan,physnet}.toml`, run by
+- **TS-CAN and PhysNet** (the `baseline-tscan` and `baseline-physnet` folds of
   `configs/experiments/baselines-nets.toml`) train through zephyr's own loop on
   `channels = "gray"`; see `docs/baselines-report.md`:
 
@@ -119,13 +118,14 @@ reproduces their stored results exactly.
   uv run zephyr-benchmarks run $C/experiments/baselines-nets.toml
   ```
 
-- **Pixel and Facemap-style baselines** take a fold file so they see the same
+- **Pixel and Facemap-style baselines** take an experiment (and `--fold <name>`
+  when it has several) so they see the same
   train/test clips; `timing` times every method per clip and `collect` tables
   them all with the runs:
 
   ```bash
-  uv run zephyr-benchmarks pixel $C/folds/benchmark-gray-diff-flow-multitask.toml --cache data/features-v2
-  uv run zephyr-benchmarks facemap $C/folds/benchmark-gray-diff-flow-multitask.toml --cache data/features-v2
+  uv run zephyr-benchmarks pixel $C/experiments/benchmark-gray-diff-flow-multitask.toml
+  uv run zephyr-benchmarks facemap $C/experiments/benchmark-gray-diff-flow-multitask.toml
   uv run zephyr-benchmarks collect --runs runs/baselines-nets
   ```
 
@@ -135,8 +135,8 @@ reproduces their stored results exactly.
 ## Other camera view
 
 `configs/clips/ood_side_right.toml` lists the three `side_right` sessions;
-`configs/folds/ood-hold{13,14,15}.toml` each select two of them with
+the `ood-hold{13,14,15}` folds of `configs/experiments/ood-finetune.toml` each select two of them with
 `groups = [...]` to fine-tune the benchmark network (`init_from`) on the face
 data (weight 0.5) plus those sessions (0.5), and score the held-out session and
-both face groups. `configs/experiments/ood-finetune.toml` runs all three.
+both face groups; the experiment runs all three (`--folds ood-hold15` runs one).
 Preprocess `configs/clips/ood_side_right.toml` first.

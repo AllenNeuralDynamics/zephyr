@@ -191,7 +191,7 @@ class FoldTests(_Dataset):
         clips = write_list(self.root / "c" / "all.toml", videos)
         path = self.root / "f.toml"
         path.write_text(
-            '[[train]]\nclips = "c/all.toml"\n'
+            'name = "f"\n[[train]]\nclips = "c/all.toml"\n'
             f"groups = {[str(g) for g in train_groups]}\n\n"
             f'[test]\nheld = {{ clips = "c/all.toml", groups = '
             f"{[str(g) for g in test_groups]} }}\n"
@@ -214,19 +214,44 @@ class FoldTests(_Dataset):
         with self.assertRaisesRegex(ValueError, r"groups \['9'\] are not in the list"):
             load(Fold, self._one_list_fold([1, 2], [9]))
 
-    def test_experiment_loads_its_folds_and_rejects_duplicate_seeds(self):
+    def _experiment(self, names=("a",), seeds=(1, 2)) -> Path:
+        """An experiment with one inline fold per name, all alike."""
         a = touch_clip(self.root / "d", 1, 1)
         b = touch_clip(self.root / "d", 2, 1)
-        self._fold([a], [b])
+        write_list(self.root / "c" / "a.toml", [a])
+        write_list(self.root / "c" / "b.toml", [b])
+        blocks = "".join(
+            f'\n[[fold]]\nname = "{name}"\n[[fold.train]]\nclips = "c/a.toml"\n'
+            '[fold.test]\nheld = "c/b.toml"\n'
+            for name in names
+        )
         exp = self.root / "e.toml"
         exp.write_text(
-            'folds = ["f.toml"]\nseeds = [1, 2]\n'
-            'output_dir = "out"\nfeatures_dir = "feat"\n'
+            f"seeds = {list(seeds)}\n"
+            'output_dir = "out"\nfeatures_dir = "feat"\n' + blocks
         )
-        self.assertEqual(load(Experiment, exp).output_dir, self.root / "out")
-        exp.write_text(exp.read_text().replace("[1, 2]", "[1, 1]"))
+        return exp
+
+    def test_experiment_holds_its_folds_inline(self):
+        experiment = load(Experiment, self._experiment(names=("a", "b")))
+        self.assertEqual(experiment.output_dir, self.root / "out")
+        self.assertEqual([f.name for f in experiment.folds()], ["a", "b"])
+        self.assertEqual([f.name for f in experiment.folds(["b"])], ["b"])
+        (fold,) = experiment.folds(["a"])
+        self.assertEqual(list(fold.test), ["held"])
+        self.assertEqual(fold.train_clips()[0][0].group, "1")
+        with self.assertRaisesRegex(ValueError, "no fold named"):
+            experiment.folds(["c"])
+
+    def test_experiment_rejects_duplicate_seeds_and_fold_names(self):
         with self.assertRaisesRegex(ValueError, "distinct"):
-            load(Experiment, exp)
+            load(Experiment, self._experiment(seeds=(1, 1)))
+        with self.assertRaisesRegex(ValueError, "share a name"):
+            load(Experiment, self._experiment(names=("a", "a")))
+
+    def test_fold_name_must_be_a_plain_file_name(self):
+        with self.assertRaisesRegex(ValueError, "plain file name"):
+            load(Experiment, self._experiment(names=("../escape",)))
 
 
 if __name__ == "__main__":

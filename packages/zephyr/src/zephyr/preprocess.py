@@ -107,9 +107,14 @@ TARGET_STATS = (
 
 
 def _write_target(clip: ResolvedClip, files: dict[str, Path], out_times, sigma_s):
-    """Targets and onset events for a labelled clip; returns their stats."""
+    """Target and event set of a labelled clip; returns their stats.
+
+    The events are the clip's ``[events]`` set (by default ``peak_detection``),
+    at the thermistor's own time resolution, never snapped to *out_times*.
+    """
     target = load_target(clip.thermistor, out_times)
-    heatmap = onset_heatmap(out_times, target.onset_times, sigma_s=sigma_s)
+    found = clip.events.for_clip(clip, (out_times[0], out_times[-1]))
+    heatmap = onset_heatmap(out_times, found.inhale, sigma_s=sigma_s)
     pd.DataFrame(
         {
             "time": out_times,
@@ -119,15 +124,16 @@ def _write_target(clip: ResolvedClip, files: dict[str, Path], out_times, sigma_s
     ).to_parquet(files["target"], index=False)
     np.savez(
         files["events"],
-        onset_times=target.onset_times,
-        offset_times=target.offset_times,
+        onset_times=found.inhale,
+        offset_times=found.exhale,
+        excluded=found.excluded,
     )
     return dict(
         zip(
             TARGET_STATS,
             (
-                len(target.onset_times),
-                float(len(target.onset_times) / (out_times[-1] - out_times[0])),
+                len(found.inhale),
+                float(len(found.inhale) / (out_times[-1] - out_times[0])),
                 target.native_fs,
                 target.scale,
                 target.offset,
@@ -142,17 +148,18 @@ def preprocess_clip(
     """Preprocess one clip into *cache_dir* and return its entry.
 
     Does nothing for a clip already cached; rebuilds only the target when the
-    arrays are cached but the clip's thermistor changed.
+    arrays are cached but the clip's thermistor or event set changed.
     """
     started = time_module.perf_counter()
     key = features.cache_key(clip, params)
     files = features.paths(cache_dir, features.prefix(clip, params))
     thermistor = clip.thermistor.as_posix() if clip.thermistor else None
+    labels = features.events_identity(clip) if thermistor else None
 
     if files["sidecar"].is_file():
         sidecar = json.loads(files["sidecar"].read_text())
         if sidecar["key"] == key:
-            if sidecar["thermistor"] != thermistor:
+            if (sidecar["thermistor"], sidecar.get("events")) != (thermistor, labels):
                 # Arrays are reusable; only the thermistor-derived target is not.
                 stats = {
                     k: v for k, v in sidecar["stats"].items() if k not in TARGET_STATS
@@ -161,7 +168,7 @@ def preprocess_clip(
                     stats |= _write_target(
                         clip, files, np.load(files["times"]), params.onset_sigma_s
                     )
-                sidecar |= {"stats": stats, "thermistor": thermistor}
+                sidecar |= {"stats": stats, "thermistor": thermistor, "events": labels}
                 files["sidecar"].write_text(json.dumps(sidecar, indent=2))
             return features.lookup(clip, params, cache_dir)
 
@@ -263,6 +270,7 @@ def preprocess_clip(
             {
                 "key": key,
                 "thermistor": thermistor,
+                "events": labels,
                 "n_frames": n_written,
                 "n_output": len(out_times),
                 "stats": stats,

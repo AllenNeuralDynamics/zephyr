@@ -105,6 +105,61 @@ def write_boxes(
     path.write_text(tomlkit.dumps(doc))
 
 
+def update_clip_list(
+    path: Path,
+    *,
+    events: dict[Path, tuple[str, dict[str, float]]] | None = None,
+    excluded: dict[Path, list[tuple[float, float]]] | None = None,
+    add: list[Path] | None = None,
+    remove: set[Path] | None = None,
+) -> None:
+    """Edit *path* in place: set each clip's ``events = {method, params}`` (keyed
+    by resolved video path), set each clip's ``excluded`` spans (removing the key when
+    there are none), append the *add* videos and delete the *remove* ones.
+
+    Like :func:`write_boxes` this keeps every comment and other field.  The result
+    is validated before it is written.
+    """
+    path = path.resolve()
+    doc = tomlkit.parse(path.read_text())
+    clips = doc["clip"]
+    gone = {Path(v).resolve() for v in (remove or ())}
+
+    def resolved(entry) -> Path:
+        return (path.parent / str(entry["video"])).resolve()
+
+    for index in reversed(range(len(clips))):
+        if resolved(clips[index]) in gone:
+            del clips[index]
+    present = {resolved(entry) for entry in clips}
+    for video in add or []:
+        video = Path(video).resolve()
+        if video not in present:
+            entry = tomlkit.table()
+            entry.add("video", _relative(video, path.parent))
+            clips.append(entry)
+            present.add(video)
+    for entry in clips:
+        spans = (excluded or {}).get(resolved(entry))
+        if spans is not None:
+            if spans:
+                entry["excluded"] = [[float(a), float(b)] for a, b in spans]
+            elif "excluded" in entry:
+                del entry["excluded"]
+        chosen = (events or {}).get(resolved(entry))
+        if chosen is None:
+            continue
+        method, params = chosen
+        inline = tomlkit.inline_table()
+        inline["method"] = method
+        if params:
+            inline["params"] = tomlkit.inline_table()
+            inline["params"].update({k: float(v) for k, v in params.items()})
+        entry["events"] = inline
+    ClipList.model_validate(doc.unwrap(), context={"base": path.parent})
+    path.write_text(tomlkit.dumps(doc))
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Create and maintain clip lists.")
     sub = parser.add_subparsers(dest="command", required=True)

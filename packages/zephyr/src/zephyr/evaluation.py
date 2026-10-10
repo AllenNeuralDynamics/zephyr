@@ -13,6 +13,7 @@ import numpy as np
 import pandas as pd
 from scipy.optimize import linear_sum_assignment
 
+from .events import in_spans
 from .signal import (
     BREATHING_SIGNAL_COLUMN,
     CANONICAL_BREATHING_SAMPLING_RATE,
@@ -25,10 +26,18 @@ from .signal import (
 # Score dataclass
 # ---------------------------------------------------------------------------
 
-EVENT_TOLERANCE_S: float = 0.017
-"""Default tolerance (seconds) for matching predicted events to GT events.
-A predicted event within this window of a GT event counts as a true positive.
+EVENT_TOLERANCE_S: float = 1.0 / CANONICAL_BREATHING_SAMPLING_RATE
+"""Default tolerance (seconds) for matching predicted events to GT events: one
+60 Hz frame (16.7 ms) either side.
+
+GT events are at the thermistor's own resolution while predictions sit on 60 Hz
+frames, so this accepts exactly the two frames that bracket the true event,
+wherever it falls between them; the next frame out is always more than a frame
+away.
 """
+
+MATCH_SLACK_S: float = 1e-9
+"""Added to the tolerance when matching, so an exact tie is always a match."""
 
 
 @dataclass
@@ -61,7 +70,8 @@ class Score:
     """F1 score for inhalation-onset events.
 
     A predicted event is a true positive if it falls within
-    ``EVENT_TOLERANCE_S`` (default 17 ms) of a GT inhalation onset.
+    ``EVENT_TOLERANCE_S`` (one 60 Hz frame, so one of the two frames bracketing
+    it) of a GT inhalation onset.
     Matching is an optimal one-to-one assignment (Hungarian algorithm);
     each GT event may be matched at most once.
     Range [0, 1].  Higher is better.
@@ -145,7 +155,10 @@ def match_events(
     delta = np.abs(
         np.asarray(truth_times_s)[:, None] - np.asarray(predicted_times_s)[None, :]
     )
-    feasible = delta <= tolerance_s
+    # Times on two grids of the same rate sit whole frames apart, so with a
+    # one-frame tolerance a distance of exactly one frame must not be left to
+    # floating-point rounding.
+    feasible = delta <= tolerance_s + MATCH_SLACK_S
     if not feasible.any():
         return []
 
@@ -231,21 +244,37 @@ def kl_ibi(
     truth_event_times_s: np.ndarray,
     predicted_event_times_s: np.ndarray,
     bins: int = 20,
+    *,
+    excluded_s: np.ndarray | None = None,
 ) -> float:
     """KL divergence D_KL(truth ‖ predicted) between inter-event-interval
     distributions.
 
-    Intervals are the first differences of the event times.  Both interval
-    sets are binned on a common grid spanning their joint range; histograms
-    are smoothed with a small epsilon so the divergence is always finite.
+    Intervals are the first differences of the event times; one that overlaps
+    an *excluded_s* span is dropped, since the events of the gap are unknown.
+    Both interval sets are binned on a common grid spanning their joint range;
+    histograms are smoothed with a small epsilon so the divergence is always
+    finite.
 
-    Returns NaN when either side has fewer than two events (no intervals).
+    Returns NaN when either side has no interval left.
     """
-    if len(truth_event_times_s) < 2 or len(predicted_event_times_s) < 2:
-        return float("nan")
 
-    truth_ibi = np.diff(truth_event_times_s)
-    predicted_ibi = np.diff(predicted_event_times_s)
+    def intervals(times):
+        times = np.asarray(times, float)
+        if len(times) < 2:
+            return np.empty(0)
+        start, stop = times[:-1], times[1:]
+        keep = np.ones(len(start), bool)
+        for lo, hi in np.asarray(
+            excluded_s if excluded_s is not None else [], float
+        ).reshape(-1, 2):
+            keep &= ~((start <= hi) & (stop >= lo))
+        return (stop - start)[keep]
+
+    truth_ibi = intervals(truth_event_times_s)
+    predicted_ibi = intervals(predicted_event_times_s)
+    if len(truth_ibi) == 0 or len(predicted_ibi) == 0:
+        return float("nan")
 
     lo = min(truth_ibi.min(), predicted_ibi.min())
     hi = max(truth_ibi.max(), predicted_ibi.max())
@@ -274,6 +303,7 @@ def score_clip(
     predicted_onset_times_s: np.ndarray | None = None,
     predicted_offset_times_s: np.ndarray | None = None,
     tolerance_s: float = EVENT_TOLERANCE_S,
+    excluded_s: np.ndarray | None = None,
 ) -> Score:
     """Compute all metrics for one clip and assemble a :class:`Score`.
 
@@ -302,6 +332,11 @@ def score_clip(
         explicitly, and are otherwise detected from the predicted signal.
     tolerance_s:
         Event-matching tolerance passed to the event metrics.
+    excluded_s:
+        Spans ``(n, 2)`` (start, end in seconds) left out of every metric:
+        their samples are not correlated, events inside them on either side
+        are dropped, and inter-event intervals reaching into them are not
+        compared.  From a clip's event set (see :mod:`zephyr.events`).
 
     Returns
     -------
@@ -337,7 +372,10 @@ def score_clip(
         truth_thermistor[TIME_COLUMN].to_numpy(dtype=float),
         truth_thermistor[BREATHING_SIGNAL_COLUMN].to_numpy(dtype=float),
     )
-    corr = zero_lag_correlation(truth_on_predicted, predicted)
+    spans = np.empty((0, 2)) if excluded_s is None else np.asarray(excluded_s, float)
+    spans = spans.reshape(-1, 2)
+    scored = ~in_spans(predicted_time, spans)
+    corr = zero_lag_correlation(truth_on_predicted[scored], predicted[scored])
 
     # ── Events ───────────────────────────────────────────────────────────
     # Defaults for whichever side/type isn't overridden below. Indices are
@@ -371,9 +409,15 @@ def score_clip(
         else predicted_time[predicted_off_default]
     )
 
+    def kept(times):
+        times = np.asarray(times, float)
+        return times[~in_spans(times, spans)]
+
+    truth_on_s, truth_off_s = kept(truth_on_s), kept(truth_off_s)
+    predicted_on_s, predicted_off_s = kept(predicted_on_s), kept(predicted_off_s)
     return Score(
         correlation=corr,
         inhale_f1=event_f1(truth_on_s, predicted_on_s, tolerance_s),
         exhale_f1=event_f1(truth_off_s, predicted_off_s, tolerance_s),
-        kl_ibi=kl_ibi(truth_on_s, predicted_on_s),
+        kl_ibi=kl_ibi(truth_on_s, predicted_on_s, excluded_s=spans),
     )

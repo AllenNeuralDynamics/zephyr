@@ -67,10 +67,10 @@ Specifically, do not:
 Change code only when a setting genuinely does not exist yet (see
 [When code does need to change](#when-code-does-need-to-change)).
 
-## The three file types
+## The two file types
 
 Paths in every file are **relative to the file they are written in**.
-`zephyr schema <dir>` writes JSON schemas of all three for editor validation.
+`zephyr schema <dir>` writes JSON schemas of both for editor validation.
 A misspelt key is an error, never silently ignored. Examples below are from
 `packages/zephyr-benchmarks/configs/`, four levels below the repository root
 where `data/`, `benchmarks/` and `runs/` live.
@@ -104,42 +104,68 @@ box = [228, 85, 96, 96]           # x, y, w, h in target_size pixels
   it existed still match.
 - Put **all sessions of a dataset in one list**; folds select sessions with
   `groups`. Do not make one file per session or per subset.
+- A clip's breathing events (inhale peaks, exhale troughs), which both training
+  (onset head, rate balancing) and scoring use, come from a detector in
+  `zephyr/events.py` run on its thermistor. Without any setting every clip uses
+  `peak_detection` with its defaults. `[events]` (model `EventsSource`) sets
+  `method` (`"adaptive_prominence"`, `"hysteresis_cycles"`, ...) and `params = {...}`
+  for the whole list; a clip's own `events = { method = "...", params = {...} }`,
+  written next to its `box`, overrides it (see
+  [Choosing the event detector](#choosing-the-event-detector)). Detectors work on
+  the thermistor at its own rate, so event times are never snapped to a grid.
+  A clip's `excluded = [[start, end], ...]` (seconds on the thermistor's clock) marks
+  stretches whose events are untrusted: nothing is scored inside them and no
+  training window overlaps them. Changing any of these rebuilds only the targets at
+  the next `preprocess`.
 
-### Fold (`configs/folds/*.toml`, model `Fold`; `BenchmarkFold` in zephyr-benchmarks)
+### Experiment (`configs/experiments/*.toml`, model `Experiment`; `BenchmarkExperiment`)
 
-What trains, what is scored, and how.
+Which seeds run and where, plus its folds inline: each `[[fold]]` block is one
+train/test arrangement (model `Fold`; `BenchmarkFold` in zephyr-benchmarks) --
+what trains, what is scored, and how.
 
 ```toml
+seeds = [42]                      # each fold runs once per seed
+output_dir = "../../../../runs/my-experiment"
+features_dir = "../../../../data/features-v2"
+device = "cuda"                   # machine settings: optional, CLI overrides
+amp = "bf16"
+
+[[fold]]
+name = "ood-hold15"               # its run directory: <output_dir>/ood-hold15/seed-<n>/
 init_from = "../../../../benchmarks/.../best.pt"   # optional: start from these weights
 
-[[train]]
+[[fold.train]]
 clips = "../clips/face_train.toml"
-weight = 0.5                                 # relative share of training windows
+weight = 0.5                      # relative share of training windows
 
-[[train]]
+[[fold.train]]
 clips = "../clips/ood_side_right.toml"
-groups = ["13", "14"]                        # optional: only these recordings
+groups = ["13", "14"]             # optional: only these recordings
 weight = 0.5
 
-[test]                                       # name -> clips; names become report groups
+[fold.test]                       # name -> clips; names become report groups
 ood_held_out = { clips = "../clips/ood_side_right.toml", groups = ["15"] }
 new_animals = "../clips/face_test_new_animals.toml"
 
-[train_params]                               # anything omitted keeps its default
+[fold.train_params]               # anything omitted keeps its default
 epochs = 20
 lr = 1e-4
 
-[train_params.augmentation]
+[fold.train_params.augmentation]
 time_stretch = 1.0
 ```
 
+- Seeds and machine settings belong to the experiment, never to a fold. Fold
+  names must be distinct, plain file names; `zephyr run --folds <name>...`
+  runs only some of them.
 - Every training knob lives in `TrainParams` / `Augmentation` in zephyr's
   `config.py`; read that file for the full list and defaults.
 - `rate_balance` (0 to 1, default 0 = off) draws training windows by their true
   breathing rate, from the clips' stored inhale onsets, over `rate_bins_hz`
   (default 2-15 Hz): each window is weighted by `share(bin) ** -rate_balance`,
-  within each `[[train]]` source. Bins under 1% of windows count as 1%. Helpers
-  are in `zephyr/rates.py`; validation windows are never balanced.
+  within each `[[fold.train]]` source. Bins under 1% of windows count as 1%.
+  Helpers are in `zephyr/rates.py`; validation windows are never balanced.
 - `signal_pool` (default 1 = off) makes the signal head read the TCN's output
   average-pooled by that factor in time and upsampled back to 60 Hz (a smoother
   trace). `onset_input` (`full`, the default, `pooled` or `both`) says what the
@@ -149,30 +175,16 @@ time_stretch = 1.0
 - zephyr-benchmarks' `BenchmarkTrainParams` adds `arch` (`zephyr`, the
   default, `tscan`, `physnet` or `physnet_event`; every arch but `zephyr` needs
   `channels = "gray"` and leaves `signal_pool` / `onset_input` at their
-  defaults) and `tscan_img_size`. zephyr's own `Fold` refuses both keys: a fold naming a
-  comparison network runs only through `zephyr-benchmarks run`.
+  defaults) and `tscan_img_size`. zephyr's own `Fold` refuses both keys: an
+  experiment naming a comparison network runs only through `zephyr-benchmarks run`.
 - Loading refuses leakage (a test clip sharing a video or recording with
   training), unlabelled training clips, clips without boxes, and lists with
   different `[preprocess]` recipes. If a fold fails to load, fix the fold,
   not the validator.
 - `all` is reserved as a test group name.
-- Leave-one-out is one fold file per held-out recording (see
-  `configs/folds/ood-hold{13,14,15}.toml`); they differ only in `groups`.
-
-### Experiment (`configs/experiments/*.toml`, model `Experiment`; `BenchmarkExperiment`)
-
-Which folds run, with which seeds, and where.
-
-```toml
-folds = ["../folds/ood-hold13.toml", "../folds/ood-hold14.toml"]
-seeds = [42]                      # each fold runs once per seed
-output_dir = "../../../../runs/my-experiment"
-features_dir = "../../../../data/features-v2"
-device = "cuda"                   # machine settings: optional, CLI overrides
-amp = "bf16"
-```
-
-Seeds belong to the experiment, never to the fold.
+- Leave-one-out is one `[[fold]]` per held-out recording in one experiment
+  (see `configs/experiments/ood-finetune.toml`); the blocks differ only in
+  `name` and `groups`. Duplicating them is intended: each fold reads on its own.
 
 ## Workflow
 
@@ -188,7 +200,7 @@ uv run zephyr evaluate --checkpoint <best.pt> --clips <a>.toml <b>.toml --cache 
 - `zephyr-benchmarks run` / `evaluate` take the same arguments and are needed
   for folds with any `arch` other than `zephyr`, and for their checkpoints;
   `zephyr evaluate` refuses non-zephyr checkpoints. Baselines and tables:
-  `zephyr-benchmarks pixel|facemap|timing <fold> --cache <dir>`,
+  `zephyr-benchmarks pixel|facemap|timing <experiment> [--fold <name>]`,
   `zephyr-benchmarks collect --runs <dir>`,
   `zephyr-benchmarks report --runs <dir> --out <dir>`.
 - `zephyr-benchmarks occlusion --checkpoint <best.pt> --clips <a>.toml <b>.toml --cache data/features-v2 --out <file.npz>`
@@ -197,7 +209,7 @@ uv run zephyr evaluate --checkpoint <best.pt> --clips <a>.toml <b>.toml --cache 
   `--stride`, `--window-s` are analysis args.
 - **Always smoke-run** (`--smoke`, 1 epoch of 2 steps) before a full run. Smoke
   output goes to `<output_dir>/smoke/` unless `--output-dir` is given.
-- A run writes `<output_dir>/<fold stem>/seed-<n>/` with `config.json`,
+- A run writes `<output_dir>/<fold name>/seed-<n>/` with `config.json`,
   `train_videos.json`, checkpoints and `evaluation.json`. With
   `train_params.save_every = N` it also keeps `epoch-<nnn>.pt` every N epochs,
   in the same form as `best.pt`, so `evaluate --checkpoint` scores one as is.
@@ -209,7 +221,7 @@ uv run zephyr evaluate --checkpoint <best.pt> --clips <a>.toml <b>.toml --cache 
   per training step.
 - Standalone `evaluate` reports each `--clips` list as a group named after its
   file stem (`--name` renames a single list). To score selected `groups`
-  under chosen names, put them in a fold's `[test]` instead.
+  under chosen names, put them in a fold's `[fold.test]` instead.
 - `evaluate` refuses clips a checkpoint (or the checkpoint it was initialised
   from) trained on. Do not work around the refusal.
 - Scoring and training targets go by time, never by sample index: a clip's video
@@ -219,16 +231,44 @@ uv run zephyr evaluate --checkpoint <best.pt> --clips <a>.toml <b>.toml --cache 
   edge value outside its span instead of extrapolating. Correlation against the
   raw thermistor moves by several hundredths for a few ms of misalignment, so
   never compare correlations scored before and after this rule.
+- Truth events come from the clip's cached event set (`evaluate.score_entry`),
+  the same events its target was built from; nothing re-detects them from the
+  raw thermistor. Inside an excluded span nothing is scored and no training
+  window is drawn. Events match within `EVENT_TOLERANCE_S`, one 60 Hz frame
+  (16.7 ms) either side: against exact thermistor times, a predicted event must
+  be on one of the two frames bracketing the true one. Scores from before this
+  rule (truth re-detected on the raw thermistor on its own 60 Hz grid, 17 ms)
+  are not comparable.
+- A cache entry whose event set is stale (made before event sets, or under
+  another `[events]`) is refused as "not in the feature cache". Rebuild its
+  target, without decoding video, with
+  `uv run python scripts/rebuild_targets.py --cache <dir> --clips <lists>`
+  (`--select-fs 30` for `data/features-v2-30hz`; `--dry-run` reports only).
 - To check that a new config means what you intend before training, load it:
-  `uv run python -c "from zephyr.config import load; from zephyr.benchmarks.config import BenchmarkFold; f = load(BenchmarkFold, 'packages/zephyr-benchmarks/configs/folds/x.toml'); print([len(c) for c in f.train_clips()], {k: len(v) for k, v in f.test_clips().items()})"`.
+  `uv run python -c "from zephyr.config import load; from zephyr.benchmarks.config import BenchmarkExperiment; e = load(BenchmarkExperiment, 'packages/zephyr-benchmarks/configs/experiments/x.toml'); print({f.name: ([len(c) for c in f.train_clips()], {k: len(v) for k, v in f.test_clips().items()}) for f in e.fold})"`.
+
+## Choosing the event detector
+
+`uv run zephyr annotate events [<list.toml>]` (`zephyr/annotate_events.py`; the
+window is `annotate_events_ui.py`, pyqtgraph + PySide6, installed with
+`uv sync --all-packages --extra ui`) compares the detectors on a clip list. It is
+read-only apart from excluded spans: events are never placed by hand. The Editor tab shows a clip's raw and
+processed traces, its detected events, rate, amplitude and histograms; the Methods
+tab has one row per clip with its method, parameters and quality metrics (and a
+mean row). Pick a method and parameters and apply them to the current clip, the
+selected clips or all of them. Mark a stretch to exclude with `x` (start, then end,
+at the cursor), delete one with a right-click (or Shift+X), undo with Ctrl+Z.
+**File > Save** writes each chosen `events = { method, params }` and any
+`excluded` spans next to the clip's `box` in the list (comments and layout are kept). File > Add videos / Remove selected videos edit the list itself.
+The method and parameters may differ from clip to clip.
 
 ## Reference configs: do not change their meaning
 
-`configs/folds/benchmark-gray-diff-flow-multitask.toml`,
-`configs/folds/baseline-{tscan,physnet}.toml` and their experiments (all in
-`packages/zephyr-benchmarks/`) reproduce published results;
-`packages/zephyr-benchmarks/tests/test_reproduction.py` pins them to the
-reference runs' settings. Copy them to experiment; never edit them.
+`configs/experiments/benchmark-gray-diff-flow-multitask.toml` and
+`configs/experiments/baselines-nets.toml` (in `packages/zephyr-benchmarks/`)
+reproduce the reference runs in `benchmarks/`;
+`packages/zephyr-benchmarks/tests/test_reproduction.py` pins their folds to
+those runs' settings. Copy them to experiment; never edit them.
 
 ## When code does need to change
 

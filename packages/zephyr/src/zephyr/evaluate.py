@@ -1,6 +1,7 @@
 """Score checkpoints against held-out labelled clips, the way the benchmark does.
 
-Truth is the raw thermistor trace, scored by ``.evaluation.score_clip``. ``zephyr
+Truth is the raw thermistor trace and the clip's cached event set (the events its
+target was built from, see :mod:`.events`), scored by :func:`score_entry`. ``zephyr
 evaluate`` and the evaluation after :mod:`zephyr.run` share :func:`evaluate_groups`:
 named groups of clips in, one result out. Clips sharing a video or recording with a
 checkpoint's recorded training set are refused (older checkpoints only warn). Multitask
@@ -29,7 +30,8 @@ from zephyr.model import BreathingNet
 
 from . import features
 from .config import ClipList, ResolvedClip, load
-from .evaluation import score_clip
+from .evaluation import Score, score_clip
+from .events import Events
 from .features import ClipEntry
 from .infer import predict_clip
 from .plot_diagnosis import ClipPrediction, rate_breakdown, reserved_grid
@@ -166,6 +168,31 @@ def truth_frame(entry: ClipEntry) -> pd.DataFrame:
     return pd.read_parquet(entry.thermistor)
 
 
+def truth_events(entry: ClipEntry) -> Events:
+    """The clip's cached event set: what it trained against, and is scored on."""
+    stored = np.load(entry.events)
+    excluded = stored["excluded"] if "excluded" in stored.files else ()
+    return Events.of(stored["onset_times"], stored["offset_times"], excluded)
+
+
+def score_entry(entry: ClipEntry, predicted: pd.DataFrame, **kwargs) -> Score:
+    """Score a prediction against the clip's thermistor and its event set.
+
+    Truth events and excluded spans come from the cache, so a clip is scored
+    on the same events its target was built from.  *kwargs* go to
+    :func:`~zephyr.evaluation.score_clip` (e.g. the predicted events).
+    """
+    found = truth_events(entry)
+    return score_clip(
+        truth_frame(entry),
+        predicted,
+        truth_onset_times_s=found.inhale,
+        truth_offset_times_s=found.exhale,
+        excluded_s=found.excluded,
+        **kwargs,
+    )
+
+
 def head_event_indices(probability: np.ndarray, times: np.ndarray) -> np.ndarray:
     """Inhale events the onset head asserts: thresholded local maxima."""
     if len(probability) != len(times):
@@ -297,8 +324,7 @@ def score_entries(
                 BREATHING_SIGNAL_COLUMN: signal.astype(np.float64),
             }
         )
-        truth = truth_frame(entry)
-        score = score_clip(truth, predicted)
+        score = score_entry(entry, predicted)
         row = {"clip_id": entry.clip_id, "recording": entry.recording}
         row |= score.to_dict()
         line = (
@@ -307,15 +333,15 @@ def score_entries(
         )
         if head:
             head_indices = head_event_indices(onset[:n], times)
-            head_score = score_clip(
-                truth, predicted, predicted_onset_times_s=times[head_indices]
+            head_score = score_entry(
+                entry, predicted, predicted_onset_times_s=times[head_indices]
             )
             row[HEAD_FIELD] = head_score.to_dict()["inhale_f1"]
             row["n_head_events"] = len(head_indices)
             line += f"{head_score.inhale_f1:8.3f}"
         rows.append(row)
         if plot_data is not None:
-            plot_data.append(ClipPrediction(entry, signal, times, truth))
+            plot_data.append(ClipPrediction(entry, signal, times, truth_frame(entry)))
         print(line, flush=True)
     print("-" * len(header))
     return rows

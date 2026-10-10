@@ -1,7 +1,7 @@
 """Every input zephyr consumes is a TOML file, validated here.
 
-A clip list names videos, a fold says which lists train and which are scored, an
-experiment says which folds run with which seeds. Nothing else knows the dataset layout;
+A clip list names videos; an experiment holds its folds (which lists train and which
+are scored) and the seeds they run with. Nothing else knows the dataset layout;
 the example dataset appears only in ``examples/`` and zephyr-benchmarks. Every path
 field is a :data:`RelPath`: relative to the file it is written in, absolute once loaded.
 
@@ -31,6 +31,7 @@ from pydantic import (
     model_validator,
 )
 
+from . import events
 from .channels import FLOW_CLIP_PX, FLOW_SCALE_PX, MOTION_TAU_S, ChannelSet
 from .rates import DEFAULT_RATE_BINS_HZ
 from .signal import CANONICAL_BREATHING_SAMPLING_RATE
@@ -159,6 +160,39 @@ class Derive(_Model):
         return {"stem": video.stem, **match.groupdict()}
 
 
+class EventsSource(_Model):
+    """Which breathing events a clip uses: a detector and its parameters.
+
+    Training (the onset head, rate balancing) and scoring both read them; see
+    :mod:`zephyr.events`.  Set for a whole list with ``[events]`` or for one clip
+    with ``events = {...}`` next to its ``box`` (``zephyr annotate events``);
+    without either, ``peak_detection`` with its defaults.
+    """
+
+    method: str = events.DEFAULT_METHOD
+    """Name of a detector in :data:`zephyr.events.DETECTORS`."""
+    params: dict[str, float] = {}
+    """Its parameters; omitted ones keep the detector's defaults."""
+
+    @model_validator(mode="after")
+    def _known_method(self) -> "EventsSource":
+        events.detector_params(self.method, self.params)
+        return self
+
+    def for_clip(self, clip: "ResolvedClip", span=None) -> "events.Events":
+        """The detector's events on the clip's thermistor, with its excluded spans."""
+        found = events.for_clip(self.method, self.params, clip.thermistor, span)
+        return events.Events.of(found.inhale, found.exhale, clip.excluded)
+
+    def identity(self, clip: "ResolvedClip") -> dict:
+        """What the clip's cached events depend on; spans enter only when present, so
+        caches made without any still match."""
+        out = events.identity(self.method, self.params)
+        if clip.excluded:
+            out["excluded"] = [list(span) for span in clip.excluded]
+        return out
+
+
 class Clip(_Model):
     """One clip as written in a clip list; omitted fields are derived."""
 
@@ -172,6 +206,19 @@ class Clip(_Model):
     """Recording label within the video's folder; derived when omitted."""
     box: Box | None = None
     """Hand-placed crop box in ``target_size`` pixels; see ``zephyr annotate``."""
+    events: "EventsSource | None" = None
+    """This clip's own detector, overriding the list's ``[events]``."""
+    excluded: list[tuple[float, float]] = []
+    """Spans ``[start, end]`` (seconds on the thermistor's clock) whose events are
+    untrusted: nothing is scored there and no training window overlaps them."""
+
+    @field_validator("excluded")
+    @classmethod
+    def _ordered_spans(cls, value: list[tuple[float, float]]):
+        for start, end in value:
+            if not start < end:
+                raise ValueError(f"excluded span [{start}, {end}] needs start < end")
+        return sorted(value)
 
     @field_validator("box")
     @classmethod
@@ -191,6 +238,9 @@ class ResolvedClip(_Model):
     thermistor: Path | None
     group: str
     box: Box | None
+    excluded: tuple[tuple[float, float], ...] = ()
+    events: EventsSource = EventsSource()
+    """Its list's ``[events]``; the default detector when the list has none."""
 
     @property
     def labelled(self) -> bool:
@@ -212,7 +262,9 @@ class ResolvedClip(_Model):
         return f"{self.video.parent.name}/{self.video.stem}"
 
 
-def resolve_clip(clip: Clip, derive: Derive) -> ResolvedClip:
+def resolve_clip(
+    clip: Clip, derive: Derive, events_source: EventsSource | None = None
+) -> ResolvedClip:
     """Fill a clip's omitted fields from its video name, or say why not."""
     fields = derive.fields(clip.video)
 
@@ -243,6 +295,8 @@ def resolve_clip(clip: Clip, derive: Derive) -> ResolvedClip:
         thermistor=thermistor,
         group=group,
         box=clip.box,
+        excluded=tuple(clip.excluded),
+        events=clip.events or events_source or EventsSource(),
     )
 
 
@@ -251,6 +305,8 @@ class ClipList(_Model):
 
     preprocess: PreprocessParams
     derive: Derive = Derive()
+    events: EventsSource | None = None
+    """Which breathing events the clips use; see :class:`EventsSource`."""
     clip: list[Clip] = Field(min_length=1)
 
     @model_validator(mode="after")
@@ -295,7 +351,7 @@ class ClipList(_Model):
 
     def resolve(self) -> list[ResolvedClip]:
         """The clips in file order, every field concrete."""
-        return [resolve_clip(c, self.derive) for c in self.clip]
+        return [resolve_clip(c, self.derive, self.events) for c in self.clip]
 
 
 # ---------------------------------------------------------------------------
@@ -443,9 +499,18 @@ class TrainSource(Selection):
     """Relative to the other sources: weights 0.5 / 0.5 and 1 / 1 are the same."""
 
 
-class Fold(_Model):
-    """One train/test arrangement: what trains, what is scored, from where."""
+FOLD_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
+
+class Fold(_Model):
+    """One train/test arrangement: what trains, what is scored, from where.
+
+    Written as a ``[[fold]]`` block of an experiment; its *name* is the run
+    directory, so it must be a plain file name.
+    """
+
+    name: str
+    """The fold's run directory under the experiment's ``output_dir``."""
     init_from: RelPath | None = None
     """Checkpoint whose weights to start from (fresh optimiser and schedule)."""
     train: list[TrainSource] = Field(min_length=1)
@@ -453,6 +518,16 @@ class Fold(_Model):
     """Report group name -> clips to score; the names are the config author's.
     A bare path is shorthand for the whole list."""
     train_params: TrainParams = TrainParams()
+
+    @field_validator("name")
+    @classmethod
+    def _plain_name(cls, value: str) -> str:
+        if not FOLD_NAME.match(value):
+            raise ValueError(
+                f"fold name {value!r} must be a plain file name "
+                "(letters, digits, '.', '_', '-')"
+            )
+        return value
 
     @field_validator("test", mode="before")
     @classmethod
@@ -541,12 +616,11 @@ class Fold(_Model):
 
 
 class Experiment(_Model):
-    """Folds to run, the seeds each runs with, and where results go."""
+    """Folds to run (inline ``[[fold]]`` blocks), the seeds each runs with, and
+    where results go.  A subclass may hold a richer fold by redeclaring *fold*."""
 
-    fold_model: ClassVar[type[Fold]] = Fold
-    """What each fold file is loaded as; a subclass may name a richer fold."""
-
-    folds: list[RelPath] = Field(min_length=1)
+    fold: list[Fold] = Field(min_length=1)
+    """Each runs into ``{output_dir}/{name}/seed-{seed}/``."""
     seeds: list[int] = Field(min_length=1)
     """Each fold runs once per seed; the seed belongs here, not to the fold."""
     output_dir: RelPath
@@ -565,22 +639,32 @@ class Experiment(_Model):
         return value
 
     @model_validator(mode="after")
-    def _check_folds(self) -> "Experiment":
-        stems = [path.stem for path in self.folds]
-        if len(set(stems)) != len(stems):
+    def _distinct_names(self) -> "Experiment":
+        names = [fold.name for fold in self.fold]
+        if len(set(names)) != len(names):
             raise ValueError(
-                f"fold files share a name, so their runs would collide: {stems}"
+                f"folds share a name, so their runs would collide: {names}"
             )
-        for path in self.folds:
-            load(self.fold_model, path)
         return self
+
+    def folds(self, names: list[str] | None = None) -> list[Fold]:
+        """The folds called *names* (all when ``None``), in the file's order."""
+        if names is None:
+            return list(self.fold)
+        known = {fold.name: fold for fold in self.fold}
+        unknown = sorted(set(names) - set(known))
+        if unknown:
+            raise ValueError(
+                f"no fold named {unknown}; the experiment has {sorted(known)}"
+            )
+        return [fold for fold in self.fold if fold.name in names]
 
 
 # ---------------------------------------------------------------------------
 # JSON schemas, for editor validation of the TOML files
 # ---------------------------------------------------------------------------
 
-SCHEMAS = {"clip-list": ClipList, "fold": Fold, "experiment": Experiment}
+SCHEMAS = {"clip-list": ClipList, "experiment": Experiment}
 
 
 def write_schemas(directory: Path) -> list[Path]:
@@ -596,7 +680,7 @@ def write_schemas(directory: Path) -> list[Path]:
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
-        description="Write JSON schemas of the clip list, fold and experiment files."
+        description="Write JSON schemas of the clip list and experiment files."
     )
     parser.add_argument("directory", type=Path)
     args = parser.parse_args(argv)

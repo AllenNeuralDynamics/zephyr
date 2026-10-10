@@ -21,14 +21,15 @@ are relative to the file they are written in.
 - A **clip list** names videos (everything else -- timestamps, thermistor,
   recording group -- is derived from the file name, or given explicitly), the
   `[preprocess]` recipe, and a hand-placed crop `box` per clip.
-- A **fold** names the clip lists to train on (with relative weights), the
+- An **experiment** says which seeds run, where results go, and holds one or
+  more **folds** inline as `[[fold]]` blocks. A fold has a `name` (its run
+  directory) and names the clip lists to train on (with relative weights), the
   clip lists to score (each a named group in the report), the training
   hyperparameters, and optionally a checkpoint to start from. Leakage is
   refused at load: no test clip may share a video, or a *recording* (video
   folder + group), with a training clip.
-- An **experiment** names folds, the seeds each runs with, and where results go.
 
-`zephyr schema <dir>` writes JSON schemas of all three for editor validation.
+`zephyr schema <dir>` writes JSON schemas of both for editor validation.
 The repository's `examples/` holds one of each, used below; they read the face
 clips of the AIND breathing challenge data (see `zephyr-benchmarks`' README for
 the download).
@@ -69,7 +70,7 @@ the download).
    ```
 
 5. **Run.** `zephyr run` trains each (fold, seed) into
-   `<output_dir>/<fold>/seed-<n>/` -- with the resolved config, the list of
+   `<output_dir>/<fold name>/seed-<n>/` (`--folds <name>...` runs only some) -- with the resolved config, the list of
    training videos, checkpoints and `evaluation.json` -- then scores the
    fold's test groups. Check the plumbing first with `--smoke` (1 epoch of 2
    steps; add `--device cpu --amp off --num-workers 0` without a GPU):

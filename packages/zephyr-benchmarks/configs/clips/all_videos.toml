@@ -1,0 +1,375 @@
+# Every video of the benchmark in one list, to check and tune the breathing-event
+# detector of each at once: `uv run zephyr annotate events <this file>`.
+# Built from: face_train.toml, face_test_known_animals_new_date.toml, face_test_new_animals.toml, ood_side_right.toml.
+# Not a training or test list: use the originals for folds.
+
+[preprocess]
+target_size = [360, 270]
+
+[[clip]]
+video = "../../../../data/train/video_face_1_part_1.mp4"
+box = [212, 99, 96, 96]
+events = {method = "adaptive_prominence", params = {distance_s = 0.04, prominence_frac = 0.2, window_s = 1.5}}
+
+
+[[clip]]
+video = "../../../../data/train/video_face_1_part_2.mp4"
+box = [212, 99, 96, 96]
+events = {method = "adaptive_prominence", params = {distance_s = 0.04, prominence_frac = 0.2, window_s = 1.5}}
+
+
+[[clip]]
+video = "../../../../data/train/video_face_2_part_1.mp4"
+box = [223, 117, 96, 96]
+events = {method = "adaptive_prominence", params = {distance_s = 0.04, prominence_frac = 0.2, window_s = 1.5}}
+
+
+[[clip]]
+video = "../../../../data/train/video_face_2_part_2.mp4"
+box = [223, 117, 96, 96]
+events = {method = "adaptive_prominence", params = {distance_s = 0.04, prominence_frac = 0.2, window_s = 1.5}}
+
+
+[[clip]]
+video = "../../../../data/train/video_face_3_part_1.mp4"
+box = [211, 110, 96, 96]
+events = {method = "adaptive_prominence", params = {distance_s = 0.04, prominence_frac = 0.2, window_s = 1.5}}
+
+
+[[clip]]
+video = "../../../../data/train/video_face_3_part_2.mp4"
+box = [211, 110, 96, 96]
+events = {method = "adaptive_prominence", params = {distance_s = 0.04, prominence_frac = 0.2, window_s = 1.5}}
+
+
+[[clip]]
+video = "../../../../data/train/video_face_4_part_1.mp4"
+box = [208, 98, 96, 96]
+events = {method = "adaptive_prominence", params = {distance_s = 0.04, prominence_frac = 0.2, window_s = 1.5}}
+
+
+[[clip]]
+video = "../../../../data/train/video_face_4_part_2.mp4"
+box = [208, 98, 96, 96]
+events = {method = "adaptive_prominence", params = {distance_s = 0.04, prominence_frac = 0.2, window_s = 1.5}}
+
+
+[[clip]]
+video = "../../../../data/train/video_face_5_part_1.mp4"
+box = [213, 94, 96, 96]
+events = {method = "adaptive_prominence", params = {distance_s = 0.04, prominence_frac = 0.2, window_s = 1.5}}
+
+
+[[clip]]
+video = "../../../../data/train/video_face_5_part_2.mp4"
+box = [213, 94, 96, 96]
+events = {method = "adaptive_prominence", params = {distance_s = 0.04, prominence_frac = 0.2, window_s = 1.5}}
+
+
+[[clip]]
+video = "../../../../data/train/video_face_6_part_1.mp4"
+box = [201, 117, 96, 96]
+events = {method = "adaptive_prominence", params = {distance_s = 0.04, prominence_frac = 0.2, window_s = 1.5}}
+
+
+[[clip]]
+video = "../../../../data/train/video_face_6_part_2.mp4"
+box = [201, 117, 96, 96]
+events = {method = "adaptive_prominence", params = {distance_s = 0.04, prominence_frac = 0.2, window_s = 1.5}}
+
+
+[[clip]]
+video = "../../../../data/train/video_face_7_part_1.mp4"
+box = [193, 110, 96, 96]
+events = {method = "adaptive_prominence", params = {distance_s = 0.04, prominence_frac = 0.2, window_s = 1.5}}
+
+
+[[clip]]
+video = "../../../../data/train/video_face_7_part_2.mp4"
+box = [193, 110, 96, 96]
+events = {method = "adaptive_prominence", params = {distance_s = 0.04, prominence_frac = 0.2, window_s = 1.5}}
+
+
+[[clip]]
+video = "../../../../data/train/video_face_8_part_1.mp4"
+box = [214, 92, 96, 96]
+events = {method = "adaptive_prominence", params = {distance_s = 0.04, prominence_frac = 0.2, window_s = 1.5}}
+
+
+[[clip]]
+video = "../../../../data/train/video_face_8_part_2.mp4"
+box = [214, 92, 96, 96]
+events = {method = "adaptive_prominence", params = {distance_s = 0.04, prominence_frac = 0.2, window_s = 1.5}}
+
+
+[[clip]]
+video = "../../../../data/train/video_face_9_part_1.mp4"
+box = [220, 98, 96, 96]
+events = {method = "adaptive_prominence", params = {distance_s = 0.04, prominence_frac = 0.2, window_s = 1.5}}
+
+
+[[clip]]
+video = "../../../../data/train/video_face_9_part_2.mp4"
+box = [220, 98, 96, 96]
+events = {method = "adaptive_prominence", params = {distance_s = 0.04, prominence_frac = 0.2, window_s = 1.5}}
+
+
+[[clip]]
+video = "../../../../data/train/video_face_10_part_1.mp4"
+box = [202, 123, 96, 96]
+events = {method = "adaptive_prominence", params = {distance_s = 0.04, prominence_frac = 0.2, window_s = 1.5}}
+
+
+[[clip]]
+video = "../../../../data/train/video_face_10_part_2.mp4"
+box = [202, 123, 96, 96]
+events = {method = "adaptive_prominence", params = {distance_s = 0.04, prominence_frac = 0.2, window_s = 1.5}}
+
+
+[[clip]]
+video = "../../../../data/train/video_face_11_part_1.mp4"
+box = [212, 101, 96, 96]
+events = {method = "adaptive_prominence", params = {distance_s = 0.04, prominence_frac = 0.2, window_s = 1.5}}
+
+
+[[clip]]
+video = "../../../../data/train/video_face_11_part_2.mp4"
+box = [212, 101, 96, 96]
+events = {method = "adaptive_prominence", params = {distance_s = 0.04, prominence_frac = 0.2, window_s = 1.5}}
+
+
+[[clip]]
+video = "../../../../data/train/video_face_12_part_1.mp4"
+box = [238, 118, 96, 96]
+events = {method = "adaptive_prominence", params = {distance_s = 0.04, prominence_frac = 0.2, window_s = 1.5}}
+
+
+[[clip]]
+video = "../../../../data/train/video_face_12_part_2.mp4"
+box = [238, 118, 96, 96]
+events = {method = "adaptive_prominence", params = {distance_s = 0.04, prominence_frac = 0.2, window_s = 1.5}}
+
+
+[[clip]]
+video = "../../../../data/train/video_face_13_part_1.mp4"
+box = [237, 117, 96, 96]
+events = {method = "adaptive_prominence", params = {distance_s = 0.04, prominence_frac = 0.2, window_s = 1.5}}
+
+
+[[clip]]
+video = "../../../../data/train/video_face_13_part_2.mp4"
+box = [237, 117, 96, 96]
+events = {method = "adaptive_prominence", params = {distance_s = 0.04, prominence_frac = 0.2, window_s = 1.5}}
+
+
+[[clip]]
+video = "../../../../data/train/video_face_14_part_1.mp4"
+box = [192, 111, 96, 96]
+events = {method = "adaptive_prominence", params = {distance_s = 0.04, prominence_frac = 0.2, window_s = 1.5}}
+
+
+[[clip]]
+video = "../../../../data/train/video_face_14_part_2.mp4"
+box = [192, 111, 96, 96]
+events = {method = "adaptive_prominence", params = {distance_s = 0.04, prominence_frac = 0.2, window_s = 1.5}}
+
+
+[[clip]]
+video = "../../../../data/train/video_face_15_part_1.mp4"
+box = [229, 120, 96, 96]
+events = {method = "adaptive_prominence", params = {distance_s = 0.04, prominence_frac = 0.2, window_s = 1.5}}
+
+
+[[clip]]
+video = "../../../../data/train/video_face_15_part_2.mp4"
+box = [229, 120, 96, 96]
+events = {method = "adaptive_prominence", params = {distance_s = 0.04, prominence_frac = 0.2, window_s = 1.5}}
+
+
+[[clip]]
+video = "../../../../data/train/video_face_16_part_1.mp4"
+box = [199, 114, 96, 96]
+events = {method = "adaptive_prominence", params = {distance_s = 0.04, prominence_frac = 0.2, window_s = 1.5}}
+
+
+[[clip]]
+video = "../../../../data/train/video_face_16_part_2.mp4"
+box = [199, 114, 96, 96]
+events = {method = "adaptive_prominence", params = {distance_s = 0.04, prominence_frac = 0.2, window_s = 1.5}}
+
+[[clip]]
+video = "../../../../data/test/video_face_7_part_1.mp4"
+box = [198, 126, 96, 96]
+events = {method = "adaptive_prominence", params = {distance_s = 0.04, prominence_frac = 0.2, window_s = 1.5}}
+
+
+[[clip]]
+video = "../../../../data/test/video_face_7_part_2.mp4"
+box = [198, 126, 96, 96]
+events = {method = "adaptive_prominence", params = {distance_s = 0.04, prominence_frac = 0.2, window_s = 1.5}}
+
+
+[[clip]]
+video = "../../../../data/test/video_face_8_part_1.mp4"
+box = [193, 111, 96, 96]
+events = {method = "adaptive_prominence", params = {distance_s = 0.04, prominence_frac = 0.2, window_s = 1.5}}
+
+
+[[clip]]
+video = "../../../../data/test/video_face_8_part_2.mp4"
+box = [193, 111, 96, 96]
+events = {method = "adaptive_prominence", params = {distance_s = 0.04, prominence_frac = 0.2, window_s = 1.5}}
+
+
+[[clip]]
+video = "../../../../data/test/video_face_9_part_1.mp4"
+box = [215, 107, 96, 96]
+events = {method = "adaptive_prominence", params = {distance_s = 0.04, prominence_frac = 0.2, window_s = 1.5}}
+
+
+[[clip]]
+video = "../../../../data/test/video_face_9_part_2.mp4"
+box = [215, 107, 96, 96]
+events = {method = "adaptive_prominence", params = {distance_s = 0.04, prominence_frac = 0.2, window_s = 1.5}}
+
+
+[[clip]]
+video = "../../../../data/test/video_face_10_part_1.mp4"
+box = [211, 117, 96, 96]
+events = {method = "adaptive_prominence", params = {distance_s = 0.04, prominence_frac = 0.2, window_s = 1.5}}
+
+
+[[clip]]
+video = "../../../../data/test/video_face_10_part_2.mp4"
+box = [211, 117, 96, 96]
+events = {method = "adaptive_prominence", params = {distance_s = 0.04, prominence_frac = 0.2, window_s = 1.5}}
+
+
+[[clip]]
+video = "../../../../data/test/video_face_11_part_1.mp4"
+box = [218, 103, 96, 96]
+events = {method = "adaptive_prominence", params = {distance_s = 0.04, prominence_frac = 0.2, window_s = 1.5}}
+
+
+[[clip]]
+video = "../../../../data/test/video_face_11_part_2.mp4"
+box = [218, 103, 96, 96]
+events = {method = "adaptive_prominence", params = {distance_s = 0.04, prominence_frac = 0.2, window_s = 1.5}}
+
+
+[[clip]]
+video = "../../../../data/test/video_face_12_part_1.mp4"
+box = [242, 112, 96, 96]
+events = {method = "adaptive_prominence", params = {distance_s = 0.04, prominence_frac = 0.2, window_s = 1.5}}
+
+
+[[clip]]
+video = "../../../../data/test/video_face_12_part_2.mp4"
+box = [242, 112, 96, 96]
+events = {method = "adaptive_prominence", params = {distance_s = 0.04, prominence_frac = 0.2, window_s = 1.5}}
+
+[[clip]]
+video = "../../../../data/test/video_face_1_part_1.mp4"
+box = [200, 108, 96, 96]
+events = {method = "adaptive_prominence", params = {distance_s = 0.04, prominence_frac = 0.2, window_s = 1.5}}
+
+
+[[clip]]
+video = "../../../../data/test/video_face_1_part_2.mp4"
+box = [200, 108, 96, 96]
+events = {method = "adaptive_prominence", params = {distance_s = 0.04, prominence_frac = 0.2, window_s = 1.5}}
+
+
+[[clip]]
+video = "../../../../data/test/video_face_2_part_1.mp4"
+box = [213, 105, 96, 96]
+events = {method = "adaptive_prominence", params = {distance_s = 0.04, prominence_frac = 0.2, window_s = 1.5}}
+
+
+[[clip]]
+video = "../../../../data/test/video_face_2_part_2.mp4"
+box = [213, 105, 96, 96]
+events = {method = "adaptive_prominence", params = {distance_s = 0.04, prominence_frac = 0.2, window_s = 1.5}}
+
+
+[[clip]]
+video = "../../../../data/test/video_face_3_part_1.mp4"
+box = [221, 106, 96, 96]
+events = {method = "adaptive_prominence", params = {distance_s = 0.04, prominence_frac = 0.2, window_s = 1.5}}
+
+
+[[clip]]
+video = "../../../../data/test/video_face_3_part_2.mp4"
+box = [221, 106, 96, 96]
+events = {method = "adaptive_prominence", params = {distance_s = 0.04, prominence_frac = 0.2, window_s = 1.5}}
+
+
+[[clip]]
+video = "../../../../data/test/video_face_4_part_1.mp4"
+box = [195, 122, 96, 96]
+events = {method = "adaptive_prominence", params = {distance_s = 0.04, prominence_frac = 0.2, window_s = 1.5}}
+
+
+[[clip]]
+video = "../../../../data/test/video_face_4_part_2.mp4"
+box = [195, 122, 96, 96]
+events = {method = "adaptive_prominence", params = {distance_s = 0.04, prominence_frac = 0.2, window_s = 1.5}}
+
+
+[[clip]]
+video = "../../../../data/test/video_face_5_part_1.mp4"
+box = [213, 107, 96, 96]
+events = {method = "adaptive_prominence", params = {distance_s = 0.04, prominence_frac = 0.2, window_s = 1.5}}
+
+
+[[clip]]
+video = "../../../../data/test/video_face_5_part_2.mp4"
+box = [213, 107, 96, 96]
+events = {method = "adaptive_prominence", params = {distance_s = 0.04, prominence_frac = 0.2, window_s = 1.5}}
+
+
+[[clip]]
+video = "../../../../data/test/video_face_6_part_1.mp4"
+box = [216, 101, 96, 96]
+events = {method = "adaptive_prominence", params = {distance_s = 0.04, prominence_frac = 0.2, window_s = 1.5}}
+
+
+[[clip]]
+video = "../../../../data/test/video_face_6_part_2.mp4"
+box = [216, 101, 96, 96]
+events = {method = "adaptive_prominence", params = {distance_s = 0.04, prominence_frac = 0.2, window_s = 1.5}}
+
+[[clip]]
+video = "../../../../data/ood/video_side_right_13_part_1.mp4"
+box = [228, 85, 96, 96]
+events = {method = "adaptive_prominence", params = {distance_s = 0.04, prominence_frac = 0.2, window_s = 1.5}}
+
+
+[[clip]]
+video = "../../../../data/ood/video_side_right_13_part_2.mp4"
+box = [228, 85, 96, 96]
+events = {method = "adaptive_prominence", params = {distance_s = 0.04, prominence_frac = 0.2, window_s = 1.5}}
+
+
+[[clip]]
+video = "../../../../data/ood/video_side_right_14_part_1.mp4"
+box = [212, 92, 96, 96]
+events = {method = "adaptive_prominence", params = {distance_s = 0.04, prominence_frac = 0.2, window_s = 1.5}}
+
+
+[[clip]]
+video = "../../../../data/ood/video_side_right_14_part_2.mp4"
+box = [212, 92, 96, 96]
+events = {method = "adaptive_prominence", params = {distance_s = 0.04, prominence_frac = 0.2, window_s = 1.5}}
+
+
+[[clip]]
+video = "../../../../data/ood/video_side_right_15_part_1.mp4"
+box = [220, 90, 96, 96]
+events = {method = "adaptive_prominence", params = {distance_s = 0.04, prominence_frac = 0.2, window_s = 1.5}}
+
+
+[[clip]]
+video = "../../../../data/ood/video_side_right_15_part_2.mp4"
+box = [220, 90, 96, 96]
+events = {method = "adaptive_prominence", params = {distance_s = 0.04, prominence_frac = 0.2, window_s = 1.5}}

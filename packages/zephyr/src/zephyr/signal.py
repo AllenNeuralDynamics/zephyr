@@ -19,11 +19,19 @@ def filter_sniff_signal(values: np.ndarray, fs: float) -> np.ndarray:
 
 
 def detect_inhalation_events(
-    signal: np.ndarray, fs: float
+    signal: np.ndarray,
+    fs: float,
+    *,
+    distance_s: float = 0.05,
+    prominence_frac: float = 0.1,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Find positive inhale peaks and negative exhale troughs in a clean trace."""
-    distance = max(1, int(fs * 0.05))
-    prominence = 0.1 * float(np.ptp(signal))
+    """Find positive inhale peaks and negative exhale troughs in a clean trace.
+
+    Peaks closer than *distance_s* are suppressed, and a peak must stand
+    *prominence_frac* of the whole trace's range above its surroundings.
+    """
+    distance = max(1, int(fs * distance_s))
+    prominence = prominence_frac * float(np.ptp(signal))
     inhale, _ = find_peaks(signal, distance=distance, prominence=prominence)
     exhale, _ = find_peaks(-signal, distance=distance, prominence=prominence)
     return inhale.astype(int), exhale.astype(int)

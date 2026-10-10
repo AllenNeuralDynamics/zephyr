@@ -1,8 +1,32 @@
 # PhysNet with an onset-event head, two seeds as the baselines.  Smoke first:
 #   zephyr-benchmarks run packages/zephyr-benchmarks/configs/experiments/physnet-event.toml --smoke --output-dir runs/smoke-physnet-event
-folds = ["../folds/physnet-event.toml"]
 seeds = [42]
 output_dir = "../../../../runs/physnet-event"
 features_dir = "../../../../data/features-v2"
 device = "cuda"
 amp = "bf16"
+
+[[fold]]
+name = "physnet-event"
+# baseline-physnet with an onset-event head (arch = "physnet_event") trained with
+# zephyr's onset loss.  Everything else is the PhysNet baseline: gray channel,
+# window 128, one scale, lr 3e-4, no time stretch, no selection jitter.
+[[fold.train]]
+clips = "../clips/face_train.toml"
+
+[fold.test]
+new_animals = "../clips/face_test_new_animals.toml"
+known_animals_new_date = "../clips/face_test_known_animals_new_date.toml"
+
+[fold.train_params]
+arch = "physnet_event"
+channels = "gray"
+window = 128
+scales = [1]
+lr = 3e-4
+w_onset = 0.5
+val_fraction = 0
+
+[fold.train_params.augmentation]
+time_stretch = 1.0
+select_jitter = 0.0

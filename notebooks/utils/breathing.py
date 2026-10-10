@@ -260,7 +260,7 @@ def event_band_counts(
     """True positives, misses and false events of each source, per rate band.
 
     Shape ``(series, band, 3)`` for the counts ``(tp, fn, fp)``. A thermistor breath
-    is a hit when an event falls within one frame (17 ms) of its onset, and counts in
+    is a hit when an event falls within a frame of its onset (``EVENT_TOLERANCE_S``), and counts in
     the band of its own rate; a false event counts in the band of the thermistor's
     rate at that time (as in :func:`f1_by_bin`). *inhales* gives each source's inhale
     times by name; the default is :data:`EVENT_SERIES` on the clip's own traces.

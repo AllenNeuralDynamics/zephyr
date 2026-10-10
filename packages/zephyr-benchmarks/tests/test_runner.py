@@ -48,9 +48,9 @@ class ConfigTests(unittest.TestCase):
         BenchmarkTrainParams(signal_pool=2, onset_input="both")
 
     def test_experiment_loads_its_folds_as_benchmark_folds(self):
-        self.assertIs(BenchmarkExperiment.fold_model, BenchmarkFold)
+        fold_type = BenchmarkExperiment.model_fields["fold"].annotation
+        self.assertEqual(fold_type, list[BenchmarkFold])
         self.assertIs(RUNNER.experiment, BenchmarkExperiment)
-        self.assertIs(RUNNER.fold, BenchmarkFold)
 
     @unittest.skipUnless((DATA / "train").is_dir(), "no local data")
     def test_every_shipped_config_loads(self):

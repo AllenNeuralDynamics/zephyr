@@ -3,6 +3,8 @@
 import numpy as np
 from scipy.optimize import linear_sum_assignment
 
+from .evaluation import EVENT_TOLERANCE_S, MATCH_SLACK_S
+
 
 def zero_lag_correlation(truth: np.ndarray, predicted: np.ndarray) -> float:
     """Pearson correlation for aligned traces."""
@@ -15,7 +17,7 @@ def zero_lag_correlation(truth: np.ndarray, predicted: np.ndarray) -> float:
 def event_f1(
     truth_times_s: np.ndarray,
     predicted_times_s: np.ndarray,
-    tolerance_s: float = 0.017,
+    tolerance_s: float = EVENT_TOLERANCE_S,
 ) -> float:
     """One-to-one event F1 used only for training diagnostics."""
     n_truth, n_pred = len(truth_times_s), len(predicted_times_s)
@@ -24,7 +26,7 @@ def event_f1(
     if n_truth == 0 or n_pred == 0:
         return 0.0
     delta = np.abs(truth_times_s[:, None] - predicted_times_s[None, :])
-    feasible = delta <= tolerance_s
+    feasible = delta <= tolerance_s + MATCH_SLACK_S
     if not feasible.any():
         return 0.0
     penalty = tolerance_s * (n_truth + n_pred + 1)

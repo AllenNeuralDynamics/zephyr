@@ -1,9 +1,38 @@
 # rate-balance with the pooled signal branch (signal_pool = 2) and the onset head
 # reading both streams.  Compare against runs/rate-balance.  Smoke first:
 #   zephyr run packages/zephyr-benchmarks/configs/experiments/rate-balance-pool2-both.toml --smoke --output-dir runs/smoke-rate-balance-pool2-both
-folds = ["../folds/benchmark-rate-balanced-pool2-both.toml"]
 seeds = [42]
 output_dir = "../../../../runs/rate-balance-pool2-both"
 features_dir = "../../../../data/features-v2"
 device = "cuda"
 amp = "bf16"
+
+[[fold]]
+name = "benchmark-rate-balanced-pool2-both"
+# benchmark-rate-balanced with a pooled signal branch: the signal head reads the
+# TCN's output averaged over 2 frames (30 Hz) and upsampled back to 60 Hz
+# (signal_pool = 2), and the onset head reads both the full-rate and the pooled
+# features (onset_input = "both").  Weights are also kept every 50 epochs
+# (save_every) to see how the score evolves over training.  Everything else is
+# benchmark-rate-balanced.
+[[fold.train]]
+clips = "../clips/face_train.toml"
+
+[fold.test]
+new_animals = "../clips/face_test_new_animals.toml"
+known_animals_new_date = "../clips/face_test_known_animals_new_date.toml"
+
+[fold.train_params]
+channels = "gray+diff+flow"
+epochs = 200
+steps_per_epoch = 200
+val_fraction = 0
+w_corr = 1.0
+w_onset = 0.5
+rate_balance = 1.0
+signal_pool = 2
+onset_input = "both"
+save_every = 50
+
+[fold.train_params.augmentation]
+time_stretch = 1.0

@@ -7,47 +7,59 @@ target_size = [360, 270]
 [[clip]]
 video = "../../../../data/test/video_face_7_part_1.mp4"
 box = [198, 126, 96, 96]
+events = {method = "adaptive_prominence", params = {distance_s = 0.04, prominence_frac = 0.2, window_s = 1.5}}
 
 [[clip]]
 video = "../../../../data/test/video_face_7_part_2.mp4"
 box = [198, 126, 96, 96]
+events = {method = "adaptive_prominence", params = {distance_s = 0.04, prominence_frac = 0.2, window_s = 1.5}}
 
 [[clip]]
 video = "../../../../data/test/video_face_8_part_1.mp4"
 box = [193, 111, 96, 96]
+events = {method = "adaptive_prominence", params = {distance_s = 0.04, prominence_frac = 0.2, window_s = 1.5}}
 
 [[clip]]
 video = "../../../../data/test/video_face_8_part_2.mp4"
 box = [193, 111, 96, 96]
+events = {method = "adaptive_prominence", params = {distance_s = 0.04, prominence_frac = 0.2, window_s = 1.5}}
 
 [[clip]]
 video = "../../../../data/test/video_face_9_part_1.mp4"
 box = [215, 107, 96, 96]
+events = {method = "adaptive_prominence", params = {distance_s = 0.04, prominence_frac = 0.2, window_s = 1.5}}
 
 [[clip]]
 video = "../../../../data/test/video_face_9_part_2.mp4"
 box = [215, 107, 96, 96]
+events = {method = "adaptive_prominence", params = {distance_s = 0.04, prominence_frac = 0.2, window_s = 1.5}}
 
 [[clip]]
 video = "../../../../data/test/video_face_10_part_1.mp4"
 box = [211, 117, 96, 96]
+events = {method = "adaptive_prominence", params = {distance_s = 0.04, prominence_frac = 0.2, window_s = 1.5}}
 
 [[clip]]
 video = "../../../../data/test/video_face_10_part_2.mp4"
 box = [211, 117, 96, 96]
+events = {method = "adaptive_prominence", params = {distance_s = 0.04, prominence_frac = 0.2, window_s = 1.5}}
 
 [[clip]]
 video = "../../../../data/test/video_face_11_part_1.mp4"
 box = [218, 103, 96, 96]
+events = {method = "adaptive_prominence", params = {distance_s = 0.04, prominence_frac = 0.2, window_s = 1.5}}
 
 [[clip]]
 video = "../../../../data/test/video_face_11_part_2.mp4"
 box = [218, 103, 96, 96]
+events = {method = "adaptive_prominence", params = {distance_s = 0.04, prominence_frac = 0.2, window_s = 1.5}}
 
 [[clip]]
 video = "../../../../data/test/video_face_12_part_1.mp4"
 box = [242, 112, 96, 96]
+events = {method = "adaptive_prominence", params = {distance_s = 0.04, prominence_frac = 0.2, window_s = 1.5}}
 
 [[clip]]
 video = "../../../../data/test/video_face_12_part_2.mp4"
 box = [242, 112, 96, 96]
+events = {method = "adaptive_prominence", params = {distance_s = 0.04, prominence_frac = 0.2, window_s = 1.5}}

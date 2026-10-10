@@ -27,8 +27,7 @@ from torch import nn
 
 from zephyr import features
 from zephyr.config import ClipList, load
-from zephyr.evaluate import load_checkpoint, refuse_leaked, truth_frame
-from zephyr.evaluation import score_clip
+from zephyr.evaluate import load_checkpoint, refuse_leaked, score_entry
 from zephyr.features import ClipEntry
 from zephyr.infer import INPUT_MARGIN, predict_clip
 from zephyr.signal import BREATHING_SIGNAL_COLUMN, TIME_COLUMN
@@ -115,8 +114,6 @@ def clip_scorer(
 ) -> Score:
     """Event F1 (mean of inhale and exhale F1) of the network on *entry*."""
     times = np.load(entry.times)
-    truth = truth_frame(entry)
-    truth = truth[truth[TIME_COLUMN].between(times[0], times[-1])]
 
     def score(hidden: Hidden | None) -> float:
         model.hidden = hidden
@@ -135,7 +132,7 @@ def clip_scorer(
                 BREATHING_SIGNAL_COLUMN: signal.astype(np.float64),
             }
         )
-        result = score_clip(truth, predicted)
+        result = score_entry(entry, predicted)
         return (result.inhale_f1 + result.exhale_f1) / 2
 
     return score

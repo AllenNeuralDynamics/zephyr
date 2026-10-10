@@ -16,8 +16,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from zephyr.evaluate import build_result, truth_frame, zscore
-from zephyr.evaluation import score_clip
+from zephyr.evaluate import build_result, score_entry, zscore
 from zephyr.signal import BREATHING_SIGNAL_COLUMN, TIME_COLUMN
 
 from . import common, facemap_ridge, pixel
@@ -58,7 +57,7 @@ def score_traces(traces, groups) -> dict:
             )
             rows.append(
                 {"clip_id": entry.clip_id, "recording": entry.recording}
-                | score_clip(truth_frame(entry), predicted).to_dict()
+                | score_entry(entry, predicted).to_dict()
             )
         rows_by_group[name] = rows
     return build_result(rows_by_group)

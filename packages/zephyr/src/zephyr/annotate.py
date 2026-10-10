@@ -13,6 +13,7 @@ CLI
 ---
     zephyr annotate list.toml --prepare   # cache one frame per clip, once
     zephyr annotate list.toml --width 360 --height 270 --box-size 96
+    zephyr annotate events list.toml   # choose each clip's event detector: zephyr.annotate_events
 """
 
 import argparse
@@ -624,6 +625,11 @@ def run_ui(state: BoxState, frame_dir: Path, out_path: Path) -> None:
 
 
 def main(argv: list[str] | None = None) -> None:
+    if argv and argv[0] == "events":
+        from . import annotate_events
+
+        annotate_events.main(argv[1:])
+        return
     parser = argparse.ArgumentParser(
         description="Choose a downsample target and hand-place crop boxes."
     )

@@ -1,8 +1,31 @@
 # Zephyr trained on rate-balanced windows with time stretching off.  Smoke first:
 #   zephyr-benchmarks run packages/zephyr-benchmarks/configs/experiments/rate-balance.toml --smoke --output-dir runs/smoke-rate-balance
-folds = ["../folds/benchmark-rate-balanced.toml"]
 seeds = [42]
 output_dir = "../../../../runs/rate-balance"
 features_dir = "../../../../data/features-v2"
 device = "cuda"
 amp = "bf16"
+
+[[fold]]
+name = "benchmark-rate-balanced"
+# benchmark-gray-diff-flow-multitask with training windows drawn evenly over the
+# true breathing rate (rate_balance = 1, default 2-15 Hz bins) and time stretching
+# off, so the run isolates the effect of balancing the real data.
+[[fold.train]]
+clips = "../clips/face_train.toml"
+
+[fold.test]
+new_animals = "../clips/face_test_new_animals.toml"
+known_animals_new_date = "../clips/face_test_known_animals_new_date.toml"
+
+[fold.train_params]
+channels = "gray+diff+flow"
+epochs = 200
+steps_per_epoch = 200
+val_fraction = 0
+w_corr = 1.0
+w_onset = 0.5
+rate_balance = 1.0
+
+[fold.train_params.augmentation]
+time_stretch = 1.0
