@@ -113,6 +113,8 @@ box = [228, 85, 96, 96]           # x, y, w, h in target_size pixels
   written next to its `box`, overrides it (see
   [Choosing the event detector](#choosing-the-event-detector)). Detectors work on
   the thermistor at its own rate, so event times are never snapped to a grid.
+  Every detector's `params` also take `highpass_hz` (default 0.2), the corner of the
+  high-pass applied to the thermistor first (a detector that filters it takes it); it enters the cache identity only off its default.
   A clip's `excluded = [[start, end], ...]` (seconds on the thermistor's clock) marks
   stretches whose events are untrusted: nothing is scored inside them and no
   training window overlaps them. Changing any of these rebuilds only the targets at

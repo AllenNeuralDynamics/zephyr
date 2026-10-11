@@ -327,7 +327,7 @@ def _hist_plot(title: str, xlabel: str) -> pg.PlotItem:
 
 
 class EditorWindow(QtWidgets.QMainWindow):
-    def __init__(self, state: TuneState, window_s: float = 5.0) -> None:
+    def __init__(self, state: TuneState, window_s: float = 10.0) -> None:
         super().__init__()
         self.state = state
         self.width_s = self.initial_s = window_s
@@ -497,6 +497,13 @@ class EditorWindow(QtWidgets.QMainWindow):
             bar.addWidget(frame)
             self.cards[key] = (value, sub)
         bar.addStretch(1)
+        self.use_box = QtWidgets.QCheckBox("Use this video")
+        self.use_box.setToolTip(
+            "Untick to exclude the video: it is never used once saved"
+        )
+        self.use_box.setChecked(True)
+        self.use_box.toggled.connect(self._use_current)
+        bar.addWidget(self.use_box)
         bar.addWidget(QtWidgets.QLabel("Window (s)"))
         self.width_box = QtWidgets.QDoubleSpinBox()
         self.width_box.setRange(MIN_WINDOW_S, 600)
@@ -756,6 +763,7 @@ class EditorWindow(QtWidgets.QMainWindow):
     # ---- clip, view -----------------------------------------------------------------
 
     def load_clip(self) -> None:
+        width = self.width_s if self.width_s <= MARKER_MAX_WINDOW_S else self.initial_s
         trace = self.state.trace()
         raw = trace.x if trace.raw is None else trace.raw
         self.raw_curve.setData(trace.t, raw)
@@ -780,7 +788,7 @@ class EditorWindow(QtWidgets.QMainWindow):
         self.seek.getViewBox().setLimits(xMin=lo, xMax=hi)
         self.seek.setXRange(lo, hi, padding=0)
         self.region.setBounds((lo, hi))
-        self.set_window(lo, min(hi, lo + self.width_s))
+        self.set_window(lo, min(hi, lo + width))
         self.detector_card.sync()
         self.span_start = None
         for line in self.pending:
@@ -916,7 +924,22 @@ class EditorWindow(QtWidgets.QMainWindow):
             self.state.select(row)
             self.load_clip()
 
+    def _use_current(self, use: bool) -> None:
+        try:
+            self.state.set_rejected([self.state.index], not use)
+        except ValueError as exc:
+            self.statusBar().showMessage(f"not changed: {exc}")
+        else:
+            self.statusBar().showMessage(
+                f"video {'included again' if use else 'excluded'}; save to keep it"
+            )
+        self._refresh_clip_names()
+        self.refresh_analysis()
+
     def _refresh_clip_names(self) -> None:
+        self.use_box.blockSignals(True)
+        self.use_box.setChecked(not self.state.entry.rejected)
+        self.use_box.blockSignals(False)
         for i, clip in enumerate(self.state.clips):
             method, _ = self.state.describe(i)
             mark = "\u25cf " if i in self.state.dirty else ""
@@ -956,16 +979,46 @@ class EditorWindow(QtWidgets.QMainWindow):
                 item.scene().removeItem(item)
         self.span_items.clear()
         brush = pg.mkBrush(_alpha(THEME["span"], 90))
-        for start, end in self.state.spans():
+        edge = pg.mkPen(THEME["span"], width=3)
+        for k, (start, end) in enumerate(self.state.spans()):
+            group = []
             for plot in (self.raw, self.proc, self.rate, self.seek):
                 item = pg.LinearRegionItem(
                     (start, end), movable=False, brush=brush, pen=pg.mkPen(None)
                 )
                 item.setZValue(-10)
+                draggable = plot in (self.raw, self.proc)
                 for line in item.lines:
-                    line.setPen(pg.mkPen(None))
+                    line.setPen(edge if draggable else pg.mkPen(None))
+                    if draggable:
+                        line.setHoverPen(pg.mkPen(THEME["bad"], width=4))
+                        line.setMovable(True)
                 plot.addItem(item, ignoreBounds=True)
                 self.span_items.append(item)
+                group.append(item)
+            for item in group[:2]:
+                item.sigRegionChanged.connect(
+                    lambda moved, group=group: self._span_dragging(moved, group)
+                )
+                item.sigRegionChangeFinished.connect(
+                    lambda moved, k=k: self._span_dropped(k, moved)
+                )
+
+    def _span_dragging(self, moved, group) -> None:
+        """Keep the span's other drawings on the edge being dragged."""
+        for item in group:
+            if item is not moved:
+                item.blockSignals(True)
+                item.setRegion(moved.getRegion())
+                item.blockSignals(False)
+
+    def _span_dropped(self, k: int, moved) -> None:
+        start, end = moved.getRegion()
+        try:
+            self.state.update_span(k, float(start), float(end))
+        except ValueError as exc:
+            self.statusBar().showMessage(f"span not changed: {exc}")
+        self._spans_changed()
 
     def refresh_span_list(self) -> None:
         """Fill the Spans tab from the clip's spans (sorted by start)."""
@@ -1139,14 +1192,14 @@ class EditorWindow(QtWidgets.QMainWindow):
             stats = self.state.breath_stats(band=tuple(self.band))
         rows = self.state.rows()
         onsets = self.state.times("inhale")
-        flagged = stats["flagged"]
+        flagged = set(np.asarray(stats["flagged"]).tolist())
         only_bad = self.show_kind["violations only"].isChecked()
         out, tags, times = [], [], []
         later = np.searchsorted(onsets, rows["time"].to_numpy(), side="right")
         for pos, (kind, time) in enumerate(zip(rows["kind"], rows["time"])):
             if not self.show_kind[kind].isChecked():
                 continue
-            bad = kind == "inhale" and bool(np.isin(time, flagged))
+            bad = kind == "inhale" and float(time) in flagged
             if only_bad and not bad:
                 continue
             rate = ""
@@ -1188,6 +1241,8 @@ class EditorWindow(QtWidgets.QMainWindow):
         "E>I median (s)",
         "I>I breaks",
         "E>E breaks",
+        "amplitude",
+        "SNR (dB)",
         "spans",
     )
 
@@ -1313,7 +1368,7 @@ class EditorWindow(QtWidgets.QMainWindow):
             return "-" if np.isnan(value) else f"{value:.{digits}f}"
 
         def numbers(row: dict, count: int) -> list[str]:
-            digits = (count, count, 2, count, 3, 3, count, count, count)
+            digits = (count, count, 2, count, 3, 3, count, count, 3, 1, count)
             return [fmt(row[k], d) for k, d in zip(METRICS, digits)]
 
         flagged = {"outside", "ii_breaks", "ee_breaks"}
@@ -1449,8 +1504,16 @@ class EditorWindow(QtWidgets.QMainWindow):
             verb = "included again" if use else "excluded"
             message = f"{self.state.clips[i].name} {verb}; save to keep it"
         self._refresh_clip_names()
-        self.refresh_analysis()
-        self.refresh_table()
+        if len(self._table_rows) == len(self.state.clips):
+            rows = list(self._table_rows)  # only this video's metrics change
+            rows[i] = (
+                dict.fromkeys(METRICS, np.nan)
+                if self.state.entries[i].rejected
+                else self.state.clip_metrics(i, tuple(self.band))
+            )
+            self._fill_table(rows)
+        else:
+            self.refresh_table()
         self.statusBar().showMessage(message)
 
     def _summary_opened(self, row: int, _column: int) -> None:
@@ -1487,10 +1550,9 @@ class EditorWindow(QtWidgets.QMainWindow):
     def _applied(self, error: str) -> None:
         if error:
             self.statusBar().showMessage(f"detector failed: {error}")
-        self.refresh_markers()
-        self.refresh_analysis()
-        self._refresh_clip_names()
-        self.detector_card.sync()
+        lo, hi = self.raw.getViewBox().viewRange()[0]
+        self.load_clip()  # redraws the traces: the high-pass may have changed
+        self.set_window(lo, hi)
         if self.tabs.currentIndex() == 1:
             self.refresh_table()
 
@@ -1751,7 +1813,7 @@ def open_window(path: Path, window_s: float, parent=None) -> bool:
     return True
 
 
-def run_ui(path: Path | None, window_s: float = 5.0) -> None:  # pragma: no cover
+def run_ui(path: Path | None, window_s: float = 10.0) -> None:  # pragma: no cover
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
     app.setStyleSheet(STYLE)
     if path is None:

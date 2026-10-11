@@ -54,6 +54,10 @@ class Events:
 class DetectorParams(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
+    highpass_hz: float = Field(0.2, gt=0, lt=5)
+    """Corner of the 2nd-order high-pass applied to the thermistor first (its
+    drift); every detector that filters the thermistor takes it."""
+
 
 class PeakDetectionParams(DetectorParams):
     """``peak_detection`` (the default): ``find_peaks`` on the filtered, z-scored
@@ -97,11 +101,13 @@ detector works on the thermistor at its own rate, so its times are not snapped
 to any output grid."""
 
 
-def native_trace(t: np.ndarray, v: np.ndarray) -> tuple[np.ndarray, np.ndarray, float]:
+def native_trace(
+    t: np.ndarray, v: np.ndarray, highpass_hz: float = 0.2
+) -> tuple[np.ndarray, np.ndarray, float]:
     """The thermistor on a uniform grid at its own rate, filtered and z-scored."""
     fs = 1.0 / float(np.median(np.diff(t)))
     tu = np.arange(t[0], t[-1], 1.0 / fs)
-    x = filter_sniff_signal(np.interp(tu, t, v), fs)
+    x = filter_sniff_signal(np.interp(tu, t, v), fs, highpass_hz)
     return tu, (x - x.mean()) / (x.std() or 1.0), fs
 
 
@@ -112,7 +118,7 @@ def _rolling_range(x: np.ndarray, n: int) -> np.ndarray:
 
 
 def _peak_detection(t, v, params: PeakDetectionParams):
-    tu, x, fs = native_trace(t, v)
+    tu, x, fs = native_trace(t, v, params.highpass_hz)
     on, off = detect_inhalation_events(
         x, fs, distance_s=params.distance_s, prominence_frac=params.prominence_frac
     )
@@ -120,7 +126,7 @@ def _peak_detection(t, v, params: PeakDetectionParams):
 
 
 def _adaptive_prominence(t, v, params: AdaptiveProminenceParams):
-    tu, x, fs = native_trace(t, v)
+    tu, x, fs = native_trace(t, v, params.highpass_hz)
     local = _rolling_range(x, round(params.window_s * fs))
     distance = max(1, round(params.distance_s * fs))
     times = []
@@ -132,7 +138,7 @@ def _adaptive_prominence(t, v, params: AdaptiveProminenceParams):
 
 
 def _hysteresis_cycles(t, v, params: HysteresisCyclesParams):
-    tu, x, fs = native_trace(t, v)
+    tu, x, fs = native_trace(t, v, params.highpass_hz)
     baseline = (
         pd.Series(x)
         .rolling(max(3, round(params.baseline_s * fs)), center=True, min_periods=1)
@@ -209,7 +215,10 @@ def for_clip(
 def identity(method: str, params: dict | None) -> dict:
     """What a clip's event set depends on, for the feature cache's staleness
     check: the method plus its validated parameters."""
-    return {"method": method, "params": detector_params(method, params).model_dump()}
+    full = detector_params(method, params).model_dump()
+    if full["highpass_hz"] == DetectorParams.model_fields["highpass_hz"].default:
+        del full["highpass_hz"]  # caches made before the knob existed still match
+    return {"method": method, "params": full}
 
 
 def in_spans(times: np.ndarray, spans: np.ndarray) -> np.ndarray:

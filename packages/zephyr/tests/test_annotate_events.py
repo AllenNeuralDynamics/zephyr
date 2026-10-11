@@ -55,6 +55,12 @@ class TuneStateTests(unittest.TestCase):
             self.state.describe(1), ("adaptive_prominence", "prominence_frac=0.3")
         )
 
+    def test_the_highpass_is_a_parameter_that_changes_the_trace(self):
+        before = self.state.trace(0).x.copy()
+        self.state.apply([0], "peak_detection", {"highpass_hz": 1.0})
+        self.assertEqual(self.state.describe(0), ("peak_detection", "highpass_hz=1"))
+        self.assertFalse(np.allclose(before, self.state.trace(0).x))
+
     def test_a_bad_method_or_parameter_changes_nothing(self):
         for method, params in (("nope", {}), ("peak_detection", {"bogus": 1.0})):
             with self.assertRaises(ValueError):

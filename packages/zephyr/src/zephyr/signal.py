@@ -10,9 +10,11 @@ TIME_COLUMN = "Time"
 BREATHING_SIGNAL_COLUMN = "Signal"
 
 
-def filter_sniff_signal(values: np.ndarray, fs: float) -> np.ndarray:
+def filter_sniff_signal(
+    values: np.ndarray, fs: float, highpass_hz: float = 0.2
+) -> np.ndarray:
     """Filter raw thermistor samples before resampling the training target."""
-    b_hp, a_hp = butter(2, 0.2, "highpass", fs=fs)
+    b_hp, a_hp = butter(2, highpass_hz, "highpass", fs=fs)
     filtered = filtfilt(b_hp, a_hp, values)
     b_lp, a_lp = butter(2, 40.0, "lowpass", fs=fs)
     return filtfilt(b_lp, a_lp, filtered)

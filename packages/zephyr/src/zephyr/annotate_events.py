@@ -38,6 +38,8 @@ METRICS = (
     "ei_median",
     "ii_breaks",
     "ee_breaks",
+    "amplitude",
+    "snr_db",
     "spans",
 )
 """The per-clip numbers :meth:`TuneState.clip_metrics` reports."""
@@ -55,10 +57,10 @@ class Trace:
     """The unfiltered thermistor on the same grid, if known."""
 
 
-def load_trace(clip: ResolvedClip) -> Trace:
+def load_trace(clip: ResolvedClip, highpass_hz: float = 0.2) -> Trace:
     frame = pd.read_parquet(clip.thermistor)
     t_raw, v_raw = frame["Time"].to_numpy(float), frame["Signal"].to_numpy(float)
-    t, x, fs = events.native_trace(t_raw, v_raw)
+    t, x, fs = events.native_trace(t_raw, v_raw, highpass_hz)
     return Trace(t, x, fs, np.interp(t, t_raw, v_raw))
 
 
@@ -147,7 +149,9 @@ class TuneState:
     def trace(self, i: int | None = None) -> Trace:
         entry = self.entries[self.index if i is None else i]
         if entry.trace is None:
-            entry.trace = self._load_trace(entry.clip)
+            entry.trace = self._load_trace(
+                entry.clip, entry.params.get("highpass_hz", 0.2)
+            )
         return entry.trace
 
     # ---- events of the chosen detector --------------------------------------------
@@ -196,7 +200,7 @@ class TuneState:
             entry = self.entries[i]
             entry.method, entry.params = method, dict(full)
             entry.custom = entry.dirty = True
-            entry.rows = None
+            entry.rows = entry.trace = None  # the filter may have changed
             self.rows(i)
             if progress is not None:
                 progress(n, len(indices))
@@ -364,6 +368,24 @@ class TuneState:
             "ee_breaks": int(pair("exhale", "exhale").sum()),
         }
 
+    def signal_quality(self, i: int | None = None) -> tuple[float, float]:
+        """Mean amplitude and SNR (dB) of the raw thermistor: the amplitude is the
+        mean 5th-to-95th percentile range over 1 s blocks, the noise the robust
+        standard deviation of its sample-to-sample differences."""
+        trace = self.trace(i)
+        raw = np.asarray(trace.x if trace.raw is None else trace.raw, float)
+        block = max(3, round(trace.fs))
+        blocks = raw[: len(raw) // block * block].reshape(-1, block)
+        if not len(blocks):
+            return np.nan, np.nan
+        low, high = np.percentile(blocks, [5, 95], axis=1)
+        amplitude = float(np.mean(high - low))
+        step = np.diff(raw)
+        noise = 1.4826 * float(np.median(np.abs(step - np.median(step)))) / np.sqrt(2)
+        if noise <= 0:
+            return amplitude, np.nan
+        return amplitude, float(20 * np.log10(amplitude / noise))
+
     def clip_metrics(
         self, i: int | None = None, band: tuple[float, float] = RATE_BAND_HZ
     ) -> dict:
@@ -373,6 +395,7 @@ class TuneState:
         def median(a):
             return float(np.median(a)) if len(a) else np.nan
 
+        amplitude, snr_db = self.signal_quality(i)
         return {
             "inhales": stats["inhales"],
             "exhales": stats["exhales"],
@@ -382,6 +405,8 @@ class TuneState:
             "ei_median": median(stats["ei"]),
             "ii_breaks": stats["ii_breaks"],
             "ee_breaks": stats["ee_breaks"],
+            "amplitude": amplitude,
+            "snr_db": snr_db,
             "spans": len(self.spans(i)),
         }
 
@@ -417,7 +442,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "clips", nargs="?", type=Path, help="Clip list TOML file (else File > Open)."
     )
-    parser.add_argument("--window-s", type=float, default=5.0)
+    parser.add_argument("--window-s", type=float, default=10.0)
     args = parser.parse_args(argv)
     from .annotate_events_ui import run_ui
 
