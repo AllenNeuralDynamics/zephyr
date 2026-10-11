@@ -3,6 +3,7 @@
 import gzip
 import io
 import json
+import shutil
 import tempfile
 import unittest
 import uuid
@@ -12,10 +13,10 @@ import fsspec
 import numpy as np
 import pandas as pd
 import tomlkit
-from _corpusfakes import harp_bytes
+from _corpusfakes import camera_frame, harp_bytes
 
 from zephyr.annotate_events import TuneState
-from zephyr.corpus import fetch, inventory, lists, qc, select
+from zephyr.corpus import fetch, inventory, lists, qc, select, videos
 from zephyr.corpus.config import DatasetSpec, Layout, Review
 
 FS_HZ = 250.0
@@ -34,11 +35,30 @@ def flat(t, seed):
     return 2000 + 2 * np.random.default_rng(seed).standard_normal(len(t))
 
 
-SESSIONS = {  # session_id: (raw folder name, signal, has a camera)
-    "100_2026-01-01_10-00-00": ("behavior_100_2026-01-01_10-00-00", breathing, True),
-    "behavior_101_2026-01-02_10-00-00": ("101_2026-01-02_10-00-00", breathing, False),
-    "102_2026-01-03_10-00-00": ("102_2026-01-03_10-00-00", flat, True),
-    "103_2026-01-04_10-00-00": ("103_2026-01-04_10-00-00", breathing, True),
+SESSIONS = {  # session_id: (raw folder name, signal, cameras)
+    "100_2026-01-01_10-00-00": (
+        "behavior_100_2026-01-01_10-00-00",
+        breathing,
+        {"FaceCamera": camera_frame(drop=100), "SideCamera": camera_frame()},
+    ),
+    "behavior_101_2026-01-02_10-00-00": (
+        "101_2026-01-02_10-00-00",
+        breathing,
+        {"FaceCamera": camera_frame()},  # no SideCamera: never selected
+    ),
+    "102_2026-01-03_10-00-00": (
+        "102_2026-01-03_10-00-00",
+        flat,
+        {"FaceCamera": camera_frame(), "SideCamera": camera_frame()},
+    ),
+    "103_2026-01-04_10-00-00": (
+        "103_2026-01-04_10-00-00",
+        breathing,
+        {  # cameras need not share a rate
+            "FaceCamera": camera_frame(),
+            "SideCamera": camera_frame(n=600, rollback=200, hz=60.0),
+        },
+    ),
 }
 SUBJECTS = {  # the metadata's subject; the last session was corrected after naming
     "100_2026-01-01_10-00-00": "100",
@@ -53,7 +73,7 @@ def fake_bucket():
     bucket = f"bucket-{uuid.uuid4().hex[:8]}"  # memory filesystems share one store
     records = []
     t = np.arange(0, 40.0, 1 / FS_HZ) + 5000.0
-    for k, (sid, (raw, signal, camera)) in enumerate(SESSIONS.items()):
+    for k, (sid, (raw, signal, cameras)) in enumerate(SESSIONS.items()):
         harp_dir = f"{bucket}/{raw}/behavior/SniffDetector.harp"
         values = np.round(signal(t - t[0], k)).astype(np.uint16)
         half = len(t) // 2
@@ -63,9 +83,10 @@ def fake_bucket():
             f"{harp_dir}/SniffDetector_32_1.bin", harp_bytes(t[half:], values[half:])
         )
         fs.pipe(f"{harp_dir}/SniffDetector_33.bin", harp_bytes([5000.0], [1], 33))
-        if camera:
-            for name in ("video.mp4", "metadata.csv"):
-                fs.pipe(f"{bucket}/{raw}/behavior-videos/FaceCamera/{name}", b"x")
+        for name, frame in cameras.items():
+            folder = f"{bucket}/{raw}/behavior-videos/{name}"
+            fs.pipe(f"{folder}/video.mp4", b"x")
+            fs.pipe(f"{folder}/metadata.csv", frame.to_csv(index=False).encode())
         session = pd.DataFrame(
             {
                 "session_id": [sid],
@@ -181,16 +202,65 @@ class PipelineTests(unittest.TestCase):
         by_id = {s["session_id"]: s for s in results["sessions"]}
         self.assertEqual(by_id["102_2026-01-03_10-00-00"]["selection"], "exclude")
         self.assertTrue(by_id["102_2026-01-03_10-00-00"]["reason"])  # a dead sensor
-        # passed: the three breathing sessions; the second has no camera
+        # passed: the three breathing sessions; the second has no SideCamera
         self.assertEqual(len(results["passed"]), 3)
         self.assertEqual(
             results["selected"], ["100_2026-01-01_10-00-00", "103_2026-01-04_10-00-00"]
         )
         chosen = by_id["100_2026-01-01_10-00-00"]
         self.assertEqual(sorted(chosen["clips"]), ["span1", "span2"])
-        self.assertTrue(chosen["camera"].endswith("/FaceCamera/"))
-        self.assertIsNone(by_id["behavior_101_2026-01-02_10-00-00"]["clips"])
+        self.assertEqual(sorted(chosen["cameras"]), ["FaceCamera", "SideCamera"])
+        self.assertTrue(chosen["cameras"]["SideCamera"].endswith("/SideCamera/"))
+        lonely = by_id["behavior_101_2026-01-02_10-00-00"]
+        self.assertEqual(list(lonely["cameras"]), ["FaceCamera"])
+        self.assertIsNone(lonely["clips"])
         self.assertEqual(json.loads(self.layout.results.read_text()), results)
+
+    def test_videos_repairs_rollbacks_and_reports_what_stays_broken(self):
+        self.build()
+
+        def frames(url):  # what ffprobe would say: the video's own frame count
+            return 600 if "103_" in url and "SideCamera" in url else 2400
+
+        table = videos.run(self.spec, workers=2, fs=self.fs, frames=frames)
+        self.assertEqual(len(table), 4)  # two selected sessions x two cameras
+        row = table.set_index(["session_id", "camera"])
+        repaired = row.loc[("103_2026-01-04_10-00-00", "SideCamera")]
+        self.assertEqual(repaired["before_ref_backwards"], 1)
+        self.assertEqual(repaired["repaired_rows"], 2)  # the spike and the rollback
+        self.assertTrue(repaired["clean"])
+        self.assertAlmostEqual(repaired["after_rate_hz"], 60.0, places=3)
+        dropped = row.loc[("100_2026-01-01_10-00-00", "FaceCamera")]
+        self.assertEqual(dropped["after_dropped_frames"], 1)
+        self.assertFalse(dropped["clean"])  # and 2399 rows against 2400 video frames
+        fixed = pd.read_parquet(
+            self.layout.timestamps("103_2026-01-04_10-00-00", "SideCamera")
+        )
+        self.assertTrue(fixed["ReferenceTime"].is_monotonic_increasing)
+        np.testing.assert_allclose(
+            fixed["ReferenceTime"].to_numpy(), 5000.0 + np.arange(600) / 60.0
+        )
+        again = videos.run(self.spec, workers=2, fs=self.fs, frames=lambda url: 1 / 0)
+        pd.testing.assert_frame_equal(again, table)  # resumable: nothing redone
+        raw = pd.read_parquet(
+            self.layout.camera_metadata("103_2026-01-04_10-00-00", "SideCamera")
+        )
+        self.assertFalse(raw["ReferenceTime"].is_monotonic_increasing)  # unmodified
+        # a changed repair re-runs from the cache alone: no S3, no ffprobe
+        shutil.rmtree(self.layout.video_dir)
+        self.layout.cameras.unlink()
+        redone = videos.run(self.spec, workers=2, fs=None, frames=lambda url: 1 / 0)
+        pd.testing.assert_frame_equal(redone, table)
+        # select then drops sessions whose cameras are not clean, saying why
+        results = select.run(self.spec, workers=2, fs=self.fs)
+        self.assertEqual(results["selected"], ["103_2026-01-04_10-00-00"])
+        self.assertEqual(results["counts"]["dropped_for_cameras"], 1)
+        dropped = {s["session_id"]: s for s in results["sessions"]}[
+            "100_2026-01-01_10-00-00"
+        ]
+        self.assertIsNone(dropped["clips"])
+        self.assertTrue(any("FaceCamera" in p for p in dropped["dropped"]))
+        self.assertTrue(any("dropped frames" in p for p in dropped["dropped"]))
 
     def test_the_list_groups_by_subject(self):
         self.build()

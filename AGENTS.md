@@ -318,7 +318,7 @@ and rigs in or out), `[preprocess]` and `[events]` (the clip list's header), `[q
 clips per session, seed, camera required). Steps, each resumable:
 
 ```bash
-uv run zephyr-dataset inventory|fetch|lists|qc|select|status|build <spec.toml> [--workers N]
+uv run zephyr-dataset inventory|fetch|lists|qc|select|videos|status|build <spec.toml> [--workers N]
 ```
 
 - `inventory` queries DocDB (read-only REST, no credentials, paged) for the packaging
@@ -339,14 +339,28 @@ uv run zephyr-dataset inventory|fetch|lists|qc|select|status|build <spec.toml> [
   `include` (the list is the source of truth, so reviews win); passing sessions draw
   `clips_per_session` non-overlapping clips (`span1`, `span2`, ...) uniformly over their
   `included` spans, seeded by the spec's seed and the session_id, and need the camera
-  folder (`video.mp4` + `metadata.csv`) when `require_camera`.
+  folders (`video.mp4` + `metadata.csv`) of every camera in `[source] cameras` when
+  `require_cameras`.
+- `videos` (selected sessions only) caches each camera's `metadata.csv` unmodified in
+  `camera_metadata/<session_id>_<camera>.parquet` (with the video's frame count from
+  ffprobe), measures it (`zephyr/corpus/camera.py`: dropped frames, backward or
+  oversized steps in either clock, clock jitter, rows vs video frames; every threshold
+  relative to the camera's own median interval, never a fixed rate), repairs one-row
+  `ReferenceTime` rollbacks by interpolation and writes the repaired timestamps to
+  `videos/<session_id>_<camera>.parquet`; `cameras.parquet` keeps both measurements and
+  `clean`. A camera that is not clean after the repair is reported, never silently kept:
+  the next `select` drops its session and records why (`dropped` in `results.json`).
+  A re-run reads the cache, so changing the repair needs no S3. The known problems, why
+  their sessions are dropped and how they could be repaired are in
+  `packages/zephyr-dataset/README.md` ("Known data issues"); keep that section current.
 
 Decisions made by hand go in the spec as `[[review]]` (`session_id`, optional
 `selection`, `excluded`, `included`); `qc` writes them over its suggestions, marked
 reviewed (fields left out keep QC's), so a rebuild from nothing gives the same corpus. `notebooks/corpus.py` reruns the default pipeline
 into a new folder and compares it with the corpus.
 
-The dataset folder holds only those six entries; no logs or reports. Review with
+The dataset folder holds only these entries (plus `camera_metadata/`, `videos/` and
+`cameras.parquet` from `videos`); no logs or reports. Review with
 `uv run zephyr annotate events <root>/sessions.toml`, then run `select` again.
 
 ## Reference configs: do not change their meaning

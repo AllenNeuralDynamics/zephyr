@@ -12,7 +12,7 @@ with app.setup:
     import pandas as pd
 
     from zephyr.config import load
-    from zephyr.corpus import fetch, inventory, lists, qc, select, status
+    from zephyr.corpus import fetch, inventory, lists, qc, select, status, videos
     from zephyr.corpus.config import DatasetSpec, Layout
 
     REPO = Path(__file__).resolve().parents[1]
@@ -25,7 +25,7 @@ def _():
     # Rebuild the corpus
 
     Runs the default `zephyr-dataset` pipeline (`inventory`, `fetch`, `lists`, `qc`,
-    `select`) from the spec into a new folder, then compares it with the corpus the
+    `select`, `videos`) from the spec into a new folder, then compares it with the corpus the
     spec names. The DocDB return is copied from that corpus (`docdb.json.gz`) and the
     spec's `until` drops later assets, so the rebuild reads the same metadata; the
     spec's `[[review]]` entries restore the decisions made by hand.
@@ -62,7 +62,7 @@ def _(out_dir, spec_path):
 
 @app.cell
 def _():
-    run = mo.ui.run_button(label="Rebuild (about 15 minutes)")
+    run = mo.ui.run_button(label="Rebuild (about an hour)")
     run
     return (run,)
 
@@ -84,6 +84,10 @@ def _(rebuilt, reference, run, workers):
         spinner.update(title="qc")
         qc.run(rebuilt)
         spinner.update(title="select (camera folders on S3)")
+        select.run(rebuilt, workers=workers.value)
+        spinner.update(title="videos (camera timestamps from S3)")
+        videos.run(rebuilt, workers=workers.value)
+        spinner.update(title="select again (drops sessions with unclean cameras)")
         results = select.run(rebuilt, workers=workers.value)
     return (results,)
 
@@ -96,13 +100,14 @@ def _(rebuilt, reference, results):
         return {s["session_id"]: s for s in found["sessions"]}
 
     old, new = by_session(ref), by_session(results)
-    keys = ("selection", "reviewed", "included", "excluded", "clips", "camera")
+    keys = ("selection", "reviewed", "included", "excluded", "clips", "cameras")
     differ = sorted(
         sid
         for sid in old.keys() | new.keys()
         if sid not in old
         or sid not in new
         or any(old[sid][k] != new[sid][k] for k in keys)
+        or old[sid].get("dropped") != new[sid].get("dropped")
     )
     inv_old = pd.read_parquet(Layout(reference.root).inventory)
     inv_new = pd.read_parquet(Layout(rebuilt.root).inventory)
@@ -111,17 +116,25 @@ def _(rebuilt, reference, results):
             "reference": [
                 len(inv_old),
                 ref["counts"]["passed"],
+                ref["counts"].get("dropped_for_cameras"),
                 ref["counts"]["selected"],
                 "",
             ],
             "rebuild": [
                 len(inv_new),
                 results["counts"]["passed"],
+                results["counts"]["dropped_for_cameras"],
                 results["counts"]["selected"],
                 len(differ),
             ],
         },
-        index=["inventoried", "passed", "selected", "sessions that differ"],
+        index=[
+            "inventoried",
+            "passed",
+            "dropped for cameras",
+            "selected",
+            "sessions that differ",
+        ],
     )
     mo.vstack(
         [
@@ -145,6 +158,51 @@ def _(rebuilt, results):
     frame = pd.DataFrame(results["sessions"])
     frame["mark"] = frame["selection"].fillna("unset")
     pd.crosstab(frame["rig"].fillna("?"), frame["mark"], margins=True)
+    return
+
+
+@app.cell
+def _(rebuilt, results):
+    cams = pd.read_parquet(Layout(rebuilt.root).cameras)
+    failed = cams["error"].notna()
+    clean = cams["clean"].fillna(False).astype(bool)
+    repaired = cams["repaired_rows"].fillna(0) > 0
+    per_camera = (
+        pd.DataFrame(
+            {
+                "cameras": cams.groupby("camera").size(),
+                "clean": cams[clean].groupby("camera").size(),
+                "clean after repair": cams[clean & repaired].groupby("camera").size(),
+                "not clean": cams[~clean & ~failed].groupby("camera").size(),
+                "failed": cams[failed].groupby("camera").size(),
+            }
+        )
+        .fillna(0)
+        .astype(int)
+    )
+    dropped = pd.DataFrame(
+        [
+            {
+                "session_id": s["session_id"],
+                "subject": s["subject_id"],
+                "rig": s["rig"],
+                "date": s["date"],
+                "why": "; ".join(s["dropped"]),
+            }
+            for s in results["sessions"]
+            if s.get("dropped")
+        ]
+    )
+    mo.vstack(
+        [
+            mo.md("## Camera timestamps"),
+            per_camera,
+            mo.md(f"{len(dropped)} session(s) dropped for their cameras"),
+            dropped,
+            mo.md(f"{int(failed.sum())} camera(s) failed (retried by the next run)"),
+            cams.loc[failed, ["session_id", "camera", "error"]],
+        ]
+    )
     return
 
 

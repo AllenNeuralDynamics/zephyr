@@ -11,7 +11,7 @@ docdb = "https://api.allenneuraldynamics.org/v2/metadata_index/data_assets"
 process = "primary-nwb-packaging-vr-foraging"
 device = "SniffDetector"
 signal = "RawVoltage"
-camera = "FaceCamera"
+cameras = ["FaceCamera", "SideCamera"]
 
 [query]
 until = 2026-10-11T20:09:34Z  # the time of the saved DocDB query (docdb.json.gz)
@@ -60,7 +60,7 @@ artifact_pad_s = 2.0
 clip_s = 300.0
 clips_per_session = 2
 seed = 2026
-require_camera = true
+require_cameras = true
 
 # decisions made by hand (marked reviewed, so QC never changes them)
 [[review]]

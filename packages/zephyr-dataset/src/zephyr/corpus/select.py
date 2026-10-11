@@ -4,8 +4,9 @@ The clip list is the source of truth: a session passes when its mark is ``includ
 and its clips come from its ``included`` spans (the QC's, or a reviewer's). Each
 passing session draws ``clips_per_session`` non-overlapping clips uniformly over its
 included time (seeded by the spec's seed and its session_id), labelled ``span1``,
-``span2``, ... in time order (thermistor seconds); with ``require_camera`` only
-sessions whose camera folder holds ``video.mp4`` and ``metadata.csv`` are selected.
+``span2``, ... in time order (thermistor seconds); with ``require_cameras`` only
+sessions with every camera of the spec are kept, and (once ``videos`` has run) only
+those whose cameras are all clean: the others get ``dropped`` with the reason.
 """
 
 import hashlib
@@ -18,6 +19,7 @@ import pandas as pd
 
 from zephyr.config import ClipList, load
 
+from . import camera
 from .config import DatasetSpec, Layout, session_of
 from .qc import METRICS
 from .qc import metadata as qc_metadata
@@ -84,15 +86,39 @@ def draw_clips(
     return None
 
 
-def camera_folder(fs, spec: DatasetSpec, source: str) -> str | None:
-    """``s3://`` path of the session's camera folder when it holds a video."""
-    path = find(fs, spec.source.bucket, source, f"behavior-videos/{spec.source.camera}")
-    if path is None:
-        return None
-    names = {n.rsplit("/", 1)[-1] for n in fs.ls(path, detail=False)}
-    if {"video.mp4", "metadata.csv"} <= names:
-        return f"s3://{path}/"
-    return None
+def camera_folders(fs, spec: DatasetSpec, source: str) -> dict[str, str]:
+    """``s3://`` paths of the session's camera folders that hold a video and its
+    ``metadata.csv``, by camera name (cameras without them are left out)."""
+    root = find(fs, spec.source.bucket, source, "behavior-videos")
+    if root is None:
+        return {}
+    found = {}
+    for name in spec.source.cameras:
+        path = f"{root}/{name}"
+        if not fs.exists(path):
+            continue
+        names = {n.rsplit("/", 1)[-1] for n in fs.ls(path, detail=False)}
+        if {"video.mp4", "metadata.csv"} <= names:
+            found[name] = f"s3://{path.lstrip('/')}/"
+    return found
+
+
+def camera_problems(layout: Layout) -> dict[str, list[str]]:
+    """Sessions with a camera whose timestamps are not clean after the repair, and
+    why ("<camera>: <problem>"); none before ``videos`` has run."""
+    if not layout.cameras.exists():
+        return {}
+    table = pd.read_parquet(layout.cameras)
+    out: dict[str, list[str]] = {}
+    for _, row in table.iterrows():
+        if row["error"] is not None and not pd.isna(row["error"]):
+            continue  # not checked yet: retried by the next `videos`
+        if not bool(row["clean"]):
+            found = camera.problems(row) or ["not clean"]
+            out.setdefault(row["session_id"], []).extend(
+                f"{row['camera']}: {p}" for p in found
+            )
+    return out
 
 
 def _clean(value):
@@ -143,7 +169,7 @@ def run(spec: DatasetSpec, workers: int = 32, fs=None) -> dict:
             "included": [[float(a), float(b)] for a, b in clip.included],
             "excluded": [[float(a), float(b)] for a, b in clip.excluded],
             "clips": None,
-            "camera": None,
+            "cameras": {},
         }
         if clip.selection == "include":
             record["clips"] = draw_clips(
@@ -152,18 +178,24 @@ def run(spec: DatasetSpec, workers: int = 32, fs=None) -> dict:
         sessions.append(record)
     passed = [s for s in sessions if s["selection"] == "include"]
     fits = [s for s in passed if s["clips"]]
-    if rule.require_camera:
+    if rule.require_cameras:
         fs = fs or filesystem()
         found = thread_map(
-            lambda s: camera_folder(fs, spec, s["source_session"] or s["session_id"]),
+            lambda s: camera_folders(fs, spec, s["source_session"] or s["session_id"]),
             fits,
             workers,
         )
-        for s, path in zip(fits, found):
-            s["camera"] = path
-        selected = [s for s in fits if s["camera"]]
+        for s, paths in zip(fits, found):
+            s["cameras"] = paths
+        wanted = set(spec.source.cameras)
+        selected = [s for s in fits if wanted <= set(s["cameras"])]
     else:
         selected = fits
+    dropped = camera_problems(layout)  # from `videos`, once it has run
+    for s in selected:
+        if s["session_id"] in dropped:
+            s["dropped"] = dropped[s["session_id"]]
+    selected = [s for s in selected if s["session_id"] not in dropped]
     chosen = {s["session_id"] for s in selected}
     for s in sessions:
         if s["session_id"] not in chosen:
@@ -182,6 +214,7 @@ def run(spec: DatasetSpec, workers: int = 32, fs=None) -> dict:
             "sessions": len(sessions),
             "passed": len(passed),
             "clips_fit": len(fits),
+            "dropped_for_cameras": sum("dropped" in s for s in sessions),
             "selected": len(selected),
         },
         "passed": [s["session_id"] for s in passed],
@@ -191,6 +224,7 @@ def run(spec: DatasetSpec, workers: int = 32, fs=None) -> dict:
     layout.results.write_text(json.dumps(results, indent=1, default=_clean))
     print(
         f"select: {len(passed)} passed, {len(fits)} fit {rule.clips_per_session} "
-        f"clips of {rule.clip_s:g} s, {len(selected)} selected"
+        f"clips of {rule.clip_s:g} s, {results['counts']['dropped_for_cameras']} "
+        f"dropped for their cameras, {len(selected)} selected"
     )
     return results

@@ -34,8 +34,9 @@ class Source(_Model):
     """Harp device folder (``behavior/<device>.harp``) holding the thermistor."""
     signal: str = "RawVoltage"
     """Register of that device read as the thermistor signal."""
-    camera: str = "FaceCamera"
-    """Camera folder (``behavior-videos/<camera>``) a selected session needs."""
+    cameras: list[str] = ["FaceCamera", "SideCamera"]
+    """Camera folders (``behavior-videos/<camera>``, each with ``video.mp4`` and
+    ``metadata.csv``) a selected session needs."""
 
 
 class Query(_Model):
@@ -80,8 +81,8 @@ class Select(_Model):
     clips_per_session: int = Field(ge=1)
     seed: int
     """Global seed; each session draws from ``seed`` and its session_id."""
-    require_camera: bool = True
-    """Keep only sessions whose ``Source.camera`` video exists."""
+    require_cameras: bool = True
+    """Keep only sessions with every one of ``Source.cameras``."""
 
 
 class Review(_Model):
@@ -120,10 +121,20 @@ class Layout:
         self.clips = self.root / "sessions.toml"
         self.qc = self.root / "qc.parquet"
         self.results = self.root / "results.json"
+        self.video_dir = self.root / "videos"
+        self.cameras = self.root / "cameras.parquet"
 
     def thermistor(self, session_id: str) -> Path:
         """The whole session's thermistor."""
         return self.thermistor_dir / f"{session_id}.parquet"
+
+    def timestamps(self, session_id: str, camera: str) -> Path:
+        """A whole session's repaired camera timestamps."""
+        return self.video_dir / f"{session_id}_{camera}.parquet"
+
+    def camera_metadata(self, session_id: str, camera: str) -> Path:
+        """A camera's ``metadata.csv`` as on S3, unmodified (a cache)."""
+        return self.root / "camera_metadata" / f"{session_id}_{camera}.parquet"
 
     def sessions(self) -> list[str]:
         """Session ids with a fetched thermistor, sorted."""

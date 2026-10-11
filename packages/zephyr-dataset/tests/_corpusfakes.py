@@ -1,8 +1,28 @@
-"""Fake Harp files for the zephyr-dataset tests."""
+"""Fake Harp files and camera timestamps for the zephyr-dataset tests."""
 
 import numpy as np
+import pandas as pd
 
 from zephyr.corpus import harp
+
+
+def camera_frame(
+    n=2400, start=5000.0, rollback=None, drop=None, hz=240.0
+) -> pd.DataFrame:
+    """A *hz* camera's ``metadata.csv`` rows: *rollback* puts a spike + rollback of the
+    Harp clock at that row; *drop* removes that frame (a dropped frame)."""
+    number = np.arange(n) + 1000
+    cam = (np.arange(n) * 1e9 / hz).astype(np.int64) + 7_000_000_000
+    ref = start + np.arange(n) / hz
+    if rollback is not None:
+        ref[rollback] += 50.0  # the spike ...
+        ref[rollback + 1] -= 1.0  # ... and the rollback after it
+    frame = pd.DataFrame(
+        {"ReferenceTime": ref, "CameraFrameNumber": number, "CameraFrameTime": cam}
+    )
+    if drop is not None:
+        frame = frame.drop(index=drop).reset_index(drop=True)
+    return frame
 
 
 def harp_bytes(times, values, address=32) -> bytes:

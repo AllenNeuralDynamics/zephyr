@@ -10,6 +10,7 @@ CLI
     zephyr-dataset lists <spec.toml>       # sessions.toml
     zephyr-dataset qc <spec.toml>          # marks/spans of unreviewed clips, qc.parquet
     zephyr-dataset select <spec.toml>      # results.json
+    zephyr-dataset videos <spec.toml> [--workers 16] [--limit N]   # videos/, cameras.parquet
     zephyr-dataset status <spec.toml>
     zephyr-dataset build <spec.toml>       # all of the above
 """
@@ -21,7 +22,7 @@ from zephyr.config import load
 
 from .config import DatasetSpec
 
-STEPS = ["inventory", "fetch", "lists", "qc", "select", "status"]
+STEPS = ["inventory", "fetch", "lists", "qc", "select", "videos", "status"]
 
 
 def step(name: str, spec: DatasetSpec, args: argparse.Namespace) -> None:
@@ -45,6 +46,10 @@ def step(name: str, spec: DatasetSpec, args: argparse.Namespace) -> None:
         from . import select
 
         select.run(spec, workers=args.workers or 32)
+    elif name == "videos":
+        from . import videos
+
+        videos.run(spec, workers=args.workers or 16, limit=args.limit)
     elif name == "status":
         from . import status
 
@@ -61,7 +66,9 @@ def run(argv: list[str] | None = None) -> None:
     parser.add_argument("command", choices=[*STEPS, "build"])
     parser.add_argument("spec", type=Path)
     parser.add_argument("--workers", type=int, help="threads for S3 work")
-    parser.add_argument("--limit", type=int, help="fetch: only the first N sessions")
+    parser.add_argument(
+        "--limit", type=int, help="fetch, videos: only the first N sessions"
+    )
     parser.add_argument(
         "--refresh",
         action="store_true",
