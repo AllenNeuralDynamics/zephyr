@@ -392,8 +392,11 @@ def run(
         )
     ]
     start, written = time.time(), 0
-    for k in range(0, len(todo), BATCH):  # saved per batch: a stop loses little
-        batch = todo[k : k + BATCH]
+    size = max(
+        BATCH, workers
+    )  # every worker busy; saved per batch: a stop loses little
+    for k in range(0, len(todo), size):
+        batch = todo[k : k + size]
         found = thread_map(
             lambda s: one_session(spec, layout, s, done, url_of), batch, workers
         )
