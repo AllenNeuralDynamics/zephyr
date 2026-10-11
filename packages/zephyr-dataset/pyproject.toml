@@ -15,6 +15,7 @@ dependencies = [
     "pyyaml>=6.0",
     "tomlkit>=0.13",
     "s3fs>=2024.2",
+    "universal-pathlib>=0.2.6",
 ]
 
 [project.scripts]

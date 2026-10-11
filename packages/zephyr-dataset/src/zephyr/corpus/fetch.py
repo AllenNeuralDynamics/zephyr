@@ -8,7 +8,7 @@ Resumable: sessions already present are skipped.
 
 import pandas as pd
 
-from . import harp
+from . import harp, storage
 from .config import DatasetSpec, Layout
 from .inventory import wanted
 from .remote import filesystem, find, thread_map
@@ -33,9 +33,8 @@ def read_thermistor(fs, spec: DatasetSpec, source: str) -> pd.DataFrame | None:
     return frame.reset_index(drop=True)
 
 
-def fetch_one(fs, spec: DatasetSpec, layout: Layout, row) -> str:
-    target = layout.thermistor(row.session_id)
-    if target.exists():
+def fetch_one(fs, spec: DatasetSpec, layout: Layout, row, have: set[str]) -> str:
+    if row.session_id in have:
         return "have"
     try:
         frame = read_thermistor(fs, spec, first_source(row))
@@ -43,21 +42,21 @@ def fetch_one(fs, spec: DatasetSpec, layout: Layout, row) -> str:
         return type(exc).__name__
     if frame is None or frame.empty:
         return "no raw data"
-    tmp = target.with_suffix(".tmp")
-    frame.to_parquet(tmp, index=False)
-    tmp.replace(target)
+    storage.write_frame(frame, layout.thermistor(row.session_id))
     return "ok"
 
 
 def run(spec: DatasetSpec, workers: int = 16, fs=None, limit: int | None = None):
     fs = fs or filesystem()
     layout = Layout(spec.root)
-    layout.thermistor_dir.mkdir(parents=True, exist_ok=True)
-    table = wanted(spec, pd.read_parquet(layout.inventory))
+    table = wanted(spec, storage.read_parquet(layout.inventory))
     if limit:
         table = table.head(limit)
+    have = set(layout.sessions())
     status = thread_map(
-        lambda row: fetch_one(fs, spec, layout, row), list(table.itertuples()), workers
+        lambda row: fetch_one(fs, spec, layout, row, have),
+        list(table.itertuples()),
+        workers,
     )
     counts = pd.Series(status, dtype=object).value_counts().to_dict()
     print(f"fetch: {len(status)} sessions: {counts}")

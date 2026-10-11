@@ -13,9 +13,8 @@ import json
 
 import pandas as pd
 import pyarrow as pa
-import pyarrow.parquet as pq
 
-from . import camera
+from . import camera, storage
 from .config import DatasetSpec, Layout
 from .remote import filesystem, thread_map
 
@@ -43,10 +42,7 @@ def one(fs, layout: Layout, session_id: str, name: str, folder: str, frames) -> 
     row |= {f"before_{k}": v for k, v in before.items()}
     row |= {f"after_{k}": v for k, v in after.items()}
     row["clean"] = camera.clean(after, row["video_frames"])
-    target = layout.timestamps(session_id, name)
-    tmp = target.with_suffix(".tmp")
-    write(fixed[COLUMNS], tmp)
-    tmp.replace(target)
+    write(fixed[COLUMNS], layout.timestamps(session_id, name))
     return row
 
 
@@ -55,16 +51,13 @@ def cached(fs, layout: Layout, session_id: str, name: str, folder: str, frames):
     else from S3 (then cached)."""
     path = layout.camera_metadata(session_id, name)
     if path.exists():
-        meta = pq.read_schema(path).metadata or {}
+        meta = storage.schema_metadata(path)
         if b"video_frames" in meta:
-            return pd.read_parquet(path), int(meta[b"video_frames"])
+            return storage.read_parquet(path), int(meta[b"video_frames"])
     source = f"{folder.removeprefix('s3://').rstrip('/')}/metadata.csv"
     raw = pd.read_csv(io.BytesIO(fs.cat(source)), usecols=COLUMNS)  # one request
     count = frames(f"{https(folder)}/video.mp4")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
-    write(raw, tmp, {"video_frames": str(count), "source": f"s3://{source}"})
-    tmp.replace(path)
+    write(raw, path, {"video_frames": str(count), "source": f"s3://{source}"})
     return raw, count
 
 
@@ -79,7 +72,7 @@ def write(frame: pd.DataFrame, path, metadata: dict | None = None) -> None:
                 **{k.encode(): v.encode() for k, v in metadata.items()},
             }
         )
-    pq.write_table(
+    storage.write_table(
         table,
         path,
         compression="zstd",
@@ -102,17 +95,17 @@ def run(
     fs = fs or filesystem()
     frames = frames or camera.video_frames
     layout = Layout(spec.root)
-    layout.video_dir.mkdir(parents=True, exist_ok=True)
-    results = json.loads(layout.results.read_text())
+    results = json.loads(layout.results.read_text(encoding="utf-8"))
     by_id = {s["session_id"]: s for s in results["sessions"]}
-    done = pd.read_parquet(layout.cameras) if layout.cameras.exists() else None
+    done = storage.read_parquet(layout.cameras) if layout.cameras.exists() else None
     finished = set()
     if done is not None:
         ok = done[done["error"].isna()]
+        written = storage.names(layout.video_dir, "*.parquet")
         finished = {
             (s, c)
             for s, c in zip(ok["session_id"], ok["camera"])
-            if layout.timestamps(s, c).exists()
+            if layout.timestamps(s, c).name in written
         }
     todo = [
         (sid, name, by_id[sid]["cameras"][name])
@@ -127,7 +120,7 @@ def run(
             thread_map(lambda t: one(fs, layout, *t, frames), batch, workers)
         )
         table = merge(table, rows)
-        table.to_parquet(layout.cameras, index=False)
+        storage.write_frame(table, layout.cameras)
         print(f"videos: {start + len(batch)}/{len(todo)}", flush=True)
     report(table)
     return table

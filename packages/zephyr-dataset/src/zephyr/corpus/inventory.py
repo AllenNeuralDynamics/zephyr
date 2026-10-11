@@ -16,6 +16,7 @@ import pandas as pd
 import pyarrow.parquet as pq
 from packaging.version import InvalidVersion, Version
 
+from . import storage
 from .config import DatasetSpec, Layout
 from .remote import filesystem, thread_map
 
@@ -83,19 +84,20 @@ def records(spec: DatasetSpec, refresh: bool = False) -> list[dict]:
     there is none or *refresh*: re-runs read the same metadata."""
     layout = Layout(spec.root)
     if layout.docdb.exists() and not refresh:
-        with gzip.open(layout.docdb, "rt", encoding="utf-8") as handle:
-            return json.load(handle)["records"]
+        return snapshot(layout)["records"]
     found = query_docdb(spec.source.docdb, spec.source.process)
-    layout.root.mkdir(parents=True, exist_ok=True)
-    snapshot = {
+    saved = {
         "queried": datetime.now(UTC).isoformat(timespec="seconds"),
         "url": spec.source.docdb,
         "process": spec.source.process,
         "records": found,
     }
-    with gzip.open(layout.docdb, "wt", encoding="utf-8") as handle:
-        json.dump(snapshot, handle)
+    storage.write_bytes(layout.docdb, gzip.compress(json.dumps(saved).encode()))
     return found
+
+
+def snapshot(layout: Layout) -> dict:
+    return json.loads(gzip.decompress(layout.docdb.read_bytes()))
 
 
 def queried(spec: DatasetSpec) -> str | None:
@@ -103,8 +105,7 @@ def queried(spec: DatasetSpec) -> str | None:
     layout = Layout(spec.root)
     if not layout.docdb.exists():
         return None
-    with gzip.open(layout.docdb, "rt", encoding="utf-8") as handle:
-        return json.load(handle).get("queried")
+    return snapshot(layout).get("queried")
 
 
 def _utc(moment: datetime) -> datetime:
@@ -204,7 +205,7 @@ def build(
     rows = thread_map(lambda a: read_session(fs, a), chosen, workers)
     table = pd.DataFrame(rows)
     table["queried"] = queried(spec)
-    table.to_parquet(Layout(spec.root).inventory, index=False)
+    storage.write_frame(table, Layout(spec.root).inventory)
     print(
         f"inventory: {len(found)} records, {len(assets)} assets created by "
         f"{spec.query.until or 'now'}, {len(chosen)} latest per source, "

@@ -1,28 +1,32 @@
 """The ``zephyr-dataset`` command: one subcommand per step, each taking the spec.
 
 Steps are resumable and run in this order; ``build`` runs them all. Only machine
-settings (``--workers``, ``--limit``, ``--refresh``) are flags; the rest is in the spec.
+settings (``--workers``, ``--limit``, ``--refresh``, ``--profile``) are flags; the rest
+is in the spec.
 
 CLI
 ---
     zephyr-dataset inventory <spec.toml> [--refresh]   # DocDB -> docdb.json.gz, inventory.parquet
     zephyr-dataset fetch <spec.toml> [--workers 16] [--limit N]
     zephyr-dataset lists <spec.toml>       # sessions.toml
-    zephyr-dataset qc <spec.toml>          # marks/spans of unreviewed clips, qc.parquet
+    zephyr-dataset qc <spec.toml>          # marks/spans of unreviewed clips, qc.parquet (local root)
     zephyr-dataset select <spec.toml>      # results.json
     zephyr-dataset videos <spec.toml> [--workers 16] [--limit N]   # videos/, cameras.parquet
+    zephyr-dataset clips <spec.toml> [--workers 8] [--limit N]     # clips/, clips.parquet, clips.toml
     zephyr-dataset status <spec.toml>
     zephyr-dataset build <spec.toml>       # all of the above
+    zephyr-dataset clips <spec.toml> --profile IAmAnywhere   # AWS profile of an s3:// root
 """
 
 import argparse
+import os
 from pathlib import Path
 
 from zephyr.config import load
 
 from .config import DatasetSpec
 
-STEPS = ["inventory", "fetch", "lists", "qc", "select", "videos", "status"]
+STEPS = ["inventory", "fetch", "lists", "qc", "select", "videos", "clips", "status"]
 
 
 def step(name: str, spec: DatasetSpec, args: argparse.Namespace) -> None:
@@ -50,6 +54,10 @@ def step(name: str, spec: DatasetSpec, args: argparse.Namespace) -> None:
         from . import videos
 
         videos.run(spec, workers=args.workers or 16, limit=args.limit)
+    elif name == "clips":
+        from . import clips
+
+        clips.run(spec, workers=args.workers or 8, limit=args.limit)
     elif name == "status":
         from . import status
 
@@ -67,14 +75,19 @@ def run(argv: list[str] | None = None) -> None:
     parser.add_argument("spec", type=Path)
     parser.add_argument("--workers", type=int, help="threads for S3 work")
     parser.add_argument(
-        "--limit", type=int, help="fetch, videos: only the first N sessions"
+        "--limit", type=int, help="fetch, videos, clips: only the first N sessions"
     )
     parser.add_argument(
         "--refresh",
         action="store_true",
         help="inventory: query DocDB again instead of reading docdb.json.gz",
     )
+    parser.add_argument(
+        "--profile", help="AWS profile for an s3:// root (sets AWS_PROFILE)"
+    )
     args = parser.parse_args(argv)
+    if args.profile:
+        os.environ["AWS_PROFILE"] = args.profile
     spec = load(DatasetSpec, args.spec)
     for name in STEPS if args.command == "build" else [args.command]:
         step(name, spec, args)

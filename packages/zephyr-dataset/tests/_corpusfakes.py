@@ -1,9 +1,98 @@
-"""Fake Harp files and camera timestamps for the zephyr-dataset tests."""
+"""Fake Harp files, camera timestamps and videos for the zephyr-dataset tests."""
+
+import hashlib
+import subprocess
 
 import numpy as np
 import pandas as pd
 
 from zephyr.corpus import harp
+
+GOP = 250
+
+
+def make_video(path, frames: int, hz: int) -> None:
+    """A small H.264 video like the cameras': B-frames, a keyframe every ``GOP`` frames,
+    time base 1/15360, every frame different."""
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            f"testsrc2=size=64x48:rate={hz}",
+            "-frames:v",
+            str(frames),
+            "-c:v",
+            "libx264",
+            "-g",
+            str(GOP),
+            "-keyint_min",
+            str(GOP),
+            "-sc_threshold",
+            "0",
+            "-bf",
+            "2",
+            "-pix_fmt",
+            "yuv420p",
+            "-video_track_timescale",
+            "15360",
+            str(path),
+        ],
+        check=True,
+    )
+
+
+def frame_digest(path, index: int) -> str:
+    """md5 of frame *index* of a video, decoded from its start."""
+    out = subprocess.run(
+        [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-i",
+            str(path),
+            "-vf",
+            f"select=eq(n\\,{index})",
+            "-frames:v",
+            "1",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "rgb24",
+            "pipe:1",
+        ],
+        capture_output=True,
+        check=True,
+    ).stdout
+    assert out, f"no frame {index} in {path}"
+    return hashlib.md5(out).hexdigest()
+
+
+def packet_count(data: bytes) -> int:
+    out = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-count_packets",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=nb_read_packets",
+            "-of",
+            "csv=p=0",
+            "-i",
+            "pipe:0",
+        ],
+        input=data,
+        capture_output=True,
+        check=True,
+    ).stdout
+    return int(out.decode().strip().strip(","))
 
 
 def camera_frame(

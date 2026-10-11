@@ -311,15 +311,24 @@ The method and parameters may differ from clip to clip.
 `zephyr-dataset` (`packages/zephyr-dataset/`, import `zephyr.corpus`) builds the corpus
 of VR-foraging sessions with a sniff detector from one spec, `DatasetSpec` in
 `zephyr/corpus/config.py` (`packages/zephyr-dataset/configs/vr-foraging-sniff.toml`):
-`root` (the dataset folder, relative to the spec), `[source]` (bucket, DocDB, Harp
-device and register, camera), `[query]` (`until`, minimum dataset version, sessions
-and rigs in or out), `[preprocess]` and `[events]` (the clip list's header), `[qc]` (**every**
-`session_selection.Settings` value, none defaulted) and `[select]` (clip length,
-clips per session, seed, camera required). Steps, each resumable:
+`root` (the dataset folder: a URL such as `s3://...`, or a path relative to the spec),
+`[source]` (bucket, DocDB, Harp device and register, cameras), `[query]` (`until`,
+minimum dataset version, sessions and rigs in or out), `[preprocess]` and `[events]` (the
+clip list's header), `[qc]` (**every** `session_selection.Settings` value, none
+defaulted), `[select]` (clip length, clips per session, seed, camera required) and
+`[clips]` (thermistor pad). Steps, each resumable:
 
 ```bash
-uv run zephyr-dataset inventory|fetch|lists|qc|select|videos|status|build <spec.toml> [--workers N]
+uv run zephyr-dataset inventory|fetch|lists|qc|select|videos|clips|status|build <spec.toml> [--workers N] [--profile P]
 ```
+
+The corpus root is `s3://aind-scratch-data/vr-foraging/zephyr-dataset`. Every step reads
+and writes the root through `zephyr/corpus/storage.py` (`upath.UPath`, local or remote;
+`--profile` sets `AWS_PROFILE`), never renaming or deleting remote objects. Zephyr
+itself reads only local files and must not learn about remote paths, so `qc` (and
+`zephyr annotate events`, `preprocess`) run on a local copy; a remote clip list is
+validated entry by entry because zephyr cannot check its files exist (see the package
+README).
 
 - `inventory` queries DocDB (read-only REST, no credentials, paged) for the packaging
   process's derived assets, saves the raw return as `docdb.json.gz` and reuses it on
@@ -353,15 +362,29 @@ uv run zephyr-dataset inventory|fetch|lists|qc|select|videos|status|build <spec.
   A re-run reads the cache, so changing the repair needs no S3. The known problems, why
   their sessions are dropped and how they could be repaired are in
   `packages/zephyr-dataset/README.md` ("Known data issues"); keep that section current.
+- `clips` (selected sessions, after the second `select`) cuts each span of `results.json`
+  from each camera's video **without re-encoding**: from the keyframe at or before the
+  span's first frame to the keyframe at or after its last (or the video's end), as a
+  fragmented MP4 that ffmpeg writes to a pipe, checked (one packet per frame, evenly
+  spaced) before upload to `clips/<session_id>_<span>_<camera>.mp4`. Frame rate, time base
+  and keyframes come from each stream (cameras run at 240.38 or 359.2 Hz; never assume
+  one). Beside it go the frames' `Time` (repaired `ReferenceTime`, row *i* = frame *i*)
+  and, per span, the thermistor over both cameras ± `[clips] thermistor_pad_s`; each
+  session's camera gets one full-resolution PNG, `thumbnails/<session_id>_<camera>.png`
+  (first frame of its first span; missing ones are made from the stored clip). Rows go to
+  `clips.parquet` (errors kept, retried next run) and the clips to `clips.toml`, a clip list
+  grouped by subject, without boxes.
 
 Decisions made by hand go in the spec as `[[review]]` (`session_id`, optional
 `selection`, `excluded`, `included`); `qc` writes them over its suggestions, marked
-reviewed (fields left out keep QC's), so a rebuild from nothing gives the same corpus. `notebooks/corpus.py` reruns the default pipeline
-into a new folder and compares it with the corpus.
+reviewed (fields left out keep QC's), so a rebuild from nothing gives the same corpus. `notebooks/corpus.py` reruns the metadata stages
+into a new local folder and compares it with the corpus.
 
 The dataset folder holds only these entries (plus `camera_metadata/`, `videos/` and
-`cameras.parquet` from `videos`); no logs or reports. Review with
-`uv run zephyr annotate events <root>/sessions.toml`, then run `select` again.
+`cameras.parquet` from `videos`, and `clips/`, `thumbnails/`, `clips.parquet`,
+`clips.toml` from `clips`); no logs or reports. Review with
+`uv run zephyr annotate events <copy>/sessions.toml` on a local copy, record decisions in
+`[[review]]`, then run `qc` (on the copy) and `select` again.
 
 ## Reference configs: do not change their meaning
 

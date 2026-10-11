@@ -12,11 +12,11 @@ import time
 
 import pandas as pd
 import pyarrow as pa
-import pyarrow.parquet as pq
 
 from zephyr.annotate_events import TuneState
 from zephyr.session_selection import apply, assess
 
+from . import storage
 from .config import DatasetSpec, Layout, session_of
 
 METRICS = [
@@ -54,7 +54,13 @@ def apply_reviews(spec: DatasetSpec, state: TuneState) -> None:
 
 def run(spec: DatasetSpec) -> pd.DataFrame:
     layout = Layout(spec.root)
-    state = TuneState(layout.clips)
+    if not layout.local:
+        raise SystemExit(
+            "qc: zephyr reads the clip list and thermistors from local files; run qc "
+            f"on a local copy of {layout.root} (sessions.toml, thermistor/, "
+            "inventory.parquet) and upload sessions.toml and qc.parquet back"
+        )
+    state = TuneState(layout.session_list)
     start = time.time()
 
     def progress(done: int, total: int) -> None:
@@ -78,7 +84,7 @@ def run(spec: DatasetSpec) -> pd.DataFrame:
     arrow = arrow.replace_schema_metadata(
         {**(arrow.schema.metadata or {}), b"zephyr_dataset": json.dumps(meta).encode()}
     )
-    pq.write_table(arrow, layout.qc)
+    storage.write_table(arrow, layout.qc)
     passed = int((out["suggested"] == "include").sum())
     print(
         f"qc: {len(out)} sessions scored in {time.time() - start:.0f}s, {passed} "
@@ -89,5 +95,4 @@ def run(spec: DatasetSpec) -> pd.DataFrame:
 
 def metadata(path) -> dict:
     """What ``qc.parquet`` was made with (SNR gate, thresholds, detector)."""
-    raw = pq.read_schema(path).metadata or {}
-    return json.loads(raw.get(b"zephyr_dataset", b"{}"))
+    return json.loads(storage.schema_metadata(path).get(b"zephyr_dataset", b"{}"))

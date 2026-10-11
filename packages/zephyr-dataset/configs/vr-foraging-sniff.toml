@@ -1,9 +1,9 @@
 # VR-foraging sessions with a sniff detector: zephyr's corpus.
-#   uv run zephyr-dataset build packages/zephyr-dataset/configs/vr-foraging-sniff.toml
-# Review marks and spans with `uv run zephyr annotate events <root>/sessions.toml`,
-# then run `zephyr-dataset select` again.
+#   uv run zephyr-dataset <step> packages/zephyr-dataset/configs/vr-foraging-sniff.toml --profile IAmAnywhere
+# `qc` and `zephyr annotate events` need a local copy of the folder (see the README);
+# hand decisions go in [[review]] below.
 
-root = '\\allen\aind\scratch\bruno.cruz\zephyr\scratch\vr-foraging-sniff'
+root = "s3://aind-scratch-data/vr-foraging/zephyr-dataset"
 
 [source]
 bucket = "aind-open-data"
@@ -61,6 +61,9 @@ clip_s = 300.0
 clips_per_session = 2
 seed = 2026
 require_cameras = true
+
+[clips]
+thermistor_pad_s = 10.0
 
 # decisions made by hand (marked reviewed, so QC never changes them)
 [[review]]

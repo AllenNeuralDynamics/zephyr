@@ -16,11 +16,11 @@ from importlib.metadata import PackageNotFoundError, version
 
 import numpy as np
 import pandas as pd
+import tomlkit
 
-from zephyr.config import ClipList, load
-
-from . import camera
+from . import camera, storage
 from .config import DatasetSpec, Layout, session_of
+from .lists import validate
 from .qc import METRICS
 from .qc import metadata as qc_metadata
 from .remote import filesystem, find, thread_map
@@ -108,7 +108,7 @@ def camera_problems(layout: Layout) -> dict[str, list[str]]:
     why ("<camera>: <problem>"); none before ``videos`` has run."""
     if not layout.cameras.exists():
         return {}
-    table = pd.read_parquet(layout.cameras)
+    table = storage.read_parquet(layout.cameras)
     out: dict[str, list[str]] = {}
     for _, row in table.iterrows():
         if row["error"] is not None and not pd.isna(row["error"]):
@@ -141,11 +141,12 @@ def _package_version() -> str | None:
 def run(spec: DatasetSpec, workers: int = 32, fs=None) -> dict:
     layout = Layout(spec.root)
     rule = spec.select
-    clip_list = load(ClipList, layout.clips)
-    qc = pd.read_parquet(layout.qc).set_index("session_id")
-    inventory = pd.read_parquet(layout.inventory).set_index("session_id")
+    text = layout.session_list.read_text(encoding="utf-8")
+    entries = validate(tomlkit.parse(text), layout)
+    qc = storage.read_parquet(layout.qc).set_index("session_id")
+    inventory = storage.read_parquet(layout.inventory).set_index("session_id")
     sessions = []
-    for clip in clip_list.clip:
+    for clip in entries:
         sid = session_of(clip.thermistor)
         meta = inventory.loc[sid] if sid in inventory.index else None
         scored = qc.loc[sid] if sid in qc.index else None
@@ -221,7 +222,7 @@ def run(spec: DatasetSpec, workers: int = 32, fs=None) -> dict:
         "selected": [s["session_id"] for s in selected],
         "sessions": sessions,
     }
-    layout.results.write_text(json.dumps(results, indent=1, default=_clean))
+    storage.write_text(layout.results, json.dumps(results, indent=1, default=_clean))
     print(
         f"select: {len(passed)} passed, {len(fits)} fit {rule.clips_per_session} "
         f"clips of {rule.clip_s:g} s, {results['counts']['dropped_for_cameras']} "

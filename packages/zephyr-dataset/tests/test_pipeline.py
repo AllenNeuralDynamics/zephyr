@@ -1,4 +1,4 @@
-"""The whole pipeline on an in-memory bucket: inventory, fetch, lists, qc, select."""
+"""The whole pipeline on an in-memory bucket, into a local or an in-memory root."""
 
 import gzip
 import io
@@ -13,10 +13,18 @@ import fsspec
 import numpy as np
 import pandas as pd
 import tomlkit
-from _corpusfakes import camera_frame, harp_bytes
+from _corpusfakes import (
+    GOP,
+    camera_frame,
+    frame_digest,
+    harp_bytes,
+    make_video,
+    packet_count,
+)
 
 from zephyr.annotate_events import TuneState
-from zephyr.corpus import fetch, inventory, lists, qc, select, videos
+from zephyr.config import ClipList, load
+from zephyr.corpus import clips, fetch, inventory, lists, qc, select, storage, videos
 from zephyr.corpus.config import DatasetSpec, Layout, Review
 
 FS_HZ = 250.0
@@ -108,6 +116,11 @@ def fake_bucket():
     raw = last["data_description"]["source_data"]
     records.append(record("later", bucket, "2.0", "2026-03-01", raw[0]))
     return fs, bucket, records
+
+
+def video_frames(url) -> int:
+    """What ffprobe would say: each fake video's own frame count."""
+    return 600 if "103_" in url and "SideCamera" in url else 2400
 
 
 def record(name, bucket, version, created, source) -> dict:
@@ -219,10 +232,7 @@ class PipelineTests(unittest.TestCase):
     def test_videos_repairs_rollbacks_and_reports_what_stays_broken(self):
         self.build()
 
-        def frames(url):  # what ffprobe would say: the video's own frame count
-            return 600 if "103_" in url and "SideCamera" in url else 2400
-
-        table = videos.run(self.spec, workers=2, fs=self.fs, frames=frames)
+        table = videos.run(self.spec, workers=2, fs=self.fs, frames=video_frames)
         self.assertEqual(len(table), 4)  # two selected sessions x two cameras
         row = table.set_index(["session_id", "camera"])
         repaired = row.loc[("103_2026-01-04_10-00-00", "SideCamera")]
@@ -262,9 +272,103 @@ class PipelineTests(unittest.TestCase):
         self.assertTrue(any("FaceCamera" in p for p in dropped["dropped"]))
         self.assertTrue(any("dropped frames" in p for p in dropped["dropped"]))
 
+    def test_a_remote_root_works_and_qc_runs_on_a_local_copy(self):
+        local = self.build()
+        remote = f"memory://dataset-{uuid.uuid4().hex[:8]}"
+        spec = self.spec.model_copy(update={"root": remote})
+        layout = Layout(spec.root)
+        self.assertFalse(layout.local)
+        storage.write_bytes(layout.docdb, self.layout.docdb.read_bytes())
+        inventory.build(spec, workers=2, fs=self.fs)
+        fetch.run(spec, workers=2, fs=self.fs)
+        lists.run(spec)
+        self.assertEqual(layout.sessions(), self.layout.sessions())
+        with self.assertRaises(SystemExit):  # zephyr reads local files only
+            qc.run(spec)
+        for name in ("sessions.toml", "qc.parquet"):  # qc's output, made locally
+            storage.write_bytes(
+                layout.root / name, (self.layout.root / name).read_bytes()
+            )
+        results = select.run(spec, workers=2, fs=self.fs)
+        self.assertEqual(results["selected"], local["selected"])
+        table = videos.run(spec, workers=2, fs=self.fs, frames=video_frames)
+        self.assertEqual(len(table), 4)
+        self.assertEqual(len(storage.names(layout.video_dir, "*.parquet")), 4)
+
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "ffmpeg")
+    def test_clips_are_whole_gops_copied_with_their_timestamps(self):
+        self.build()
+        videos.run(self.spec, workers=2, fs=self.fs, frames=video_frames)
+        select.run(self.spec, workers=2, fs=self.fs)  # only 103 keeps clean cameras
+        sid = "103_2026-01-04_10-00-00"
+        results = json.loads(self.layout.results.read_text())
+        for s in results["sessions"]:  # spans inside the cameras' 10 s; the second
+            if s["session_id"] == sid:  # ends in the last GOP of both videos
+                s["clips"] = {
+                    "span1": {"start": 5001.3, "end": 5003.3},
+                    "span2": {"start": 5005.0, "end": 5009.9},
+                }
+        self.layout.results.write_text(json.dumps(results))
+        sources = {}
+        for name, frames, hz in (("FaceCamera", 2400, 240), ("SideCamera", 600, 60)):
+            sources[name] = Path(self.tmp.name) / f"{name}.mp4"
+            make_video(sources[name], frames, hz)
+
+        def url_of(folder):
+            return str(sources[folder.rstrip("/").rsplit("/", 1)[-1]])
+
+        table = clips.run(self.spec, workers=2, url_of=url_of)
+        self.assertEqual(len(table), 4)  # two spans x two cameras
+        self.assertTrue(table["error"].isna().all(), table["error"].tolist())
+        for clip in table.itertuples():
+            times = pd.read_parquet(self.layout.timestamps(sid, clip.camera))
+            times = times["ReferenceTime"].to_numpy()
+            stop = clip.first_frame + clip.frames
+            self.assertEqual(clip.first_frame % GOP, 0)  # whole GOPs ...
+            self.assertTrue(stop % GOP == 0 or stop == len(times))  # ... or the end
+            self.assertLessEqual(times[clip.first_frame], clip.span_start)
+            self.assertGreaterEqual(times[stop - 1], clip.span_end)
+            cut = self.layout.root / clip.video
+            self.assertEqual(packet_count(cut.read_bytes()), clip.frames)
+            source = sources[clip.camera]  # the same pictures: nothing re-encoded
+            self.assertEqual(
+                frame_digest(cut, 0), frame_digest(source, clip.first_frame)
+            )
+            self.assertEqual(
+                frame_digest(cut, clip.frames - 1), frame_digest(source, stop - 1)
+            )
+            stamps = pd.read_parquet(self.layout.root / clip.timestamps)
+            self.assertEqual(list(stamps.columns), ["Time"])
+            np.testing.assert_array_equal(
+                stamps["Time"], times[clip.first_frame : stop]
+            )
+            therm = pd.read_parquet(self.layout.root / clip.thermistor)["Time"]
+            self.assertLessEqual(therm.min(), max(clip.start - 10, 5000) + 1 / FS_HZ)
+            self.assertGreaterEqual(
+                therm.max(), min(clip.end + 10, 5039.99) - 1 / FS_HZ
+            )
+        thumbs = sorted(p.name for p in self.layout.thumbnail_dir.iterdir())
+        self.assertEqual(thumbs, [f"{sid}_FaceCamera.png", f"{sid}_SideCamera.png"])
+        span1 = table.set_index(["span", "camera"]).loc[("span1", "FaceCamera")]
+        png = self.layout.thumbnail(sid, "FaceCamera")
+        self.assertEqual(png.read_bytes()[1:4], b"PNG")
+        self.assertEqual(  # full resolution, the first frame of span1's clip
+            frame_digest(png, 0), frame_digest(sources["FaceCamera"], span1.first_frame)
+        )
+        png.unlink()  # a missing one is made again from the stored clip
+        clips.run(self.spec, workers=2, url_of=lambda folder: 1 / 0)
+        self.assertEqual(
+            frame_digest(png, 0), frame_digest(sources["FaceCamera"], span1.first_frame)
+        )
+        listed = load(ClipList, self.layout.clip_list)
+        self.assertEqual(len(listed.clip), 4)
+        self.assertEqual({c.group for c in listed.clip}, {"900"})  # the subject
+        again = clips.run(self.spec, workers=2, url_of=lambda folder: 1 / 0)
+        pd.testing.assert_frame_equal(again, table)  # resumable: nothing redone
+
     def test_the_list_groups_by_subject(self):
         self.build()
-        state = TuneState(self.layout.clips)
+        state = TuneState(self.layout.session_list)
         self.assertTrue(all(e.clip.video is None for e in state.entries))
         groups = {e.clip.source.stem: e.clip.group for e in state.entries}
         self.assertEqual(groups["behavior_101_2026-01-02_10-00-00"], "101")
@@ -274,15 +378,15 @@ class PipelineTests(unittest.TestCase):
 
     def test_reviews_survive_a_rerun_and_decide_the_selection(self):
         self.build()
-        doc = tomlkit.parse(self.layout.clips.read_text())
+        doc = tomlkit.parse(self.layout.session_list.read_text())
         for clip in doc["clip"]:
             if "103_" in str(clip["thermistor"]):
                 clip["selection"] = "exclude"
                 clip["reviewed"] = True
-        self.layout.clips.write_text(tomlkit.dumps(doc))
+        self.layout.session_list.write_text(tomlkit.dumps(doc))
         results = self.build()  # every step again
         self.assertEqual(results["selected"], ["100_2026-01-01_10-00-00"])
-        doc = tomlkit.parse(self.layout.clips.read_text())
+        doc = tomlkit.parse(self.layout.session_list.read_text())
         self.assertEqual(len(doc["clip"]), len(SESSIONS))
         reviewed = [c for c in doc["clip"] if c.get("reviewed")]
         self.assertEqual([str(c["selection"]) for c in reviewed], ["exclude"])

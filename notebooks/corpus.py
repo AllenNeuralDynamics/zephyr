@@ -5,14 +5,23 @@ app = marimo.App(width="medium")
 
 with app.setup:
     import json
-    import shutil
+    import os
     from pathlib import Path
 
     import marimo as mo
     import pandas as pd
 
     from zephyr.config import load
-    from zephyr.corpus import fetch, inventory, lists, qc, select, status, videos
+    from zephyr.corpus import (
+        fetch,
+        inventory,
+        lists,
+        qc,
+        select,
+        status,
+        storage,
+        videos,
+    )
     from zephyr.corpus.config import DatasetSpec, Layout
 
     REPO = Path(__file__).resolve().parents[1]
@@ -25,8 +34,9 @@ def _():
     # Rebuild the corpus
 
     Runs the default `zephyr-dataset` pipeline (`inventory`, `fetch`, `lists`, `qc`,
-    `select`, `videos`) from the spec into a new folder, then compares it with the corpus the
-    spec names. The DocDB return is copied from that corpus (`docdb.json.gz`) and the
+    `select`, `videos`; not `clips`, which copies terabytes) from the spec into a new
+    local folder (`qc` reads local files), then compares it with the corpus the spec
+    names. The DocDB return is copied from that corpus (`docdb.json.gz`) and the
     spec's `until` drops later assets, so the rebuild reads the same metadata; the
     spec's `[[review]]` entries restore the decisions made by hand.
     """)
@@ -37,21 +47,24 @@ def _():
 def _():
     spec_path = mo.ui.text(value=str(SPEC), label="Spec", full_width=True)
     out_dir = mo.ui.text(
-        value=str(load(DatasetSpec, SPEC).root.with_name("vr-foraging-sniff-rebuild")),
-        label="Rebuild into",
+        value=str(Path.home() / "zephyr-dataset-rebuild"),
+        label="Rebuild into (local)",
         full_width=True,
     )
+    profile = mo.ui.text(value="IAmAnywhere", label="AWS profile of an s3:// corpus")
     workers = mo.ui.number(start=1, stop=64, value=16, label="S3 threads")
-    mo.vstack([spec_path, out_dir, workers])
-    return out_dir, spec_path, workers
+    mo.vstack([spec_path, out_dir, profile, workers])
+    return out_dir, profile, spec_path, workers
 
 
 @app.cell
-def _(out_dir, spec_path):
+def _(out_dir, profile, spec_path):
+    if profile.value:
+        os.environ["AWS_PROFILE"] = profile.value
     reference = load(DatasetSpec, Path(spec_path.value))
-    rebuilt = reference.model_copy(update={"root": Path(out_dir.value)})
+    rebuilt = reference.model_copy(update={"root": str(Path(out_dir.value).resolve())})
     mo.stop(
-        rebuilt.root.resolve() == reference.root.resolve(),
+        rebuilt.root == reference.root,
         mo.callout(
             mo.md("Choose a folder other than the corpus itself."), kind="danger"
         ),
@@ -74,7 +87,7 @@ def _(rebuilt, reference, run, workers):
     layout.root.mkdir(parents=True, exist_ok=True)
     saved = Layout(reference.root).docdb
     if saved.exists() and not layout.docdb.exists():
-        shutil.copy(saved, layout.docdb)
+        storage.write_bytes(layout.docdb, saved.read_bytes())
     with mo.status.spinner(title="inventory") as spinner:
         inventory.build(rebuilt, workers=workers.value)
         spinner.update(title="fetch (raw Harp files from S3)")
@@ -94,7 +107,7 @@ def _(rebuilt, reference, run, workers):
 
 @app.cell
 def _(rebuilt, reference, results):
-    ref = json.loads(Layout(reference.root).results.read_text())
+    ref = json.loads(Layout(reference.root).results.read_text(encoding="utf-8"))
 
     def by_session(found):
         return {s["session_id"]: s for s in found["sessions"]}
@@ -109,8 +122,8 @@ def _(rebuilt, reference, results):
         or any(old[sid][k] != new[sid][k] for k in keys)
         or old[sid].get("dropped") != new[sid].get("dropped")
     )
-    inv_old = pd.read_parquet(Layout(reference.root).inventory)
-    inv_new = pd.read_parquet(Layout(rebuilt.root).inventory)
+    inv_old = storage.read_parquet(Layout(reference.root).inventory)
+    inv_new = storage.read_parquet(Layout(rebuilt.root).inventory)
     summary = pd.DataFrame(
         {
             "reference": [

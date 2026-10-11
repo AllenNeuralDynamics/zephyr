@@ -8,11 +8,13 @@ from the session metadata (never parsed from the session name, which can predate
 correction), so folds can hold out animals.
 """
 
-import pandas as pd
+from pathlib import Path
+
 import tomlkit
 
-from zephyr.config import ClipList
+from zephyr.config import Clip, ClipList, EventsSource, PreprocessParams
 
+from . import storage
 from .config import DatasetSpec, Layout, session_of
 
 HEADER = [
@@ -36,17 +38,31 @@ def header(spec: DatasetSpec) -> dict:
 
 def subjects(layout: Layout) -> dict[str, str]:
     """session_id -> subject_id, from the inventory (session metadata)."""
-    inventory = pd.read_parquet(layout.inventory, columns=["session_id", "subject_id"])
-    inventory = inventory.dropna()
+    inventory = storage.read_parquet(
+        layout.inventory, columns=["session_id", "subject_id"]
+    ).dropna()
     return dict(zip(inventory["session_id"], inventory["subject_id"].astype(str)))
+
+
+def validate(doc, layout: Layout) -> list[Clip]:
+    """The clips of *doc*, a list at the root of *layout*. A local list is checked whole
+    by zephyr (its files must exist); a remote one header and entry by entry, as zephyr
+    cannot see remote files."""
+    data = doc.unwrap()
+    if layout.local:
+        return ClipList.model_validate(data, context={"base": Path(layout.root)}).clip
+    PreprocessParams.model_validate(data.get("preprocess", {}))
+    EventsSource.model_validate(data.get("events", {}))
+    context = {"base": Path.cwd()}  # names only: never opened
+    return [Clip.model_validate(c, context=context) for c in data["clip"]]
 
 
 def run(spec: DatasetSpec) -> int:
     layout = Layout(spec.root)
-    path = layout.clips
+    path = layout.session_list
     subject = subjects(layout)
     if path.exists():
-        doc = tomlkit.parse(path.read_text())
+        doc = tomlkit.parse(path.read_text(encoding="utf-8"))
     else:
         doc = tomlkit.document()
         for line in HEADER:
@@ -81,7 +97,7 @@ def run(spec: DatasetSpec) -> int:
             entry["group"] = subject[session_id]
     if unknown:
         raise SystemExit(f"lists: no subject in the inventory for {sorted(unknown)}")
-    ClipList.model_validate(doc.unwrap(), context={"base": path.parent})
-    path.write_text(tomlkit.dumps(doc))
+    validate(doc, layout)
+    storage.write_text(path, tomlkit.dumps(doc))
     print(f"lists: {len(doc['clip'])} sessions ({added} added) in {path.name}")
     return added

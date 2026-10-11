@@ -2,18 +2,47 @@
 
 Allen-internal, never released. Builds zephyr's corpus of VR-foraging sessions with a
 sniff detector: the inventory of packaged sessions, their raw thermistor traces, a clip
-list with QC marks and spans, and the final selection of clips.
+list with QC marks and spans, the final selection, and the selected spans cut from the
+videos.
 
 ```bash
-uv run zephyr-dataset build packages/zephyr-dataset/configs/vr-foraging-sniff.toml
+uv run zephyr-dataset <step> packages/zephyr-dataset/configs/vr-foraging-sniff.toml --profile IAmAnywhere
 ```
 
-or one step at a time: `inventory`, `fetch`, `lists`, `qc`, `select`, `videos`, `status`.
-Review the marks with `uv run zephyr annotate events <root>/sessions.toml`, then run
-`select` again. After `videos`, run `select` once more: it drops sessions whose camera
-timestamps are not clean (see [Known data issues](#known-data-issues)).
+Steps, in order: `inventory`, `fetch`, `lists`, `qc`, `select`, `videos`, `select` (again:
+it drops sessions whose camera timestamps are not clean, see
+[Known data issues](#known-data-issues)), `clips`; `status` reports progress and `build`
+runs them all.
 
-The dataset folder (`root` in the spec) holds only what later stages need:
+## Where the dataset lives
+
+`root` in the spec is a local folder or a URL; the corpus is at
+`s3://aind-scratch-data/vr-foraging/zephyr-dataset` (about 40 GB of metadata, timestamps
+and thermistors, plus about 3.9 TB of clips). Every step reads and writes it directly,
+with the AWS profile given by `--profile` (or `AWS_PROFILE`); the source bucket,
+`aind-open-data`, is read anonymously. Writes never rename or delete remote objects (the
+`IAmAnywhere` role may not delete), and a file appears only once it is complete.
+
+Two things need local files, because zephyr itself reads only local paths:
+
+- `qc` (zephyr's session selection) refuses a remote root. Copy what it reads, run it on
+  the copy and upload its two outputs:
+
+  ```bash
+  aws s3 sync s3://aind-scratch-data/vr-foraging/zephyr-dataset <copy> --exclude "clips/*" --exclude "videos/*" --exclude "camera_metadata/*"
+  # a spec with root = "<copy>", then: zephyr-dataset qc <that spec>
+  aws s3 cp <copy>/sessions.toml s3://aind-scratch-data/vr-foraging/zephyr-dataset/
+  aws s3 cp <copy>/qc.parquet s3://aind-scratch-data/vr-foraging/zephyr-dataset/
+  ```
+
+- Reviewing (`zephyr annotate events <copy>/sessions.toml`) and preprocessing
+  (`clips.toml`) work on such a copy. Every path in the lists is relative, so a copy
+  anywhere works; sync `clips/` only for the clips you need. Decisions made by hand go
+  in the spec's `[[review]]`, so `qc` writes them back on every run.
+
+## The dataset folder
+
+It holds only what later stages need:
 
 | path | what |
 | --- | --- |
@@ -26,6 +55,24 @@ The dataset folder (`root` in the spec) holds only what later stages need:
 | `videos/<session_id>_<camera>.parquet` | the repaired camera timestamps (`ReferenceTime`, `CameraFrameNumber`, `CameraFrameTime`) |
 | `cameras.parquet` | each camera's checks before and after the repair, and whether it is clean |
 | `results.json` | the selection: per session metadata, metrics, marks, spans, clips, camera folders, and `dropped` (why) for sessions left out for their cameras |
+| `clips/<session_id>_<span>_<camera>.mp4` | the span cut from the camera's video: whole GOPs, stream-copied (never re-encoded) as fragmented MP4, at the camera's native rate |
+| `clips/<session_id>_<span>_<camera>.parquet` | that clip's frame times, one `Time` column (repaired `ReferenceTime`, Harp seconds), one row per frame |
+| `clips/<session_id>_<span>_thermistor.parquet` | the thermistor over both cameras' clips ± `[clips] thermistor_pad_s` (Harp seconds) |
+| `thumbnails/<session_id>_<camera>.png` | the camera at full resolution, losslessly: the first frame of the session's first clip |
+| `clips.parquet` | every clip: frames, first frame, span, start and end, rate, bytes, or the error that stopped it |
+| `clips.toml` | the clips as a zephyr clip list (`group` = subject, no boxes yet) |
+
+### How `clips` cuts
+
+A span is drawn in thermistor seconds, which share the Harp clock with the cameras'
+repaired `ReferenceTime`, so it maps to frame indices directly (row *i* of the timestamps
+is frame *i*: `videos` guarantees no dropped frames and as many rows as frames). The cut
+runs from the keyframe at or before the span's first frame to the keyframe at or after its
+last (or the end of the video), so a clip is a few seconds longer than its span and needs
+no re-encoding. Each video's frame rate, time base and keyframes are read from the
+stream, never assumed (most cameras are 240.38 Hz, the 15 sessions of rig 4B in
+2026-02/03 are 359.2 Hz). ffmpeg writes the cut to a pipe; it is uploaded only after a
+check that it holds one packet per expected frame, evenly spaced.
 
 ## Known data issues
 
@@ -47,7 +94,7 @@ and every rig keeps 20 or more. 7 of the 8 short videos were recorded on 2026-06
 mostly on FRG.4 rigs, which suggests an acquisition problem on those days.
 
 They could be recovered, in theory, which is why the raw `metadata.csv` is kept in
-`camera_metadata/` (a re-repair needs no S3):
+`camera_metadata/` (a re-repair never reads the source bucket again):
 
 - **3 ms dip**: generalise the repair to use the camera clock as the reference: blank any
   row whose `ReferenceTime` step disagrees with the `CameraFrameTime` step by more than
