@@ -16,13 +16,14 @@ import pandas as pd
 import pyqtgraph as pg
 from PySide6 import QtCore, QtGui, QtWidgets
 
-from . import events
+from . import events, session_selection
 from .annotate_events import (
     METRICS,
     POINT_KINDS,
     RATE_BAND_HZ,
     TuneState,
     mean_metrics,
+    parallel_map,
 )
 from .rates import breath_rates
 
@@ -37,6 +38,7 @@ THEME = {
     "inhale": "#2f9e63",
     "exhale": "#d9534f",
     "span": "#f0a53a",
+    "keep": "#1a9fa0",
     "bad": "#d9534f",
 }
 SYMBOLS = {"inhale": "t1", "exhale": "t"}
@@ -45,6 +47,8 @@ SEEKER_BUCKETS = 2000
 AMPLITUDE_WINDOW_S = 1.0
 """Width of the rolling window whose raw 5th-95th percentile range is the amplitude."""
 AMPLITUDE_COLOUR = "#8e5bd0"
+SELECTION_LABELS = ("unset", "include", "exclude")
+SPAN_COLOUR = {"exclude": THEME["span"], "include": THEME["keep"]}
 AMPLITUDE_HZ = 50.0
 SERIES_BINS = 120
 """Bins across the window for the rate and amplitude lines (coarser when zoomed out)."""
@@ -341,6 +345,7 @@ class EditorWindow(QtWidgets.QMainWindow):
         self._series: dict[str, tuple[np.ndarray, np.ndarray]] = {}
         self._skip_prompt = False
         self.span_start: float | None = None
+        self.span_kind = "exclude"
         self.span_items: list[pg.LinearRegionItem] = []
         self._jobs: list[_Job] = []
         screen = QtGui.QGuiApplication.primaryScreen().availableGeometry()
@@ -366,6 +371,7 @@ class EditorWindow(QtWidgets.QMainWindow):
         self.tabs = QtWidgets.QTabWidget()
         self.tabs.addTab(split, "Editor")
         self.tabs.addTab(self._build_methods(), "Methods")
+        self.tabs.addTab(self._build_selection(), "Selection")
         self.tabs.currentChanged.connect(self._tab_changed)
         self.setCentralWidget(self.tabs)
         split.addWidget(self._build_left())
@@ -388,6 +394,7 @@ class EditorWindow(QtWidgets.QMainWindow):
         self.clips.addItems([c.name for c in self.state.clips])
         self.clips.setTextElideMode(QtCore.Qt.TextElideMode.ElideLeft)
         self.clips.currentRowChanged.connect(self._clip_picked)
+        self._order: list[int] = list(range(len(self.state.clips)))
         panes.addWidget(self.clips)
 
         box = QtWidgets.QWidget()
@@ -433,7 +440,43 @@ class EditorWindow(QtWidgets.QMainWindow):
         self.list_tabs.addTab(box, "Events")
         self.list_tabs.addTab(self._build_span_list(), "Spans")
         panes.addWidget(self.list_tabs)
-        panes.setSizes([200, 700])
+
+        mark = QtWidgets.QFrame(objectName="card")
+        column = QtWidgets.QVBoxLayout(mark)
+        column.setContentsMargins(8, 6, 8, 6)
+        row = QtWidgets.QHBoxLayout()
+        column.addLayout(row)
+        row.addWidget(QtWidgets.QLabel("This video", objectName="title"))
+        self.mark_buttons = []
+        group = QtWidgets.QButtonGroup(mark)
+        for text, value in zip(SELECTION_LABELS, TuneState.SELECTIONS):
+            button = QtWidgets.QPushButton(text.capitalize())
+            button.setCheckable(True)
+            button.clicked.connect(
+                lambda _=False, v=value: self._mark([self.state.index], v)
+            )
+            group.addButton(button)
+            row.addWidget(button)
+            self.mark_buttons.append(button)
+        self.reviewed_button = QtWidgets.QPushButton("Reviewed")
+        self.reviewed_button.setCheckable(True)
+        self.reviewed_button.setToolTip("A person confirmed this video's mark (Ctrl+R)")
+        self.reviewed_button.clicked.connect(
+            lambda checked: self._review([self.state.index], checked)
+        )
+        row.addWidget(self.reviewed_button)
+        step = QtWidgets.QHBoxLayout()
+        for text, direction, tip in (("<", -1, "Previous"), (">", 1, "Next")):
+            button = QtWidgets.QPushButton(text)
+            button.setToolTip(f"{tip} video (P / N)")
+            button.clicked.connect(lambda _=False, d=direction: self._step_clip(d))
+            step.addWidget(button)
+        column.addLayout(step)
+        panes.addWidget(mark)
+        panes.setStretchFactor(0, 0)
+        panes.setStretchFactor(1, 1)
+        panes.setStretchFactor(2, 0)
+        panes.setSizes([200, 610, 90])
         return panes
 
     def _build_span_list(self) -> QtWidgets.QWidget:
@@ -442,10 +485,11 @@ class EditorWindow(QtWidgets.QMainWindow):
         page = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(page)
         layout.setContentsMargins(0, 4, 0, 0)
-        self.span_table = QtWidgets.QTableWidget(0, 3)
+        self.span_table = QtWidgets.QTableWidget(0, 4)
         self.span_table.setHorizontalHeaderLabels(
-            ["start (s)", "end (s)", "length (s)"]
+            ["start (s)", "end (s)", "length (s)", "kind"]
         )
+        self._span_rows: list[tuple[str, int]] = []
         self.span_table.verticalHeader().hide()
         self.span_table.verticalHeader().setDefaultSectionSize(24)
         self.span_table.horizontalHeader().setStretchLastSection(True)
@@ -467,12 +511,16 @@ class EditorWindow(QtWidgets.QMainWindow):
         self.span_table.currentCellChanged.connect(self._span_picked)
         layout.addWidget(self.span_table, 1)
         buttons = QtWidgets.QHBoxLayout()
-        add = QtWidgets.QPushButton("Add span")
+        add = QtWidgets.QPushButton("Add exclude span")
         add.setToolTip("A span in the middle of the view; then type its start and end")
-        add.clicked.connect(self.add_span_here)
+        add.clicked.connect(lambda: self.add_span_here("exclude"))
+        add_good = QtWidgets.QPushButton("Add include span")
+        add_good.setToolTip("A good stretch in the middle of the view")
+        add_good.clicked.connect(lambda: self.add_span_here("include"))
         remove = QtWidgets.QPushButton("Delete selected")
         remove.clicked.connect(self.delete_selected_spans)
         buttons.addWidget(add)
+        buttons.addWidget(add_good)
         buttons.addWidget(remove)
         layout.addLayout(buttons)
         layout.addWidget(
@@ -497,13 +545,15 @@ class EditorWindow(QtWidgets.QMainWindow):
             bar.addWidget(frame)
             self.cards[key] = (value, sub)
         bar.addStretch(1)
-        self.use_box = QtWidgets.QCheckBox("Use this video")
-        self.use_box.setToolTip(
-            "Untick to exclude the video: it is never used once saved"
+        bar.addWidget(QtWidgets.QLabel("This video"))
+        self.sel_box = QtWidgets.QComboBox()
+        self.sel_box.addItems(SELECTION_LABELS)
+        self.sel_box.setToolTip(
+            "Exclude: never used once saved. Include: a note only. Neither changes "
+            "the clip's spans or detector."
         )
-        self.use_box.setChecked(True)
-        self.use_box.toggled.connect(self._use_current)
-        bar.addWidget(self.use_box)
+        self.sel_box.currentIndexChanged.connect(self._selection_current)
+        bar.addWidget(self.sel_box)
         bar.addWidget(QtWidgets.QLabel("Window (s)"))
         self.width_box = QtWidgets.QDoubleSpinBox()
         self.width_box.setRange(MIN_WINDOW_S, 600)
@@ -794,7 +844,7 @@ class EditorWindow(QtWidgets.QMainWindow):
         for line in self.pending:
             line.hide()
         self.clips.blockSignals(True)
-        self.clips.setCurrentRow(self.state.index)
+        self.clips.setCurrentRow(self._row_of(self.state.index))
         self.clips.blockSignals(False)
         self.refresh_markers()
         self.refresh_analysis()
@@ -920,35 +970,50 @@ class EditorWindow(QtWidgets.QMainWindow):
             line.hide()
 
     def _clip_picked(self, row: int) -> None:
-        if row >= 0 and row != self.state.index:
-            self.state.select(row)
+        if 0 <= row < len(self._order) and self._order[row] != self.state.index:
+            self.state.select(self._order[row])
             self.load_clip()
 
-    def _use_current(self, use: bool) -> None:
-        try:
-            self.state.set_rejected([self.state.index], not use)
-        except ValueError as exc:
-            self.statusBar().showMessage(f"not changed: {exc}")
-        else:
-            self.statusBar().showMessage(
-                f"video {'included again' if use else 'excluded'}; save to keep it"
-            )
+    def _row_of(self, i: int) -> int:
+        return self._order.index(i) if i in self._order else i
+
+    def set_clip_order(self, order: list[int]) -> None:
+        """Show the clip list (and step N / P, < / >) in *order*, the order of the
+        table last sorted, so a sorted selection is easy to walk through."""
+        if sorted(order) != list(range(len(self.state.clips))) or order == self._order:
+            return
+        self._order = list(order)
+        self.clips.blockSignals(True)
+        self.clips.clear()
+        self.clips.addItems([self.state.clips[i].name for i in self._order])
+        self.clips.setCurrentRow(self._row_of(self.state.index))
+        self.clips.blockSignals(False)
         self._refresh_clip_names()
-        self.refresh_analysis()
+
+    def _selection_current(self, index: int) -> None:
+        self._mark([self.state.index], TuneState.SELECTIONS[index])
 
     def _refresh_clip_names(self) -> None:
-        self.use_box.blockSignals(True)
-        self.use_box.setChecked(not self.state.entry.rejected)
-        self.use_box.blockSignals(False)
-        for i, clip in enumerate(self.state.clips):
+        self.sel_box.blockSignals(True)
+        self.sel_box.setCurrentIndex(
+            TuneState.SELECTIONS.index(self.state.entry.selection)
+        )
+        self.sel_box.blockSignals(False)
+        current = TuneState.SELECTIONS.index(self.state.entry.selection)
+        for n, button in enumerate(self.mark_buttons):
+            button.setChecked(n == current)
+        self.reviewed_button.setChecked(self.state.entry.reviewed)
+        for row, i in enumerate(self._order):
+            clip = self.state.clips[i]
             method, _ = self.state.describe(i)
             mark = "\u25cf " if i in self.state.dirty else ""
             rejected = self.state.entries[i].rejected
-            item = self.clips.item(i)
+            item = self.clips.item(row)
+            note = {None: "", "include": "  + included", "exclude": "  - excluded"}
+            seen = "  \u2713" if self.state.entries[i].reviewed else ""
             item.setText(
-                f"{mark}{clip.name}   [excluded]"
-                if rejected
-                else f"{mark}{clip.name}   [{method}]"
+                f"{mark}{clip.name}   [{method}]"
+                f"{note[self.state.entries[i].selection]}{seen}"
             )
             item.setForeground(
                 QtGui.QBrush(QtGui.QColor(THEME["muted" if rejected else "ink"]))
@@ -961,6 +1026,7 @@ class EditorWindow(QtWidgets.QMainWindow):
 
     def _reload_clips(self) -> None:
         """The list of clips changed: rebuild the list widget and show a clip."""
+        self._order = list(range(len(self.state.clips)))
         self.clips.blockSignals(True)
         self.clips.clear()
         self.clips.addItems([c.name for c in self.state.clips])
@@ -978,31 +1044,33 @@ class EditorWindow(QtWidgets.QMainWindow):
             if item.scene() is not None:
                 item.scene().removeItem(item)
         self.span_items.clear()
-        brush = pg.mkBrush(_alpha(THEME["span"], 90))
-        edge = pg.mkPen(THEME["span"], width=3)
-        for k, (start, end) in enumerate(self.state.spans()):
-            group = []
-            for plot in (self.raw, self.proc, self.rate, self.seek):
-                item = pg.LinearRegionItem(
-                    (start, end), movable=False, brush=brush, pen=pg.mkPen(None)
-                )
-                item.setZValue(-10)
-                draggable = plot in (self.raw, self.proc)
-                for line in item.lines:
-                    line.setPen(edge if draggable else pg.mkPen(None))
-                    if draggable:
-                        line.setHoverPen(pg.mkPen(THEME["bad"], width=4))
-                        line.setMovable(True)
-                plot.addItem(item, ignoreBounds=True)
-                self.span_items.append(item)
-                group.append(item)
-            for item in group[:2]:
-                item.sigRegionChanged.connect(
-                    lambda moved, group=group: self._span_dragging(moved, group)
-                )
-                item.sigRegionChangeFinished.connect(
-                    lambda moved, k=k: self._span_dropped(k, moved)
-                )
+        for kind in TuneState.KINDS:
+            colour = SPAN_COLOUR[kind]
+            brush = pg.mkBrush(_alpha(colour, 90))
+            edge = pg.mkPen(colour, width=3)
+            for k, (start, end) in enumerate(self.state.spans(kind=kind)):
+                group = []
+                for plot in (self.raw, self.proc, self.rate, self.seek):
+                    item = pg.LinearRegionItem(
+                        (start, end), movable=False, brush=brush, pen=pg.mkPen(None)
+                    )
+                    item.setZValue(-10)
+                    draggable = plot in (self.raw, self.proc)
+                    for line in item.lines:
+                        line.setPen(edge if draggable else pg.mkPen(None))
+                        if draggable:
+                            line.setHoverPen(pg.mkPen(THEME["bad"], width=4))
+                            line.setMovable(True)
+                    plot.addItem(item, ignoreBounds=True)
+                    self.span_items.append(item)
+                    group.append(item)
+                for item in group[:2]:
+                    item.sigRegionChanged.connect(
+                        lambda moved, group=group: self._span_dragging(moved, group)
+                    )
+                    item.sigRegionChangeFinished.connect(
+                        lambda moved, k=k, kind=kind: self._span_dropped(k, moved, kind)
+                    )
 
     def _span_dragging(self, moved, group) -> None:
         """Keep the span's other drawings on the edge being dragged."""
@@ -1012,64 +1080,85 @@ class EditorWindow(QtWidgets.QMainWindow):
                 item.setRegion(moved.getRegion())
                 item.blockSignals(False)
 
-    def _span_dropped(self, k: int, moved) -> None:
+    def _span_dropped(self, k: int, moved, kind: str = "exclude") -> None:
         start, end = moved.getRegion()
         try:
-            self.state.update_span(k, float(start), float(end))
+            self.state.update_span(k, float(start), float(end), kind=kind)
         except ValueError as exc:
             self.statusBar().showMessage(f"span not changed: {exc}")
         self._spans_changed()
 
     def refresh_span_list(self) -> None:
-        """Fill the Spans tab from the clip's spans (sorted by start)."""
-        spans = self.state.spans()
+        """Fill the Spans tab: the excluded spans, then the included ones, each in
+        start order."""
+        self._span_rows = [
+            (kind, k)
+            for kind in TuneState.KINDS
+            for k in range(len(self.state.spans(kind=kind)))
+        ]
         table = self.span_table
         table.blockSignals(True)
-        table.setRowCount(len(spans))
-        for k, (start, end) in enumerate(spans):
-            for column, value in enumerate((start, end, end - start)):
-                item = QtWidgets.QTableWidgetItem(f"{value:.3f}")
+        table.setRowCount(len(self._span_rows))
+        for n, (kind, k) in enumerate(self._span_rows):
+            start, end = self.state.spans(kind=kind)[k]
+            for column, value in enumerate((start, end, end - start, kind)):
+                text = value if isinstance(value, str) else f"{value:.3f}"
+                item = QtWidgets.QTableWidgetItem(text)
                 item.setTextAlignment(
-                    QtCore.Qt.AlignmentFlag.AlignRight
+                    (
+                        QtCore.Qt.AlignmentFlag.AlignLeft
+                        if column == 3
+                        else QtCore.Qt.AlignmentFlag.AlignRight
+                    )
                     | QtCore.Qt.AlignmentFlag.AlignVCenter
                 )
-                if column == 2:
+                if column >= 2:
                     item.setFlags(item.flags() & ~QtCore.Qt.ItemFlag.ItemIsEditable)
-                table.setItem(k, column, item)
+                if column == 3:
+                    item.setForeground(QtGui.QBrush(QtGui.QColor(SPAN_COLOUR[kind])))
+                table.setItem(n, column, item)
         table.blockSignals(False)
-        self.list_tabs.setTabText(1, f"Spans ({len(spans)})" if len(spans) else "Spans")
+        count = len(self._span_rows)
+        self.list_tabs.setTabText(1, f"Spans ({count})" if count else "Spans")
 
     def _span_picked(
         self, row: int, _column: int, _old_row: int, _old_col: int
     ) -> None:
-        spans = self.state.spans()
-        if 0 <= row < len(spans):
-            self.centre_on(float(spans[row].mean()))
+        if 0 <= row < len(self._span_rows):
+            kind, k = self._span_rows[row]
+            self.centre_on(float(self.state.spans(kind=kind)[k].mean()))
 
     def _span_edited(self, item) -> None:
         """A start or end was typed: apply it, or say why not and put it back."""
         try:
-            k = item.row()
-            start = float(self.span_table.item(k, 0).text())
-            end = float(self.span_table.item(k, 1).text())
-            self.state.update_span(k, start, end)
+            kind, k = self._span_rows[item.row()]
+            start = float(self.span_table.item(item.row(), 0).text())
+            end = float(self.span_table.item(item.row(), 1).text())
+            self.state.update_span(k, start, end, kind=kind)
         except ValueError as exc:
             self.statusBar().showMessage(f"span not changed: {exc}")
             self.refresh_span_list()
             return
         self._spans_changed()
 
-    def add_span_here(self) -> None:
+    def add_span_here(self, kind: str = "exclude") -> None:
         lo, hi = self.raw.getViewBox().viewRange()[0]
         width = hi - lo
-        self.state.exclude(lo + width / 4, hi - width / 4)
+        self.state.exclude(lo + width / 4, hi - width / 4, kind=kind)
         self._spans_changed()
 
     def delete_selected_spans(self) -> None:
-        rows = sorted(
-            {r.row() for r in self.span_table.selectionModel().selectedRows()}
-        )
-        if rows and self.state.remove_spans(rows):
+        rows = {r.row() for r in self.span_table.selectionModel().selectedRows()}
+        changed = False
+        for kind in TuneState.KINDS:
+            picked = [
+                k
+                for n, (kd, k) in enumerate(self._span_rows)
+                if n in rows and kd == kind
+            ]
+            if picked:
+                changed |= self.state.remove_spans(picked, kind=kind)
+        if changed:
             self._spans_changed()
 
     def _spans_changed(self) -> None:
@@ -1079,23 +1168,31 @@ class EditorWindow(QtWidgets.QMainWindow):
         if self.tabs.currentIndex() == 1:
             self.refresh_table()
 
-    def mark_span(self) -> None:
-        """Start an excluded span at the cursor, or end the one that was started."""
+    def mark_span(self, kind: str = "exclude") -> None:
+        """Start a span of *kind* at the cursor, or end the one that was started."""
         if self.cursor_x is None:
             self.statusBar().showMessage("point at a plot first")
             return
         if self.span_start is None:
-            self.span_start = self.cursor_x
+            self.span_start, self.span_kind = self.cursor_x, kind
             for line in self.pending:
+                line.setPen(
+                    pg.mkPen(
+                        SPAN_COLOUR[kind],
+                        width=2,
+                        style=QtCore.Qt.PenStyle.DashLine,
+                    )
+                )
                 line.setValue(self.span_start)
                 line.show()
-            self.statusBar().showMessage("span started: x again to end it")
+            key = "x" if kind == "exclude" else "i"
+            self.statusBar().showMessage(f"{kind} span started: {key} again to end it")
             return
         start, self.span_start = self.span_start, None
         for line in self.pending:
             line.hide()
         if abs(self.cursor_x - start) > 1e-3:
-            self.state.exclude(start, self.cursor_x)
+            self.state.exclude(start, self.cursor_x, kind=self.span_kind)
             self._spans_changed()
 
     def delete_span(self, t: float | None = None) -> None:
@@ -1182,9 +1279,15 @@ class EditorWindow(QtWidgets.QMainWindow):
         method, changed = self.state.describe(self.state.index)
         self.statusBar().showMessage(
             f"{self.state.clip.name}   {method} {changed}   "
-            f"{len(self.state.spans())} excluded span(s)   "
-            f"{'VIDEO EXCLUDED   ' if self.state.entry.rejected else ''}"
+            f"{len(self.state.spans())} excluded, "
+            f"{len(self.state.spans(kind='include'))} included span(s)   "
+            f"{self._selection_note()}"
             f"{'UNSAVED' if self.state.modified else 'saved'}"
+        )
+
+    def _selection_note(self) -> str:
+        return {"include": "VIDEO INCLUDED   ", "exclude": "VIDEO EXCLUDED   "}.get(
+            self.state.entry.selection, ""
         )
 
     def refresh_list(self, stats: dict | None = None) -> None:
@@ -1229,7 +1332,7 @@ class EditorWindow(QtWidgets.QMainWindow):
     # ---- methods tab -----------------------------------------------------------
 
     TABLE_HEAD = (
-        "use",
+        "selection",
         "video",
         "method",
         "parameters",
@@ -1282,9 +1385,25 @@ class EditorWindow(QtWidgets.QMainWindow):
         self._row_clip: list[int] = []
         self._widths_set = False
         self.summary.cellDoubleClicked.connect(self._summary_opened)
-        self.summary.itemChanged.connect(self._use_toggled)
         self.summary.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
         self.summary.customContextMenuRequested.connect(self._table_menu)
+        bar = QtWidgets.QHBoxLayout()
+        bar.addWidget(QtWidgets.QLabel("Mark selected videos:"))
+        for text, value in (
+            ("Include", "include"),
+            ("Exclude", "exclude"),
+            ("Unset", None),
+        ):
+            button = QtWidgets.QPushButton(text)
+            button.clicked.connect(lambda _=False, v=value: self.set_selection(v))
+            bar.addWidget(button)
+        bar.addSpacing(16)
+        for text, value in (("Reviewed", True), ("Not reviewed", False)):
+            button = QtWidgets.QPushButton(text)
+            button.clicked.connect(lambda _=False, v=value: self.set_reviewed(v))
+            bar.addWidget(button)
+        bar.addStretch(1)
+        layout.addLayout(bar)
         layout.addWidget(self.summary, 1)
         layout.addWidget(
             QtWidgets.QLabel(
@@ -1317,10 +1436,268 @@ class EditorWindow(QtWidgets.QMainWindow):
         self._jobs.append(job)
         QtCore.QThreadPool.globalInstance().start(job)
 
+    SELECTION_HEAD = (
+        "video",
+        "current",
+        "reviewed",
+        "suggested",
+        "SNR (dB)",
+        "consistency z",
+        "good time",
+        "artifacts",
+        "accepted (min)",
+        "include spans",
+        "reason",
+    )
+
+    def _build_selection(self) -> QtWidgets.QWidget:
+        """Suggest marks and spans for every video from rolling-window quality (see
+        :mod:`zephyr.session_selection`), with its thresholds editable."""
+        page = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(page)
+        card = QtWidgets.QFrame(objectName="card")
+        grid = QtWidgets.QGridLayout(card)
+        grid.addWidget(QtWidgets.QLabel("SELECTION", objectName="title"), 0, 0)
+        defaults = session_selection.Settings()
+        self.sel_edits: dict[str, QtWidgets.QLineEdit] = {}
+        labels = {
+            "window_s": "window (s)",
+            "min_span_s": "min include span (s)",
+            "max_outside": "max out-of-band frac",
+            "max_breaks": "max break frac",
+            "outlier_z": "outlier z",
+            "min_snr_gap_db": "min SNR gap (dB)",
+            "min_amplitude": "min amplitude",
+            "artifact_z": "artifact z",
+            "artifact_pad_s": "artifact pad (s)",
+        }
+        for n, (name, label) in enumerate(labels.items()):
+            edit = QtWidgets.QLineEdit(f"{getattr(defaults, name):g}")
+            edit.setMaximumWidth(80)
+            grid.addWidget(QtWidgets.QLabel(label), 0, 1 + 2 * n)
+            grid.addWidget(edit, 0, 2 + 2 * n)
+            self.sel_edits[name] = edit
+        run = QtWidgets.QPushButton("Run suggestions", objectName="accent")
+        run.clicked.connect(self.run_selection)
+        write = QtWidgets.QPushButton("Apply to unreviewed videos")
+        write.setToolTip(
+            "Write the suggested mark and spans into every video not reviewed; "
+            "File > Save keeps them"
+        )
+        write.clicked.connect(self.apply_selection)
+        grid.addWidget(run, 0, 2 + 2 * len(labels))
+        grid.addWidget(write, 0, 3 + 2 * len(labels))
+        grid.setColumnStretch(4 + 2 * len(labels), 1)
+        layout.addWidget(card)
+        bar = QtWidgets.QHBoxLayout()
+        bar.addWidget(QtWidgets.QLabel("Selected videos:"))
+        for text, slot in (
+            ("Include", lambda: self.set_selection("include")),
+            ("Exclude", lambda: self.set_selection("exclude")),
+            ("Unset", lambda: self.set_selection(None)),
+            ("Reviewed", lambda: self.set_reviewed(True)),
+            ("Not reviewed", lambda: self.set_reviewed(False)),
+            ("Clear spans of selected", lambda: self.clear_spans(False)),
+            ("Clear spans of all unreviewed", lambda: self.clear_spans(True)),
+        ):
+            button = QtWidgets.QPushButton(text)
+            button.clicked.connect(lambda _=False, f=slot: f())
+            bar.addWidget(button)
+        bar.addStretch(1)
+        self.sel_summary = QtWidgets.QLabel("", objectName="sub")
+        bar.addWidget(self.sel_summary)
+        layout.addLayout(bar)
+        self.sel_table = QtWidgets.QTableWidget(0, len(self.SELECTION_HEAD))
+        self.sel_table.setHorizontalHeaderLabels(self.SELECTION_HEAD)
+        self.sel_table.verticalHeader().hide()
+        self.sel_table.setEditTriggers(
+            QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers
+        )
+        self.sel_table.setSelectionBehavior(
+            QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows
+        )
+        self.sel_table.setSelectionMode(
+            QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection
+        )
+        self.sel_table.setShowGrid(False)
+        self.sel_table.setSortingEnabled(True)
+        header = self.sel_table.horizontalHeader()
+        header.setSortIndicator(0, QtCore.Qt.SortOrder.AscendingOrder)
+        header.setSectionResizeMode(QtWidgets.QHeaderView.ResizeMode.Interactive)
+        header.setStretchLastSection(True)
+        self.sel_table.cellDoubleClicked.connect(self._selection_opened)
+        header.sortIndicatorChanged.connect(
+            lambda *_: QtCore.QTimer.singleShot(0, self._order_from_selection)
+        )
+        layout.addWidget(self.sel_table, 1)
+        layout.addWidget(
+            QtWidgets.QLabel(
+                "Run suggestions scores every video in rolling windows; good runs at "
+                "least the min span long become include spans, bad windows exclude "
+                "spans | reviewed videos are never changed | double-click a video to "
+                "view it",
+                objectName="sub",
+            )
+        )
+        self._suggestions = None
+        return page
+
+    def _selection_settings(self):
+        values = {k: float(e.text()) for k, e in self.sel_edits.items()}
+        return session_selection.Settings(**values)
+
+    def run_selection(self) -> None:
+        try:
+            settings = self._selection_settings()
+        except ValueError as exc:
+            self.statusBar().showMessage(f"bad threshold: {exc}")
+            return
+        result = {}
+
+        def compute(progress) -> None:
+            result["table"] = session_selection.assess(self.state, settings, progress)
+
+        def done(error: str) -> None:
+            if error:
+                self.statusBar().showMessage(f"selection failed: {error}")
+                return
+            self._suggestions = result["table"]
+            self._fill_selection()
+
+        self._work("Scoring every video in rolling windows...", compute, done)
+
+    def _fill_selection(self) -> None:
+        table = self._suggestions
+        sel = self.sel_table
+        kept = set(self._targets()) if self.tabs.currentIndex() == 2 else set()
+        sel.setSortingEnabled(False)
+        n = len(self.state.entries)
+        sel.setRowCount(n)
+        for i, entry in enumerate(self.state.entries):
+            row = table.iloc[i] if table is not None and i < len(table) else None
+            values = [
+                entry.clip.name,
+                SELECTION_LABELS[TuneState.SELECTIONS.index(entry.selection)],
+                "\u2713" if entry.reviewed else "",
+            ]
+            if row is not None:
+                values += [
+                    row["suggested"],
+                    row["snr_db"],
+                    row["consistency_z"],
+                    row["good_frac"],
+                    row["artifacts"],
+                    row["accepted_s"] / 60,
+                    len(row["included"]),
+                    row["reason"],
+                ]
+            for column, value in enumerate(values):
+                item = QtWidgets.QTableWidgetItem()
+                if isinstance(value, str):
+                    item.setText(value)
+                else:
+                    item.setData(
+                        QtCore.Qt.ItemDataRole.DisplayRole,
+                        round(float(value), 2) if np.isfinite(value) else float("nan"),
+                    )
+                item.setData(QtCore.Qt.ItemDataRole.UserRole, i)
+                if column == 3 or column == 1:
+                    colour = {"include": THEME["inhale"], "exclude": THEME["bad"]}.get(
+                        value
+                    )
+                    if colour:
+                        item.setForeground(QtGui.QBrush(QtGui.QColor(colour)))
+                if (
+                    column == 3
+                    and row is not None
+                    and value != (entry.selection or "")
+                    and not entry.reviewed
+                ):
+                    font = item.font()
+                    font.setBold(True)
+                    item.setFont(font)
+                sel.setItem(i, column, item)
+            for column in range(len(values), len(self.SELECTION_HEAD)):
+                sel.setItem(i, column, QtWidgets.QTableWidgetItem(""))
+        sel.setSortingEnabled(True)
+        if table is not None:
+            cut = table.attrs.get("snr_threshold")
+            gate = "no dead-sensor mode" if cut is None else f"SNR gate {cut:.1f} dB"
+            counts = table["suggested"].value_counts().to_dict()
+            self.sel_summary.setText(
+                f"{gate} | suggested include {counts.get('include', 0)}, "
+                f"exclude {counts.get('exclude', 0)}"
+            )
+        sel.resizeColumnsToContents()
+        for row in range(sel.rowCount()):
+            item = sel.item(row, 0)
+            if item and item.data(QtCore.Qt.ItemDataRole.UserRole) in kept:
+                sel.selectionModel().select(
+                    sel.model().index(row, 0),
+                    QtCore.QItemSelectionModel.SelectionFlag.Select
+                    | QtCore.QItemSelectionModel.SelectionFlag.Rows,
+                )
+
+    def apply_selection(self) -> None:
+        if self._suggestions is None:
+            self.statusBar().showMessage("run the suggestions first")
+            return
+        try:
+            changed = session_selection.apply(self.state, self._suggestions)
+        except ValueError as exc:
+            self.statusBar().showMessage(f"not applied: {exc}")
+            return
+        self._refresh_clip_names()
+        self.refresh_spans()
+        self.refresh_analysis()
+        self._fill_selection()
+        self.statusBar().showMessage(
+            f"{changed} unreviewed video(s) updated; File > Save keeps them"
+        )
+
+    def clear_spans(self, all_unreviewed: bool) -> None:
+        """Remove every excluded and included span of the selected videos, or of all
+        videos not reviewed (Ctrl+Z in the Editor brings a video's back)."""
+        if all_unreviewed:
+            targets = [i for i, e in enumerate(self.state.entries) if not e.reviewed]
+            ask = f"Remove every span of {len(targets)} unreviewed video(s)?"
+        else:
+            targets = self._targets()
+            ask = f"Remove every span of {len(targets)} selected video(s)?"
+        if not targets:
+            self.statusBar().showMessage("no videos selected")
+            return
+        if all_unreviewed and QtWidgets.QMessageBox.question(
+            self, "Clear spans", ask
+        ) != (QtWidgets.QMessageBox.StandardButton.Yes):
+            return
+        cleared = self.state.clear_spans(targets)
+        self.refresh_spans()
+        self.refresh_analysis()
+        self._refresh_clip_names()
+        self._fill_selection()
+        self.statusBar().showMessage(
+            f"spans removed from {cleared} video(s); File > Save keeps it"
+        )
+
+    def _order_from_selection(self) -> None:
+        items = [self.sel_table.item(r, 0) for r in range(self.sel_table.rowCount())]
+        order = [it.data(QtCore.Qt.ItemDataRole.UserRole) for it in items if it]
+        self.set_clip_order(order)
+
+    def _selection_opened(self, row: int, _column: int) -> None:
+        item = self.sel_table.item(row, 0)
+        if item is not None:
+            self.state.select(item.data(QtCore.Qt.ItemDataRole.UserRole))
+            self.load_clip()
+            self.tabs.setCurrentIndex(0)
+
     def _tab_changed(self, index: int) -> None:
         if index == 1:
             self.methods_card.sync()
             self.refresh_table()
+        if index == 2:
+            self._fill_selection()
         self.statusBar().clearMessage()
 
     def refresh_table(self) -> None:
@@ -1328,15 +1705,11 @@ class EditorWindow(QtWidgets.QMainWindow):
         band = tuple(self.band)
 
         def compute(progress) -> None:
-            rows.clear()
-            for i in range(len(self.state.clips)):
-                rejected = self.state.entries[i].rejected
-                rows.append(
-                    dict.fromkeys(METRICS, np.nan)
-                    if rejected
-                    else self.state.clip_metrics(i, band)
-                )
-                progress(i + 1, len(self.state.clips))
+            rows[:] = parallel_map(
+                lambda i: self.state.clip_metrics(i, band),
+                range(len(self.state.clips)),
+                progress,
+            )
 
         def done(error: str) -> None:
             if error:
@@ -1394,36 +1767,25 @@ class EditorWindow(QtWidgets.QMainWindow):
             clip, row = self.state.clips[i], rows[i]
             method, changed = self.state.describe(i)
             mark = "\u25cf " if i in self.state.dirty else ""
-            tick = cell("")
-            tick.setFlags(
-                QtCore.Qt.ItemFlag.ItemIsUserCheckable
-                | QtCore.Qt.ItemFlag.ItemIsEnabled
-                | QtCore.Qt.ItemFlag.ItemIsSelectable
+            chosen_mark = self.state.entries[i].selection
+            mark_cell = cell(
+                SELECTION_LABELS[TuneState.SELECTIONS.index(chosen_mark)]
+                + ("  \u2713" if self.state.entries[i].reviewed else ""),
+                left=True,
             )
-            tick.setCheckState(
-                QtCore.Qt.CheckState.Unchecked
-                if self.state.entries[i].rejected
-                else QtCore.Qt.CheckState.Checked
+            colour = {"include": THEME["inhale"], "exclude": THEME["bad"]}.get(
+                chosen_mark
             )
-            self.summary.setItem(n, 0, tick)
+            if colour:
+                mark_cell.setForeground(QtGui.QBrush(QtGui.QColor(colour)))
+            self.summary.setItem(n, 0, mark_cell)
+            name = cell(mark + clip.name, left=True)
             if self.state.entries[i].rejected:
-                for column in range(1, len(self.TABLE_HEAD)):
-                    gone = cell(
-                        f"{mark}{clip.name}"
-                        if column == 1
-                        else "excluded"
-                        if column == 2
-                        else "",
-                        left=column < 4,
-                    )
-                    gone.setForeground(QtGui.QBrush(QtGui.QColor(THEME["muted"])))
-                    font = gone.font()
-                    font.setStrikeOut(column == 1)
-                    font.setItalic(column == 2)
-                    gone.setFont(font)
-                    self.summary.setItem(n, column, gone)
-                continue
-            self.summary.setItem(n, 1, cell(mark + clip.name, left=True))
+                font = name.font()
+                font.setStrikeOut(True)
+                name.setFont(font)
+                name.setForeground(QtGui.QBrush(QtGui.QColor(THEME["muted"])))
+            self.summary.setItem(n, 1, name)
             chosen = cell(method, left=True)
             colour = THEME["accent"] if self.state.entries[i].custom else THEME["muted"]
             chosen.setForeground(QtGui.QBrush(QtGui.QColor(colour)))
@@ -1459,7 +1821,8 @@ class EditorWindow(QtWidgets.QMainWindow):
 
         def value(i: int):
             if column == 0:
-                return int(not self.state.entries[i].rejected)
+                entry = self.state.entries[i]
+                return (TuneState.SELECTIONS.index(entry.selection), entry.reviewed)
             if column == 1:
                 return self.state.clips[i].name.lower()
             if column in (2, 3):
@@ -1487,34 +1850,7 @@ class EditorWindow(QtWidgets.QMainWindow):
             header.setSortIndicator(*self._sort)
         if self._table_rows:
             self._fill_table(self._table_rows)
-
-    def _use_toggled(self, item) -> None:
-        """The tick in the first column: unticked videos are excluded from use."""
-        n = item.row()
-        if item.column() != 0 or not 1 <= n <= len(self._row_clip):
-            return
-        i = self._row_clip[n - 1]
-        use = item.checkState() == QtCore.Qt.CheckState.Checked
-        message = ""
-        try:
-            self.state.set_rejected([i], not use)
-        except ValueError as exc:
-            message = f"not changed: {exc}"
-        else:
-            verb = "included again" if use else "excluded"
-            message = f"{self.state.clips[i].name} {verb}; save to keep it"
-        self._refresh_clip_names()
-        if len(self._table_rows) == len(self.state.clips):
-            rows = list(self._table_rows)  # only this video's metrics change
-            rows[i] = (
-                dict.fromkeys(METRICS, np.nan)
-                if self.state.entries[i].rejected
-                else self.state.clip_metrics(i, tuple(self.band))
-            )
-            self._fill_table(rows)
-        else:
-            self.refresh_table()
-        self.statusBar().showMessage(message)
+            self.set_clip_order(self._row_clip)
 
     def _summary_opened(self, row: int, _column: int) -> None:
         if 1 <= row <= len(self._row_clip):
@@ -1569,34 +1905,84 @@ class EditorWindow(QtWidgets.QMainWindow):
         """The videos a menu command acts on: the table's selection, else this one."""
         if self.tabs.currentIndex() == 1:
             return self._selected_clips()
+        if self.tabs.currentIndex() == 2:
+            rows = {r.row() for r in self.sel_table.selectionModel().selectedRows()}
+            items = [self.sel_table.item(r, 0) for r in rows]
+            return sorted(
+                item.data(QtCore.Qt.ItemDataRole.UserRole) for item in items if item
+            )
         return [self.state.index]
 
-    def set_rejected(self, rejected: bool) -> None:
-        """Exclude (or include again) the target videos: an excluded video is never
-        used once the list is saved."""
-        indices = self._targets()
+    def _refresh_tabs(self) -> None:
+        """Redraw the table of the tab being shown after a mark changed."""
+        if self.tabs.currentIndex() == 1:
+            self.refresh_table()
+        elif self.tabs.currentIndex() == 2:
+            self._fill_selection()
+
+    def _mark(self, indices: list[int], value: str | None) -> None:
         if not indices:
             self.statusBar().showMessage("no videos selected")
             return
         try:
-            self.state.set_rejected(indices, rejected)
+            self.state.set_selection(indices, value)
         except ValueError as exc:
+            self._refresh_clip_names()
             self.statusBar().showMessage(f"not changed: {exc}")
             return
-        verb = "excluded" if rejected else "included again"
-        self.statusBar().showMessage(f"{len(indices)} video(s) {verb}; save to keep it")
+        label = SELECTION_LABELS[TuneState.SELECTIONS.index(value)]
         self._refresh_clip_names()
         self.refresh_analysis()
-        if self.tabs.currentIndex() == 1:
-            self.refresh_table()
+        self._refresh_tabs()
+        self.statusBar().showMessage(
+            f"{len(indices)} video(s) marked {label}; save to keep it"
+        )
+
+    def set_selection(self, value: str | None) -> None:
+        self._mark(self._targets(), value)
+
+    def _review(self, indices: list[int], reviewed: bool) -> None:
+        if not indices:
+            self.statusBar().showMessage("no videos selected")
+            return
+        self.state.set_reviewed(indices, reviewed)
+        self._refresh_clip_names()
+        self.refresh_analysis()
+        self._refresh_tabs()
+        word = "reviewed" if reviewed else "not reviewed"
+        self.statusBar().showMessage(f"{len(indices)} video(s) {word}; save to keep it")
+
+    def set_reviewed(self, reviewed: bool) -> None:
+        self._review(self._targets(), reviewed)
+
+    def toggle_reviewed(self) -> None:
+        targets = self._targets()
+        if targets:
+            self._review(targets, not self.state.entries[targets[0]].reviewed)
+
+    def cycle_selection(self) -> None:
+        """Step the mark none, include, exclude, none for the target videos, all to
+        the step after the first one's."""
+        targets = self._targets()
+        if targets:
+            self._mark(targets, self.state.next_selection(targets[0]))
 
     def _table_menu(self, position) -> None:
         menu = QtWidgets.QMenu(self)
-        menu.addAction("Exclude selected videos").triggered.connect(
-            lambda: self.set_rejected(True)
+        for text, value in (
+            ("Include selected videos", "include"),
+            ("Exclude selected videos", "exclude"),
+            ("Unset the mark of selected videos", None),
+        ):
+            menu.addAction(text).triggered.connect(
+                lambda _=False, v=value: self.set_selection(v)
+            )
+        menu.addSeparator()
+        menu.addAction("Mark selected videos reviewed").triggered.connect(
+            lambda: self.set_reviewed(True)
         )
-        menu.addAction("Include selected videos").triggered.connect(
-            lambda: self.set_rejected(False)
+        menu.addAction("Mark selected videos not reviewed").triggered.connect(
+            lambda: self.set_reviewed(False)
         )
         menu.exec(self.summary.viewport().mapToGlobal(position))
 
@@ -1655,18 +2041,22 @@ class EditorWindow(QtWidgets.QMainWindow):
         edit_menu.addSeparator()
         action(
             edit_menu,
-            "Exclude video(s) from use",
-            lambda: self.set_rejected(True),
+            "Cycle video(s): unset, include, exclude",
+            self.cycle_selection,
             "Ctrl+E",
         )
-        action(
-            edit_menu,
-            "Include video(s) again",
-            lambda: self.set_rejected(False),
-            "Ctrl+Shift+E",
-        )
+        action(edit_menu, "Include video(s)", lambda: self.set_selection("include"))
+        action(edit_menu, "Exclude video(s)", lambda: self.set_selection("exclude"))
+        action(edit_menu, "Unset video(s) mark", lambda: self.set_selection(None))
+        action(edit_menu, "Toggle reviewed", self.toggle_reviewed, "Ctrl+R")
         edit_menu.addSeparator()
         action(edit_menu, "Mark excluded span start/end", self.mark_span, "X")
+        action(
+            edit_menu,
+            "Mark included span start/end",
+            lambda: self.mark_span("include"),
+            "I",
+        )
         action(edit_menu, "Delete span at cursor", self.delete_span, "Shift+X")
         action(edit_menu, "Delete selected spans", self.delete_selected_spans)
         action(edit_menu, "Undo span change", self.undo_span, "Ctrl+Z")
@@ -1675,12 +2065,16 @@ class EditorWindow(QtWidgets.QMainWindow):
         action(
             view_menu, "&Methods tab", lambda: self.tabs.setCurrentIndex(1), "Ctrl+2"
         )
+        action(
+            view_menu, "&Selection tab", lambda: self.tabs.setCurrentIndex(2), "Ctrl+3"
+        )
         view_menu.addSeparator()
         action(view_menu, "&Next clip", lambda: self._step_clip(1), "N")
         action(view_menu, "&Previous clip", lambda: self._step_clip(-1), "P")
 
     def _step_clip(self, step: int) -> None:
-        self.state.select(self.state.index + step)
+        row = (self._row_of(self.state.index) + step) % len(self._order)
+        self.state.select(self._order[row])
         self.load_clip()
 
     def _confirm_discard(self) -> bool:

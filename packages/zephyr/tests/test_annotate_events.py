@@ -101,38 +101,46 @@ class TuneStateTests(unittest.TestCase):
         self.assertEqual(names, [self.videos[1].name, extra.name])
         self.assertFalse(self.state.modified)
 
-    def test_a_rejected_video_is_saved_and_left_out_of_everything_downstream(self):
-        self.state.set_rejected([1])
-        self.assertEqual(self.state.dirty, {1})
+    def test_include_and_exclude_marks_are_saved_and_only_exclude_drops_a_video(self):
+        self.assertEqual([e.selection for e in self.state.entries], [None, None])
+        self.state.apply([1], "adaptive_prominence", {"prominence_frac": 0.3})
+        self.state.exclude(3.0, 4.0, 1)
+        self.state.set_selection([0], "include")
+        self.state.set_selection([1], "exclude")
         self.assertEqual(self.state.accepted(), [0])
+        self.assertEqual(self.state.next_selection(0), "exclude")
         self.state.save()
-        self.assertEqual(self.path.read_text().count("rejected = true"), 1)
+        text = self.path.read_text()
+        self.assertIn('selection = "include"', text)
+        self.assertIn('selection = "exclude"', text)
         clip_list = load(ClipList, self.path)
         self.assertEqual(
             [c.video.name for c in clip_list.resolve()], [self.videos[0].name]
         )
-        both = clip_list.resolve(include_rejected=True)
-        self.assertEqual(len(both), 2)
-        again = TuneState(self.path)  # the tuner still lists it, marked
-        self.assertEqual([e.rejected for e in again.entries], [False, True])
-        again.set_rejected([1], False)
+        again = TuneState(self.path)  # the marks leave detector and spans alone
+        self.assertEqual([e.selection for e in again.entries], ["include", "exclude"])
+        self.assertEqual(again.describe(1)[0], "adaptive_prominence")
+        self.assertEqual(again.spans(1).tolist(), [[3.0, 4.0]])
+        again.set_selection([0, 1], None)
         again.save()
-        self.assertNotIn("rejected", self.path.read_text())
+        self.assertNotIn("selection", self.path.read_text())
         self.assertEqual(len(load(ClipList, self.path).resolve()), 2)
 
     def test_at_least_one_video_must_stay_in_use(self):
-        self.state.set_rejected([0])
+        self.state.set_selection([0], "exclude")
         with self.assertRaisesRegex(ValueError, "at least one video"):
-            self.state.set_rejected([1])
+            self.state.set_selection([1], "exclude")
         with self.assertRaisesRegex(ValueError, "at least one video"):
             self.state.remove([1])
+        self.state.set_selection([1], "include")  # only exclude is restricted
         self.assertEqual(self.state.accepted(), [1])
         self.state.path.write_text(
             self.state.path.read_text().replace(
-                "box = [10, 10, 32, 32]\n", "box = [10, 10, 32, 32]\nrejected = true\n"
+                "box = [10, 10, 32, 32]\n",
+                'box = [10, 10, 32, 32]\nselection = "exclude"\n',
             )
         )
-        with self.assertRaisesRegex(ValueError, "every clip of the list is rejected"):
+        with self.assertRaisesRegex(ValueError, "every clip of the list is excluded"):
             load(ClipList, self.path)
 
     def test_excluded_spans_are_marked_undone_saved_and_reloaded(self):
@@ -172,6 +180,49 @@ class TuneStateTests(unittest.TestCase):
         self.assertEqual(self.state.spans().tolist(), [[12.0, 13.0]])
         self.assertTrue(self.state.undo_span())  # the removal is one change
         self.assertEqual(len(self.state.spans()), 3)
+
+    def test_included_spans_are_a_second_kind_saved_and_undone_with_the_others(self):
+        self.state.exclude(3.0, 4.0)
+        self.state.exclude(10.0, 20.0, kind="include")
+        self.state.exclude(25.0, 26.0, kind="include")
+        self.assertEqual(self.state.spans().tolist(), [[3.0, 4.0]])
+        self.assertEqual(
+            self.state.spans(kind="include").tolist(), [[10.0, 20.0], [25.0, 26.0]]
+        )
+        self.state.update_span(0, 11.0, 19.0, kind="include")
+        self.assertTrue(self.state.remove_spans([1], kind="include"))
+        self.assertTrue(self.state.delete_span(3.5))  # either kind, by time
+        self.assertTrue(self.state.undo_span())
+        self.state.save()
+        text = self.path.read_text()
+        self.assertIn("included = [[11.0, 19.0]]", text)
+        first = load(ClipList, self.path).resolve(include_excluded=True)[0]
+        self.assertEqual(first.excluded, ((3.0, 4.0),))
+        self.assertEqual(
+            TuneState(self.path).spans(kind="include").tolist(), [[11.0, 19.0]]
+        )
+        with self.assertRaisesRegex(ValueError, "span kind"):
+            self.state.spans(kind="nope")
+        before = self.state.breath_stats(0)["rates"]
+        self.state.exclude(0.0, 15.0, kind="include")  # a note: metrics unchanged
+        self.assertEqual(len(self.state.breath_stats(0)["rates"]), len(before))
+        self.state.remove_spans([0, 1], kind="include")
+        self.state.delete_span(3.5)
+        self.state.save()
+        self.assertNotIn("included", self.path.read_text())
+
+    def test_clear_spans_removes_both_kinds_and_is_undoable_per_clip(self):
+        self.state.exclude(3.0, 4.0, 0)
+        self.state.exclude(5.0, 9.0, 0, kind="include")
+        self.state.exclude(3.0, 4.0, 1)
+        self.assertEqual(self.state.clear_spans([0, 1]), 2)
+        self.assertEqual(self.state.clear_spans([0, 1]), 0)
+        self.assertEqual(
+            len(self.state.spans(0)) + len(self.state.spans(0, "include")), 0
+        )
+        self.assertTrue(self.state.undo_span(0))
+        self.assertEqual(self.state.spans(0, "include").tolist(), [[5.0, 9.0]])
+        self.assertEqual(self.state.spans(1).tolist(), [])
 
     def test_metrics_ignore_events_inside_excluded_spans(self):
         before = self.state.breath_stats(0)

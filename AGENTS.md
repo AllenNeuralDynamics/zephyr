@@ -118,10 +118,11 @@ box = [228, 85, 96, 96]           # x, y, w, h in target_size pixels
   A clip's `excluded = [[start, end], ...]` (seconds on the thermistor's clock) marks
   stretches whose events are untrusted: nothing is scored inside them and no
   training window overlaps them. Changing any of these rebuilds only the targets at
-  the next `preprocess`. A clip with `rejected = true` is **never used**: the list's
+  the next `preprocess`. A clip with `selection = "exclude"` is **never used**: the list's
   `resolve()` leaves it out, so preprocessing, folds, training and scoring never see
-  it (only the detector tuner lists it, to include it again). At least one clip of a
-  list must stay in use.
+  it (only the detector tuner lists it, to include it again), whether or not it is
+  reviewed. `reviewed = true` records that a person confirmed the mark and spans. At
+  least one clip of a list must stay in use.
 
 ### Experiment (`configs/experiments/*.toml`, model `Experiment`; `BenchmarkExperiment`)
 
@@ -266,11 +267,32 @@ at the cursor), delete one with a right-click (or Shift+X), undo with Ctrl+Z. Th
 **Spans** tab beside the event list lists the current clip's spans (start, end,
 length): pick one to jump to it, double-click a start or end to type it, add one
 in the middle of the view, or delete the selected ones.
-Exclude a whole video with Edit > Exclude video(s) from use (Ctrl+E, or right-click
-in the Methods table; Ctrl+Shift+E includes it again): it is struck out in the lists,
-left out of the mean row and of Apply to all, and saved as `rejected = true`.
+Each video has a mark, unset (default, no key), include or exclude, and a reviewed flag
+(default false). Set them in the first column of the Methods table, the "This video" strip
+and box in the Editor tab, the buttons above the Methods and Selection tables (they act
+on all selected rows), the right-click menu, Edit > Cycle video(s) (Ctrl+E) and Edit >
+Toggle reviewed (Ctrl+R). An excluded video keeps its row, metrics, spans and detector
+(marks never remove settings from the list); it is struck out, left out of the mean row
+and of Apply to all, and saved as `selection = "exclude"`. `selection = "include"` is a
+note only. Spans have two kinds: exclude (amber, key `x`) and include (teal, key `i`; a
+note of good stretches, saved as `included = [[start, end], ...]`, read by nothing
+downstream and not used by the metrics). Drag a span's edges on the traces to move them. Sorting the Methods or Selection table
+reorders the Editor's clip list (and N / P, < / >) to match.
+The **Selection** tab (`zephyr/session_selection.py`, also
+`uv run zephyr clips select <list.toml> [--out <list.toml>] [--min-span-s 300] [--window-s 30] [--report <csv>]`)
+suggests marks and spans: each clip is scored in rolling windows (SNR, amplitude,
+out-of-band breaths, alternation breaks), and `artifact_pad_s` either side of each stretch where
+the processed trace (as plotted, z-scored over the clip) goes beyond `artifact_z` in
+either direction is cut out; runs of good time at least the minimum span long become `included` spans, bad
+windows and artifact stretches `excluded` spans. A clip is suggested exclude when its SNR
+is in the list's low (dead sensor) mode, when its amplitude is below `min_amplitude`,
+when it is a robust outlier in event consistency
+among the rest, or when it has no accepted span. Suggestions are only written to clips
+that are not reviewed (Apply to unreviewed videos, or `--out`), replacing their mark and
+both span kinds; the thresholds are editable in the tab (analysis settings, not
+experiment settings).
 **File > Save** writes each chosen `events = { method, params }`, any
-`excluded` spans and any `rejected` flag next to the clip's `box` in the list (comments and layout are kept). File > Add videos / Remove selected videos edit the list itself.
+`excluded` / `included` spans, any `selection` mark and `reviewed = true` next to the clip's `box` in the list (comments and layout are kept). File > Add videos / Remove selected videos edit the list itself.
 The method and parameters may differ from clip to clip.
 
 ## Reference configs: do not change their meaning

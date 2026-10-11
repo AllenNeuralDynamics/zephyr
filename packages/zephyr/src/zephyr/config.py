@@ -208,19 +208,28 @@ class Clip(_Model):
     """Hand-placed crop box in ``target_size`` pixels; see ``zephyr annotate``."""
     events: "EventsSource | None" = None
     """This clip's own detector, overriding the list's ``[events]``."""
-    rejected: bool = False
-    """Never use this video: it is left out of everything downstream (preprocessing,
-    folds, training, scoring).  Set from ``zephyr annotate events``."""
+    selection: Literal["include", "exclude"] | None = None
+    """Curation mark set from ``zephyr annotate events``.  ``"exclude"``: never use
+    this video; it is left out of everything downstream (preprocessing, folds,
+    training, scoring).  ``"include"`` is a note only; neither touches the clip's
+    other settings."""
+    reviewed: bool = False
+    """Whether a person has confirmed ``selection`` (and the spans) in ``zephyr
+    annotate events``; ``zephyr clips select`` never changes a reviewed clip."""
     excluded: list[tuple[float, float]] = []
     """Spans ``[start, end]`` (seconds on the thermistor's clock) whose events are
     untrusted: nothing is scored there and no training window overlaps them."""
 
-    @field_validator("excluded")
+    included: list[tuple[float, float]] = []
+    """Spans ``[start, end]`` marked as good stretches of data from ``zephyr annotate
+    events``: a note only, nothing downstream reads them."""
+
+    @field_validator("excluded", "included")
     @classmethod
     def _ordered_spans(cls, value: list[tuple[float, float]]):
         for start, end in value:
             if not start < end:
-                raise ValueError(f"excluded span [{start}, {end}] needs start < end")
+                raise ValueError(f"span [{start}, {end}] needs start < end")
         return sorted(value)
 
     @field_validator("box")
@@ -316,9 +325,9 @@ class ClipList(_Model):
     def _check_clips(self) -> "ClipList":
         resolved = self.resolve()
         if not resolved:
-            raise ValueError("every clip of the list is rejected")
+            raise ValueError("every clip of the list is excluded")
 
-        videos = [c.video for c in self.resolve(include_rejected=True)]
+        videos = [c.video for c in self.resolve(include_excluded=True)]
         duplicated = sorted({str(v) for v in videos if videos.count(v) > 1})
         if duplicated:
             raise ValueError(f"videos listed more than once: {duplicated}")
@@ -354,13 +363,13 @@ class ClipList(_Model):
             )
         return self
 
-    def resolve(self, include_rejected: bool = False) -> list[ResolvedClip]:
-        """The clips in file order, every field concrete.  Rejected clips are left
-        out unless *include_rejected* (only the detector tuner wants them)."""
+    def resolve(self, include_excluded: bool = False) -> list[ResolvedClip]:
+        """The clips in file order, every field concrete.  Excluded clips are left
+        out unless *include_excluded* (only the detector tuner wants them)."""
         return [
             resolve_clip(c, self.derive, self.events)
             for c in self.clip
-            if include_rejected or not c.rejected
+            if include_excluded or c.selection != "exclude"
         ]
 
 

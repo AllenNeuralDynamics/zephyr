@@ -15,6 +15,9 @@ clip, the selected clips or all of them.
 """
 
 import argparse
+import os
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -43,6 +46,24 @@ METRICS = (
     "spans",
 )
 """The per-clip numbers :meth:`TuneState.clip_metrics` reports."""
+
+
+def parallel_map(fn, items, progress=None) -> list:
+    """``[fn(x) for x in items]`` on threads (the detectors' numpy / pandas work
+    releases the GIL), in order; *progress* is called with (done, total)."""
+    items = list(items)
+    done, lock = [0], threading.Lock()
+
+    def run(item):
+        result = fn(item)
+        if progress is not None:
+            with lock:
+                done[0] += 1
+                progress(done[0], len(items))
+        return result
+
+    with ThreadPoolExecutor(max(1, min(8, os.cpu_count() or 1))) as pool:
+        return list(pool.map(run, items))
 
 
 @dataclass(frozen=True)
@@ -83,15 +104,23 @@ class Entry:
     """Every parameter of *method*, defaults included."""
     custom: bool
     """Whether the clip list gives it its own ``events`` (else it uses the list's)."""
-    rejected: bool = False
-    """Whether the video is never to be used (``rejected = true`` in the list)."""
+    selection: str | None = None
+    """``None``, ``"include"`` or ``"exclude"`` (``selection`` in the list)."""
+    reviewed: bool = False
+    """Whether a person confirmed the selection (``reviewed = true`` in the list)."""
     excluded: list[tuple[float, float]] = field(default_factory=list)
     """The clip's excluded spans (start, end), sorted."""
-    undo: list[list[tuple[float, float]]] = field(default_factory=list)
+    included: list[tuple[float, float]] = field(default_factory=list)
+    """The clip's included (good) spans (start, end), sorted; a note only."""
+    undo: list[tuple[list, list]] = field(default_factory=list)
     dirty: bool = False
     trace: Trace | None = None
     rows: pd.DataFrame | None = None
     stats: dict = field(default_factory=dict)
+
+    @property
+    def rejected(self) -> bool:
+        return self.selection == "exclude"
 
 
 class TuneState:
@@ -102,11 +131,13 @@ class TuneState:
         self.clip_list = load(ClipList, self.path)
         self._load_trace = trace_loader
         self.entries: list[Entry] = []
-        everything = self.clip_list.resolve(include_rejected=True)
+        everything = self.clip_list.resolve(include_excluded=True)
         for raw, clip in zip(self.clip_list.clip, everything):
             if clip.labelled:
                 entry = self._entry(clip, raw.events is not None)
-                entry.rejected = raw.rejected
+                entry.selection = raw.selection
+                entry.reviewed = raw.reviewed
+                entry.included = sorted(raw.included)
                 self.entries.append(entry)
         if not self.entries:
             raise ValueError("the clip list has no labelled clips")
@@ -118,7 +149,9 @@ class TuneState:
     def _entry(clip: ResolvedClip, custom: bool) -> Entry:
         source = clip.events
         params = events.detector_params(source.method, source.params).model_dump()
-        return Entry(clip, source.method, dict(params), custom, list(clip.excluded))
+        return Entry(
+            clip, source.method, dict(params), custom, excluded=list(clip.excluded)
+        )
 
     # ---- the clips -------------------------------------------------------------
 
@@ -196,94 +229,154 @@ class TuneState:
         *progress* is called with (clips done, clips total).  Bad names or
         parameters raise ValueError before anything changes."""
         full = events.detector_params(method, params).model_dump()
-        for n, i in enumerate(indices, start=1):
+        for i in indices:
             entry = self.entries[i]
             entry.method, entry.params = method, dict(full)
             entry.custom = entry.dirty = True
             entry.rows = entry.trace = None  # the filter may have changed
-            self.rows(i)
-            if progress is not None:
-                progress(n, len(indices))
+        parallel_map(self.rows, indices, progress)
 
-    # ---- rejected videos ------------------------------------------------------------
+    # ---- include / exclude marks ----------------------------------------------------
 
-    def set_rejected(self, indices: list[int], rejected: bool = True) -> None:
-        """Reject (or take back) the videos at *indices*: a rejected video is never
-        used downstream.  At least one video must stay in use."""
+    SELECTIONS = (None, "include", "exclude")
+
+    def set_selection(self, indices: list[int], value: str | None) -> None:
+        """Mark the videos at *indices* ``None``, ``"include"`` or ``"exclude"``:
+        an excluded video is never used downstream, the marks change nothing else.
+        At least one video must stay un-excluded."""
+        if value not in self.SELECTIONS:
+            raise ValueError(f"selection must be one of {self.SELECTIONS}")
         change = set(indices)
-        left = [
-            i
+        if not any(
+            (value if i in change else e.selection) != "exclude"
             for i, e in enumerate(self.entries)
-            if not (e.rejected if i not in change else rejected)
-        ]
-        if not left:
+        ):
             raise ValueError("at least one video must stay in use")
         for i in change:
-            if self.entries[i].rejected != rejected:
-                self.entries[i].rejected = rejected
+            if self.entries[i].selection != value:
+                self.entries[i].selection = value
                 self.entries[i].dirty = True
 
+    def set_reviewed(self, indices: list[int], reviewed: bool = True) -> None:
+        """Mark the videos at *indices* reviewed (or not) by a person."""
+        for i in set(indices):
+            if self.entries[i].reviewed != reviewed:
+                self.entries[i].reviewed = reviewed
+                self.entries[i].dirty = True
+
+    def next_selection(self, i: int) -> str | None:
+        """The mark after video *i*'s in the cycle none, include, exclude."""
+        order = self.SELECTIONS
+        return order[(order.index(self.entries[i].selection) + 1) % len(order)]
+
     def accepted(self) -> list[int]:
-        """Indices of the videos still in use."""
-        return [i for i, e in enumerate(self.entries) if not e.rejected]
+        """Indices of the videos not excluded."""
+        return [i for i, e in enumerate(self.entries) if e.selection != "exclude"]
 
-    # ---- excluded spans -------------------------------------------------------------
+    # ---- excluded and included spans ----------------------------------------------
 
-    def spans(self, i: int | None = None) -> np.ndarray:
-        """The clip's excluded spans, shape ``(n, 2)``."""
+    KINDS = ("exclude", "include")
+    """Span kinds: stretches whose events are untrusted, and good stretches (a note)."""
+
+    @staticmethod
+    def _kind(entry: Entry, kind: str) -> list[tuple[float, float]]:
+        if kind not in TuneState.KINDS:
+            raise ValueError(f"span kind must be one of {TuneState.KINDS}")
+        return entry.excluded if kind == "exclude" else entry.included
+
+    def spans(self, i: int | None = None, kind: str = "exclude") -> np.ndarray:
+        """The clip's spans of *kind*, shape ``(n, 2)``."""
         entry = self.entries[self.index if i is None else i]
-        return np.asarray(entry.excluded, np.float64).reshape(-1, 2)
+        return np.asarray(self._kind(entry, kind), np.float64).reshape(-1, 2)
 
-    def _set_spans(self, entry: Entry, spans: list[tuple[float, float]]) -> None:
-        entry.undo.append(list(entry.excluded))
-        entry.excluded = sorted(spans)
+    def _set_spans(
+        self, entry: Entry, spans: list[tuple[float, float]], kind: str = "exclude"
+    ) -> None:
+        self._kind(entry, kind)
+        entry.undo.append((list(entry.excluded), list(entry.included)))
+        if kind == "exclude":
+            entry.excluded = sorted(spans)
+        else:
+            entry.included = sorted(spans)
         entry.dirty = True
 
-    def exclude(self, t0: float, t1: float, i: int | None = None) -> None:
-        """Exclude the span between *t0* and *t1* (either order) from the clip."""
+    def exclude(
+        self, t0: float, t1: float, i: int | None = None, kind: str = "exclude"
+    ) -> None:
+        """Add the span between *t0* and *t1* (either order) to the clip: excluded
+        (default) or, with ``kind="include"``, a good stretch."""
         start, end = sorted((float(t0), float(t1)))
         if not start < end:
-            raise ValueError("an excluded span needs a start before its end")
+            raise ValueError("a span needs a start before its end")
         entry = self.entries[self.index if i is None else i]
-        self._set_spans(entry, [*entry.excluded, (start, end)])
+        self._set_spans(entry, [*self._kind(entry, kind), (start, end)], kind)
 
-    def delete_span(self, t: float, i: int | None = None) -> bool:
-        """Remove the span containing time *t*; False if there is none."""
+    def delete_span(
+        self, t: float, i: int | None = None, kind: str | None = None
+    ) -> bool:
+        """Remove the span of *kind* (either, if None) containing time *t*; False if
+        there is none."""
         entry = self.entries[self.index if i is None else i]
-        keep = [s for s in entry.excluded if not s[0] <= t <= s[1]]
-        if len(keep) == len(entry.excluded):
-            return False
-        self._set_spans(entry, keep)
-        return True
+        changed = False
+        for k in (kind,) if kind else self.KINDS:
+            spans = self._kind(entry, k)
+            keep = [s for s in spans if not s[0] <= t <= s[1]]
+            if len(keep) != len(spans):
+                self._set_spans(entry, keep, k)
+                changed = True
+        return changed
 
     def update_span(
-        self, k: int, start: float, end: float, i: int | None = None
+        self,
+        k: int,
+        start: float,
+        end: float,
+        i: int | None = None,
+        kind: str = "exclude",
     ) -> None:
-        """Give the clip's *k*-th span (in start order) new bounds."""
+        """Give the clip's *k*-th span of *kind* (in start order) new bounds."""
         start, end = float(start), float(end)
         if not start < end:
-            raise ValueError("an excluded span needs a start before its end")
+            raise ValueError("a span needs a start before its end")
         entry = self.entries[self.index if i is None else i]
-        spans = list(entry.excluded)
+        spans = list(self._kind(entry, kind))
         spans[k] = (start, end)
-        self._set_spans(entry, spans)
+        self._set_spans(entry, spans, kind)
 
-    def remove_spans(self, indices: list[int], i: int | None = None) -> bool:
-        """Remove the clip's spans at *indices* (in start order) as one change."""
+    def remove_spans(
+        self, indices: list[int], i: int | None = None, kind: str = "exclude"
+    ) -> bool:
+        """Remove the clip's spans of *kind* at *indices* (in start order) as one
+        change."""
         entry = self.entries[self.index if i is None else i]
         drop = set(indices)
-        keep = [s for n, s in enumerate(entry.excluded) if n not in drop]
-        if len(keep) == len(entry.excluded):
+        spans = self._kind(entry, kind)
+        keep = [s for n, s in enumerate(spans) if n not in drop]
+        if len(keep) == len(spans):
             return False
-        self._set_spans(entry, keep)
+        self._set_spans(entry, keep, kind)
         return True
+
+    def clear_spans(self, indices: list[int]) -> int:
+        """Remove every span (both kinds) of the videos at *indices*, each as one
+        undoable change; returns how many videos had any."""
+        cleared = 0
+        for i in indices:
+            entry = self.entries[i]
+            if entry.excluded or entry.included:
+                entry.undo.append((list(entry.excluded), list(entry.included)))
+                entry.excluded, entry.included = [], []
+                entry.dirty = True
+                cleared += 1
+        return cleared
 
     def undo_span(self, i: int | None = None) -> bool:
         """Take back the last span change of the clip."""
         entry = self.entries[self.index if i is None else i]
         if not entry.undo:
             return False
-        entry.excluded = entry.undo.pop()
+        excluded, included = entry.undo.pop()
+        entry.excluded, entry.included = excluded, included
         entry.dirty = True
         return True
 
@@ -312,7 +405,9 @@ class TuneState:
     def remove(self, indices: list[int]) -> None:
         """Drop clips from the list; the last clip cannot be removed."""
         gone = set(indices)
-        if all(e.rejected or i in gone for i, e in enumerate(self.entries)):
+        if all(
+            e.selection == "exclude" or i in gone for i, e in enumerate(self.entries)
+        ):
             raise ValueError("a clip list needs at least one video in use")
         for i in sorted(gone, reverse=True):
             video = self.entries[i].clip.video.resolve()
@@ -421,12 +516,14 @@ class TuneState:
             if e.custom
         }
         spans = {e.clip.video.resolve(): e.excluded for e in self.entries}
-        rejected = {e.clip.video.resolve(): e.rejected for e in self.entries}
+        selection = {e.clip.video.resolve(): e.selection for e in self.entries}
         update_clip_list(
             self.path,
             events=chosen,
             excluded=spans,
-            rejected=rejected,
+            included={e.clip.video.resolve(): e.included for e in self.entries},
+            selection=selection,
+            reviewed={e.clip.video.resolve(): e.reviewed for e in self.entries},
             add=self.added,
             remove=self.removed,
         )

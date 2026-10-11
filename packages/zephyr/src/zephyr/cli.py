@@ -11,6 +11,7 @@ the complete list.
 CLI
 ---
     zephyr clips scan <dir> --glob <pattern> -o <list.toml>
+    zephyr clips select <list.toml> [--out <list.toml>] [--min-span-s 300]
     zephyr annotate <list.toml> [--prepare]
     zephyr annotate events [<list.toml>]
     zephyr preprocess <list.toml>... --cache <dir>
