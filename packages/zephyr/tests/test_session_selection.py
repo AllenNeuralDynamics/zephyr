@@ -123,6 +123,12 @@ class SessionSelectionTests(unittest.TestCase):
         cut = snr_threshold(np.array([9.0, 10, 11, 30, 31, 33]), 3.0)
         self.assertTrue(11 < cut < 30)
 
+    def test_one_absurd_snr_does_not_move_the_gate(self):
+        snr = np.array([9.0, 10, 11, 12, 30, 31, 33, 34, 238])
+        capped = np.minimum(snr, Settings().snr_ceiling_db)
+        cut = snr_threshold(capped, 3.0)
+        self.assertTrue(12 < cut < 30)
+
     def test_runs(self):
         good = np.array([True, True, False, True])
         starts = np.arange(4.0)

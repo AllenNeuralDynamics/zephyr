@@ -333,9 +333,6 @@ than working around it. When in doubt, mention the implication to the user.
 
 ## Hard rules
 
-- **Never read, store or use animal or subject identity** (`subject_id` or
-  similar) anywhere: code, configs, logs. Test group names like
-  `new_animals` are labels a config author chose, nothing more.
 - `data/` and `benchmarks/` are read-only inputs. Write new outputs to new
   directories (`runs/...`, a new feature cache). One exception: when the scorer
   itself is corrected, the score files (`evaluation.json`) of existing runs, in

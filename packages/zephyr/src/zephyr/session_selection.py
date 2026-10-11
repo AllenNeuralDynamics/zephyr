@@ -34,6 +34,9 @@ class Settings:
     """Robust z-score of event consistency above which a clip is suggested out."""
     min_snr_gap_db: float = 3.0
     """Smallest gap between the two SNR modes for the dead-sensor gate to apply."""
+    snr_ceiling_db: float = 60.0
+    """SNRs above this (a flat or quantised signal) count as this when the dead-sensor
+    gate is fitted, so one such clip cannot move the gate."""
     min_amplitude: float = 20.0
     """Smallest raw amplitude (mean 5th-95th percentile range over 1 s blocks, in the
     thermistor's units) of a good window, and of a clip suggested include."""
@@ -190,8 +193,11 @@ def consistency(table: pd.DataFrame) -> pd.Series:
     return pd.concat(z, axis=1).mean(axis=1)
 
 
-def assess(state: TuneState, settings: Settings, progress=None) -> pd.DataFrame:
-    """One row per clip: its features, spans and suggested selection."""
+def assess(
+    state: TuneState, settings: Settings, progress=None, release: bool = False
+) -> pd.DataFrame:
+    """One row per clip: its features, spans and suggested selection.  With *release*
+    each clip's trace and events are dropped from memory once scored (long lists)."""
 
     def score(i: int):
         windows = window_table(state, i, settings)
@@ -214,13 +220,21 @@ def assess(state: TuneState, settings: Settings, progress=None) -> pd.DataFrame:
             "rate_cv": float(np.std(rates) / np.mean(rates)) if len(rates) else 1.0,
             "amp_cv": float(np.std(amp) / np.mean(amp)) if len(amp) else 1.0,
         }
-        return record, (windows, artifacts(state, i, settings))
+        result = record, (windows, artifacts(state, i, settings))
+        if release:
+            entry = state.entries[i]
+            entry.trace = entry.rows = None
+            entry.stats = {}
+        return result
 
     scored = parallel_map(score, range(len(state.entries)), progress)
     records = [record for record, _ in scored]
     spans = [pair for _, pair in scored]
     table = pd.DataFrame(records)
-    cut = snr_threshold(table["snr_db"].to_numpy(), settings.min_snr_gap_db)
+    cut = snr_threshold(
+        np.minimum(table["snr_db"].to_numpy(), settings.snr_ceiling_db),
+        settings.min_snr_gap_db,
+    )
     dead = table["snr_db"] < cut if cut is not None else pd.Series(False, table.index)
     table["dead_sensor"] = dead
     table["consistency_z"] = np.nan
