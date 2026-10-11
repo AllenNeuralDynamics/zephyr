@@ -49,6 +49,8 @@ class ClipEntry:
 
 def cache_key(clip: ResolvedClip, params: PreprocessParams) -> dict:
     """Everything that determines a clip's arrays."""
+    if clip.video is None or clip.timestamps is None:
+        raise ValueError(f"{clip.name} is thermistor only; features need its video")
     if clip.box is None:
         raise ValueError(f"{clip.name} has no box; place it with `zephyr annotate`")
     recipe = {
@@ -76,7 +78,7 @@ def events_identity(clip: ResolvedClip) -> dict:
 
 def prefix(clip: ResolvedClip, params: PreprocessParams) -> str:
     blob = json.dumps(cache_key(clip, params), sort_keys=True).encode()
-    return f"{clip.video.stem}-{hashlib.sha256(blob).hexdigest()[:10]}"
+    return f"{clip.source.stem}-{hashlib.sha256(blob).hexdigest()[:10]}"
 
 
 def paths(cache_dir: Path, name: str) -> dict[str, Path]:

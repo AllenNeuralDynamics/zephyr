@@ -211,7 +211,7 @@ def assess(
         blocks = raw[: len(raw) // block * block].reshape(-1, block)
         amp = np.subtract(*np.percentile(blocks, [95, 5], axis=1))
         record = {
-            "clip": state.entries[i].clip.video.stem,
+            "clip": state.entries[i].clip.source.stem,
             "snr_db": snr,
             "amplitude": amplitude,
             "mean_rate": stats["mean"],

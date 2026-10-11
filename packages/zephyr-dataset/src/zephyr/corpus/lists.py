@@ -1,0 +1,87 @@
+"""``lists``: the dataset's clip list, ``sessions.toml``, one entry per fetched session.
+
+Entries are thermistor only (``thermistor = "thermistor/<session_id>.parquet"``, no
+video): the whole session, read by ``zephyr annotate events`` and the QC. The header
+(``[preprocess]``, ``[events]``) is rewritten from the spec. Entries are only added, so
+marks, spans and reviews survive, but each one's ``group`` is (re)set to its subject
+from the session metadata (never parsed from the session name, which can predate a
+correction), so folds can hold out animals.
+"""
+
+import pandas as pd
+import tomlkit
+
+from zephyr.config import ClipList
+
+from .config import DatasetSpec, Layout, session_of
+
+HEADER = [
+    "Clip list of a zephyr-dataset folder: one thermistor-only entry per whole",
+    "session. Written by `zephyr-dataset lists`; review marks and spans with",
+    "`zephyr annotate events` on this file. `group` is the subject from the session",
+    "metadata.",
+]
+
+
+def header(spec: DatasetSpec) -> dict:
+    events = {"method": spec.events.method}
+    if spec.events.params:
+        events["params"] = tomlkit.inline_table()
+        events["params"].update({k: float(v) for k, v in spec.events.params.items()})
+    return {
+        "preprocess": spec.preprocess.model_dump(mode="json", exclude_defaults=True),
+        "events": events,
+    }
+
+
+def subjects(layout: Layout) -> dict[str, str]:
+    """session_id -> subject_id, from the inventory (session metadata)."""
+    inventory = pd.read_parquet(layout.inventory, columns=["session_id", "subject_id"])
+    inventory = inventory.dropna()
+    return dict(zip(inventory["session_id"], inventory["subject_id"].astype(str)))
+
+
+def run(spec: DatasetSpec) -> int:
+    layout = Layout(spec.root)
+    path = layout.clips
+    subject = subjects(layout)
+    if path.exists():
+        doc = tomlkit.parse(path.read_text())
+    else:
+        doc = tomlkit.document()
+        for line in HEADER:
+            doc.add(tomlkit.comment(line))
+        doc.add(tomlkit.nl())
+    if "derive" in doc:  # entries name their thermistor; nothing is derived
+        del doc["derive"]
+    for name, table in header(spec).items():
+        if name in doc:
+            doc[name] = table
+        else:
+            doc.add(name, table)
+    if "clip" not in doc:
+        doc.add("clip", tomlkit.aot())
+    present = {session_of(c["thermistor"]) for c in doc["clip"]}
+    added = 0
+    for session_id in layout.sessions():
+        if session_id in present:
+            continue
+        entry = tomlkit.table()
+        entry.add("thermistor", f"thermistor/{layout.thermistor(session_id).name}")
+        doc["clip"].append(entry)
+        added += 1
+    if not doc["clip"]:
+        raise SystemExit("lists: no fetched sessions yet (run fetch first)")
+    unknown = []
+    for entry in doc["clip"]:
+        session_id = session_of(entry["thermistor"])
+        if session_id not in subject:
+            unknown.append(session_id)
+        elif str(entry.get("group", "")) != subject[session_id]:
+            entry["group"] = subject[session_id]
+    if unknown:
+        raise SystemExit(f"lists: no subject in the inventory for {sorted(unknown)}")
+    ClipList.model_validate(doc.unwrap(), context={"base": path.parent})
+    path.write_text(tomlkit.dumps(doc))
+    print(f"lists: {len(doc['clip'])} sessions ({added} added) in {path.name}")
+    return added

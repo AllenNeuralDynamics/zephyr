@@ -2,20 +2,24 @@
 
 Instructions for coding agents. Read this before changing anything.
 
-## Two packages, one way
+## Three packages, one way
 
-The repository is a uv workspace of two packages (`uv sync --all-packages
+The repository is a uv workspace of three packages (`uv sync --all-packages
 --extra cpu`, or `--extra gpu`):
 
 | Package | Path | Import | Command |
 | --- | --- | --- | --- |
 | `zephyr` | `packages/zephyr/` | `zephyr` | `zephyr` |
 | `zephyr-benchmarks` | `packages/zephyr-benchmarks/` | `zephyr.benchmarks` | `zephyr-benchmarks` |
+| `zephyr-dataset` | `packages/zephyr-dataset/` | `zephyr.corpus` | `zephyr-dataset` |
 
 - **`zephyr` runs only the zephyr network.** It never imports
-  `zephyr.benchmarks` and never names a comparison method (TS-CAN, PhysNet,
-  pixel, Facemap, ...); `packages/zephyr/tests/test_boundary.py` enforces both.
-  It is the only released package.
+  `zephyr.benchmarks` or `zephyr.corpus` and never names a comparison method
+  (TS-CAN, PhysNet, pixel, Facemap, ...); `packages/zephyr/tests/test_boundary.py`
+  enforces all three. It is the only released package.
+- **`zephyr-dataset`** (Allen-internal, never released) builds the corpus of
+  VR-foraging sessions; see [Building the corpus](#building-the-corpus). Its import
+  name is `zephyr.corpus` because `zephyr.dataset` is core's training dataset module.
 - **`zephyr-benchmarks`** holds everything about our dataset and the methods
   zephyr is compared against: the benchmark configs, the comparison networks
   and baselines, timing, the collected tables and the report. It builds on
@@ -24,12 +28,14 @@ The repository is a uv workspace of two packages (`uv sync --all-packages
   something new, add a **generic** seam to zephyr (as with `Architecture` in
   `train.py`, `Runner` in `run.py`, the `loader` of `evaluate.py`) that does
   not know the method exists, never a special case.
-- `zephyr` lives under one import name across two distributions: core's
+- `zephyr` lives under one import name across three distributions: core's
   `zephyr/__init__.py` extends `__path__`. Keep that line; never add an
-  `__init__.py` at `packages/zephyr-benchmarks/src/zephyr/`.
+  `__init__.py` at `packages/zephyr-benchmarks/src/zephyr/` or
+  `packages/zephyr-dataset/src/zephyr/`.
 - **`notebooks/`** holds [marimo](https://marimo.io) notebooks (plain `.py`
   files) for plotting runs and results; marimo is in the `dev` dependency group.
-  Notebooks are declarative, only read results, never train, and share
+  Notebooks are declarative, only read results (the one exception, `corpus.py`,
+  rebuilds the corpus into a new folder of its own), never train, and share
   `notebooks/utils/` (`style.py` fixes figure sizes, fonts and one colour per
   method/channel/objective; reuse it for every figure). They are not an
   experiment path (see below).
@@ -88,6 +94,11 @@ video = "../../../../data/ood/video_side_right_13_part_1.mp4"
 box = [228, 85, 96, 96]           # x, y, w, h in target_size pixels
 ```
 
+- An entry **without a `video`** is thermistor only (`thermistor = "..."`, optional
+  `group`, defaulting to the file stem; no timestamps or box): a whole recording,
+  e.g. a session before clips are cut from it. `zephyr annotate events` and
+  `zephyr clips select` read it; everything that needs frames (preprocess, folds,
+  `evaluate`, `zephyr annotate`, the feature cache) refuses it (`require_videos`).
 - `timestamps`, `thermistor` and `group` are **derived from the video name** by
   `[derive]` (defaults match the example dataset); give them explicitly only
   when the naming differs. `thermistor = false` marks an unlabelled clip.
@@ -294,6 +305,49 @@ experiment settings).
 **File > Save** writes each chosen `events = { method, params }`, any
 `excluded` / `included` spans, any `selection` mark and `reviewed = true` next to the clip's `box` in the list (comments and layout are kept). File > Add videos / Remove selected videos edit the list itself.
 The method and parameters may differ from clip to clip.
+
+## Building the corpus
+
+`zephyr-dataset` (`packages/zephyr-dataset/`, import `zephyr.corpus`) builds the corpus
+of VR-foraging sessions with a sniff detector from one spec, `DatasetSpec` in
+`zephyr/corpus/config.py` (`packages/zephyr-dataset/configs/vr-foraging-sniff.toml`):
+`root` (the dataset folder, relative to the spec), `[source]` (bucket, DocDB, Harp
+device and register, camera), `[query]` (`until`, minimum dataset version, sessions
+and rigs in or out), `[preprocess]` and `[events]` (the clip list's header), `[qc]` (**every**
+`session_selection.Settings` value, none defaulted) and `[select]` (clip length,
+clips per session, seed, camera required). Steps, each resumable:
+
+```bash
+uv run zephyr-dataset inventory|fetch|lists|qc|select|status|build <spec.toml> [--workers N]
+```
+
+- `inventory` queries DocDB (read-only REST, no credentials, paged) for the packaging
+  process's derived assets, saves the raw return as `docdb.json.gz` and reuses it on
+  later runs (`--refresh` queries again), drops assets created after `[query] until`,
+  keeps the latest per raw source session and writes `inventory.parquet` (session_id,
+  subject, rig, date, dataset version, asset, source). Both make a rebuild reproducible.
+- `fetch` reads only `device.yml` and the register's `.bin` files of each raw session's
+  Harp folder on S3 (`zephyr/corpus/harp.py`, no other Harp library) into the whole
+  session's `thermistor/<session_id>.parquet` (`Time`, `Signal`).
+- `lists` writes `sessions.toml`: one thermistor-only entry per session, header from
+  the spec, and each entry's `group` set to its **subject from the session metadata** (folds hold out
+  animals). Never infer the animal from a session name: corrected sessions keep their
+  old name. It only adds clips, so marks, spans and reviews survive.
+- `qc` runs `session_selection.assess` / `apply` (reviewed clips never change) and keeps
+  the metrics and suggestions in `qc.parquet`.
+- `select` writes `results.json`: a session passes when its mark in `sessions.toml` is
+  `include` (the list is the source of truth, so reviews win); passing sessions draw
+  `clips_per_session` non-overlapping clips (`span1`, `span2`, ...) uniformly over their
+  `included` spans, seeded by the spec's seed and the session_id, and need the camera
+  folder (`video.mp4` + `metadata.csv`) when `require_camera`.
+
+Decisions made by hand go in the spec as `[[review]]` (`session_id`, optional
+`selection`, `excluded`, `included`); `qc` writes them over its suggestions, marked
+reviewed (fields left out keep QC's), so a rebuild from nothing gives the same corpus. `notebooks/corpus.py` reruns the default pipeline
+into a new folder and compares it with the corpus.
+
+The dataset folder holds only those six entries; no logs or reports. Review with
+`uv run zephyr annotate events <root>/sessions.toml`, then run `select` again.
 
 ## Reference configs: do not change their meaning
 

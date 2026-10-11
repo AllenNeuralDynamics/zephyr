@@ -25,7 +25,7 @@ import cv2
 import numpy as np
 
 from .clips import write_boxes
-from .config import ClipList, ResolvedClip, load
+from .config import ClipList, ResolvedClip, load, require_videos
 from .video import Box, clamp_box, decode_window, probe_size
 
 DEFAULT_BOX_SIZE = 128
@@ -651,6 +651,10 @@ def main(argv: list[str] | None = None) -> None:
 
     clip_list = load(ClipList, args.clips)
     clips = clip_list.resolve()
+    try:
+        require_videos(clips, "placing boxes")
+    except ValueError as exc:
+        raise SystemExit(f"{args.clips}: {exc}") from None
     if args.prepare:
         prepare_frames(clips, args.frame_dir)
         return

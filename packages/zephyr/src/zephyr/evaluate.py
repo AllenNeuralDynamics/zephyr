@@ -29,7 +29,7 @@ from zephyr.channels import ChannelSet
 from zephyr.model import BreathingNet
 
 from . import features
-from .config import ClipList, ResolvedClip, load
+from .config import ClipList, ResolvedClip, load, require_videos
 from .evaluation import Score, score_clip
 from .events import Events
 from .features import ClipEntry
@@ -534,6 +534,10 @@ def main(argv: list[str] | None = None, *, loader: Loader = load_checkpoint) -> 
     recipes = {lst.preprocess for lst in lists.values()}
     if len(recipes) != 1:
         raise SystemExit("the clip lists disagree on [preprocess]")
+    try:
+        require_videos([c for lst in lists.values() for c in lst.resolve()], "scoring")
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from None
     evaluate_groups(
         args.checkpoint,
         {name: lst.resolve() for name, lst in lists.items()},

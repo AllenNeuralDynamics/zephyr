@@ -27,7 +27,14 @@ import pandas as pd
 
 from . import features
 from .channels import N_CHANNELS, encode_stack, make_flow_estimator
-from .config import OUTPUT_FS, ClipList, PreprocessParams, ResolvedClip, load
+from .config import (
+    OUTPUT_FS,
+    ClipList,
+    PreprocessParams,
+    ResolvedClip,
+    load,
+    require_videos,
+)
 from .targets import load_target, onset_heatmap
 from .video import iter_frames, probe_size
 
@@ -387,6 +394,10 @@ def main(argv: list[str] | None = None) -> None:
         clips = clip_list.resolve()
         if args.limit:
             clips = clips[: args.limit]
+        try:
+            require_videos(clips, "preprocessing")
+        except ValueError as exc:
+            raise SystemExit(f"{path}: {exc}") from None
         unboxed = [c.name for c in clips if c.box is None]
         if unboxed:
             raise SystemExit(

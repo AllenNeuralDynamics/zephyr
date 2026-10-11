@@ -99,6 +99,8 @@ def write_boxes(
     if target_size is not None:
         doc["preprocess"]["target_size"] = list(target_size)
     for entry in doc["clip"]:
+        if "video" not in entry:  # thermistor only: never boxed
+            continue
         video = (path.parent / str(entry["video"])).resolve()
         if video in boxes:
             entry["box"] = list(boxes[video])
@@ -117,7 +119,7 @@ def update_clip_list(
     remove: set[Path] | None = None,
 ) -> None:
     """Edit *path* in place: set each clip's ``events = {method, params}`` (keyed
-    by resolved video path), set each clip's ``excluded`` and ``included`` spans and ``selection`` mark (removing the key when
+    by resolved source path: the video, or a thermistor-only entry's thermistor), set each clip's ``excluded`` and ``included`` spans and ``selection`` mark (removing the key when
     there are none, or the clip is accepted), append the *add* videos and delete the *remove* ones.
 
     Like :func:`write_boxes` this keeps every comment and other field.  The result
@@ -129,7 +131,9 @@ def update_clip_list(
     gone = {Path(v).resolve() for v in (remove or ())}
 
     def resolved(entry) -> Path:
-        return (path.parent / str(entry["video"])).resolve()
+        """The entry's source: its video, else (thermistor only) its thermistor."""
+        source = entry["video"] if "video" in entry else entry["thermistor"]
+        return (path.parent / str(source)).resolve()
 
     for index in reversed(range(len(clips))):
         if resolved(clips[index]) in gone:

@@ -385,7 +385,7 @@ class TuneState:
     def add_videos(self, videos: list[Path]) -> list[Path]:
         """Add videos to the list (their thermistors must exist); returns those
         added, skipping any already present."""
-        present = {e.clip.video.resolve() for e in self.entries}
+        present = {e.clip.source.resolve() for e in self.entries}
         added = []
         for video in (Path(v).resolve() for v in videos):
             if video in present:
@@ -410,7 +410,7 @@ class TuneState:
         ):
             raise ValueError("a clip list needs at least one video in use")
         for i in sorted(gone, reverse=True):
-            video = self.entries[i].clip.video.resolve()
+            video = self.entries[i].clip.source.resolve()
             if video in self.added:
                 self.added.remove(video)
             else:
@@ -511,19 +511,19 @@ class TuneState:
         """Write each customised clip's ``events``, the added videos and the removals
         into the clip list; returns the number of clips given their own detector."""
         chosen = {
-            e.clip.video.resolve(): (e.method, e.params)
+            e.clip.source.resolve(): (e.method, e.params)
             for e in self.entries
             if e.custom
         }
-        spans = {e.clip.video.resolve(): e.excluded for e in self.entries}
-        selection = {e.clip.video.resolve(): e.selection for e in self.entries}
+        spans = {e.clip.source.resolve(): e.excluded for e in self.entries}
+        selection = {e.clip.source.resolve(): e.selection for e in self.entries}
         update_clip_list(
             self.path,
             events=chosen,
             excluded=spans,
-            included={e.clip.video.resolve(): e.included for e in self.entries},
+            included={e.clip.source.resolve(): e.included for e in self.entries},
             selection=selection,
-            reviewed={e.clip.video.resolve(): e.reviewed for e in self.entries},
+            reviewed={e.clip.source.resolve(): e.reviewed for e in self.entries},
             add=self.added,
             remove=self.removed,
         )

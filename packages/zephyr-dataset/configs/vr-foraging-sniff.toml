@@ -1,0 +1,68 @@
+# VR-foraging sessions with a sniff detector: zephyr's corpus.
+#   uv run zephyr-dataset build packages/zephyr-dataset/configs/vr-foraging-sniff.toml
+# Review marks and spans with `uv run zephyr annotate events <root>/sessions.toml`,
+# then run `zephyr-dataset select` again.
+
+root = '\\allen\aind\scratch\bruno.cruz\zephyr\scratch\vr-foraging-sniff'
+
+[source]
+bucket = "aind-open-data"
+docdb = "https://api.allenneuraldynamics.org/v2/metadata_index/data_assets"
+process = "primary-nwb-packaging-vr-foraging"
+device = "SniffDetector"
+signal = "RawVoltage"
+camera = "FaceCamera"
+
+[query]
+until = 2026-10-11T20:09:34Z  # the time of the saved DocDB query (docdb.json.gz)
+min_dataset_version = "0.6.0"
+# the ephys sessions (reviewed by hand) packaged before 0.6.0
+include_sessions = [
+    "behavior_794591_2025-10-14_17-57-50",
+    "behavior_794591_2025-10-15_16-39-00",
+    "behavior_794591_2025-10-17_17-00-09",
+    "behavior_794591_2025-10-19_17-52-03",
+    "behavior_794591_2025-10-20_16-52-39",
+    "behavior_794591_2025-10-21_17-02-35",
+    "behavior_794591_2025-10-22_17-09-46",
+    "behavior_794591_2025-10-23_16-46-09",
+    "behavior_794591_2025-10-24_17-21-18",
+    "behavior_794591_2025-10-27_18-21-28",
+    "behavior_794591_2025-10-28_17-20-23",
+    "behavior_794591_2025-10-29_18-12-05",
+    "behavior_794591_2025-10-30_17-14-07",
+    "behavior_794591_2025-10-31_17-04-22",
+    "behavior_794591_2025-11-04_20-19-41",
+]
+exclude_sessions = []
+exclude_rigs = []
+
+[preprocess]
+target_size = [360, 270]
+
+[events]  # tuned on the ephys sessions
+method = "adaptive_prominence"
+params = { highpass_hz = 1.0, distance_s = 0.05, prominence_frac = 0.2, window_s = 1.5 }
+
+[qc]
+window_s = 30.0
+min_span_s = 300.0
+max_outside = 0.10
+max_breaks = 0.05
+outlier_z = 3.0
+min_snr_gap_db = 3.0
+snr_ceiling_db = 60.0
+min_amplitude = 20.0
+artifact_z = 8.0
+artifact_pad_s = 2.0
+
+[select]
+clip_s = 300.0
+clips_per_session = 2
+seed = 2026
+require_camera = true
+
+# decisions made by hand (marked reviewed, so QC never changes them)
+[[review]]
+session_id = "behavior_798279_2025-12-05_17-42-48"
+selection = "exclude"

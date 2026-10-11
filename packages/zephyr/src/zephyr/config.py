@@ -194,9 +194,16 @@ class EventsSource(_Model):
 
 
 class Clip(_Model):
-    """One clip as written in a clip list; omitted fields are derived."""
+    """One clip as written in a clip list; omitted fields are derived.
 
-    video: RelPath
+    Without a ``video`` the entry is a thermistor-only recording (e.g. a whole session):
+    it names its ``thermistor`` and has no timestamps or box. The detector tuner and
+    ``zephyr clips select`` read such entries; everything that needs frames refuses
+    them (:func:`require_videos`).
+    """
+
+    video: RelPath | None = None
+    """The clip's video; omitted for a thermistor-only entry."""
     timestamps: RelPath | None = None
     """Frame timestamp parquet; derived when omitted."""
     thermistor: RelPath | Literal[False] | None = None
@@ -241,12 +248,27 @@ class Clip(_Model):
             raise ValueError(f"box {list(value)} needs x, y >= 0 and w, h > 0")
         return value
 
+    @model_validator(mode="after")
+    def _video_or_thermistor(self) -> "Clip":
+        if self.video is None:
+            if not isinstance(self.thermistor, Path):
+                raise ValueError(
+                    "a clip needs a video, or (thermistor only) a thermistor"
+                )
+            if self.timestamps is not None or self.box is not None:
+                raise ValueError(
+                    f"{self.thermistor.name}: a thermistor-only clip has no "
+                    "timestamps or box"
+                )
+        return self
+
 
 class ResolvedClip(_Model):
-    """A clip with every field concrete; what the rest of the package consumes."""
+    """A clip with every field concrete; what the rest of the package consumes.
+    ``video`` and ``timestamps`` are None for a thermistor-only entry."""
 
-    video: Path
-    timestamps: Path
+    video: Path | None
+    timestamps: Path | None
     thermistor: Path | None
     group: str
     box: Box | None
@@ -259,25 +281,53 @@ class ResolvedClip(_Model):
         return self.thermistor is not None
 
     @property
+    def source(self) -> Path:
+        """The file that identifies the clip: its video, else its thermistor."""
+        source = self.video if self.video is not None else self.thermistor
+        assert source is not None  # Clip requires one of them
+        return source
+
+    @property
     def recording(self) -> tuple[Path, str]:
         """Identity leakage is judged on; see the module docstring."""
-        return (self.video.parent, self.group)
+        return (self.source.parent, self.group)
 
     @property
     def recording_id(self) -> str:
         """The recording as one string, for reports and run records."""
-        return f"{self.video.parent.as_posix()}#{self.group}"
+        return f"{self.source.parent.as_posix()}#{self.group}"
 
     @property
     def name(self) -> str:
         """Short human label: folder and file stem."""
-        return f"{self.video.parent.name}/{self.video.stem}"
+        return f"{self.source.parent.name}/{self.source.stem}"
+
+
+def require_videos(clips: list[ResolvedClip], what: str) -> None:
+    """Refuse thermistor-only clips where frames are needed."""
+    missing = [c.name for c in clips if c.video is None]
+    if missing:
+        raise ValueError(
+            f"{what} needs videos; {len(missing)} clip(s) are thermistor only: {missing}"
+        )
 
 
 def resolve_clip(
     clip: Clip, derive: Derive, events_source: EventsSource | None = None
 ) -> ResolvedClip:
     """Fill a clip's omitted fields from its video name, or say why not."""
+    events_source = clip.events or events_source or EventsSource()
+    if clip.video is None:  # thermistor only: nothing to derive
+        assert isinstance(clip.thermistor, Path)
+        return ResolvedClip(
+            video=None,
+            timestamps=None,
+            thermistor=clip.thermistor,
+            group=clip.group if clip.group is not None else clip.thermistor.stem,
+            box=None,
+            excluded=tuple(clip.excluded),
+            events=events_source,
+        )
     fields = derive.fields(clip.video)
 
     def derived(label: str, template: str | None) -> str:
@@ -308,7 +358,7 @@ def resolve_clip(
         group=group,
         box=clip.box,
         excluded=tuple(clip.excluded),
-        events=clip.events or events_source or EventsSource(),
+        events=events_source,
     )
 
 
@@ -327,8 +377,8 @@ class ClipList(_Model):
         if not resolved:
             raise ValueError("every clip of the list is excluded")
 
-        videos = [c.video for c in self.resolve(include_excluded=True)]
-        duplicated = sorted({str(v) for v in videos if videos.count(v) > 1})
+        sources = [c.source for c in self.resolve(include_excluded=True)]
+        duplicated = sorted({str(v) for v in sources if sources.count(v) > 1})
         if duplicated:
             raise ValueError(f"videos listed more than once: {duplicated}")
 
@@ -352,7 +402,7 @@ class ClipList(_Model):
             x, y, w, h = c.box
             if x + w > width or y + h > height:
                 raise ValueError(
-                    f"{c.video.name}: box {list(c.box)} lies outside the "
+                    f"{c.name}: box {list(c.box)} lies outside the "
                     f"{width}x{height} target frame"
                 )
             sizes.add((w, h))
@@ -598,6 +648,7 @@ class Fold(_Model):
             )
 
         selected = [c for clips in [*train, *test.values()] for c in clips]
+        require_videos(selected, "a fold")
         sizes = {(c.box[2], c.box[3]) for c in selected if c.box is not None}
         unboxed = [c.name for c in selected if not c.box]
         if unboxed:
