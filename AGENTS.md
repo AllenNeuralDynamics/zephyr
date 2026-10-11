@@ -116,7 +116,10 @@ box = [228, 85, 96, 96]           # x, y, w, h in target_size pixels
   A clip's `excluded = [[start, end], ...]` (seconds on the thermistor's clock) marks
   stretches whose events are untrusted: nothing is scored inside them and no
   training window overlaps them. Changing any of these rebuilds only the targets at
-  the next `preprocess`.
+  the next `preprocess`. A clip with `rejected = true` is **never used**: the list's
+  `resolve()` leaves it out, so preprocessing, folds, training and scoring never see
+  it (only the detector tuner lists it, to include it again). At least one clip of a
+  list must stay in use.
 
 ### Experiment (`configs/experiments/*.toml`, model `Experiment`; `BenchmarkExperiment`)
 
@@ -257,9 +260,15 @@ processed traces, its detected events, rate, amplitude and histograms; the Metho
 tab has one row per clip with its method, parameters and quality metrics (and a
 mean row). Pick a method and parameters and apply them to the current clip, the
 selected clips or all of them. Mark a stretch to exclude with `x` (start, then end,
-at the cursor), delete one with a right-click (or Shift+X), undo with Ctrl+Z.
-**File > Save** writes each chosen `events = { method, params }` and any
-`excluded` spans next to the clip's `box` in the list (comments and layout are kept). File > Add videos / Remove selected videos edit the list itself.
+at the cursor), delete one with a right-click (or Shift+X), undo with Ctrl+Z. The
+**Spans** tab beside the event list lists the current clip's spans (start, end,
+length): pick one to jump to it, double-click a start or end to type it, add one
+in the middle of the view, or delete the selected ones.
+Exclude a whole video with Edit > Exclude video(s) from use (Ctrl+E, or right-click
+in the Methods table; Ctrl+Shift+E includes it again): it is struck out in the lists,
+left out of the mean row and of Apply to all, and saved as `rejected = true`.
+**File > Save** writes each chosen `events = { method, params }`, any
+`excluded` spans and any `rejected` flag next to the clip's `box` in the list (comments and layout are kept). File > Add videos / Remove selected videos edit the list itself.
 The method and parameters may differ from clip to clip.
 
 ## Reference configs: do not change their meaning

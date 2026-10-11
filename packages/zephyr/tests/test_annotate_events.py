@@ -95,6 +95,40 @@ class TuneStateTests(unittest.TestCase):
         self.assertEqual(names, [self.videos[1].name, extra.name])
         self.assertFalse(self.state.modified)
 
+    def test_a_rejected_video_is_saved_and_left_out_of_everything_downstream(self):
+        self.state.set_rejected([1])
+        self.assertEqual(self.state.dirty, {1})
+        self.assertEqual(self.state.accepted(), [0])
+        self.state.save()
+        self.assertEqual(self.path.read_text().count("rejected = true"), 1)
+        clip_list = load(ClipList, self.path)
+        self.assertEqual(
+            [c.video.name for c in clip_list.resolve()], [self.videos[0].name]
+        )
+        both = clip_list.resolve(include_rejected=True)
+        self.assertEqual(len(both), 2)
+        again = TuneState(self.path)  # the tuner still lists it, marked
+        self.assertEqual([e.rejected for e in again.entries], [False, True])
+        again.set_rejected([1], False)
+        again.save()
+        self.assertNotIn("rejected", self.path.read_text())
+        self.assertEqual(len(load(ClipList, self.path).resolve()), 2)
+
+    def test_at_least_one_video_must_stay_in_use(self):
+        self.state.set_rejected([0])
+        with self.assertRaisesRegex(ValueError, "at least one video"):
+            self.state.set_rejected([1])
+        with self.assertRaisesRegex(ValueError, "at least one video"):
+            self.state.remove([1])
+        self.assertEqual(self.state.accepted(), [1])
+        self.state.path.write_text(
+            self.state.path.read_text().replace(
+                "box = [10, 10, 32, 32]\n", "box = [10, 10, 32, 32]\nrejected = true\n"
+            )
+        )
+        with self.assertRaisesRegex(ValueError, "every clip of the list is rejected"):
+            load(ClipList, self.path)
+
     def test_excluded_spans_are_marked_undone_saved_and_reloaded(self):
         self.state.exclude(9.0, 3.0)  # either order
         self.state.exclude(12.0, 14.0)
@@ -114,6 +148,24 @@ class TuneStateTests(unittest.TestCase):
         self.state.delete_span(13.0)
         self.state.save()
         self.assertNotIn("excluded", self.path.read_text())
+
+    def test_spans_are_edited_and_removed_by_index(self):
+        for start, end in ((3.0, 4.0), (8.0, 9.0), (12.0, 13.0)):
+            self.state.exclude(start, end)
+        self.state.update_span(1, 7.5, 9.5)
+        self.assertEqual(
+            self.state.spans().tolist(), [[3.0, 4.0], [7.5, 9.5], [12.0, 13.0]]
+        )
+        self.state.update_span(0, 15.0, 16.0)  # moved past the others: order restored
+        self.assertEqual(self.state.spans()[:, 0].tolist(), [7.5, 12.0, 15.0])
+        with self.assertRaisesRegex(ValueError, "before its end"):
+            self.state.update_span(0, 9.0, 8.0)
+        self.assertEqual(len(self.state.spans()), 3)
+        self.assertFalse(self.state.remove_spans([]))
+        self.assertTrue(self.state.remove_spans([0, 2]))
+        self.assertEqual(self.state.spans().tolist(), [[12.0, 13.0]])
+        self.assertTrue(self.state.undo_span())  # the removal is one change
+        self.assertEqual(len(self.state.spans()), 3)
 
     def test_metrics_ignore_events_inside_excluded_spans(self):
         before = self.state.breath_stats(0)

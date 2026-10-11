@@ -81,6 +81,8 @@ class Entry:
     """Every parameter of *method*, defaults included."""
     custom: bool
     """Whether the clip list gives it its own ``events`` (else it uses the list's)."""
+    rejected: bool = False
+    """Whether the video is never to be used (``rejected = true`` in the list)."""
     excluded: list[tuple[float, float]] = field(default_factory=list)
     """The clip's excluded spans (start, end), sorted."""
     undo: list[list[tuple[float, float]]] = field(default_factory=list)
@@ -98,9 +100,12 @@ class TuneState:
         self.clip_list = load(ClipList, self.path)
         self._load_trace = trace_loader
         self.entries: list[Entry] = []
-        for raw, clip in zip(self.clip_list.clip, self.clip_list.resolve()):
+        everything = self.clip_list.resolve(include_rejected=True)
+        for raw, clip in zip(self.clip_list.clip, everything):
             if clip.labelled:
-                self.entries.append(self._entry(clip, raw.events is not None))
+                entry = self._entry(clip, raw.events is not None)
+                entry.rejected = raw.rejected
+                self.entries.append(entry)
         if not self.entries:
             raise ValueError("the clip list has no labelled clips")
         self.index = 0
@@ -196,6 +201,28 @@ class TuneState:
             if progress is not None:
                 progress(n, len(indices))
 
+    # ---- rejected videos ------------------------------------------------------------
+
+    def set_rejected(self, indices: list[int], rejected: bool = True) -> None:
+        """Reject (or take back) the videos at *indices*: a rejected video is never
+        used downstream.  At least one video must stay in use."""
+        change = set(indices)
+        left = [
+            i
+            for i, e in enumerate(self.entries)
+            if not (e.rejected if i not in change else rejected)
+        ]
+        if not left:
+            raise ValueError("at least one video must stay in use")
+        for i in change:
+            if self.entries[i].rejected != rejected:
+                self.entries[i].rejected = rejected
+                self.entries[i].dirty = True
+
+    def accepted(self) -> list[int]:
+        """Indices of the videos still in use."""
+        return [i for i, e in enumerate(self.entries) if not e.rejected]
+
     # ---- excluded spans -------------------------------------------------------------
 
     def spans(self, i: int | None = None) -> np.ndarray:
@@ -220,6 +247,28 @@ class TuneState:
         """Remove the span containing time *t*; False if there is none."""
         entry = self.entries[self.index if i is None else i]
         keep = [s for s in entry.excluded if not s[0] <= t <= s[1]]
+        if len(keep) == len(entry.excluded):
+            return False
+        self._set_spans(entry, keep)
+        return True
+
+    def update_span(
+        self, k: int, start: float, end: float, i: int | None = None
+    ) -> None:
+        """Give the clip's *k*-th span (in start order) new bounds."""
+        start, end = float(start), float(end)
+        if not start < end:
+            raise ValueError("an excluded span needs a start before its end")
+        entry = self.entries[self.index if i is None else i]
+        spans = list(entry.excluded)
+        spans[k] = (start, end)
+        self._set_spans(entry, spans)
+
+    def remove_spans(self, indices: list[int], i: int | None = None) -> bool:
+        """Remove the clip's spans at *indices* (in start order) as one change."""
+        entry = self.entries[self.index if i is None else i]
+        drop = set(indices)
+        keep = [s for n, s in enumerate(entry.excluded) if n not in drop]
         if len(keep) == len(entry.excluded):
             return False
         self._set_spans(entry, keep)
@@ -259,8 +308,8 @@ class TuneState:
     def remove(self, indices: list[int]) -> None:
         """Drop clips from the list; the last clip cannot be removed."""
         gone = set(indices)
-        if len(gone) >= len(self.entries):
-            raise ValueError("a clip list needs at least one clip")
+        if all(e.rejected or i in gone for i, e in enumerate(self.entries)):
+            raise ValueError("a clip list needs at least one video in use")
         for i in sorted(gone, reverse=True):
             video = self.entries[i].clip.video.resolve()
             if video in self.added:
@@ -347,10 +396,12 @@ class TuneState:
             if e.custom
         }
         spans = {e.clip.video.resolve(): e.excluded for e in self.entries}
+        rejected = {e.clip.video.resolve(): e.rejected for e in self.entries}
         update_clip_list(
             self.path,
             events=chosen,
             excluded=spans,
+            rejected=rejected,
             add=self.added,
             remove=self.removed,
         )

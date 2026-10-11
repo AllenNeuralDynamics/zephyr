@@ -110,12 +110,13 @@ def update_clip_list(
     *,
     events: dict[Path, tuple[str, dict[str, float]]] | None = None,
     excluded: dict[Path, list[tuple[float, float]]] | None = None,
+    rejected: dict[Path, bool] | None = None,
     add: list[Path] | None = None,
     remove: set[Path] | None = None,
 ) -> None:
     """Edit *path* in place: set each clip's ``events = {method, params}`` (keyed
-    by resolved video path), set each clip's ``excluded`` spans (removing the key when
-    there are none), append the *add* videos and delete the *remove* ones.
+    by resolved video path), set each clip's ``excluded`` spans and ``rejected`` flag (removing the key when
+    there are none, or the clip is accepted), append the *add* videos and delete the *remove* ones.
 
     Like :func:`write_boxes` this keeps every comment and other field.  The result
     is validated before it is written.
@@ -140,6 +141,11 @@ def update_clip_list(
             clips.append(entry)
             present.add(video)
     for entry in clips:
+        flag = (rejected or {}).get(resolved(entry))
+        if flag:
+            entry["rejected"] = True
+        elif flag is not None and "rejected" in entry:
+            del entry["rejected"]
         spans = (excluded or {}).get(resolved(entry))
         if spans is not None:
             if spans:

@@ -208,6 +208,9 @@ class Clip(_Model):
     """Hand-placed crop box in ``target_size`` pixels; see ``zephyr annotate``."""
     events: "EventsSource | None" = None
     """This clip's own detector, overriding the list's ``[events]``."""
+    rejected: bool = False
+    """Never use this video: it is left out of everything downstream (preprocessing,
+    folds, training, scoring).  Set from ``zephyr annotate events``."""
     excluded: list[tuple[float, float]] = []
     """Spans ``[start, end]`` (seconds on the thermistor's clock) whose events are
     untrusted: nothing is scored there and no training window overlaps them."""
@@ -312,8 +315,10 @@ class ClipList(_Model):
     @model_validator(mode="after")
     def _check_clips(self) -> "ClipList":
         resolved = self.resolve()
+        if not resolved:
+            raise ValueError("every clip of the list is rejected")
 
-        videos = [c.video for c in resolved]
+        videos = [c.video for c in self.resolve(include_rejected=True)]
         duplicated = sorted({str(v) for v in videos if videos.count(v) > 1})
         if duplicated:
             raise ValueError(f"videos listed more than once: {duplicated}")
@@ -349,9 +354,14 @@ class ClipList(_Model):
             )
         return self
 
-    def resolve(self) -> list[ResolvedClip]:
-        """The clips in file order, every field concrete."""
-        return [resolve_clip(c, self.derive, self.events) for c in self.clip]
+    def resolve(self, include_rejected: bool = False) -> list[ResolvedClip]:
+        """The clips in file order, every field concrete.  Rejected clips are left
+        out unless *include_rejected* (only the detector tuner wants them)."""
+        return [
+            resolve_clip(c, self.derive, self.events)
+            for c in self.clip
+            if include_rejected or not c.rejected
+        ]
 
 
 # ---------------------------------------------------------------------------
