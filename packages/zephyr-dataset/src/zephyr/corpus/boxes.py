@@ -22,7 +22,7 @@ from zephyr.config import load
 
 from . import rois, storage
 from .config import DatasetSpec, Layout
-from .lists import validate
+from .lists import validate, write_small
 
 
 def face_entries(doc, camera: str) -> list:
@@ -91,6 +91,8 @@ def publish(spec, work: Path, camera: str) -> None:
             e["box"] = boxes[str(e["video"])]
     validate(doc, layout)
     storage.write_text(layout.clip_list, tomlkit.dumps(doc))
+    if spec.small is not None and layout.folds.exists():
+        write_small(layout)
     entries = face_entries(doc, camera)
     left = {str(e["group"]) for e in entries if "box" not in e}
     print(

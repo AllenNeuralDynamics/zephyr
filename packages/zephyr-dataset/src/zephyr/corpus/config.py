@@ -145,6 +145,29 @@ class Folds(_Model):
     """Unassigned sessions put in a set after the draw, in place of excluded ones."""
 
 
+class Small(_Model):
+    """The small dataset: a subset of the sessions ``folds`` assigned that keeps its
+    structure (``small`` in ``folds.parquet``, ``clips-small.toml``): whole animals held
+    out for test A and validation, test B sessions of the training animals kept, group C
+    split by session. Animals are drawn like ``Folds`` draws them; the caps are per
+    animal and rig."""
+
+    seed: int
+    tries: int = Field(ge=1)
+    test_animals: int = Field(ge=1)
+    """Of test A's animals."""
+    val_animals: int = Field(ge=1)
+    """Of the validation animals."""
+    train_animals: int = Field(ge=1)
+    """Of the training animals; test B keeps their sessions."""
+    cap_train: int = Field(ge=1)
+    cap_val: int = Field(ge=1)
+    cap_test: int = Field(ge=1)
+    cap_test_b: int = Field(ge=0)
+    group_c: tuple[int, int, int] = (0, 0, 0)
+    """Group C sessions kept as (train, val, test), over both animals."""
+
+
 class Review(_Model):
     """A person's decision on one session, written over the suggestions by ``qc`` (with
     ``reviewed = true``); fields left out keep what QC wrote."""
@@ -169,6 +192,8 @@ class DatasetSpec(_Model):
     clips: Clips = Clips()
     folds: Folds | None = None
     """The train / validation / test assignment (``folds`` refuses to run without)."""
+    small: Small | None = None
+    """The small dataset (``folds`` marks its sessions when this is given)."""
     review: list[Review] = []
     """Reviews made by hand, so a rebuild from nothing gives the same corpus."""
 
@@ -191,6 +216,7 @@ class Layout:
         self.clip_list = self.root / "clips.toml"
         self.thumbnail_dir = self.root / "thumbnails"
         self.folds = self.root / "folds.parquet"
+        self.clip_list_small = self.root / "clips-small.toml"
 
     @property
     def local(self) -> bool:

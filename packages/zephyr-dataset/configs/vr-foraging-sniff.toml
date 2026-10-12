@@ -111,6 +111,21 @@ group_c = { "841301" = [7, 2, 4], "828415" = [1, 0, 1] }   # (train, val, test) 
 "ND_Ephys.5" = "EPHYS5"
 "322-EPHYS5" = "EPHYS5"
 
+# A small subset for small experiments (`small` in folds.parquet, clips-small.toml): whole
+# animals held out as in [folds], test B sessions of the kept training animals, group C by
+# session; the caps are per animal and rig.
+[small]
+seed = 2026
+tries = 2000
+test_animals = 4    # of test A's 10
+val_animals = 3     # of validation's 8
+train_animals = 10  # of the 43 training animals; test B keeps their sessions
+cap_train = 2
+cap_val = 1
+cap_test = 1
+cap_test_b = 1
+group_c = [3, 1, 2]  # (train, val, test) sessions of 841301 and 828415
+
 # decisions made by hand (marked reviewed, so QC never changes them)
 [[review]]
 session_id = "behavior_798279_2025-12-05_17-42-48"

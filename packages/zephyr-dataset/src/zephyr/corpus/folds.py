@@ -19,7 +19,8 @@ import pandas as pd
 from zephyr import events, rates
 
 from . import storage
-from .config import DatasetSpec, Folds, Layout
+from .config import DatasetSpec, Folds, Layout, Small
+from .lists import write_small
 from .remote import thread_map
 
 BANDS = ["1-4", "4-8", "8-15"]
@@ -241,6 +242,43 @@ def assign(df: pd.DataFrame, s: Folds) -> pd.DataFrame:
     return out
 
 
+def choose_small(df: pd.DataFrame, s: Small) -> set[str]:
+    """The sessions of the small dataset, drawn from the assigned sessions of *df*: the
+    best balanced animals of each role, a capped spread of each one's sessions per rig,
+    and the group C sessions by a seeded permutation."""
+    used = df[df["set"].notna()].reset_index(drop=True)
+    draw = Draw(used, s.seed)
+    rng = np.random.default_rng(s.seed)
+    keep: list[str] = []
+
+    def sessions(animals, name, cap):
+        for a in animals:
+            for rig, g in used[(used.subject_id == a) & (used["set"] == name)].groupby(
+                "rig"
+            ):
+                r = np.random.default_rng([s.seed, int(a), zlib.crc32(rig.encode()), 3])
+                keep.extend(used.loc[spread(g.sort_values("date"), cap, r)].session_id)
+
+    for role, name, n, cap, extra in (
+        ("test_a", "test_a", s.test_animals, s.cap_test, ()),
+        ("val", "val", s.val_animals, s.cap_val, ()),
+        ("train", "train", s.train_animals, s.cap_train, ("test_b",)),
+    ):
+        pool = sorted(
+            used.loc[(used.role == role) & ~used.group_c, "subject_id"].unique()
+        )
+        chosen = draw.best(pool, n, pool, cap, rng, s.tries)
+        sessions(chosen, name, cap)
+        for more in extra:
+            sessions(chosen, more, s.cap_test_b)
+    c = used[used.group_c].sort_values("session_id")
+    for name, k in zip(("train", "val", "test_c"), s.group_c):
+        g = c[c["set"] == name]
+        pick = np.random.default_rng([s.seed, 359, len(name)]).permutation(len(g))[:k]
+        keep.extend(g.session_id.iloc[sorted(pick)])
+    return set(keep)
+
+
 def check(df: pd.DataFrame) -> None:
     """Refuse an assignment in which a held-out animal trains, or a set is unknown."""
     bad = sorted(set(df["set"].dropna()) - set(SETS))
@@ -279,6 +317,9 @@ def report(df: pd.DataFrame) -> pd.DataFrame:
     summary = pd.DataFrame(rows)
     print(summary.to_string(index=False))
     print(f"folds: {int(df['set'].notna().sum())} of {len(df)} sessions assigned")
+    if "small" in df:
+        print("small dataset:")
+        report(df[df["small"].fillna(False)].drop(columns="small"))
     return summary
 
 
@@ -288,9 +329,13 @@ def run(spec: DatasetSpec, workers: int = 6) -> pd.DataFrame:
     layout = Layout(spec.root)
     out = assign(table(spec, layout, workers), spec.folds)
     check(out)
+    if spec.small is not None:
+        out["small"] = out.session_id.isin(choose_small(out, spec.small))
     out["date"] = out["date"].astype(str)
     buffer = io.BytesIO()
     out.to_parquet(buffer, index=False)
     storage.write_bytes(layout.folds, buffer.getvalue())
     report(out)
+    if spec.small is not None and layout.clip_list.exists():
+        print(f"folds: {write_small(layout)} clips in clips-small.toml")
     return out

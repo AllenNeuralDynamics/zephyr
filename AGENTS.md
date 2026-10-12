@@ -82,6 +82,9 @@ resumable steps; what each does and the folder layout are in its README.
   corrections in `zephyr annotate --remote`, then `publish`) and live in `clips.toml`;
   `clips` keeps them, and lists the side camera as excluded (`[clips] exclude_cameras`). `python -m zephyr.corpus.rois` is a helper that writes only to a
   local folder, never the dataset or the spec; OWLv2 needs `--extra rois`.
+- The small dataset (`[small]`, `clips-small.toml`) is a subset of the assigned sessions that
+  keeps the split's structure; never run a small experiment's test sets against animals
+  its training uses (`folds.check` guards the full split).
 - In `clips.toml` the `group` is the session; the animal split lives in `folds.parquet`.
 - The root may be remote (`s3://...`, through `storage.py`). Zephyr core reads only
   local files and must not learn about remote paths: `qc`, `zephyr annotate events` and
