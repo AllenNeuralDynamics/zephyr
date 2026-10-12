@@ -41,3 +41,6 @@ notebooks/cache/
 notebooks/figures/
 notebooks/__marimo__/
 notebooks/*.html
+
+# Scratch work (downloads, one-off analyses)
+scratch/

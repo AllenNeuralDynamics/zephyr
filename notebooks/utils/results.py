@@ -16,8 +16,7 @@ from zephyr.benchmarks.common import blind_polarity
 from zephyr.benchmarks.runner import load_checkpoint
 from zephyr.channels import CHANNEL_NAMES, decode_flow
 from zephyr.config import ClipList, load
-from zephyr.evaluate import head_event_indices, score_entries
-from zephyr.evaluation import score_clip
+from zephyr.evaluate import head_event_indices, score_entries, score_entry
 from zephyr.infer import predict_clip
 from zephyr.signal import (
     BREATHING_SIGNAL_COLUMN,
@@ -488,18 +487,17 @@ def method_scores(entry: features.ClipEntry, traces: pd.DataFrame) -> pd.DataFra
     is DSP for every method.
     """
     times = traces[TIME_COLUMN].to_numpy()
-    reference = truth(entry)
     rows: dict[str, dict[str, object]] = {}
     for method in style.METHODS:
         predicted = pd.DataFrame(
             {TIME_COLUMN: times, BREATHING_SIGNAL_COLUMN: traces[method]}
         )
         if method in HEADED:
-            row = score_clip(
-                reference, predicted, predicted_onset_times_s=head_events(traces)
+            row = score_entry(
+                entry, predicted, predicted_onset_times_s=head_events(traces)
             ).to_dict()
         else:
-            row = score_clip(reference, predicted).to_dict()
+            row = score_entry(entry, predicted).to_dict()
         row["inhale events"] = "head" if method in HEADED else "DSP"
         rows[method] = row
     return pd.DataFrame(rows).T[[*METRICS, "inhale events"]]
@@ -537,10 +535,9 @@ def head_scores(run: str) -> pd.DataFrame:
         )
         times = np.load(entry.times)[: entry.n_output]
         predicted = pd.DataFrame({TIME_COLUMN: times, BREATHING_SIGNAL_COLUMN: signal})
-        reference = truth(entry)
         head_events = times[head_event_indices(onset, times)]
-        trace = score_clip(reference, predicted)
-        head = score_clip(reference, predicted, predicted_onset_times_s=head_events)
+        trace = score_entry(entry, predicted)
+        head = score_entry(entry, predicted, predicted_onset_times_s=head_events)
         rows.append(
             {
                 "clip": name,

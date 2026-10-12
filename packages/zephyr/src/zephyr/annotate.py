@@ -13,6 +13,8 @@ CLI
 ---
     zephyr annotate list.toml --prepare   # cache one frame per clip, once
     zephyr annotate list.toml --width 360 --height 270 --box-size 96
+    zephyr annotate list.toml --remote --frame-dir frames   # clips kept elsewhere: frames only
+    zephyr annotate events list.toml   # choose each clip's event detector: zephyr.annotate_events
 """
 
 import argparse
@@ -24,7 +26,7 @@ import cv2
 import numpy as np
 
 from .clips import write_boxes
-from .config import ClipList, ResolvedClip, load
+from .config import ClipList, ResolvedClip, load, require_videos
 from .video import Box, clamp_box, decode_window, probe_size
 
 DEFAULT_BOX_SIZE = 128
@@ -315,6 +317,16 @@ def prepare_frames(clips: list[ResolvedClip], frame_dir: Path) -> None:
         )[0]
         np.save(path, frame)
         print(f"  [{i}/{len(clips)}] {clip.name}: wrote {path.name}")
+
+
+def frame_size(clips: list[ResolvedClip], frame_dir: Path) -> tuple[int, int]:
+    """``(width, height)`` of the first cached frame, for clips that are not here."""
+    for clip in clips:
+        path = frame_path(frame_dir, clip.video)
+        if path.exists():
+            height, width = np.load(path).shape[:2]
+            return width, height
+    raise SystemExit(f"--remote: no cached frame in {frame_dir} for these clips")
 
 
 def load_recording_frames(recording: Recording, frame_dir: Path) -> list[np.ndarray]:
@@ -624,6 +636,11 @@ def run_ui(state: BoxState, frame_dir: Path, out_path: Path) -> None:
 
 
 def main(argv: list[str] | None = None) -> None:
+    if argv and argv[0] == "events":
+        from . import annotate_events
+
+        annotate_events.main(argv[1:])
+        return
     parser = argparse.ArgumentParser(
         description="Choose a downsample target and hand-place crop boxes."
     )
@@ -641,15 +658,29 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="Cache one frame per clip, then exit.",
     )
+    parser.add_argument(
+        "--remote",
+        action="store_true",
+        help="The clips are not on this machine: do not check they exist and take "
+        "the frame size from the cached frames in --frame-dir.",
+    )
     args = parser.parse_args(argv)
 
-    clip_list = load(ClipList, args.clips)
+    clip_list = load(ClipList, args.clips, check_files=not args.remote)
     clips = clip_list.resolve()
+    try:
+        require_videos(clips, "placing boxes")
+    except ValueError as exc:
+        raise SystemExit(f"{args.clips}: {exc}") from None
+    if args.prepare and args.remote:
+        raise SystemExit("--prepare decodes the videos, which --remote has not got")
     if args.prepare:
         prepare_frames(clips, args.frame_dir)
         return
 
-    native = probe_size(clips[0].video)
+    native = (
+        frame_size(clips, args.frame_dir) if args.remote else probe_size(clips[0].video)
+    )
     saved_target = clip_list.preprocess.target_size
     target = (args.width or saved_target[0], args.height or saved_target[1])
     # Start on the grid the boxes were saved on, then move to the requested

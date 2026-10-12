@@ -99,9 +99,87 @@ def write_boxes(
     if target_size is not None:
         doc["preprocess"]["target_size"] = list(target_size)
     for entry in doc["clip"]:
+        if "video" not in entry:  # thermistor only: never boxed
+            continue
         video = (path.parent / str(entry["video"])).resolve()
         if video in boxes:
             entry["box"] = list(boxes[video])
+    path.write_text(tomlkit.dumps(doc))
+
+
+def update_clip_list(
+    path: Path,
+    *,
+    events: dict[Path, tuple[str, dict[str, float]]] | None = None,
+    excluded: dict[Path, list[tuple[float, float]]] | None = None,
+    included: dict[Path, list[tuple[float, float]]] | None = None,
+    selection: dict[Path, str | None] | None = None,
+    reviewed: dict[Path, bool] | None = None,
+    add: list[Path] | None = None,
+    remove: set[Path] | None = None,
+) -> None:
+    """Edit *path* in place: set each clip's ``events = {method, params}`` (keyed
+    by resolved source path: the video, or a thermistor-only entry's thermistor), set each clip's ``excluded`` and ``included`` spans and ``selection`` mark (removing the key when
+    there are none, or the clip is accepted), append the *add* videos and delete the *remove* ones.
+
+    Like :func:`write_boxes` this keeps every comment and other field.  The result
+    is validated before it is written.
+    """
+    path = path.resolve()
+    doc = tomlkit.parse(path.read_text())
+    clips = doc["clip"]
+    gone = {Path(v).resolve() for v in (remove or ())}
+
+    def resolved(entry) -> Path:
+        """The entry's source: its video, else (thermistor only) its thermistor."""
+        source = entry["video"] if "video" in entry else entry["thermistor"]
+        return (path.parent / str(source)).resolve()
+
+    for index in reversed(range(len(clips))):
+        if resolved(clips[index]) in gone:
+            del clips[index]
+    present = {resolved(entry) for entry in clips}
+    for video in add or []:
+        video = Path(video).resolve()
+        if video not in present:
+            entry = tomlkit.table()
+            entry.add("video", _relative(video, path.parent))
+            clips.append(entry)
+            present.add(video)
+    for entry in clips:
+        good = (included or {}).get(resolved(entry))
+        if good is not None:
+            if good:
+                entry["included"] = [[float(a), float(b)] for a, b in good]
+            elif "included" in entry:
+                del entry["included"]
+        seen = (reviewed or {}).get(resolved(entry))
+        if seen:
+            entry["reviewed"] = True
+        elif seen is not None and "reviewed" in entry:
+            del entry["reviewed"]
+        chosen = (selection or {}).get(resolved(entry), "unchanged")
+        if chosen is None and "selection" in entry:
+            del entry["selection"]
+        elif chosen in ("include", "exclude"):
+            entry["selection"] = chosen
+        spans = (excluded or {}).get(resolved(entry))
+        if spans is not None:
+            if spans:
+                entry["excluded"] = [[float(a), float(b)] for a, b in spans]
+            elif "excluded" in entry:
+                del entry["excluded"]
+        chosen = (events or {}).get(resolved(entry))
+        if chosen is None:
+            continue
+        method, params = chosen
+        inline = tomlkit.inline_table()
+        inline["method"] = method
+        if params:
+            inline["params"] = tomlkit.inline_table()
+            inline["params"].update({k: float(v) for k, v in params.items()})
+        entry["events"] = inline
+    ClipList.model_validate(doc.unwrap(), context={"base": path.parent})
     path.write_text(tomlkit.dumps(doc))
 
 
@@ -129,6 +207,20 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="Mark every clip `thermistor = false` (inference only).",
     )
+    sub.add_parser(
+        "select",
+        help="Suggest clips and spans to use (see zephyr.session_selection).",
+        add_help=False,
+    )
+    if argv is None:
+        import sys
+
+        argv = sys.argv[1:]
+    if argv and argv[0] == "select":
+        from .session_selection import main as select
+
+        select(argv[1:])
+        return
     args = parser.parse_args(argv)
     scan(
         args.directory,

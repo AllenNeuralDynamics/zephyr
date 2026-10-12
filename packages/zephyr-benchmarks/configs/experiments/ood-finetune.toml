@@ -1,11 +1,90 @@
 # Leave-one-session-out fine-tuning on the side-profile rig.
-folds = [
-  "../folds/ood-hold13.toml",
-  "../folds/ood-hold14.toml",
-  "../folds/ood-hold15.toml",
-]
 seeds = [42]
 output_dir = "../../../../runs/ood-finetune"
 features_dir = "../../../../data/features-v2"
 device = "cuda"
 amp = "bf16"
+
+[[fold]]
+name = "ood-hold13"
+# Fine-tune the benchmark network on the face data plus side-profile sessions
+# 14 and 15, then score the held-out session 13 and both face groups.
+init_from = "../../../../benchmarks/input-objective-v1/runs/gray-diff-flow__multitask__seed-42/best.pt"
+
+[[fold.train]]
+clips = "../clips/face_train.toml"
+weight = 0.5
+
+[[fold.train]]
+clips = "../clips/ood_side_right.toml"
+groups = ["14", "15"]
+weight = 0.5
+
+[fold.test]
+ood_held_out = { clips = "../clips/ood_side_right.toml", groups = ["13"] }
+new_animals = "../clips/face_test_new_animals.toml"
+known_animals_new_date = "../clips/face_test_known_animals_new_date.toml"
+
+[fold.train_params]
+channels = "gray+diff+flow"
+epochs = 20
+steps_per_epoch = 200
+lr = 1e-4
+ema_decay = 0.995
+val_fraction = 0
+
+[[fold]]
+name = "ood-hold14"
+# Fine-tune the benchmark network on the face data plus side-profile sessions
+# 13 and 15, then score the held-out session 14 and both face groups.
+init_from = "../../../../benchmarks/input-objective-v1/runs/gray-diff-flow__multitask__seed-42/best.pt"
+
+[[fold.train]]
+clips = "../clips/face_train.toml"
+weight = 0.5
+
+[[fold.train]]
+clips = "../clips/ood_side_right.toml"
+groups = ["13", "15"]
+weight = 0.5
+
+[fold.test]
+ood_held_out = { clips = "../clips/ood_side_right.toml", groups = ["14"] }
+new_animals = "../clips/face_test_new_animals.toml"
+known_animals_new_date = "../clips/face_test_known_animals_new_date.toml"
+
+[fold.train_params]
+channels = "gray+diff+flow"
+epochs = 20
+steps_per_epoch = 200
+lr = 1e-4
+ema_decay = 0.995
+val_fraction = 0
+
+[[fold]]
+name = "ood-hold15"
+# Fine-tune the benchmark network on the face data plus side-profile sessions
+# 13 and 14, then score the held-out session 15 and both face groups.
+init_from = "../../../../benchmarks/input-objective-v1/runs/gray-diff-flow__multitask__seed-42/best.pt"
+
+[[fold.train]]
+clips = "../clips/face_train.toml"
+weight = 0.5
+
+[[fold.train]]
+clips = "../clips/ood_side_right.toml"
+groups = ["13", "14"]
+weight = 0.5
+
+[fold.test]
+ood_held_out = { clips = "../clips/ood_side_right.toml", groups = ["15"] }
+new_animals = "../clips/face_test_new_animals.toml"
+known_animals_new_date = "../clips/face_test_known_animals_new_date.toml"
+
+[fold.train_params]
+channels = "gray+diff+flow"
+epochs = 20
+steps_per_epoch = 200
+lr = 1e-4
+ema_decay = 0.995
+val_fraction = 0

@@ -11,9 +11,11 @@ the complete list.
 CLI
 ---
     zephyr clips scan <dir> --glob <pattern> -o <list.toml>
+    zephyr clips select <list.toml> [--out <list.toml>] [--min-span-s 300]
     zephyr annotate <list.toml> [--prepare]
+    zephyr annotate events [<list.toml>]
     zephyr preprocess <list.toml>... --cache <dir>
-    zephyr run <fold.toml | experiment.toml> [--smoke]
+    zephyr run <experiment.toml> [--smoke] [--folds <name>...]
     zephyr evaluate --checkpoint <best.pt> --clips <list.toml>... --cache <dir>
     zephyr schema <dir>
 """
@@ -44,7 +46,7 @@ class ClipsCommand(_PassthroughCommand):
 
 
 class AnnotateCommand(_PassthroughCommand):
-    """Cache frames and place hand crop boxes. See ``zephyr.annotate``."""
+    """Place crop boxes, or (``annotate events``) choose each clip's event detector."""
 
     def cli_cmd(self) -> None:
         from . import annotate

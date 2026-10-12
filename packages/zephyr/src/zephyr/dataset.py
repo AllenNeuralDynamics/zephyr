@@ -42,6 +42,9 @@ BALANCE_HOP_S = 0.25
 """Spacing of the candidate window starts that rate balancing weighs; a drawn start
 is jittered uniformly within its cell, so every offset stays reachable."""
 
+MAX_REDRAWS = 1000
+"""Draws a random window may take before giving up on avoiding excluded spans."""
+
 
 def stats_path(cache_dir: Path, entries: Sequence[ClipEntry]) -> Path:
     """Where the statistics over exactly *entries* are cached: next to the
@@ -265,6 +268,7 @@ class WindowDataset(Dataset):
         self._arrays: dict[Path, np.ndarray] = {}
         self._targets: dict[Path, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
         self._frame_time_cache: dict[Path, np.ndarray] = {}
+        self._span_cache: dict[Path, np.ndarray] = {}
 
         # A clip must be long enough for the widest stretch draw, not just window.
         self.max_source = int(np.ceil(self.extent(self.augment.max_source_frames))) + 1
@@ -300,6 +304,7 @@ class WindowDataset(Dataset):
                     self.bounds[entry.features][1] - extent,
                     hop,
                 )
+                if not self._excluded(i, float(start), 1.0)
             ]
             self.random = False
         else:
@@ -417,6 +422,39 @@ class WindowDataset(Dataset):
             return None, clip_i, start, stretch
 
         rng = np.random.default_rng((self.seed, i))
+        # A window overlapping an excluded span is redrawn from the same
+        # generator, so clips without spans draw exactly what they always did.
+        for _ in range(MAX_REDRAWS):
+            clip_i, start, stretch = self._draw_random(rng)
+            if not self._excluded(clip_i, start, stretch):
+                return rng, clip_i, start, stretch
+        raise RuntimeError(
+            f"window {i}: {MAX_REDRAWS} draws in a row overlapped excluded spans"
+        )
+
+    def _spans(self, entry: ClipEntry) -> np.ndarray:
+        spans = self._span_cache.get(entry.features)
+        if spans is None:
+            stored = np.load(entry.events)
+            spans = stored["excluded"] if "excluded" in stored.files else np.empty(0)
+            spans = np.asarray(spans, np.float64).reshape(-1, 2)
+            self._span_cache[entry.features] = spans
+        return spans
+
+    def _excluded(self, clip_i: int, start: float, stretch: float) -> bool:
+        """Whether the window at *start* overlaps one of its clip's excluded spans."""
+        entry = self.usable[clip_i]
+        spans = self._spans(entry)
+        if not len(spans):
+            return False
+        frame_times = self._frame_times(entry)
+        last = min(len(frame_times) - 1, int(np.ceil(start + self.extent(stretch))))
+        lo, hi = frame_times[int(start)], frame_times[last]
+        return bool(np.any((spans[:, 0] <= hi) & (spans[:, 1] >= lo)))
+
+    def _draw_random(self, rng: np.random.Generator) -> tuple[int, float, float]:
+        """One random ``(clip index, start, stretch)``, ignoring excluded spans."""
+        stretch = 1.0
         balanced = self.rate_balance > 0
         if balanced:
             c = int(np.searchsorted(self._candidate_cdf, rng.random(), side="right"))
@@ -454,7 +492,7 @@ class WindowDataset(Dataset):
                 start = min(start, max(float(lo), hi - 1 - self.extent(stretch)))
             else:
                 start = self._draw_start(rng, lo, hi, stretch)
-        return rng, clip_i, start, stretch
+        return clip_i, start, stretch
 
     def draw(self, i: int) -> tuple[int, float, float]:
         """Which clip, where, and at what stretch window *i* is cut.

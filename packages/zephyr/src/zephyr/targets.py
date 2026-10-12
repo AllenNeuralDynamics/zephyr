@@ -56,12 +56,42 @@ class Target:
 
 
 def load_target(thermistor: Path, times: np.ndarray) -> Target:
-    """Build the training target from a thermistor parquet, sampled at *times*."""
+    """Build the training target from a thermistor parquet, sampled at *times*.
 
+    Its ``onset_times``/``offset_times`` are detected on *times*, for
+    diagnostics; the events training and scoring use come from
+    :mod:`zephyr.events`, at the thermistor's own resolution.
+    """
     frame = pd.read_parquet(thermistor)
     t = frame[TIME_COLUMN].to_numpy(dtype=float)
     v = frame[BREATHING_SIGNAL_COLUMN].to_numpy(dtype=float)
+    try:
+        signal, native_fs, scale, offset = filtered_on_grid(t, v, times)
+    except ValueError as exc:
+        raise ValueError(f"{thermistor}: {exc}") from exc
 
+    out_fs = 1.0 / float(np.median(np.diff(times)))
+    onsets, offsets = detect_inhalation_events(signal, out_fs)
+
+    return Target(
+        times=times,
+        signal=signal,
+        onset_times=times[onsets],
+        offset_times=times[offsets],
+        native_fs=native_fs,
+        scale=scale,
+        offset=offset,
+    )
+
+
+def filtered_on_grid(
+    t: np.ndarray, v: np.ndarray, times: np.ndarray
+) -> tuple[np.ndarray, float, float, float]:
+    """The thermistor filtered at its own rate and z-scored on *times*.
+
+    Returns ``(signal, native_fs, scale, offset)``: the trace on *times*, the
+    thermistor's rate, and the standard deviation and mean removed.
+    """
     native_fs = 1.0 / float(np.median(np.diff(t)))
 
     # filter_sniff_signal assumes uniform sampling; the source clock is close
@@ -78,24 +108,12 @@ def load_target(thermistor: Path, times: np.ndarray) -> Target:
     resampled = np.interp(times, t_uniform, filtered)
     covered = (times >= t_uniform[0]) & (times <= t_uniform[-1])
     if not covered.any():
-        raise ValueError(f"{thermistor} does not overlap the clip's output grid")
+        raise ValueError("the thermistor does not overlap the clip's output grid")
 
     offset = float(resampled[covered].mean())
     scale = float(resampled[covered].std())
     signal = (resampled - offset) / (scale if scale > 0 else 1.0)
-
-    out_fs = 1.0 / float(np.median(np.diff(times)))
-    onsets, offsets = detect_inhalation_events(signal, out_fs)
-
-    return Target(
-        times=times,
-        signal=signal,
-        onset_times=times[onsets],
-        offset_times=times[offsets],
-        native_fs=native_fs,
-        scale=scale,
-        offset=offset,
-    )
+    return signal, native_fs, scale, offset
 
 
 def onset_heatmap(

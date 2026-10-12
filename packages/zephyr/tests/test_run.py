@@ -30,7 +30,7 @@ class ChooseMachineTests(unittest.TestCase):
         self.assertEqual(flagged.num_workers, 0)
         self.assertEqual(flagged.amp, "off")
 
-    def test_bare_fold_has_no_experiment_settings(self):
+    def test_no_settings_at_all_fall_back_to_defaults(self):
         self.assertEqual(choose_machine(_args(device="cpu"), {}).num_workers, 4)
 
 

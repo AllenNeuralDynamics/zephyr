@@ -2,6 +2,9 @@
 # Paths are relative to this file. Make your own with
 #   zephyr clips scan <dir> --glob 'video_*.mp4' -o <list.toml>
 # and place the boxes with `zephyr annotate <list.toml>`.
+# A clip may choose its own breathing-event detector next to its box, e.g.
+#   events = { method = "adaptive_prominence", params = { prominence_frac = 0.3 } }
+# (written for you by `zephyr annotate events`; without it, peak_detection).
 # timestamps, thermistor and group are derived from each video name (see [derive]
 # in zephyr.config); give them explicitly when your files are named differently.
 

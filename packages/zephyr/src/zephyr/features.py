@@ -4,8 +4,10 @@ Files share a prefix ``{video stem}-{hash}``; the hash covers the video and time
 paths, every PreprocessParams field (a later one only off its default, see KEY_DEFAULTS)
 and the box, so changing any gives a new entry and nothing is overwritten. Per entry: ``feat-`` (uint8 T x 4 x h x
 w), ``ftime-``, ``dt-``, ``time-`` (output grid), ``target-`` and ``events-`` for
-labelled clips, and a ``{prefix}.json`` sidecar (full key, stats, thermistor used),
-written last so its presence means the arrays are complete.
+labelled clips, and a ``{prefix}.json`` sidecar (full key, stats, thermistor and event
+set used), written last so its presence means the arrays are complete. ``events-``
+holds the clip's event set (inhale and exhale times, excluded spans); training and
+scoring both read it.
 """
 
 import hashlib
@@ -47,6 +49,8 @@ class ClipEntry:
 
 def cache_key(clip: ResolvedClip, params: PreprocessParams) -> dict:
     """Everything that determines a clip's arrays."""
+    if clip.video is None or clip.timestamps is None:
+        raise ValueError(f"{clip.name} is thermistor only; features need its video")
     if clip.box is None:
         raise ValueError(f"{clip.name} has no box; place it with `zephyr annotate`")
     recipe = {
@@ -62,9 +66,19 @@ def cache_key(clip: ResolvedClip, params: PreprocessParams) -> dict:
     }
 
 
+def events_identity(clip: ResolvedClip) -> dict:
+    """What a labelled clip's cached events depend on; recorded in the sidecar.
+
+    A cache made before event sets existed records none, so it is stale: its
+    target is rebuilt (the video arrays are kept), with events at the
+    thermistor's own resolution instead of the output grid's.
+    """
+    return clip.events.identity(clip)
+
+
 def prefix(clip: ResolvedClip, params: PreprocessParams) -> str:
     blob = json.dumps(cache_key(clip, params), sort_keys=True).encode()
-    return f"{clip.video.stem}-{hashlib.sha256(blob).hexdigest()[:10]}"
+    return f"{clip.source.stem}-{hashlib.sha256(blob).hexdigest()[:10]}"
 
 
 def paths(cache_dir: Path, name: str) -> dict[str, Path]:
@@ -86,8 +100,9 @@ def lookup(
     """The cached entry for *clip*, or ``None`` if it is missing or stale.
 
     "Stale" means the arrays are there but the clip is labelled with a
-    different thermistor than the target on disk was built from, or is labelled
-    and has no target yet; the arrays are reusable, only the target is not.
+    different thermistor or event set than the target on disk was built from,
+    or is labelled and has no target yet; the arrays are reusable, only the
+    target is not.
     """
     name = prefix(clip, params)
     files = paths(cache_dir, name)
@@ -98,6 +113,8 @@ def lookup(
         return None
     wanted = clip.thermistor.as_posix() if clip.thermistor else None
     if sidecar["thermistor"] != wanted:
+        return None
+    if wanted and sidecar.get("events") != events_identity(clip):
         return None
     return ClipEntry(
         clip_id=clip.name,

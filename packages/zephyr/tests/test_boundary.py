@@ -1,4 +1,5 @@
-"""zephyr runs only the zephyr network and never depends on zephyr-benchmarks."""
+"""zephyr runs only the zephyr network and never depends on zephyr-benchmarks or
+zephyr-dataset (``zephyr.corpus``)."""
 
 import ast
 import re
@@ -36,7 +37,9 @@ class BoundaryTests(unittest.TestCase):
                     if node.level:
                         names += [alias.name for alias in node.names]
                 for name in names:
-                    if name == "benchmarks" or name.startswith("zephyr.benchmarks"):
+                    if name in ("benchmarks", "corpus") or name.startswith(
+                        ("zephyr.benchmarks", "zephyr.corpus")
+                    ):
                         offenders.append(f"{path.name}: {name}")
         self.assertEqual(offenders, [])
 
@@ -54,7 +57,8 @@ class BoundaryTests(unittest.TestCase):
             "import importlib, sys\n"
             f"for name in {MODULES!r}:\n"
             "    importlib.import_module(name)\n"
-            "print(sorted(m for m in sys.modules if m.startswith('zephyr.benchmarks')))"
+            "print(sorted(m for m in sys.modules\n"
+            "             if m.startswith(('zephyr.benchmarks', 'zephyr.corpus'))))"
         )
         result = subprocess.run(
             [sys.executable, "-c", code],

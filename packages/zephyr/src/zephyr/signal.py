@@ -10,20 +10,30 @@ TIME_COLUMN = "Time"
 BREATHING_SIGNAL_COLUMN = "Signal"
 
 
-def filter_sniff_signal(values: np.ndarray, fs: float) -> np.ndarray:
+def filter_sniff_signal(
+    values: np.ndarray, fs: float, highpass_hz: float = 0.2
+) -> np.ndarray:
     """Filter raw thermistor samples before resampling the training target."""
-    b_hp, a_hp = butter(2, 0.2, "highpass", fs=fs)
+    b_hp, a_hp = butter(2, highpass_hz, "highpass", fs=fs)
     filtered = filtfilt(b_hp, a_hp, values)
     b_lp, a_lp = butter(2, 40.0, "lowpass", fs=fs)
     return filtfilt(b_lp, a_lp, filtered)
 
 
 def detect_inhalation_events(
-    signal: np.ndarray, fs: float
+    signal: np.ndarray,
+    fs: float,
+    *,
+    distance_s: float = 0.05,
+    prominence_frac: float = 0.1,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Find positive inhale peaks and negative exhale troughs in a clean trace."""
-    distance = max(1, int(fs * 0.05))
-    prominence = 0.1 * float(np.ptp(signal))
+    """Find positive inhale peaks and negative exhale troughs in a clean trace.
+
+    Peaks closer than *distance_s* are suppressed, and a peak must stand
+    *prominence_frac* of the whole trace's range above its surroundings.
+    """
+    distance = max(1, int(fs * distance_s))
+    prominence = prominence_frac * float(np.ptp(signal))
     inhale, _ = find_peaks(signal, distance=distance, prominence=prominence)
     exhale, _ = find_peaks(-signal, distance=distance, prominence=prominence)
     return inhale.astype(int), exhale.astype(int)

@@ -62,7 +62,6 @@ def load_checkpoint(
 
 
 RUNNER = Runner(
-    fold=BenchmarkFold,
     experiment=BenchmarkExperiment,
     architecture=architecture,
     loader=load_checkpoint,

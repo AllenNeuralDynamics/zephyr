@@ -1,0 +1,132 @@
+# VR-foraging sessions with a sniff detector: zephyr's corpus.
+#   uv run zephyr-dataset <step> packages/zephyr-dataset/configs/vr-foraging-sniff.toml --profile IAmAnywhere
+# `qc` and `zephyr annotate events` need a local copy of the folder (see the README);
+# hand decisions go in [[review]] below.
+
+root = "s3://aind-scratch-data/vr-foraging/zephyr-dataset"
+
+[source]
+bucket = "aind-open-data"
+docdb = "https://api.allenneuraldynamics.org/v2/metadata_index/data_assets"
+process = "primary-nwb-packaging-vr-foraging"
+device = "SniffDetector"
+signal = "RawVoltage"
+cameras = ["FaceCamera", "SideCamera"]
+
+[query]
+until = 2026-10-11T20:09:34Z  # the time of the saved DocDB query (docdb.json.gz)
+min_dataset_version = "0.6.0"
+# the ephys sessions (reviewed by hand) packaged before 0.6.0
+include_sessions = [
+    "behavior_794591_2025-10-14_17-57-50",
+    "behavior_794591_2025-10-15_16-39-00",
+    "behavior_794591_2025-10-17_17-00-09",
+    "behavior_794591_2025-10-19_17-52-03",
+    "behavior_794591_2025-10-20_16-52-39",
+    "behavior_794591_2025-10-21_17-02-35",
+    "behavior_794591_2025-10-22_17-09-46",
+    "behavior_794591_2025-10-23_16-46-09",
+    "behavior_794591_2025-10-24_17-21-18",
+    "behavior_794591_2025-10-27_18-21-28",
+    "behavior_794591_2025-10-28_17-20-23",
+    "behavior_794591_2025-10-29_18-12-05",
+    "behavior_794591_2025-10-30_17-14-07",
+    "behavior_794591_2025-10-31_17-04-22",
+    "behavior_794591_2025-11-04_20-19-41",
+]
+exclude_sessions = []
+exclude_rigs = []
+
+[preprocess]
+target_size = [360, 270]
+
+[events]  # tuned on the ephys sessions
+method = "adaptive_prominence"
+params = { highpass_hz = 1.0, distance_s = 0.05, prominence_frac = 0.2, window_s = 1.5 }
+
+[qc]
+window_s = 30.0
+min_span_s = 300.0
+max_outside = 0.10
+max_breaks = 0.05
+outlier_z = 3.0
+min_snr_gap_db = 3.0
+snr_ceiling_db = 60.0
+min_amplitude = 20.0
+artifact_z = 8.0
+artifact_pad_s = 2.0
+
+[select]
+clip_s = 300.0
+clips_per_session = 2
+seed = 2026
+require_cameras = true
+
+[clips]
+thermistor_pad_s = 10.0
+exclude_cameras = ["SideCamera"]   # cut and kept, but zephyr uses the face camera only
+
+# Train / validation / test assignment; why: "Why these sessions" in packages/zephyr-dataset/README.md.
+[folds]
+seed = 2026
+camera = "FaceCamera"
+test_animals = 10     # test A: whole animals never trained on
+val_animals = 8       # validation: whole animals (early stopping and tuning)
+min_sessions = 15     # an animal held out whole has at least this many sessions
+cap_train = 10        # most sessions per animal and rig, spread over its dates
+cap_val = 3
+cap_test = 5
+cap_test_b = 5        # test B: sessions of training animals on a rig they train on ...
+test_b_one_in = 3     # ... at most a third of the animal-rig pair ...
+train_keep = 2        # ... leaving at least 2 to train on
+tries = 30000
+group_c_min_hz = 300.0   # group C: the 359.2 Hz sessions (rig 4B, 2026-02/03), held out by session
+# Videos too dark to use (mean luminance of the thumbnail under about 40; all of the video
+# is that dark), taken out after the draw; the one add is a bright session of the same animal
+# and rig that has room under the cap.
+exclude = [
+    "815103_2026-02-16_21-15-24",
+    "828423_2026-02-10_21-08-50",
+    "828423_2026-02-13_19-00-55",
+    "828425_2026-02-09_20-39-50",
+    "828425_2026-02-13_19-00-32",
+    "behavior_828425_2026-01-23_21-01-41",
+]
+add = { "828423_2026-02-24_21-05-41" = "val" }
+group_c = { "841301" = [7, 2, 4], "828415" = [1, 0, 1] }   # (train, val, test) sessions
+
+[folds.rig_families]  # names of one physical rig
+"FRG.4-A" = "4A"
+"FRG.4-B" = "4B"
+"FRG.4-C" = "4C"
+"FRG.4-D" = "4D"
+"FRG.12-B" = "12B"
+"FRG.12-C" = "12C"
+"FRG.12-D" = "12D"
+"SAKTIMUNA-12D" = "12D"
+"FRG.13-B" = "13B"
+"FRG.13-C" = "13C"
+"FRG.13-D" = "13D"
+"Ephys5" = "EPHYS5"
+"ND_Ephys.5" = "EPHYS5"
+"322-EPHYS5" = "EPHYS5"
+
+# A small subset for small experiments (`small` in folds.parquet, clips-small.toml): whole
+# animals held out as in [folds], test B sessions of the kept training animals, group C by
+# session; the caps are per animal and rig.
+[small]
+seed = 2026
+tries = 2000
+test_animals = 4    # of test A's 10
+val_animals = 3     # of validation's 8
+train_animals = 10  # of the 43 training animals; test B keeps their sessions
+cap_train = 2
+cap_val = 1
+cap_test = 1
+cap_test_b = 1
+group_c = [3, 1, 2]  # (train, val, test) sessions of 841301 and 828415
+
+# decisions made by hand (marked reviewed, so QC never changes them)
+[[review]]
+session_id = "behavior_798279_2025-12-05_17-42-48"
+selection = "exclude"

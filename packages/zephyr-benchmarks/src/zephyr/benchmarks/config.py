@@ -5,9 +5,9 @@ network (``zephyr`` when omitted, so every zephyr fold loads here unchanged) and
 ``train_params.tscan_img_size`` is TS-CAN's input size.
 """
 
-from typing import ClassVar, Literal
+from typing import Literal
 
-from pydantic import PositiveInt, model_validator
+from pydantic import Field, PositiveInt, model_validator
 
 from zephyr.channels import ChannelSet
 from zephyr.config import Experiment, Fold, TrainParams
@@ -39,4 +39,4 @@ class BenchmarkFold(Fold):
 
 
 class BenchmarkExperiment(Experiment):
-    fold_model: ClassVar[type[Fold]] = BenchmarkFold
+    fold: list[BenchmarkFold] = Field(min_length=1)

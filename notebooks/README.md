@@ -17,6 +17,11 @@ uv run marimo export html notebooks/walkthrough.py -o walkthrough.html --no-incl
   cached after the first run). Inference only (CPU is enough, about a
   minute for a new clip, then cached in `cache/`); it never trains a network. A
   first cell lists any missing input with the command that produces it.
+- `corpus.py`: reruns the default `zephyr-dataset` pipeline
+  (`packages/zephyr-dataset/configs/vr-foraging-sniff.toml`) into a new folder,
+  from the corpus's saved DocDB return, and compares the result with the corpus.
+  It writes only that new folder, and only when its Rebuild button is pressed
+  (about 15 minutes; the raw thermistors come from S3).
 - `utils/animation.py`: `session_movie(...)` renders a whole test recording (both
   videos) as a real-time MP4 of the scrubber figure (video, the four channels, a
   scrolling trace window), e.g. `uv run --project .. python -m utils.animation 6

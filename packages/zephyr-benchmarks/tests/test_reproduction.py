@@ -13,7 +13,7 @@ from pathlib import Path
 import numpy as np
 
 from zephyr import features
-from zephyr.benchmarks.config import BenchmarkExperiment, BenchmarkFold
+from zephyr.benchmarks.config import BenchmarkExperiment
 from zephyr.channels import ChannelSet
 from zephyr.config import load
 from zephyr.dataset import WindowDataset
@@ -21,7 +21,6 @@ from zephyr.train import augment_config
 
 ROOT = Path(__file__).resolve().parents[3]
 CONFIGS = Path(__file__).resolve().parents[1] / "configs"
-FOLD = CONFIGS / "folds/benchmark-gray-diff-flow-multitask.toml"
 EXPERIMENT = CONFIGS / "experiments/benchmark-gray-diff-flow-multitask.toml"
 RUNS = ROOT / "benchmarks/input-objective-v1/runs"
 FIXTURE = Path(__file__).parent / "fixtures/window_draws_seed42.json"
@@ -102,7 +101,7 @@ class BaselineFoldTests(unittest.TestCase):
         self.assertEqual(experiment.seeds, [17, 42])
         for arch in ("tscan", "physnet"):
             with self.subTest(arch=arch):
-                fold = load(BenchmarkFold, CONFIGS / f"folds/baseline-{arch}.toml")
+                (fold,) = experiment.folds([f"baseline-{arch}"])
                 root = ROOT / f"benchmarks/baselines-v1/{arch}/runs"
                 runs = [root / f"gray__signal__seed-{s}" for s in experiment.seeds]
                 _assert_params_match_runs(self, fold, runs, experiment.seeds)
@@ -112,7 +111,7 @@ class BaselineFoldTests(unittest.TestCase):
 class BenchmarkFoldTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.fold = load(BenchmarkFold, FOLD)
+        (cls.fold,) = load(BenchmarkExperiment, EXPERIMENT).fold
 
     def test_train_params_equal_every_reference_run(self):
         seeds = load(BenchmarkExperiment, EXPERIMENT).seeds

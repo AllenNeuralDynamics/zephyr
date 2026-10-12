@@ -1,0 +1,42 @@
+[project]
+name = "zephyr-dataset"
+dynamic = ["version"]
+description = "Builds zephyr's corpus of VR-foraging sessions (Allen-internal)"
+authors = [{ name = "Allen Institute for Neural Dynamics" }]
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+dependencies = [
+    "zephyr",
+    "numpy>=1.26",
+    "pandas>=2.0",
+    "pyarrow>=14.0",
+    "packaging>=23",
+    "pyyaml>=6.0",
+    "tomlkit>=0.13",
+    "s3fs>=2024.2",
+    "universal-pathlib>=0.2.6",
+    "pillow>=10",
+]
+
+[project.optional-dependencies]
+# the snout detector of `rois` (torch comes from zephyr's cpu / gpu extra)
+rois = ["transformers>=4.45"]
+
+[project.scripts]
+zephyr-dataset = "zephyr.corpus.cli:run"
+
+[tool.uv.sources]
+zephyr = { workspace = true }
+
+[build-system]
+requires = ["hatchling", "hatch-vcs"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+source = "vcs"
+raw-options = { root = "../.." }
+
+# Ships only zephyr/corpus/ (zephyr.dataset is core's training dataset module).
+[tool.hatch.build.targets.wheel]
+packages = ["src/zephyr"]

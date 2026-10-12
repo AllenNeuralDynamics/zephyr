@@ -1,7 +1,7 @@
 """Every input zephyr consumes is a TOML file, validated here.
 
-A clip list names videos, a fold says which lists train and which are scored, an
-experiment says which folds run with which seeds. Nothing else knows the dataset layout;
+A clip list names videos; an experiment holds its folds (which lists train and which
+are scored) and the seeds they run with. Nothing else knows the dataset layout;
 the example dataset appears only in ``examples/`` and zephyr-benchmarks. Every path
 field is a :data:`RelPath`: relative to the file it is written in, absolute once loaded.
 
@@ -31,6 +31,7 @@ from pydantic import (
     model_validator,
 )
 
+from . import events
 from .channels import FLOW_CLIP_PX, FLOW_SCALE_PX, MOTION_TAU_S, ChannelSet
 from .rates import DEFAULT_RATE_BINS_HZ
 from .signal import CANONICAL_BREATHING_SAMPLING_RATE
@@ -61,13 +62,16 @@ class _Model(BaseModel):
 M = TypeVar("M", bound=_Model)
 
 
-def load(model: type[M], path: Path) -> M:
-    """Read the TOML file at *path* into *model*, resolving paths against it."""
+def load(model: type[M], path: Path, check_files: bool = True) -> M:
+    """Read the TOML file at *path* into *model*, resolving paths against it. A clip
+    list's files must exist unless *check_files* is False (clips kept elsewhere)."""
     path = Path(path).resolve()
     with path.open("rb") as handle:
         data = tomllib.load(handle)
     try:
-        return model.model_validate(data, context={"base": path.parent})
+        return model.model_validate(
+            data, context={"base": path.parent, "check_files": check_files}
+        )
     except ValidationError as exc:
         # Name the file: errors from a fold's nested clip lists are otherwise
         # impossible to place.
@@ -159,10 +163,50 @@ class Derive(_Model):
         return {"stem": video.stem, **match.groupdict()}
 
 
-class Clip(_Model):
-    """One clip as written in a clip list; omitted fields are derived."""
+class EventsSource(_Model):
+    """Which breathing events a clip uses: a detector and its parameters.
 
-    video: RelPath
+    Training (the onset head, rate balancing) and scoring both read them; see
+    :mod:`zephyr.events`.  Set for a whole list with ``[events]`` or for one clip
+    with ``events = {...}`` next to its ``box`` (``zephyr annotate events``);
+    without either, ``peak_detection`` with its defaults.
+    """
+
+    method: str = events.DEFAULT_METHOD
+    """Name of a detector in :data:`zephyr.events.DETECTORS`."""
+    params: dict[str, float] = {}
+    """Its parameters; omitted ones keep the detector's defaults."""
+
+    @model_validator(mode="after")
+    def _known_method(self) -> "EventsSource":
+        events.detector_params(self.method, self.params)
+        return self
+
+    def for_clip(self, clip: "ResolvedClip", span=None) -> "events.Events":
+        """The detector's events on the clip's thermistor, with its excluded spans."""
+        found = events.for_clip(self.method, self.params, clip.thermistor, span)
+        return events.Events.of(found.inhale, found.exhale, clip.excluded)
+
+    def identity(self, clip: "ResolvedClip") -> dict:
+        """What the clip's cached events depend on; spans enter only when present, so
+        caches made without any still match."""
+        out = events.identity(self.method, self.params)
+        if clip.excluded:
+            out["excluded"] = [list(span) for span in clip.excluded]
+        return out
+
+
+class Clip(_Model):
+    """One clip as written in a clip list; omitted fields are derived.
+
+    Without a ``video`` the entry is a thermistor-only recording (e.g. a whole session):
+    it names its ``thermistor`` and has no timestamps or box. The detector tuner and
+    ``zephyr clips select`` read such entries; everything that needs frames refuses
+    them (:func:`require_videos`).
+    """
+
+    video: RelPath | None = None
+    """The clip's video; omitted for a thermistor-only entry."""
     timestamps: RelPath | None = None
     """Frame timestamp parquet; derived when omitted."""
     thermistor: RelPath | Literal[False] | None = None
@@ -172,6 +216,31 @@ class Clip(_Model):
     """Recording label within the video's folder; derived when omitted."""
     box: Box | None = None
     """Hand-placed crop box in ``target_size`` pixels; see ``zephyr annotate``."""
+    events: "EventsSource | None" = None
+    """This clip's own detector, overriding the list's ``[events]``."""
+    selection: Literal["include", "exclude"] | None = None
+    """Curation mark set from ``zephyr annotate events``.  ``"exclude"``: never use
+    this video; it is left out of everything downstream (preprocessing, folds,
+    training, scoring).  ``"include"`` is a note only; neither touches the clip's
+    other settings."""
+    reviewed: bool = False
+    """Whether a person has confirmed ``selection`` (and the spans) in ``zephyr
+    annotate events``; ``zephyr clips select`` never changes a reviewed clip."""
+    excluded: list[tuple[float, float]] = []
+    """Spans ``[start, end]`` (seconds on the thermistor's clock) whose events are
+    untrusted: nothing is scored there and no training window overlaps them."""
+
+    included: list[tuple[float, float]] = []
+    """Spans ``[start, end]`` marked as good stretches of data from ``zephyr annotate
+    events``: a note only, nothing downstream reads them."""
+
+    @field_validator("excluded", "included")
+    @classmethod
+    def _ordered_spans(cls, value: list[tuple[float, float]]):
+        for start, end in value:
+            if not start < end:
+                raise ValueError(f"span [{start}, {end}] needs start < end")
+        return sorted(value)
 
     @field_validator("box")
     @classmethod
@@ -182,38 +251,86 @@ class Clip(_Model):
             raise ValueError(f"box {list(value)} needs x, y >= 0 and w, h > 0")
         return value
 
+    @model_validator(mode="after")
+    def _video_or_thermistor(self) -> "Clip":
+        if self.video is None:
+            if not isinstance(self.thermistor, Path):
+                raise ValueError(
+                    "a clip needs a video, or (thermistor only) a thermistor"
+                )
+            if self.timestamps is not None or self.box is not None:
+                raise ValueError(
+                    f"{self.thermistor.name}: a thermistor-only clip has no "
+                    "timestamps or box"
+                )
+        return self
+
 
 class ResolvedClip(_Model):
-    """A clip with every field concrete; what the rest of the package consumes."""
+    """A clip with every field concrete; what the rest of the package consumes.
+    ``video`` and ``timestamps`` are None for a thermistor-only entry."""
 
-    video: Path
-    timestamps: Path
+    video: Path | None
+    timestamps: Path | None
     thermistor: Path | None
     group: str
     box: Box | None
+    excluded: tuple[tuple[float, float], ...] = ()
+    events: EventsSource = EventsSource()
+    """Its list's ``[events]``; the default detector when the list has none."""
 
     @property
     def labelled(self) -> bool:
         return self.thermistor is not None
 
     @property
+    def source(self) -> Path:
+        """The file that identifies the clip: its video, else its thermistor."""
+        source = self.video if self.video is not None else self.thermistor
+        assert source is not None  # Clip requires one of them
+        return source
+
+    @property
     def recording(self) -> tuple[Path, str]:
         """Identity leakage is judged on; see the module docstring."""
-        return (self.video.parent, self.group)
+        return (self.source.parent, self.group)
 
     @property
     def recording_id(self) -> str:
         """The recording as one string, for reports and run records."""
-        return f"{self.video.parent.as_posix()}#{self.group}"
+        return f"{self.source.parent.as_posix()}#{self.group}"
 
     @property
     def name(self) -> str:
         """Short human label: folder and file stem."""
-        return f"{self.video.parent.name}/{self.video.stem}"
+        return f"{self.source.parent.name}/{self.source.stem}"
 
 
-def resolve_clip(clip: Clip, derive: Derive) -> ResolvedClip:
+def require_videos(clips: list[ResolvedClip], what: str) -> None:
+    """Refuse thermistor-only clips where frames are needed."""
+    missing = [c.name for c in clips if c.video is None]
+    if missing:
+        raise ValueError(
+            f"{what} needs videos; {len(missing)} clip(s) are thermistor only: {missing}"
+        )
+
+
+def resolve_clip(
+    clip: Clip, derive: Derive, events_source: EventsSource | None = None
+) -> ResolvedClip:
     """Fill a clip's omitted fields from its video name, or say why not."""
+    events_source = clip.events or events_source or EventsSource()
+    if clip.video is None:  # thermistor only: nothing to derive
+        assert isinstance(clip.thermistor, Path)
+        return ResolvedClip(
+            video=None,
+            timestamps=None,
+            thermistor=clip.thermistor,
+            group=clip.group if clip.group is not None else clip.thermistor.stem,
+            box=None,
+            excluded=tuple(clip.excluded),
+            events=events_source,
+        )
     fields = derive.fields(clip.video)
 
     def derived(label: str, template: str | None) -> str:
@@ -243,6 +360,8 @@ def resolve_clip(clip: Clip, derive: Derive) -> ResolvedClip:
         thermistor=thermistor,
         group=group,
         box=clip.box,
+        excluded=tuple(clip.excluded),
+        events=events_source,
     )
 
 
@@ -251,14 +370,18 @@ class ClipList(_Model):
 
     preprocess: PreprocessParams
     derive: Derive = Derive()
+    events: EventsSource | None = None
+    """Which breathing events the clips use; see :class:`EventsSource`."""
     clip: list[Clip] = Field(min_length=1)
 
     @model_validator(mode="after")
-    def _check_clips(self) -> "ClipList":
+    def _check_clips(self, info: ValidationInfo) -> "ClipList":
         resolved = self.resolve()
+        if not resolved:
+            raise ValueError("every clip of the list is excluded")
 
-        videos = [c.video for c in resolved]
-        duplicated = sorted({str(v) for v in videos if videos.count(v) > 1})
+        sources = [c.source for c in self.resolve(include_excluded=True)]
+        duplicated = sorted({str(v) for v in sources if sources.count(v) > 1})
         if duplicated:
             raise ValueError(f"videos listed more than once: {duplicated}")
 
@@ -266,7 +389,9 @@ class ClipList(_Model):
             str(path)
             for c in resolved
             for path in (c.video, c.timestamps, c.thermistor)
-            if path is not None and not path.is_file()
+            if path is not None
+            and not path.is_file()
+            and (info.context or {}).get("check_files", True)
         ]
         if missing:
             raise ValueError(
@@ -282,7 +407,7 @@ class ClipList(_Model):
             x, y, w, h = c.box
             if x + w > width or y + h > height:
                 raise ValueError(
-                    f"{c.video.name}: box {list(c.box)} lies outside the "
+                    f"{c.name}: box {list(c.box)} lies outside the "
                     f"{width}x{height} target frame"
                 )
             sizes.add((w, h))
@@ -293,9 +418,14 @@ class ClipList(_Model):
             )
         return self
 
-    def resolve(self) -> list[ResolvedClip]:
-        """The clips in file order, every field concrete."""
-        return [resolve_clip(c, self.derive) for c in self.clip]
+    def resolve(self, include_excluded: bool = False) -> list[ResolvedClip]:
+        """The clips in file order, every field concrete.  Excluded clips are left
+        out unless *include_excluded* (only the detector tuner wants them)."""
+        return [
+            resolve_clip(c, self.derive, self.events)
+            for c in self.clip
+            if include_excluded or c.selection != "exclude"
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -443,9 +573,18 @@ class TrainSource(Selection):
     """Relative to the other sources: weights 0.5 / 0.5 and 1 / 1 are the same."""
 
 
-class Fold(_Model):
-    """One train/test arrangement: what trains, what is scored, from where."""
+FOLD_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
+
+class Fold(_Model):
+    """One train/test arrangement: what trains, what is scored, from where.
+
+    Written as a ``[[fold]]`` block of an experiment; its *name* is the run
+    directory, so it must be a plain file name.
+    """
+
+    name: str
+    """The fold's run directory under the experiment's ``output_dir``."""
     init_from: RelPath | None = None
     """Checkpoint whose weights to start from (fresh optimiser and schedule)."""
     train: list[TrainSource] = Field(min_length=1)
@@ -453,6 +592,16 @@ class Fold(_Model):
     """Report group name -> clips to score; the names are the config author's.
     A bare path is shorthand for the whole list."""
     train_params: TrainParams = TrainParams()
+
+    @field_validator("name")
+    @classmethod
+    def _plain_name(cls, value: str) -> str:
+        if not FOLD_NAME.match(value):
+            raise ValueError(
+                f"fold name {value!r} must be a plain file name "
+                "(letters, digits, '.', '_', '-')"
+            )
+        return value
 
     @field_validator("test", mode="before")
     @classmethod
@@ -504,6 +653,7 @@ class Fold(_Model):
             )
 
         selected = [c for clips in [*train, *test.values()] for c in clips]
+        require_videos(selected, "a fold")
         sizes = {(c.box[2], c.box[3]) for c in selected if c.box is not None}
         unboxed = [c.name for c in selected if not c.box]
         if unboxed:
@@ -541,12 +691,11 @@ class Fold(_Model):
 
 
 class Experiment(_Model):
-    """Folds to run, the seeds each runs with, and where results go."""
+    """Folds to run (inline ``[[fold]]`` blocks), the seeds each runs with, and
+    where results go.  A subclass may hold a richer fold by redeclaring *fold*."""
 
-    fold_model: ClassVar[type[Fold]] = Fold
-    """What each fold file is loaded as; a subclass may name a richer fold."""
-
-    folds: list[RelPath] = Field(min_length=1)
+    fold: list[Fold] = Field(min_length=1)
+    """Each runs into ``{output_dir}/{name}/seed-{seed}/``."""
     seeds: list[int] = Field(min_length=1)
     """Each fold runs once per seed; the seed belongs here, not to the fold."""
     output_dir: RelPath
@@ -565,22 +714,32 @@ class Experiment(_Model):
         return value
 
     @model_validator(mode="after")
-    def _check_folds(self) -> "Experiment":
-        stems = [path.stem for path in self.folds]
-        if len(set(stems)) != len(stems):
+    def _distinct_names(self) -> "Experiment":
+        names = [fold.name for fold in self.fold]
+        if len(set(names)) != len(names):
             raise ValueError(
-                f"fold files share a name, so their runs would collide: {stems}"
+                f"folds share a name, so their runs would collide: {names}"
             )
-        for path in self.folds:
-            load(self.fold_model, path)
         return self
+
+    def folds(self, names: list[str] | None = None) -> list[Fold]:
+        """The folds called *names* (all when ``None``), in the file's order."""
+        if names is None:
+            return list(self.fold)
+        known = {fold.name: fold for fold in self.fold}
+        unknown = sorted(set(names) - set(known))
+        if unknown:
+            raise ValueError(
+                f"no fold named {unknown}; the experiment has {sorted(known)}"
+            )
+        return [fold for fold in self.fold if fold.name in names]
 
 
 # ---------------------------------------------------------------------------
 # JSON schemas, for editor validation of the TOML files
 # ---------------------------------------------------------------------------
 
-SCHEMAS = {"clip-list": ClipList, "fold": Fold, "experiment": Experiment}
+SCHEMAS = {"clip-list": ClipList, "experiment": Experiment}
 
 
 def write_schemas(directory: Path) -> list[Path]:
@@ -596,7 +755,7 @@ def write_schemas(directory: Path) -> list[Path]:
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
-        description="Write JSON schemas of the clip list, fold and experiment files."
+        description="Write JSON schemas of the clip list and experiment files."
     )
     parser.add_argument("directory", type=Path)
     args = parser.parse_args(argv)
