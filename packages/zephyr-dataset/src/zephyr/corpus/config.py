@@ -107,6 +107,37 @@ class Clips(_Model):
     filter settles before the first frame."""
 
 
+class Folds(_Model):
+    """How ``folds`` splits the selected sessions (why: the package README). Animals are
+    held out whole (test A, validation); test B holds out sessions of training animals;
+    ``group_c`` animals are held out by session only."""
+
+    seed: int
+    camera: str
+    """Camera whose frame rate defines group C."""
+    test_animals: int = Field(ge=1)
+    val_animals: int = Field(ge=1)
+    min_sessions: int = Field(ge=1)
+    """Sessions an animal needs to be held out whole."""
+    cap_train: int = Field(ge=1)
+    cap_val: int = Field(ge=1)
+    cap_test: int = Field(ge=1)
+    cap_test_b: int = Field(ge=0)
+    """Most sessions per animal and rig (spread over its dates) in each set."""
+    test_b_one_in: int = Field(ge=1)
+    """Test B takes at most one session in this many of an animal-rig pair ..."""
+    train_keep: int = Field(ge=0)
+    """... and leaves the pair at least this many for training."""
+    tries: int = Field(ge=1)
+    """Seeded draws of held-out animals; the best balanced one is kept."""
+    rig_families: dict[str, str] = {}
+    """Rig names that are one physical rig (``FRG.4-B`` -> ``4B``); others stand alone."""
+    group_c_min_hz: float | None = None
+    """Sessions whose camera runs faster than this form group C ..."""
+    group_c: dict[str, tuple[int, int, int]] = {}
+    """... split per animal into (train, val, test) sessions."""
+
+
 class Review(_Model):
     """A person's decision on one session, written over the suggestions by ``qc`` (with
     ``reviewed = true``); fields left out keep what QC wrote."""
@@ -129,6 +160,8 @@ class DatasetSpec(_Model):
     qc: Qc
     select: Select
     clips: Clips = Clips()
+    folds: Folds | None = None
+    """The train / validation / test assignment (``folds`` refuses to run without)."""
     review: list[Review] = []
     """Reviews made by hand, so a rebuild from nothing gives the same corpus."""
 
@@ -150,6 +183,7 @@ class Layout:
         self.clip_table = self.root / "clips.parquet"
         self.clip_list = self.root / "clips.toml"
         self.thumbnail_dir = self.root / "thumbnails"
+        self.folds = self.root / "folds.parquet"
 
     @property
     def local(self) -> bool:

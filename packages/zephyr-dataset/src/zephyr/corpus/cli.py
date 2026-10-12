@@ -12,10 +12,12 @@ CLI
     zephyr-dataset qc <spec.toml>          # marks/spans of unreviewed clips, qc.parquet (local root)
     zephyr-dataset select <spec.toml>      # results.json
     zephyr-dataset videos <spec.toml> [--workers 16] [--limit N]   # videos/, cameras.parquet
+    zephyr-dataset folds <spec.toml>       # folds.parquet: train / val / test A, B, C (after select)
     zephyr-dataset clips <spec.toml> [--workers 8] [--limit N]     # clips/, clips.parquet, clips.toml
     zephyr-dataset status <spec.toml>
     zephyr-dataset build <spec.toml>       # all of the above
     zephyr-dataset clips <spec.toml> --profile IAmAnywhere   # AWS profile of an s3:// root
+    zephyr-dataset clips <spec.toml> --prune   # delete unassigned sessions' clips (delete rights)
 """
 
 import argparse
@@ -26,7 +28,17 @@ from zephyr.config import load
 
 from .config import DatasetSpec
 
-STEPS = ["inventory", "fetch", "lists", "qc", "select", "videos", "clips", "status"]
+STEPS = [
+    "inventory",
+    "fetch",
+    "lists",
+    "qc",
+    "select",
+    "videos",
+    "folds",
+    "clips",
+    "status",
+]
 
 
 def step(name: str, spec: DatasetSpec, args: argparse.Namespace) -> None:
@@ -54,10 +66,19 @@ def step(name: str, spec: DatasetSpec, args: argparse.Namespace) -> None:
         from . import videos
 
         videos.run(spec, workers=args.workers or 16, limit=args.limit)
+    elif name == "folds":
+        from . import folds
+
+        folds.run(spec, workers=args.workers or 6)
     elif name == "clips":
         from . import clips
 
-        clips.run(spec, workers=args.workers or 8, limit=args.limit)
+        clips.run(
+            spec,
+            workers=args.workers or 8,
+            limit=args.limit,
+            prune_unassigned=args.prune,
+        )
     elif name == "status":
         from . import status
 
@@ -84,6 +105,12 @@ def run(argv: list[str] | None = None) -> None:
     )
     parser.add_argument(
         "--profile", help="AWS profile for an s3:// root (sets AWS_PROFILE)"
+    )
+    parser.add_argument(
+        "--prune",
+        action="store_true",
+        help="clips: first delete clips of sessions folds.parquet does not assign "
+        "(needs a profile allowed to delete)",
     )
     args = parser.parse_args(argv)
     if args.profile:

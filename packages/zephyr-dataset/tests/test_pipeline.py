@@ -362,9 +362,18 @@ class PipelineTests(unittest.TestCase):
         )
         listed = load(ClipList, self.layout.clip_list)
         self.assertEqual(len(listed.clip), 4)
-        self.assertEqual({c.group for c in listed.clip}, {"900"})  # the subject
+        self.assertEqual({c.group for c in listed.clip}, {sid})  # the session
         again = clips.run(self.spec, workers=2, url_of=lambda folder: 1 / 0)
         pd.testing.assert_frame_equal(again, table)  # resumable: nothing redone
+        # once folds.parquet leaves the session out, --prune deletes its clips
+        pd.DataFrame({"session_id": [sid], "set": [None]}).to_parquet(self.layout.folds)
+        pruned = clips.run(
+            self.spec, workers=2, url_of=lambda folder: 1 / 0, prune_unassigned=True
+        )
+        self.assertTrue(pruned.empty)
+        self.assertEqual(list(self.layout.clip_dir.iterdir()), [])
+        self.assertEqual(list(self.layout.thumbnail_dir.iterdir()), [])
+        self.assertFalse(self.layout.clip_list.exists())
 
     def test_the_list_groups_by_subject(self):
         self.build()

@@ -2,7 +2,7 @@
 
 Paths are :class:`upath.UPath`. A write never leaves a partial file: a local one goes
 through a temporary file, a remote one is a single upload (S3 makes an object visible
-only once it is complete), so nothing is ever renamed or deleted remotely. Credentials
+only once it is complete), so nothing is renamed, and deleted only by ``--prune``. Credentials
 for a remote root come from the environment (``AWS_PROFILE``; ``--profile`` sets it).
 """
 
@@ -55,6 +55,17 @@ def write_table(table: pa.Table, path: UPath, **kwargs) -> None:
 
 def write_frame(frame: pd.DataFrame, path: UPath) -> None:
     write_table(pa.Table.from_pandas(frame, preserve_index=False), path)
+
+
+def delete(paths: list[UPath]) -> None:
+    """Delete files: the one remote deletion, which needs delete rights (``--prune``)."""
+    if not paths:
+        return
+    if is_local(paths[0]):
+        for path in paths:
+            path.unlink(missing_ok=True)
+        return
+    paths[0].fs.rm([p.path for p in paths])
 
 
 def names(folder: UPath, pattern: str = "*") -> set[str]:

@@ -132,6 +132,10 @@ reproduces their stored results exactly.
 - `zephyr-benchmarks report --runs <dir> --out <dir>` builds the figures and
   table for the full 4 inputs x 2 objectives x 5 seeds grid from run output.
 
+`zephyr-benchmarks occlusion --checkpoint <best.pt> --clips <a>.toml ... --cache <dir> --out <file.npz>`
+is inference-only analysis, not an experiment: per-channel patch-occlusion maps of event
+F1 on the first `--window-s` seconds of each clip (`--patch`, `--stride`).
+
 ## Other camera view
 
 `configs/clips/ood_side_right.toml` lists the three `side_right` sessions;

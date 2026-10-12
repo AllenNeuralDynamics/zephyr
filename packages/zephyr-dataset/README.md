@@ -11,17 +11,63 @@ uv run zephyr-dataset <step> packages/zephyr-dataset/configs/vr-foraging-sniff.t
 
 Steps, in order: `inventory`, `fetch`, `lists`, `qc`, `select`, `videos`, `select` (again:
 it drops sessions whose camera timestamps are not clean, see
-[Known data issues](#known-data-issues)), `clips`; `status` reports progress and `build`
-runs them all.
+[Known data issues](#known-data-issues)), `folds`, `clips`; `status` reports progress and
+`build` runs them all.
+
+## Why these sessions
+
+The goal is a network that works **on animals it has never seen**. Numbers are those of the
+corpus frozen on 2026-10-11 (`[folds] seed = 2026`).
+
+**The corpus.** 7,898 packaged sessions → 4,120 kept by the query (dataset version 0.6.0+,
+plus 15 hand-reviewed ephys sessions) → 2,339 pass thermistor QC → 2,218 fit two 300 s
+clips in good stretches → 2,215 have both cameras → **2,200** with clean camera timestamps
+(see [Known data issues](#known-data-issues)). They come from 61 animals on 15 rigs
+(names of one physical rig merged, `FRG.4-B` = `4B`), 2025-10 to 2026-10.
+
+**The split** (`folds`, written to `folds.parquet`):
+
+| set | question | held out as | animals | sessions |
+| --- | --- | --- | --- | --- |
+| test A | new animal? (the goal) | 10 whole animals | 10 | 93 |
+| test B | new session of a known animal and rig? | sessions of training animals | 40 | 206 |
+| test C | the rare 359 Hz camera? | sessions of its two animals (rig 4B) | 2 | 5 |
+| validation | early stopping, tuning | 8 whole animals (+ 2 group C sessions) | 9 | 68 |
+| train | | the rest | 43 | 488 |
+
+- **Whole animals** for test A and validation: an animal's sessions share its face and
+  breathing, and validation should reward the same thing test A measures. Comparing A
+  with B tells generalisation from memorising animals.
+- **Balanced draws:** test A and validation are the best of 30,000 seeded draws on rigs
+  and months covered and on the share of time at 1-4, 4-8 and 8-15 Hz (all sets are within
+  about a point of 45 / 45 / 9%). This favours animals that used several rigs, which is
+  accepted.
+- **Caps per animal and rig**, spread over its dates, because such sessions repeat each
+  other: train 10, validation 3, test A 5, test B 5 (at most a third of the pair, leaving at
+  least 2 to train). 860 of 2,200 sessions are used; only their clips are cut.
+- **Group C:** 841301 and 828415 were recorded at 359.2 Hz. Rather than hold the animals
+  out (training would never see that rate), their 359 Hz sessions are split 7 / 2 / 4 and
+  1 / 0 / 1 (train / val / test C). Both breathe slowly, so test C confounds frame rate with
+  breathing rate.
+- **Reporting:** average within each animal first, then report test A as the mean over its
+  10 animals with a bootstrap interval over animals; more precision means more animals,
+  not more sessions.
+- **Set aside:** a temporal holdout (new animals is what matters), leaving a rig out (rigs
+  are similar and animals move between them), cross-validation (possible later).
+
+Test A animals: 808728, 808729, 815103, 828421, 833608, 841303, 841312, 846439, 849495,
+879295. Validation animals: 798279, 810750, 828417, 828423, 841299, 846440, 846441, 866061.
 
 ## Where the dataset lives
 
 `root` in the spec is a local folder or a URL; the corpus is at
 `s3://aind-scratch-data/vr-foraging/zephyr-dataset` (about 40 GB of metadata, timestamps
-and thermistors, plus about 3.9 TB of clips). Every step reads and writes it directly,
-with the AWS profile given by `--profile` (or `AWS_PROFILE`); the source bucket,
-`aind-open-data`, is read anonymously. Writes never rename or delete remote objects (the
-`IAmAnywhere` role may not delete), and a file appears only once it is complete.
+and thermistors, plus about 1.5 TB of clips for the 860 sessions the folds use). Every
+step reads and writes it directly, with the AWS profile given by `--profile` (or
+`AWS_PROFILE`); the source bucket, `aind-open-data`, is read anonymously. Writes never
+rename remote objects, and a file appears only once it is complete. The one deletion is
+`clips --prune`, which removes the clips of sessions `folds.parquet` does not assign; it
+needs a profile allowed to delete (your SSO login; `IAmAnywhere` may not delete).
 
 Two things need local files, because zephyr itself reads only local paths:
 
@@ -55,12 +101,15 @@ It holds only what later stages need:
 | `videos/<session_id>_<camera>.parquet` | the repaired camera timestamps (`ReferenceTime`, `CameraFrameNumber`, `CameraFrameTime`) |
 | `cameras.parquet` | each camera's checks before and after the repair, and whether it is clean |
 | `results.json` | the selection: per session metadata, metrics, marks, spans, clips, camera folders, and `dropped` (why) for sessions left out for their cameras |
+| `folds.parquet` | the split: per selected session its subject, rig, date, camera rate, rate bands, the animal's `role` and the session's `set` (`train`, `val`, `test_a`, `test_b`, `test_c`, or none); see [Why these sessions](#why-these-sessions) |
 | `clips/<session_id>_<span>_<camera>.mp4` | the span cut from the camera's video: whole GOPs, stream-copied (never re-encoded) as fragmented MP4, at the camera's native rate |
 | `clips/<session_id>_<span>_<camera>.parquet` | that clip's frame times, one `Time` column (repaired `ReferenceTime`, Harp seconds), one row per frame |
 | `clips/<session_id>_<span>_thermistor.parquet` | the thermistor over both cameras' clips ± `[clips] thermistor_pad_s` (Harp seconds) |
 | `thumbnails/<session_id>_<camera>.png` | the camera at full resolution, losslessly: the first frame of the session's first clip |
 | `clips.parquet` | every clip: frames, first frame, span, start and end, rate, bytes, or the error that stopped it |
-| `clips.toml` | the clips as a zephyr clip list (`group` = subject, no boxes yet) |
+| `clips.toml` | the clips as a zephyr clip list (`group` = session, zephyr's leakage unit, so test B and C can hold out sessions of training animals; no boxes yet) |
+
+`clips` cuts only the sessions `folds.parquet` assigns, once it exists.
 
 ### How `clips` cuts
 

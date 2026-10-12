@@ -14,6 +14,7 @@ with app.setup:
     from zephyr.config import load
     from zephyr.corpus import (
         fetch,
+        folds,
         inventory,
         lists,
         qc,
@@ -33,8 +34,8 @@ def _():
     mo.md("""
     # Rebuild the corpus
 
-    Runs the default `zephyr-dataset` pipeline (`inventory`, `fetch`, `lists`, `qc`,
-    `select`, `videos`; not `clips`, which copies terabytes) from the spec into a new
+    Runs the `zephyr-dataset` pipeline (`inventory`, `fetch`, `lists`, `qc`, `select`,
+    `videos`, `folds`; not `clips`, which copies terabytes) from the spec into a new
     local folder (`qc` reads local files), then compares it with the corpus the spec
     names. The DocDB return is copied from that corpus (`docdb.json.gz`) and the
     spec's `until` drops later assets, so the rebuild reads the same metadata; the
@@ -102,11 +103,13 @@ def _(rebuilt, reference, run, workers):
         videos.run(rebuilt, workers=workers.value)
         spinner.update(title="select again (drops sessions with unclean cameras)")
         results = select.run(rebuilt, workers=workers.value)
-    return (results,)
+        spinner.update(title="folds (rate bands from the thermistors)")
+        split = folds.run(rebuilt, workers=workers.value)
+    return results, split
 
 
 @app.cell
-def _(rebuilt, reference, results):
+def _(rebuilt, reference, results, split):
     ref = json.loads(Layout(reference.root).results.read_text(encoding="utf-8"))
 
     def by_session(found):
@@ -124,6 +127,13 @@ def _(rebuilt, reference, results):
     )
     inv_old = storage.read_parquet(Layout(reference.root).inventory)
     inv_new = storage.read_parquet(Layout(rebuilt.root).inventory)
+    sets = (
+        storage.read_parquet(Layout(reference.root).folds)
+        .set_index("session_id")["set"]
+        .to_frame("reference")
+        .join(split.set_index("session_id")["set"].rename("rebuild"), how="outer")
+    )
+    moved = sets.index[sets["reference"].fillna("-") != sets["rebuild"].fillna("-")]
     summary = pd.DataFrame(
         {
             "reference": [
@@ -131,6 +141,8 @@ def _(rebuilt, reference, results):
                 ref["counts"]["passed"],
                 ref["counts"].get("dropped_for_cameras"),
                 ref["counts"]["selected"],
+                int(sets["reference"].notna().sum()),
+                "",
                 "",
             ],
             "rebuild": [
@@ -138,7 +150,9 @@ def _(rebuilt, reference, results):
                 results["counts"]["passed"],
                 results["counts"]["dropped_for_cameras"],
                 results["counts"]["selected"],
+                int(sets["rebuild"].notna().sum()),
                 len(differ),
+                len(moved),
             ],
         },
         index=[
@@ -146,20 +160,26 @@ def _(rebuilt, reference, results):
             "passed",
             "dropped for cameras",
             "selected",
+            "in a fold",
             "sessions that differ",
+            "sessions in another fold",
         ],
     )
+    same = not differ and not len(moved) and ref["selected"] == results["selected"]
     mo.vstack(
         [
             mo.callout(
                 mo.md(
-                    "The rebuild matches the corpus."
-                    if not differ and ref["selected"] == results["selected"]
-                    else f"{len(differ)} session(s) differ: {differ[:20]}"
+                    "The rebuild matches the corpus, folds included."
+                    if same
+                    else f"{len(differ)} session(s) differ: {differ[:20]}; "
+                    f"{len(moved)} in another fold: {list(moved[:20])}"
                 ),
-                kind="success" if not differ else "warn",
+                kind="success" if same else "warn",
             ),
             summary,
+            mo.md("## Folds"),
+            folds.report(split),
         ]
     )
     return

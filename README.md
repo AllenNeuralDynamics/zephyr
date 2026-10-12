@@ -3,12 +3,13 @@
 CNN + TCN network that predicts a mouse's breathing trace from video.
 
 This repository is a [uv workspace](https://docs.astral.sh/uv/concepts/projects/workspaces/)
-of two packages:
+of three packages:
 
 | Package | Import | Command | What it is |
 | --- | --- | --- | --- |
 | [`zephyr`](packages/zephyr/README.md) | `zephyr` | `zephyr` | The network: clip lists, preprocessing, training, evaluation, inference. The only released package. |
 | [`zephyr-benchmarks`](packages/zephyr-benchmarks/README.md) | `zephyr.benchmarks` | `zephyr-benchmarks` | Benchmarks on our dataset and the methods zephyr is compared against (TS-CAN, PhysNet, pixel, Facemap-style). Workspace only. |
+| [`zephyr-dataset`](packages/zephyr-dataset/README.md) | `zephyr.corpus` | `zephyr-dataset` | Builds the corpus of VR-foraging sessions (Allen-internal). Workspace only. |
 
 `zephyr` never imports `zephyr.benchmarks`; a test enforces it.
 

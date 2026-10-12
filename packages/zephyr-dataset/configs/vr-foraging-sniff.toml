@@ -65,6 +65,39 @@ require_cameras = true
 [clips]
 thermistor_pad_s = 10.0
 
+# Train / validation / test assignment; why: "Why these sessions" in packages/zephyr-dataset/README.md.
+[folds]
+seed = 2026
+camera = "FaceCamera"
+test_animals = 10     # test A: whole animals never trained on
+val_animals = 8       # validation: whole animals (early stopping and tuning)
+min_sessions = 15     # an animal held out whole has at least this many sessions
+cap_train = 10        # most sessions per animal and rig, spread over its dates
+cap_val = 3
+cap_test = 5
+cap_test_b = 5        # test B: sessions of training animals on a rig they train on ...
+test_b_one_in = 3     # ... at most a third of the animal-rig pair ...
+train_keep = 2        # ... leaving at least 2 to train on
+tries = 30000
+group_c_min_hz = 300.0   # group C: the 359.2 Hz sessions (rig 4B, 2026-02/03), held out by session
+group_c = { "841301" = [7, 2, 4], "828415" = [1, 0, 1] }   # (train, val, test) sessions
+
+[folds.rig_families]  # names of one physical rig
+"FRG.4-A" = "4A"
+"FRG.4-B" = "4B"
+"FRG.4-C" = "4C"
+"FRG.4-D" = "4D"
+"FRG.12-B" = "12B"
+"FRG.12-C" = "12C"
+"FRG.12-D" = "12D"
+"SAKTIMUNA-12D" = "12D"
+"FRG.13-B" = "13B"
+"FRG.13-C" = "13C"
+"FRG.13-D" = "13D"
+"Ephys5" = "EPHYS5"
+"ND_Ephys.5" = "EPHYS5"
+"322-EPHYS5" = "EPHYS5"
+
 # decisions made by hand (marked reviewed, so QC never changes them)
 [[review]]
 session_id = "behavior_798279_2025-12-05_17-42-48"

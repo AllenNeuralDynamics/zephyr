@@ -1,13 +1,13 @@
 """``clips``: each selected span cut from its session's videos, without re-encoding.
 
-Per span of ``results.json`` and camera of the spec, the frames from the keyframe at or
-before the span's start to the keyframe at or after its end are stream-copied from the
-source video into a fragmented MP4 (so ffmpeg can write it to a pipe), checked (one
+Per span of a session ``folds.parquet`` assigns (once it exists) and camera, the frames
+from the keyframe at or before the span's start to the keyframe at or after its end are
+stream-copied into a fragmented MP4 (so ffmpeg can write it to a pipe), checked (one
 packet per frame, evenly spaced) and written to ``clips/<session_id>_<span>_<camera>.mp4``
 with those frames' ``Time`` (repaired ``ReferenceTime``) beside it as ``.parquet``. The
 thermistor over both cameras ± ``[clips] thermistor_pad_s`` is ``..._thermistor.parquet``;
 ``thumbnails/<session_id>_<camera>.png`` is the first frame of the session's first span.
-``clips.parquet`` lists them, ``clips.toml`` is their clip list (no boxes). Resumable.
+``clips.parquet`` lists them; ``clips.toml`` (group = session, no boxes). Resumable.
 """
 
 import json
@@ -22,7 +22,7 @@ import tomlkit
 
 from . import storage
 from .config import DatasetSpec, Layout
-from .lists import header, subjects, validate
+from .lists import header, validate
 from .remote import thread_map
 from .videos import https
 
@@ -33,7 +33,8 @@ KEY = ["session_id", "span", "camera"]
 HEADER = [
     "Clips cut from the selected spans of a zephyr-dataset folder: one entry per span",
     "and camera, written by `zephyr-dataset clips` (never edit by hand: boxes come",
-    "later). `group` is the subject from the session metadata.",
+    "later). `group` is the session (zephyr's recording); which sessions train and test,",
+    "and each one's subject, are in folds.parquet.",
 ]
 
 
@@ -312,11 +313,13 @@ def merge(table: pd.DataFrame, rows: pd.DataFrame) -> pd.DataFrame:
 
 
 def write_list(spec: DatasetSpec, layout: Layout, table: pd.DataFrame) -> int:
-    """``clips.toml``: the cut clips as a zephyr clip list, grouped by subject."""
-    ok = table[table["error"].isna()]
+    """``clips.toml``: the cut clips as a zephyr clip list, one group per session (the
+    unit zephyr judges leakage on: test B holds out sessions of training animals)."""
+    ok = table if table.empty else table[table["error"].isna()]
     if ok.empty:
+        if layout.clip_list.exists():  # every clip pruned: no list naming them
+            storage.delete([layout.clip_list])
         return 0
-    subject = subjects(layout)
     doc = tomlkit.document()
     for line in HEADER:
         doc.add(tomlkit.comment(line))
@@ -329,7 +332,7 @@ def write_list(spec: DatasetSpec, layout: Layout, table: pd.DataFrame) -> int:
         entry.add("video", clip.video)
         entry.add("timestamps", clip.timestamps)
         entry.add("thermistor", clip.thermistor)
-        entry.add("group", subject[clip.session_id])
+        entry.add("group", clip.session_id)
         entries.append(entry)
     doc.add("clip", entries)
     validate(doc, layout)
@@ -365,19 +368,58 @@ def add_thumbnails(layout: Layout, table: pd.DataFrame, workers: int) -> int:
     return len(missing)
 
 
+def prune(layout: Layout, table: pd.DataFrame, assigned: set[str]) -> pd.DataFrame:
+    """Delete the clips and thumbnails of sessions no set uses (also files a stopped
+    batch left unrecorded) and drop their rows; needs delete rights."""
+    clip_names = storage.names(layout.clip_dir)
+    thumb_names = storage.names(layout.thumbnail_dir, "*.png")
+    gone = [
+        layout.clip_dir / n
+        for n in clip_names
+        if n.rsplit("_span", 1)[0] not in assigned
+    ] + [
+        layout.thumbnail_dir / n
+        for n in thumb_names
+        if n.rsplit("_", 1)[0] not in assigned
+    ]
+    storage.delete(gone)
+    kept = table if table.empty else table[table["session_id"].isin(assigned)]
+    sessions = {
+        p.name.rsplit("_span", 1)[0] for p in gone if p.parent == layout.clip_dir
+    }
+    print(f"clips: pruned {len(gone)} files of {len(sessions)} unassigned sessions")
+    return kept.reset_index(drop=True)
+
+
 def run(
-    spec: DatasetSpec, workers: int = 8, limit: int | None = None, url_of=None
+    spec: DatasetSpec,
+    workers: int = 8,
+    limit: int | None = None,
+    url_of=None,
+    prune_unassigned: bool = False,
 ) -> pd.DataFrame:
     url_of = url_of or (lambda folder: f"{https(folder)}/video.mp4")
     layout = Layout(spec.root)
     results = json.loads(layout.results.read_text(encoding="utf-8"))
     by_id = {s["session_id"]: s for s in results["sessions"]}
-    sessions = [by_id[sid] for sid in results["selected"][:limit]]
+    wanted = results["selected"]
+    assigned = None
+    if layout.folds.exists():  # only sessions some set uses
+        folds = storage.read_parquet(layout.folds, columns=["session_id", "set"])
+        assigned = set(folds.loc[folds["set"].notna(), "session_id"])
+        wanted = [sid for sid in wanted if sid in assigned]
+    sessions = [by_id[sid] for sid in wanted[:limit]]
     table = (
         storage.read_parquet(layout.clip_table)
         if layout.clip_table.exists()
         else pd.DataFrame()
     )
+    if prune_unassigned:
+        if assigned is None:
+            raise SystemExit("clips: --prune needs folds.parquet (run folds first)")
+        table = prune(layout, table, assigned)
+        storage.write_frame(table, layout.clip_table)
+        write_list(spec, layout, table)
     done = set()
     if not table.empty:
         ok = table[table["error"].isna()]
