@@ -591,6 +591,10 @@ class Fold(_Model):
     test: dict[str, Selection] = Field(min_length=1)
     """Report group name -> clips to score; the names are the config author's.
     A bare path is shorthand for the whole list."""
+    val: Selection | None = None
+    """Clips, scored whole, that select ``best.pt`` and stop training early, in place
+    of the time-tail of the training clips (``val_fraction``). They never train and
+    must share no recording with the training or test clips."""
     train_params: TrainParams = TrainParams()
 
     @field_validator("name")
@@ -639,12 +643,21 @@ class Fold(_Model):
             name: self.test[name].select(lst) for name, lst in self.test_lists().items()
         }
 
+    def val_list(self) -> ClipList | None:
+        return _load_list(self.val.clips) if self.val is not None else None
+
+    def val_clips(self) -> list[ResolvedClip]:
+        """The selected validation clips; empty without ``val``."""
+        return self.val.select(self.val_list()) if self.val is not None else []
+
     @model_validator(mode="after")
     def _check_fold(self) -> "Fold":
         train_lists, test_lists = self.train_lists(), self.test_lists()
         train = self.train_clips()
         test = self.test_clips()
-        everything = [*train_lists, *test_lists.values()]
+        val = self.val_clips()
+        val_lists = [self.val_list()] if self.val is not None else []
+        everything = [*train_lists, *test_lists.values(), *val_lists]
         recipes = {lst.preprocess for lst in everything}
         if len(recipes) > 1:
             raise ValueError(
@@ -652,7 +665,7 @@ class Fold(_Model):
                 f"scored on one recipe, got {len(recipes)} different ones"
             )
 
-        selected = [c for clips in [*train, *test.values()] for c in clips]
+        selected = [c for clips in [*train, *test.values(), val] for c in clips]
         require_videos(selected, "a fold")
         sizes = {(c.box[2], c.box[3]) for c in selected if c.box is not None}
         unboxed = [c.name for c in selected if not c.box]
@@ -682,7 +695,39 @@ class Fold(_Model):
                         f"test group {name!r}: {c.name} shares recording "
                         f"{c.recording_id} with a training clip"
                     )
+        if self.val is not None:
+            self._check_val(val, train_clips, test)
         return self
+
+    def _check_val(
+        self,
+        val: list[ResolvedClip],
+        train: list[ResolvedClip],
+        test: dict[str, list[ResolvedClip]],
+    ) -> None:
+        """Validation clips are scored, never trained on, and choose the checkpoint:
+        they need labels and must not overlap training (leakage) or a test group
+        (a test score chosen on itself)."""
+        if not val:
+            raise ValueError("val selects no clips")
+        if "val_fraction" in self.train_params.model_fields_set:
+            raise ValueError(
+                "val and train_params.val_fraction are two ways to validate; "
+                "with val, leave val_fraction out"
+            )
+        unlabelled = [c.name for c in val if not c.labelled]
+        if unlabelled:
+            raise ValueError(f"validation clips need a thermistor: {unlabelled}")
+        against = {"training": train} | {
+            f"test group {n!r}": cs for n, cs in test.items()
+        }
+        for what, clips in against.items():
+            recordings = {c.recording for c in clips}
+            for c in val:
+                if c.recording in recordings:
+                    raise ValueError(
+                        f"val: {c.name} shares recording {c.recording_id} with {what}"
+                    )
 
 
 # ---------------------------------------------------------------------------

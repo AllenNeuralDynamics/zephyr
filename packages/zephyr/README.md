@@ -126,6 +126,12 @@ section explains the ones whose behaviour is not obvious.
 
 ### Experiments
 
+- Validation picks `best.pt` and stops the run early (`score_every`, `patience`,
+  `min_epochs`). By default it is the last `val_fraction` of every training clip; a
+  `[fold.val]` selection (written like a test group) validates on whole clips instead,
+  e.g. held-out animals. They never train, must share no recording with the training or
+  test clips, and replace `val_fraction` (leave it out). `val_fraction = 0` without
+  `[fold.val]` trains a fixed number of epochs.
 - `rate_balance` (0 to 1, default 0) weights training windows by
   `share(rate bin) ** -rate_balance` over `rate_bins_hz` (default 2-15 Hz), per
   `[[fold.train]]` source, bins under 1% counting as 1% (`zephyr/rates.py`); validation

@@ -214,6 +214,32 @@ class FoldTests(_Dataset):
         with self.assertRaisesRegex(ValueError, r"groups \['9'\] are not in the list"):
             load(Fold, self._one_list_fold([1, 2], [9]))
 
+    def _val_fold(self, val_groups, test_groups=(3,), params="") -> Path:
+        """A one-list fold training on group 1 and validating on *val_groups*."""
+        path = self._one_list_fold([1], test_groups)
+        path.write_text(
+            path.read_text()
+            + f'\n[val]\nclips = "c/all.toml"\ngroups = {[str(g) for g in val_groups]}\n'
+            + (f"\n[train_params]\n{params}\n" if params else "")
+        )
+        return path
+
+    def test_val_selects_whole_clips_apart_from_training(self):
+        fold = load(Fold, self._val_fold([2]))
+        self.assertEqual([c.group for c in fold.val_clips()], ["2", "2"])
+        self.assertEqual(load(Fold, self._one_list_fold([1], [3])).val_clips(), [])
+
+    def test_val_may_not_overlap_training_or_a_test_group(self):
+        with self.assertRaisesRegex(ValueError, "val: .* with training"):
+            load(Fold, self._val_fold([1]))
+        with self.assertRaisesRegex(ValueError, "val: .* with test group 'held'"):
+            load(Fold, self._val_fold([2], test_groups=[2]))
+
+    def test_val_and_val_fraction_are_exclusive(self):
+        with self.assertRaisesRegex(ValueError, "leave val_fraction out"):
+            load(Fold, self._val_fold([2], params="val_fraction = 0.25"))
+        load(Fold, self._val_fold([2], params="patience = 4"))
+
     def _experiment(self, names=("a",), seeds=(1, 2)) -> Path:
         """An experiment with one inline fold per name, all alike."""
         a = touch_clip(self.root / "d", 1, 1)

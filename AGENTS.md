@@ -47,6 +47,9 @@ Clip lists and experiments:
   hand-edit boxes in bulk.
 - Seeds and machine settings belong to the experiment, never to a fold; fold names are
   distinct plain file names.
+- To early-stop on held-out clips (e.g. validation animals), give the fold a `[fold.val]`
+  selection; it may not overlap training or a test group, so never list it as a test
+  group too (its scores at `best.pt` are in `best_per_clip.json` and `history.json`).
 - Loading refuses leakage, unlabelled training clips, missing boxes and mixed
   `[preprocess]` recipes, and `evaluate` refuses clips a checkpoint trained on. If one
   refuses, **fix the config, never the check**.

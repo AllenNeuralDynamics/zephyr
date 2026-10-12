@@ -1,8 +1,9 @@
-"""Train one fold with one seed, with an optional time-sliced validation tail.
+"""Train one fold with one seed, validating on a fold's ``val`` clips or a time tail.
 
-With ``val_fraction > 0`` each epoch reports ``val loss/corr`` (cheap, windowed, like
-the training loss) and, every ``score_every`` epochs, ``xcorr``/``f1`` from full-clip
-predictions on the held-back tail, which selects the checkpoint. Everything that shapes
+With validation (``[fold.val]``, scored whole, or ``val_fraction > 0`` of every training
+clip) each epoch reports ``val loss/corr`` (windowed, like the training loss) and, every
+``score_every`` epochs, ``xcorr``/``f1`` from full-clip predictions, which select the
+checkpoint and stop the run early. Everything that shapes
 a run comes from a :class:`~zephyr.config.Fold`; the seed and machine are the caller's
 (see :mod:`zephyr.run`). The network is :data:`ZEPHYR` unless a caller passes another
 :class:`Architecture`.
@@ -249,6 +250,8 @@ def train_fold(
         "train_clip_lists": [dump(lst) for lst in train_lists],
         "test_clip_lists": {n: dump(lst) for n, lst in fold.test_lists().items()},
     }
+    if fold.val is not None:
+        resolved["val_clip_list"] = dump(fold.val_list())
 
     try:
         channel_set = ChannelSet.parse(params.channels)
@@ -291,17 +294,21 @@ def train_fold(
             train_entries, stats_path(features_dir, train_entries)
         )
 
-    # Every training clip trains.  Validation, if any, is the time-tail of
-    # these same clips -- see val_fraction.
-    train_span = (0.0, 1.0 - params.val_fraction)
-    val_span = (1.0 - params.val_fraction, 1.0)
-    scoring = params.val_fraction > 0
-
-    tail = (
-        f"validating on the last {params.val_fraction:.0%} of each clip"
-        if scoring
-        else f"NO validation -- fixed {params.epochs} epochs, no early stopping"
-    )
+    # Every training clip trains.  Validation, if any, is the fold's val clips
+    # whole, or else the time-tail of the training clips -- see val_fraction.
+    if fold.val is not None:
+        val_entries = features.require(fold.val_clips(), recipe, features_dir)
+        train_span, val_span = (0.0, 1.0), (0.0, 1.0)
+        n_val = len({e.recording for e in val_entries})
+        tail = f"validating on {len(val_entries)} val clips / {n_val} recordings"
+    else:
+        val_entries = train_entries
+        train_span = (0.0, 1.0 - params.val_fraction)
+        val_span = (1.0 - params.val_fraction, 1.0)
+        tail = f"validating on the last {params.val_fraction:.0%} of each clip"
+    scoring = fold.val is not None or params.val_fraction > 0
+    if not scoring:
+        tail = f"NO validation -- fixed {params.epochs} epochs, no early stopping"
     print(
         f"train {len(train_entries)} clips / {len(train_recordings)} recordings in "
         f"{len(sources)} list(s) (weights {weights})  |  {tail}",
@@ -347,7 +354,7 @@ def train_fold(
     # passes than the signal in the number justifies.
     val_set = (
         WindowDataset(
-            [train_entries],
+            [val_entries],
             window=params.window,
             mean=mean,
             std=std,
@@ -598,7 +605,7 @@ def train_fold(
         if scored:
             summary, per_clip = score_full_clips(
                 model,
-                train_entries,
+                val_entries,
                 mean,
                 std,
                 device,
@@ -618,7 +625,7 @@ def train_fold(
             if ema is not None:
                 ema_summary, ema_clips = score_full_clips(
                     ema.module,
-                    train_entries,
+                    val_entries,
                     mean,
                     std,
                     device,
