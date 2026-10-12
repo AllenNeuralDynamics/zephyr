@@ -171,6 +171,7 @@ class PipelineTests(unittest.TestCase):
                     "artifact_pad_s": 0.5,
                 },
                 "select": {"clip_s": 5.0, "clips_per_session": 2, "seed": 3},
+                "clips": {"exclude_cameras": ["SideCamera"]},
             },
             context={"base": Path(self.tmp.name)},
         )
@@ -363,8 +364,17 @@ class PipelineTests(unittest.TestCase):
         listed = load(ClipList, self.layout.clip_list)
         self.assertEqual(len(listed.clip), 4)
         self.assertEqual({c.group for c in listed.clip}, {sid})  # the session
+        self.assertEqual(  # the side camera is listed but left out of everything
+            [c.video.name for c in listed.resolve()],
+            [f"{sid}_span1_FaceCamera.mp4", f"{sid}_span2_FaceCamera.mp4"],
+        )
+        doc = tomlkit.parse(self.layout.clip_list.read_text(encoding="utf-8"))
+        doc["clip"][0]["box"] = [4, 8, 96, 96]  # as `boxes publish` writes it
+        self.layout.clip_list.write_text(tomlkit.dumps(doc), encoding="utf-8")
         again = clips.run(self.spec, workers=2, url_of=lambda folder: 1 / 0)
         pd.testing.assert_frame_equal(again, table)  # resumable: nothing redone
+        kept = load(ClipList, self.layout.clip_list).clip  # boxes survive a rewrite
+        self.assertEqual([c.box for c in kept], [(4, 8, 96, 96), None, None, None])
         # once folds.parquet leaves the session out, --prune deletes its clips
         pd.DataFrame({"session_id": [sid], "set": [None]}).to_parquet(self.layout.folds)
         pruned = clips.run(

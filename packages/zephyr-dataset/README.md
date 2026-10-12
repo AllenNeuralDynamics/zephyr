@@ -29,11 +29,11 @@ clips in good stretches → 2,215 have both cameras → **2,200** with clean cam
 
 | set | question | held out as | animals | sessions |
 | --- | --- | --- | --- | --- |
-| test A | new animal? (the goal) | 10 whole animals | 10 | 93 |
-| test B | new session of a known animal and rig? | sessions of training animals | 40 | 206 |
+| test A | new animal? (the goal) | 10 whole animals | 10 | 92 |
+| test B | new session of a known animal and rig? | sessions of training animals | 40 | 205 |
 | test C | the rare 359 Hz camera? | sessions of its two animals (rig 4B) | 2 | 5 |
-| validation | early stopping, tuning | 8 whole animals (+ 2 group C sessions) | 9 | 68 |
-| train | | the rest | 43 | 488 |
+| validation | early stopping, tuning | 8 whole animals (+ 2 group C sessions) | 9 | 67 |
+| train | | the rest | 43 | 486 |
 
 - **Whole animals** for test A and validation: an animal's sessions share its face and
   breathing, and validation should reward the same thing test A measures. Comparing A
@@ -44,7 +44,10 @@ clips in good stretches → 2,215 have both cameras → **2,200** with clean cam
   accepted.
 - **Caps per animal and rig**, spread over its dates, because such sessions repeat each
   other: train 10, validation 3, test A 5, test B 5 (at most a third of the pair, leaving at
-  least 2 to train). 860 of 2,200 sessions are used; only their clips are cut.
+  least 2 to train). 855 of 2,200 sessions are used; only their clips are cut. Six sessions
+  with a dark video were taken out after the draw (`[folds] exclude`, see
+  [Known data issues](#known-data-issues)) and one bright session of the same animal and rig
+  put in (`[folds] add`).
 - **Group C:** 841301 and 828415 were recorded at 359.2 Hz. Rather than hold the animals
   out (training would never see that rate), their 359 Hz sessions are split 7 / 2 / 4 and
   1 / 0 / 1 (train / val / test C). Both breathe slowly, so test C confounds frame rate with
@@ -107,21 +110,32 @@ It holds only what later stages need:
 | `clips/<session_id>_<span>_thermistor.parquet` | the thermistor over both cameras' clips ± `[clips] thermistor_pad_s` (Harp seconds) |
 | `thumbnails/<session_id>_<camera>.png` | the camera at full resolution, losslessly: the first frame of the session's first clip |
 | `clips.parquet` | every clip: frames, first frame, span, start and end, rate, bytes, or the error that stopped it |
-| `clips.toml` | the clips as a zephyr clip list (`group` = session, zephyr's leakage unit, so test B and C can hold out sessions of training animals; no boxes yet) |
+| `clips.toml` | the clips as a zephyr clip list (`group` = session, zephyr's leakage unit, so test B and C can hold out sessions of training animals; face clips carry their `box`; `[clips] exclude_cameras` lists the side camera as `selection = "exclude"`, so zephyr uses the face camera only and the side files stay in the folder) |
 
 `clips` cuts only the sessions `folds.parquet` assigns, once it exists.
 
-### How `clips` cuts
+### Crop boxes for the face clips
 
-A span is drawn in thermistor seconds, which share the Harp clock with the cameras'
-repaired `ReferenceTime`, so it maps to frame indices directly (row *i* of the timestamps
-is frame *i*: `videos` guarantees no dropped frames and as many rows as frames). The cut
-runs from the keyframe at or before the span's first frame to the keyframe at or after its
-last (or the end of the video), so a clip is a few seconds longer than its span and needs
-no re-encoding. Each video's frame rate, time base and keyframes are read from the
-stream, never assumed (most cameras are 240.38 Hz, the 15 sessions of rig 4B in
-2026-02/03 are 359.2 Hz). ffmpeg writes the cut to a pipe; it is uploaded only after a
-check that it holds one packet per expected frame, evenly spaced.
+A script, not a build step and not in the spec; the work folder is local. `clips.toml`
+names clips that are not on your machine, so the face clips go in a local `face.toml` with
+one frame per clip, the session's thumbnail:
+
+```bash
+uv run python -m zephyr.corpus.boxes prepare <spec> --work boxes --profile IAmAnywhere
+uv run zephyr annotate boxes/face.toml --remote --frame-dir boxes/frames --box-size 96
+uv run python -m zephyr.corpus.boxes publish <spec> --work boxes --profile IAmAnywhere
+```
+
+`prepare` template-matches the labelled snouts (`rois.EXAMPLES`, cut from our thumbnails)
+against each session's thumbnail and puts a 96x96 box (in the 360x270 frame, 192x192 native)
+on the best match if it scores at least `--min-score` (0.58) and sits where a snout can;
+both spans of a session share the box. The rest have no box: place them in the UI, which
+is also where you correct the others (`auto.csv` lists the scores). `publish` writes the
+boxes into the dataset's `clips.toml` (face clips only), and `clips` keeps them when it
+rewrites the list. The match centres on the nose-tip pad; the nostrils are not resolvable
+at 720x540, so a global offset is applied later if wanted. `python -m zephyr.corpus.rois`
+is the helper used to find this method (OWLv2 or template matching, with a preview image);
+it needs `--extra rois` for OWLv2.
 
 ## Known data issues
 
@@ -155,6 +169,14 @@ They could be recovered, in theory, which is why the raw `metadata.csv` is kept 
 - **short video**: the timestamps cannot say where the frames are missing. Finding them
   needs decoding the video (e.g. frame-to-frame differences against the camera's frame
   intervals); without that, frames cannot be matched to timestamps.
+
+**Dark videos** (not a timestamp problem): six sessions of animals 815103, 828423 and
+828425, recorded 2026-01-23 and 02-09 to 02-16 on rigs 12C, 13A and 13B, are dark for the
+whole video (thumbnail mean luminance 4 to 38 of 255; every other session is above 53). Only
+the cut thumbnails were checked, so sessions the folds do not use are not screened. They are
+`[folds] exclude` (the draw stays as it was) and clips and thumbnails are removed by
+`clips --prune`; `828423_2026-02-24_21-05-41` (luminance 72) replaces one validation session.
+Every other unassigned session of those animals is on a rig at its cap.
 
 Dropping is done by `select` from `cameras.parquet` (a camera's `clean`), so a repaired
 camera comes back in automatically on the next `videos` + `select`.

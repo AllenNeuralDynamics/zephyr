@@ -64,6 +64,7 @@ require_cameras = true
 
 [clips]
 thermistor_pad_s = 10.0
+exclude_cameras = ["SideCamera"]   # cut and kept, but zephyr uses the face camera only
 
 # Train / validation / test assignment; why: "Why these sessions" in packages/zephyr-dataset/README.md.
 [folds]
@@ -80,6 +81,18 @@ test_b_one_in = 3     # ... at most a third of the animal-rig pair ...
 train_keep = 2        # ... leaving at least 2 to train on
 tries = 30000
 group_c_min_hz = 300.0   # group C: the 359.2 Hz sessions (rig 4B, 2026-02/03), held out by session
+# Videos too dark to use (mean luminance of the thumbnail under about 40; all of the video
+# is that dark), taken out after the draw; the one add is a bright session of the same animal
+# and rig that has room under the cap.
+exclude = [
+    "815103_2026-02-16_21-15-24",
+    "828423_2026-02-10_21-08-50",
+    "828423_2026-02-13_19-00-55",
+    "828425_2026-02-09_20-39-50",
+    "828425_2026-02-13_19-00-32",
+    "behavior_828425_2026-01-23_21-01-41",
+]
+add = { "828423_2026-02-24_21-05-41" = "val" }
 group_c = { "841301" = [7, 2, 4], "828415" = [1, 0, 1] }   # (train, val, test) sessions
 
 [folds.rig_families]  # names of one physical rig

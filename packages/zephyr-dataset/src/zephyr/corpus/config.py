@@ -105,6 +105,9 @@ class Clips(_Model):
     thermistor_pad_s: float = Field(10.0, ge=0)
     """Thermistor kept beyond the clip's videos at each end, so the event detector's
     filter settles before the first frame."""
+    exclude_cameras: list[str] = []
+    """Cameras whose clips ``clips.toml`` lists as ``selection = "exclude"`` (zephyr then
+    leaves them out of everything); their files stay in the folder."""
 
 
 class Folds(_Model):
@@ -136,6 +139,10 @@ class Folds(_Model):
     """Sessions whose camera runs faster than this form group C ..."""
     group_c: dict[str, tuple[int, int, int]] = {}
     """... split per animal into (train, val, test) sessions."""
+    exclude: list[str] = []
+    """Sessions taken out after the draw (a bad video), which leaves the rest as drawn."""
+    add: dict[str, Literal["train", "val", "test_a", "test_b", "test_c"]] = {}
+    """Unassigned sessions put in a set after the draw, in place of excluded ones."""
 
 
 class Review(_Model):

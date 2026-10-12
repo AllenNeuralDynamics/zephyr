@@ -96,7 +96,9 @@ def run(argv: list[str] | None = None) -> None:
     parser.add_argument("spec", type=Path)
     parser.add_argument("--workers", type=int, help="threads for S3 work")
     parser.add_argument(
-        "--limit", type=int, help="fetch, videos, clips: only the first N sessions"
+        "--limit",
+        type=int,
+        help="fetch, videos, clips: only the first N sessions",
     )
     parser.add_argument(
         "--refresh",

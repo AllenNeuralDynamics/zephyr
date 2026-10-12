@@ -32,8 +32,9 @@ WINDOW_S = 4.0  # first keyframe search window either side (doubled until found)
 KEY = ["session_id", "span", "camera"]
 HEADER = [
     "Clips cut from the selected spans of a zephyr-dataset folder: one entry per span",
-    "and camera, written by `zephyr-dataset clips` (never edit by hand: boxes come",
-    "later). `group` is the session (zephyr's recording); which sessions train and test,",
+    "and camera, written by `zephyr-dataset clips` (never edit by hand). `box` is the",
+    "face crop, put there by `python -m zephyr.corpus.boxes publish`, kept by `clips`.",
+    "`group` is the session (zephyr's recording); which sessions train and test,",
     "and each one's subject, are in folds.parquet.",
 ]
 
@@ -312,6 +313,14 @@ def merge(table: pd.DataFrame, rows: pd.DataFrame) -> pd.DataFrame:
     return merged.sort_values(KEY).reset_index(drop=True)
 
 
+def existing_boxes(layout: Layout) -> dict[str, list[int]]:
+    """The ``box`` of each entry of the current ``clips.toml``, by its ``video``."""
+    if not layout.clip_list.exists():
+        return {}
+    doc = tomlkit.parse(layout.clip_list.read_text(encoding="utf-8"))
+    return {e["video"]: [int(v) for v in e["box"]] for e in doc["clip"] if "box" in e}
+
+
 def write_list(spec: DatasetSpec, layout: Layout, table: pd.DataFrame) -> int:
     """``clips.toml``: the cut clips as a zephyr clip list, one group per session (the
     unit zephyr judges leakage on: test B holds out sessions of training animals)."""
@@ -320,6 +329,7 @@ def write_list(spec: DatasetSpec, layout: Layout, table: pd.DataFrame) -> int:
         if layout.clip_list.exists():  # every clip pruned: no list naming them
             storage.delete([layout.clip_list])
         return 0
+    boxes = existing_boxes(layout)
     doc = tomlkit.document()
     for line in HEADER:
         doc.add(tomlkit.comment(line))
@@ -333,6 +343,10 @@ def write_list(spec: DatasetSpec, layout: Layout, table: pd.DataFrame) -> int:
         entry.add("timestamps", clip.timestamps)
         entry.add("thermistor", clip.thermistor)
         entry.add("group", clip.session_id)
+        if clip.camera in spec.clips.exclude_cameras:
+            entry.add("selection", "exclude")
+        if clip.video in boxes:
+            entry.add("box", boxes[clip.video])
         entries.append(entry)
     doc.add("clip", entries)
     validate(doc, layout)

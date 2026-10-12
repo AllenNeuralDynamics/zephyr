@@ -224,6 +224,20 @@ def assign(df: pd.DataFrame, s: Folds) -> pd.DataFrame:
     }
     out["role"] = out.subject_id.map(role)
     out["group_c"] = fast.values
+    known = set(out.session_id)
+    stray = sorted((set(s.exclude) | set(s.add)) - known)
+    if stray:
+        raise SystemExit(f"folds: exclude / add name unknown sessions {stray}")
+    taken = out.set_index("session_id")["set"]
+    twice = sorted(set(s.exclude) & set(s.add))
+    used = sorted(x for x in s.add if pd.notna(taken[x]) and x not in s.exclude)
+    if twice or used:
+        raise SystemExit(
+            f"folds: add names excluded {twice} or assigned {used} sessions"
+        )
+    out.loc[out.session_id.isin(s.exclude), "set"] = None
+    for session, name in s.add.items():
+        out.loc[out.session_id == session, "set"] = name
     return out
 
 

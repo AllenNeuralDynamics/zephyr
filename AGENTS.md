@@ -78,10 +78,15 @@ resumable steps; what each does and the folder layout are in its README.
 - The split (`folds`): test A and validation hold out **whole animals**; never weaken
   `folds.check`, which refuses a held-out animal in training. Keep the README's "Why these
   sessions" current with any change to the split.
+- Face crop boxes are made by `python -m zephyr.corpus.boxes` (template match, your
+  corrections in `zephyr annotate --remote`, then `publish`) and live in `clips.toml`;
+  `clips` keeps them, and lists the side camera as excluded (`[clips] exclude_cameras`). `python -m zephyr.corpus.rois` is a helper that writes only to a
+  local folder, never the dataset or the spec; OWLv2 needs `--extra rois`.
 - In `clips.toml` the `group` is the session; the animal split lives in `folds.parquet`.
 - The root may be remote (`s3://...`, through `storage.py`). Zephyr core reads only
   local files and must not learn about remote paths: `qc`, `zephyr annotate events` and
-  `preprocess` run on a local copy. Never rename remote objects; delete only with
+  `preprocess` run on a local copy (`zephyr annotate --remote` only skips checking that
+  a list's clips exist and reads cached frames). Never rename remote objects; delete only with
   `clips --prune`.
 
 ## When code must change

@@ -105,5 +105,32 @@ class AssignTests(unittest.TestCase):
             folds.assign(sessions(), wrong)
 
 
+class ExcludeAddTests(unittest.TestCase):
+    def test_exclusions_and_additions_leave_the_rest_as_drawn(self):
+        base = folds.assign(sessions(), SETTINGS)
+        used = base[base["set"].notna()]
+        free = base[base["set"].isna()]
+        val = used[used["set"] == "val"].iloc[0]
+        spare = free[free.subject_id == val.subject_id].iloc[0]
+        s = SETTINGS.model_copy(
+            update={"exclude": [val.session_id], "add": {spare.session_id: "val"}}
+        )
+        out = folds.assign(sessions(), s).set_index("session_id")
+        self.assertTrue(pd.isna(out.loc[val.session_id, "set"]))
+        self.assertEqual(out.loc[spare.session_id, "set"], "val")
+        rest = base.set_index("session_id").drop([val.session_id, spare.session_id])
+        self.assertTrue(
+            rest["set"].equals(out.drop([val.session_id, spare.session_id])["set"])
+        )
+        folds.check(out.reset_index())
+
+    def test_unknown_or_already_assigned_names_stop(self):
+        base = folds.assign(sessions(), SETTINGS)
+        used = base[base["set"].notna()].session_id.iloc[0]
+        for update in ({"exclude": ["nope"]}, {"add": {used: "train"}}):
+            with self.assertRaises(SystemExit):
+                folds.assign(sessions(), SETTINGS.model_copy(update=update))
+
+
 if __name__ == "__main__":
     unittest.main()

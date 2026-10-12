@@ -16,7 +16,12 @@ dependencies = [
     "tomlkit>=0.13",
     "s3fs>=2024.2",
     "universal-pathlib>=0.2.6",
+    "pillow>=10",
 ]
+
+[project.optional-dependencies]
+# the snout detector of `rois` (torch comes from zephyr's cpu / gpu extra)
+rois = ["transformers>=4.45"]
 
 [project.scripts]
 zephyr-dataset = "zephyr.corpus.cli:run"
