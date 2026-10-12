@@ -61,6 +61,9 @@ the download).
    uv run zephyr annotate my_clips.toml --width 360 --height 270 --box-size 96
    ```
 
+   For a list whose clips are not on this machine, `--remote` skips checking that they
+   exist and reads the frames you cached in `--frame-dir` (one `frame_path` file per clip).
+
 4. **Preprocess** into a feature cache (~1-2 min per clip on CPU). Entries are
    keyed by video, recipe and box, so a cache directory is safe to share and
    re-running only does what changed:

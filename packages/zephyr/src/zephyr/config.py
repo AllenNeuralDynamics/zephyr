@@ -62,13 +62,16 @@ class _Model(BaseModel):
 M = TypeVar("M", bound=_Model)
 
 
-def load(model: type[M], path: Path) -> M:
-    """Read the TOML file at *path* into *model*, resolving paths against it."""
+def load(model: type[M], path: Path, check_files: bool = True) -> M:
+    """Read the TOML file at *path* into *model*, resolving paths against it. A clip
+    list's files must exist unless *check_files* is False (clips kept elsewhere)."""
     path = Path(path).resolve()
     with path.open("rb") as handle:
         data = tomllib.load(handle)
     try:
-        return model.model_validate(data, context={"base": path.parent})
+        return model.model_validate(
+            data, context={"base": path.parent, "check_files": check_files}
+        )
     except ValidationError as exc:
         # Name the file: errors from a fold's nested clip lists are otherwise
         # impossible to place.
@@ -372,7 +375,7 @@ class ClipList(_Model):
     clip: list[Clip] = Field(min_length=1)
 
     @model_validator(mode="after")
-    def _check_clips(self) -> "ClipList":
+    def _check_clips(self, info: ValidationInfo) -> "ClipList":
         resolved = self.resolve()
         if not resolved:
             raise ValueError("every clip of the list is excluded")
@@ -386,7 +389,9 @@ class ClipList(_Model):
             str(path)
             for c in resolved
             for path in (c.video, c.timestamps, c.thermistor)
-            if path is not None and not path.is_file()
+            if path is not None
+            and not path.is_file()
+            and (info.context or {}).get("check_files", True)
         ]
         if missing:
             raise ValueError(

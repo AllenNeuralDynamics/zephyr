@@ -6,7 +6,13 @@ import numpy as np
 from _clipfiles import touch_clip, write_list
 
 from zephyr import features
-from zephyr.annotate import BoxState, initial_state, recordings_of
+from zephyr.annotate import (
+    BoxState,
+    frame_path,
+    frame_size,
+    initial_state,
+    recordings_of,
+)
 from zephyr.clips import scan, write_boxes
 from zephyr.config import OUTPUT_FS, ClipList, dump, load
 from zephyr.preprocess import output_times
@@ -31,6 +37,25 @@ class ScanTests(_Tmp):
             [f"video_face_1_part_{p}.mp4" for p in (1, 2, 10)],
         )
         self.assertIn("../d/video_face_1_part_1.mp4", out.read_text())
+
+    def test_a_list_of_clips_kept_elsewhere_loads_without_its_files(self):
+        out = self.root / "list.toml"
+        out.write_text(
+            "[preprocess]\ntarget_size = [100, 80]\n\n[[clip]]\n"
+            'video = "clips/a_span1_FaceCamera.mp4"\n'
+            'timestamps = "clips/a_span1_FaceCamera.parquet"\n'
+            'thermistor = "clips/a_span1_thermistor.parquet"\ngroup = "a"\n'
+        )
+        with self.assertRaises(ValueError):
+            load(ClipList, out)
+        clips = load(ClipList, out, check_files=False).resolve()
+        self.assertEqual([c.group for c in clips], ["a"])
+        frames = self.root / "frames"
+        frames.mkdir()
+        np.save(frame_path(frames, clips[0].video), np.zeros((54, 72), np.uint8))
+        self.assertEqual(frame_size(clips, frames), (72, 54))
+        with self.assertRaises(SystemExit):
+            frame_size(clips, self.root / "none")
 
     def test_scan_refuses_to_write_an_unloadable_list(self):
         touch_clip(self.root / "d", 1, 1, thermistor=False)
