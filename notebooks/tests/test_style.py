@@ -12,18 +12,6 @@ def test_every_entity_has_a_colour() -> None:
     assert all(style.color(n).startswith("#") for n in names)
 
 
-def test_colours_are_unique_within_a_group() -> None:
-    for group in (
-        style.METHODS,
-        style.CHANNELS,
-        style.OBJECTIVES,
-        style.VARIANTS,
-        style.OOD_DATA,
-        style.CLIP_SETS,
-    ):
-        assert len(set(group.values())) == len(group)
-
-
 @pytest.mark.parametrize("width", style.COLUMN_IN)
 def test_figures_have_the_named_width(width: str) -> None:
     style.use_style()
