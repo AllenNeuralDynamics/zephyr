@@ -11,7 +11,8 @@ import numpy as np
 from scipy.signal import butter, sosfiltfilt
 from scipy.stats import skew
 
-from zephyr.channels import CHANNEL_NAMES, decode_flow
+from zephyr import features
+from zephyr.channels import ChannelSet, decode_flow
 
 BREATH_BAND_HZ = (1.0, 15.0)
 """Pass band for every baseline filter: resting breathing through fast sniffing."""
@@ -43,13 +44,13 @@ def load_channel(
     ``gray`` in counts, ``diff`` in counts per tau, flow in pixels per tau.  Read
     in chunks from the memmap so a whole 4-channel clip never sits in memory.
     """
-    index = CHANNEL_NAMES.index(name)
-    array = np.load(entry.features, mmap_mode="r")
-    t, _, h, w = array.shape
+    array, only = features.reader(entry), ChannelSet.parse([name])
+    t = len(array)
+    _, _, h, w = array.read(slice(0, 1), only).shape
     hb, wb = h // bin_factor, w // bin_factor
     out = np.empty((t, hb, wb), np.float32)
     for start in range(0, t, chunk):
-        block = np.asarray(array[start : start + chunk, index])
+        block = array.read(slice(start, start + chunk), only)[:, 0]
         if name in ("flow_x", "flow_y"):
             block = decode_flow(block)
         elif name == "diff":

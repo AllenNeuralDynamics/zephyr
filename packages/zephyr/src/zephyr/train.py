@@ -35,6 +35,7 @@ from .dataset import (
     channel_stats,
     stats_path,
 )
+from .evaluation import EVENT_TOLERANCE_FRAMES
 from .features import ClipEntry
 from .infer import predict_clip
 from .signal import detect_inhalation_events
@@ -182,6 +183,7 @@ def score_full_clips(
             truth, pred_n = truth[lo:hi], pred_n[lo:hi]
 
         corr = zero_lag_correlation(truth, pred_n)
+        tolerance = EVENT_TOLERANCE_FRAMES / fs
         truth_on, truth_off = detect_inhalation_events(truth, fs)
         pred_on, pred_off = detect_inhalation_events(pred_n, fs)
         rows.append(
@@ -189,8 +191,8 @@ def score_full_clips(
                 "clip_id": entry.clip_id,
                 "recording": entry.recording,
                 "correlation": corr,
-                "inhale_f1": event_f1(truth_on / fs, pred_on / fs),
-                "exhale_f1": event_f1(truth_off / fs, pred_off / fs),
+                "inhale_f1": event_f1(truth_on / fs, pred_on / fs, tolerance),
+                "exhale_f1": event_f1(truth_off / fs, pred_off / fs, tolerance),
                 "n_truth_onsets": len(truth_on),
                 "n_pred_onsets": len(pred_on),
             }
@@ -238,9 +240,15 @@ def train_fold(
     amp_dtype = machine.amp_dtype
     recipe = fold.preprocess
 
+    try:
+        channel_set = ChannelSet.parse(params.channels)
+    except ValueError as exc:
+        raise SystemExit(f"channels: {exc}") from exc
+
     train_lists = fold.train_lists()
     sources = [
-        features.require(clips, recipe, features_dir) for clips in fold.train_clips()
+        features.require(clips, recipe, features_dir, channel_set)
+        for clips in fold.train_clips()
     ]
     weights = [source.weight for source in fold.train]
     train_entries = [e for source in sources for e in source]
@@ -254,11 +262,6 @@ def train_fold(
     }
     if fold.val is not None:
         resolved["val_clip_list"] = dump(fold.val_list())
-
-    try:
-        channel_set = ChannelSet.parse(params.channels)
-    except ValueError as exc:
-        raise SystemExit(f"channels: {exc}") from exc
 
     init = None
     inherited_videos: list[str] = []
@@ -293,13 +296,17 @@ def train_fold(
             )
     else:
         mean, std = channel_stats(
-            train_entries, stats_path(features_dir, train_entries)
+            train_entries,
+            stats_path(features_dir, train_entries),
+            channels=channel_set,
         )
 
     # Every training clip trains.  Validation, if any, is the fold's val clips
     # whole, or else the time-tail of the training clips -- see val_fraction.
     if fold.val is not None:
-        val_entries = features.require(fold.val_clips(), recipe, features_dir)
+        val_entries = features.require(
+            fold.val_clips(), recipe, features_dir, channel_set
+        )
         train_span, val_span = (0.0, 1.0), (0.0, 1.0)
         n_val = len({e.recording for e in val_entries})
         tail = f"validating on {len(val_entries)} val clips / {n_val} recordings"

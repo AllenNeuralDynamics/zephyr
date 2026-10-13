@@ -123,22 +123,21 @@ def onset_heatmap(
 
     A hard one-hot target is nearly impossible to optimise at 60 Hz — one
     positive sample per ~11 — so onsets are blurred into soft bumps of width
-    *sigma_s*. The heatmap is centred exactly on each event; its width makes
-    the sparse target trainable without changing the desired peak location.
+    *sigma_s*. Each bump is the Gaussian at every sample's distance from the
+    event's own time, so it is centred exactly on the event, between samples
+    where it falls there (events are at the thermistor's resolution, never
+    snapped to *times*). An event outside *times* adds only the tail that
+    reaches in, never a peak at the edge.
     """
     heatmap = np.zeros_like(times, dtype=np.float32)
-    if len(onset_times) == 0:
+    onset_times = np.asarray(onset_times, dtype=np.float64)
+    if len(onset_times) == 0 or len(times) == 0:
         return heatmap
-    fs = 1.0 / float(np.median(np.diff(times)))
-    sigma_samples = max(sigma_s * fs, 1e-6)
-    radius = int(np.ceil(3 * sigma_samples))
-    kernel_x = np.arange(-radius, radius + 1)
-    kernel = np.exp(-0.5 * (kernel_x / sigma_samples) ** 2)
-
-    indices = np.searchsorted(times, onset_times).clip(0, len(times) - 1)
-    for i in indices:
-        lo, hi = max(0, i - radius), min(len(times), i + radius + 1)
-        heatmap[lo:hi] = np.maximum(
-            heatmap[lo:hi], kernel[lo - i + radius : hi - i + radius]
-        )
+    reach = 3.0 * sigma_s
+    first = np.searchsorted(times, onset_times - reach, side="left")
+    last = np.searchsorted(times, onset_times + reach, side="right")
+    for t, lo, hi in zip(onset_times, first, last, strict=True):
+        if hi > lo:
+            bump = np.exp(-0.5 * ((times[lo:hi] - t) / sigma_s) ** 2)
+            heatmap[lo:hi] = np.maximum(heatmap[lo:hi], bump)
     return heatmap

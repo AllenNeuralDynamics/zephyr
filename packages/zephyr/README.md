@@ -72,6 +72,11 @@ the download).
    uv run zephyr preprocess examples/clips.toml --cache data/features-example
    ```
 
+   Each channel group is its own file (`gray-`, `diff-`, `flow-`), so a network reads only
+   the channels it uses. `--channels gray` stores only gray (no optic flow: about 4x
+   faster, a quarter of the disk); a later run with more channels adds the missing
+   groups to the same entries. Training refuses a network whose channels an entry lacks.
+
 5. **Run.** `zephyr run` trains each (fold, seed) into
    `<output_dir>/<fold name>/seed-<n>/` (`--folds <name>...` runs only some) -- with the resolved config, the list of
    training videos, checkpoints and `evaluation.json` -- then scores the
@@ -165,8 +170,15 @@ section explains the ones whose behaviour is not obvious.
   prediction's timestamps over the span both cover; `load_target` holds the thermistor's
   edge value outside its span. Correlations scored before this rule are not comparable.
 - Truth events come from the clip's cached event set (`evaluate.score_entry`), never
-  re-detected. Events match within `EVENT_TOLERANCE_S`, one 60 Hz frame (16.7 ms) either
-  side. Scores from before this rule are not comparable.
+  re-detected. A predicted event matches a true one on the frame nearest it or the frame
+  before or after: `EVENT_TOLERANCE_FRAMES` (1.5) frames of the prediction's own output
+  grid, so 25 ms at 60 Hz and 50 ms at 30 Hz. Event F1 scored before this rule (one
+  60 Hz frame, 16.7 ms) is not comparable.
+- The onset head's target is a Gaussian (`onset_sigma_s`) centred on each event's own
+  time, between frames where it falls there (`targets.onset_heatmap`), built per window
+  from the cached event times; it is not stored.
+  Heads trained before this rule peaked on the frame at or after each event (half a
+  frame late on average) and learned a false onset at both ends of every window.
 - A cache entry whose event set is stale is refused as "not in the feature cache";
   re-running `zephyr preprocess` on its list rebuilds only the target, without decoding
   video.

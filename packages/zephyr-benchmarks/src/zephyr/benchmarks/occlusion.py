@@ -26,6 +26,7 @@ import torch
 from torch import nn
 
 from zephyr import features
+from zephyr.channels import CHANNEL_GROUPS, ChannelSet
 from zephyr.config import ClipList, load
 from zephyr.evaluate import load_checkpoint, refuse_leaked, score_entry
 from zephyr.features import ClipEntry
@@ -98,15 +99,21 @@ def head_entry(entry: ClipEntry, seconds: float, directory: Path) -> ClipEntry:
         len(frame_times),
         int(np.searchsorted(frame_times, times[n_out - 1])) + 1 + INPUT_MARGIN,
     )
-    files = {}
-    for name, array in {
-        "features": np.load(entry.features, mmap_mode="r")[:n_in],
-        "frame_times": frame_times[:n_in],
-        "times": times[:n_out],
-    }.items():
-        files[name] = directory / f"{name}.npy"
-        np.save(files[name], array)
-    return replace(entry, n_frames=n_in, n_output=n_out, **files)
+    head = replace(
+        entry,
+        n_frames=n_in,
+        n_output=n_out,
+        stem=directory / "head",
+        frame_times=directory / "frame_times.npy",
+        times=directory / "times.npy",
+    )
+    array = features.reader(entry)
+    for group in entry.groups:
+        group_channels = ChannelSet.parse(CHANNEL_GROUPS[group])
+        np.save(head.group_file(group), array.read(slice(0, n_in), group_channels))
+    np.save(head.frame_times, frame_times[:n_in])
+    np.save(head.times, times[:n_out])
+    return head
 
 
 def clip_scorer(

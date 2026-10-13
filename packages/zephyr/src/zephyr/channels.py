@@ -3,7 +3,7 @@
 ``diff`` is ``I(t) - I(t - dt)``; ``flow_x``/``flow_y`` are signed DIS flow, both
 measured over the achieved interval ``dt`` (nearest frame to ``t - TAU``) and scaled by
 ``TAU / dt``, so values are per :data:`MOTION_TAU_S` whatever the camera rate.
-Preprocessing writes all four; :class:`ChannelSet` selects the training subset.
+Preprocessing stores the groups asked for; :class:`ChannelSet` selects a model's subset.
 Quantisation: gray as-is, diff as ``round(diff) + 128``, flow companded through
 ``asinh`` (fine near zero, wide range).
 """
@@ -225,8 +225,11 @@ def encode_stack(
     tau: float = MOTION_TAU_S,
     flow_scale_px: float = FLOW_SCALE_PX,
     flow_clip_px: float = FLOW_CLIP_PX,
-) -> tuple[np.ndarray, int, int]:
-    """Encode one anchor frame into a ``(4, H, W)`` uint8 stack.
+    groups: tuple[str, ...] = ("gray", "diff", "flow"),
+) -> tuple[dict[str, np.ndarray], int, int]:
+    """Encode one anchor frame into ``{group: (n, H, W) uint8}`` for *groups*.
+
+    Only the groups asked for are computed: without ``flow``, no optic flow is run.
 
     Parameters
     ----------
@@ -244,22 +247,31 @@ def encode_stack(
 
     Returns
     -------
-    (stack, n_diff_saturated, n_flow_saturated)
+    (planes, n_diff_saturated, n_flow_saturated)
         Saturation counted after normalisation.
     """
     height, width = gray.shape
-    stack = np.empty((N_CHANNELS, height, width), dtype=np.uint8)
-    stack[0] = gray
-
+    planes: dict[str, np.ndarray] = {}
+    if "gray" in groups:
+        planes["gray"] = gray[None].astype(np.uint8, copy=False)
+    motion = [g for g in groups if g in ("diff", "flow")]
     if reference is None or dt <= 0:
-        stack[1:] = 128
-        return stack, 0, 0
+        for group in motion:
+            planes[group] = np.full(
+                (len(CHANNEL_GROUPS[group]), height, width), 128, np.uint8
+            )
+        return planes, 0, 0
 
     gain = tau / dt
-
-    diff = (gray.astype(np.float32) - reference.astype(np.float32)) * gain
-    n_diff_saturated = int((np.abs(diff) > DIFF_CLIP).sum())
-    stack[1] = np.clip(np.rint(diff) + 128.0, 0.0, 255.0).astype(np.uint8)
+    n_diff_saturated = n_flow_saturated = 0
+    if "diff" in groups:
+        diff = (gray.astype(np.float32) - reference.astype(np.float32)) * gain
+        n_diff_saturated = int((np.abs(diff) > DIFF_CLIP).sum())
+        planes["diff"] = np.clip(np.rint(diff) + 128.0, 0.0, 255.0).astype(np.uint8)[
+            None
+        ]
+    if "flow" not in groups:
+        return planes, n_diff_saturated, 0
 
     # DIS asserts on non-contiguous input, and decoded frames arrive as views
     # into a shared read-only buffer -- so normalise before handing them over.
@@ -271,7 +283,5 @@ def encode_stack(
     )
     n_flow_saturated = int((np.abs(flow) > flow_clip_px).sum())
     codes = encode_flow(flow, scale_px=flow_scale_px, clip_px=flow_clip_px)
-    stack[2] = codes[..., 0]
-    stack[3] = codes[..., 1]
-
-    return stack, n_diff_saturated, n_flow_saturated
+    planes["flow"] = np.moveaxis(codes, -1, 0)
+    return planes, n_diff_saturated, n_flow_saturated

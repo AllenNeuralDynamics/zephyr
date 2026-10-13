@@ -10,9 +10,20 @@ from zephyr.dataset import ClipEntry
 from zephyr.infer import predict_clip
 
 
+def _save_channels(stem: Path, stack: np.ndarray) -> Path:
+    """Store a (T, 4, h, w) stack as the entry *stem*'s channel group files."""
+    for group, part in (
+        ("gray", stack[:, :1]),
+        ("diff", stack[:, 1:2]),
+        ("flow", stack[:, 2:]),
+    ):
+        np.save(stem.with_name(f"{group}-{stem.name}.npy"), part)
+    return stem
+
+
 def fake_entry(tmp: Path, n: int = 150) -> ClipEntry:
     rng = np.random.default_rng(0)
-    np.save(tmp / "feat.npy", rng.integers(0, 255, (n, 4, 32, 32), dtype=np.uint8))
+    _save_channels(tmp / "c", rng.integers(0, 255, (n, 4, 32, 32), dtype=np.uint8))
     times = np.arange(n) / 60.0
     np.save(tmp / "ft.npy", times)
     np.save(tmp / "t.npy", times)
@@ -22,7 +33,7 @@ def fake_entry(tmp: Path, n: int = 150) -> ClipEntry:
         recording="rec",
         n_frames=n,
         n_output=n,
-        features=tmp / "feat.npy",
+        stem=tmp / "c",
         frame_times=tmp / "ft.npy",
         baselines=tmp / "dt.npy",
         times=tmp / "t.npy",

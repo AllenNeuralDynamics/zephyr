@@ -355,6 +355,18 @@ def has_onset_head(states: list[dict]) -> bool:
     return float(recorded.get("w_onset", 0.0)) > 0
 
 
+def models_channels(models: list[tuple]) -> ChannelSet | None:
+    """Every channel some ``(model, mean, std)`` reads, which the cache must store;
+    ``None`` when no model has a :class:`ChannelSet` (comparison networks are checked
+    when they read)."""
+    sets = [
+        m.channels
+        for m, *_ in models
+        if isinstance(getattr(m, "channels", None), ChannelSet)
+    ]
+    return ChannelSet.parse([n for c in sets for n in c.names]) if sets else None
+
+
 def evaluate_groups(
     checkpoints: list[Path],
     groups: dict[str, list[ResolvedClip]],
@@ -396,10 +408,11 @@ def evaluate_groups(
     refuse_leaked(states, [c for clips in labelled.values() for c in clips])
 
     head = has_onset_head(states)
+    needed = models_channels(models)
     plot_data: list[ClipPrediction] | None = [] if plot_dir is not None else None
     rows_by_group: dict[str, list[dict]] = {}
     for name, clips in labelled.items():
-        entries = features.require(clips, recipe, features_dir)
+        entries = features.require(clips, recipe, features_dir, needed)
         print(
             f"\ngroup {name!r}: {len(entries)} clips / "
             f"{len({e.recording for e in entries})} recordings with "

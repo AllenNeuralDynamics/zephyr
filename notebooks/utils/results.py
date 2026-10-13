@@ -14,7 +14,7 @@ from scipy.signal import welch
 from zephyr import features, video
 from zephyr.benchmarks.common import blind_polarity
 from zephyr.benchmarks.runner import load_checkpoint
-from zephyr.channels import CHANNEL_NAMES, decode_flow
+from zephyr.channels import ALL_CHANNELS, CHANNEL_NAMES, ChannelSet, decode_flow
 from zephyr.config import ClipList, load
 from zephyr.evaluate import head_event_indices, score_entries, score_entry
 from zephyr.infer import predict_clip
@@ -218,7 +218,9 @@ def raw_frame(clip: TestClip, t_s: float) -> NDArray:
 def channel_frames(entry: features.ClipEntry, t_s: float) -> dict[str, NDArray]:
     """What the network sees at time *t_s*: each channel in physical units."""
     index = int(np.searchsorted(np.load(entry.frame_times), t_s))
-    return channel_planes(np.load(entry.features, mmap_mode="r")[index])
+    return channel_planes(
+        features.reader(entry).read(slice(index, index + 1), ALL_CHANNELS)[0]
+    )
 
 
 def channel_planes(stack: NDArray) -> dict[str, NDArray]:
@@ -280,7 +282,7 @@ def method_traces(entry: features.ClipEntry) -> pd.DataFrame:
     else:
         print(f"No cache found in {cache}. Calculating from scratch.")
         n = entry.n_output
-        key = Path(entry.features).stem
+        key = f"feat-{entry.stem.name}"  # the stored traces' names
         old_key = f"test_{short_name(entry).removeprefix('face_')}"
         traces: dict[str, NDArray] = {
             TIME_COLUMN: np.load(entry.times)[:n],
@@ -424,7 +426,7 @@ def frame_embeddings(
     mu, sd = (
         np.asarray(s, np.float32).reshape(shape) for s in channels.take_stats(mean, std)
     )
-    stack = channels.take(np.asarray(np.load(entry.features, mmap_mode="r")[:n]))
+    stack = features.reader(entry).read(slice(0, n), channels)
     frames = torch.from_numpy((stack.astype(np.float32) - mu) / sd)
     with torch.no_grad():
         embeddings = model.encode(frames.unsqueeze(0), chunk=256)[0].numpy()
@@ -715,7 +717,8 @@ def mean_frames(seconds: float = 60.0) -> dict[str, NDArray]:
     print(f"No cache found in {cache}. Calculating from scratch.")
     out: dict[str, NDArray] = {}
     for name, clip in clips().items():
-        gray = np.load(clip.entry.features, mmap_mode="r")[: round(seconds * 60) : 6, 0]
+        rows = slice(0, round(seconds * 60), 6)
+        gray = features.reader(clip.entry).read(rows, ChannelSet.parse("gray"))[:, 0]
         out[name] = np.asarray(gray, dtype=float).mean(0)
     CACHE.mkdir(exist_ok=True)
     np.savez(cache, **out)

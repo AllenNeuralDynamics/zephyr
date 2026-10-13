@@ -22,7 +22,7 @@ import numpy as np
 from matplotlib.lines import Line2D
 
 from zephyr.channels import ChannelSet
-from zephyr.evaluation import EVENT_TOLERANCE_S
+from zephyr.evaluation import EVENT_TOLERANCE_FRAMES
 
 HEAD_THRESHOLD = 0.5
 HEAD_MIN_DISTANCE_S = 0.05
@@ -798,7 +798,7 @@ def build_report(config: Runs) -> None:
                 "kind": "local_maxima",
                 "height_threshold": HEAD_THRESHOLD,
                 "minimum_distance_s": HEAD_MIN_DISTANCE_S,
-                "event_match_tolerance_s": EVENT_TOLERANCE_S,
+                "event_match_tolerance_frames": EVENT_TOLERANCE_FRAMES,
                 "threshold_selection": "fixed a priori; not tuned on holdout data",
             },
             "per_network": rows,

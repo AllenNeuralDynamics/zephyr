@@ -35,7 +35,8 @@ of paths relative to itself, validated by `packages/zephyr/src/zephyr/config.py`
 (extended by `zephyr-benchmarks`' `config.py`). A misspelt key is an error. To run a new
 experiment, **write or copy a TOML file**. Never:
 
-- add CLI flags for experiment settings;
+- add CLI flags for experiment settings (`zephyr preprocess --channels` is not one: it
+  chooses which channel files to store, never what any stored value is);
 - hardcode paths, split names, camera names, session numbers or dataset layout in `src/`;
 - write scripts that bypass `zephyr run` / `evaluate` (or `zephyr-benchmarks run` / `evaluate`);
 - edit an existing config to repurpose it: copy it under a new name.
@@ -96,6 +97,8 @@ resumable steps; what each does and the folder layout are in its README.
   `preprocess` run on a local copy (`zephyr annotate --remote` only skips checking that
   a list's clips exist and reads cached frames). Never rename remote objects; delete only with
   `clips --prune`.
+- Feature caches store one file per channel group; core reads channels only through
+  `features.reader`.
 
 ## When code must change
 
@@ -107,6 +110,10 @@ Only when a setting does not exist yet:
 2. Read it from the model where it is used; no new CLI flag.
 3. Add a test; keep module docstrings under 10 lines (`test_module_docstrings.py`); run
    `uv run ruff format . && uv run ruff check . && uv run pytest -q` from the root.
+
+A change of on-disk format (cache, run layout) keeps no backwards compatibility and no
+migration code in the packages: existing data is converted once by a throwaway script,
+and the code reads only the new format.
 
 Whenever a change touches config models, the CLI, run layout, cache, package boundary
 or a rule here, update this file (and the relevant README) in the same change; fix or

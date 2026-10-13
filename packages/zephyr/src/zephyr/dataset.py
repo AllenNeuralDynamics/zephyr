@@ -27,6 +27,7 @@ from zephyr.augment import (
 )
 from zephyr.channels import ALL_CHANNELS, CHANNEL_NAMES, N_CHANNELS, ChannelSet
 
+from . import features
 from .features import ClipEntry
 from .rates import DEFAULT_RATE_BINS_HZ, balance_weights, rate_track, window_rates
 from .targets import onset_heatmap
@@ -46,7 +47,7 @@ MAX_REDRAWS = 1000
 def stats_path(cache_dir: Path, entries: Sequence[ClipEntry]) -> Path:
     """Where the statistics over exactly *entries* are cached: next to the
     features, named for the ordered clip set so another set never reuses them."""
-    blob = json.dumps([e.features.name for e in entries]).encode()
+    blob = json.dumps([e.stem.name for e in entries]).encode()
     return cache_dir / f"channel_stats-{hashlib.sha256(blob).hexdigest()[:10]}.json"
 
 
@@ -56,6 +57,7 @@ def channel_stats(
     *,
     frames_per_clip: int = 400,
     seed: int = 0,
+    channels: ChannelSet | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Per-channel mean and standard deviation of the stored uint8 codes.
 
@@ -64,36 +66,44 @@ def channel_stats(
     *cache_path* (see :func:`stats_path`) so repeated runs over the same clips
     cannot disagree.
 
-    Always measured over every stored channel, whatever subset a run trains on
-    -- so one cache serves every :class:`zephyr.channels.ChannelSet` with no
-    recompute, and two runs can never disagree about a channel's mean.  Slice
-    the result with :meth:`~.channels.ChannelSet.take_stats`.
+    Measured over every channel all *entries* store (only *channels*, if given: what
+    a run reads), on the same sampled frames whichever channels are measured -- so two
+    runs can never disagree about a channel's mean.  A channel not measured is NaN, and
+    a cached file is measured again once a run needs a channel it lacks.  Full width:
+    slice it with :meth:`~.channels.ChannelSet.take_stats`.
     """
-    names = [entry.features.name for entry in entries]
+    names = [entry.stem.name for entry in entries]
+    wanted = channels.names if channels is not None else CHANNEL_NAMES
+    have = ChannelSet.parse(
+        [n for n in wanted if all(n in e.stored.names for e in entries)]
+    )
+    index = list(have.indices)
     if cache_path.exists():
         cached = json.loads(cache_path.read_text())
-        if cached.get("clips") == names:
-            return np.array(cached["mean"], np.float32), np.array(
-                cached["std"], np.float32
-            )
+        mean = np.array(cached["mean"], np.float32)
+        # Reused unless a channel it lacked has been stored since.
+        if cached.get("clips") == names and np.isfinite(mean[index]).all():
+            return mean, np.array(cached["std"], np.float32)
 
     rng = np.random.default_rng(seed)
     total = np.zeros(N_CHANNELS, np.float64)
     total_sq = np.zeros(N_CHANNELS, np.float64)
     count = 0
     for entry in entries:
-        array = np.load(entry.features, mmap_mode="r")
+        array = features.reader(entry)
         n = min(frames_per_clip, len(array) - 1)
         # Skip frame 0: it has no predecessor, so its diff and flow channels are
         # zero by construction and would drag the motion statistics down.
         indices = rng.choice(np.arange(1, len(array)), size=n, replace=False)
-        block = np.asarray(array[np.sort(indices)], dtype=np.float64)
-        total += block.sum(axis=(0, 2, 3))
-        total_sq += (block**2).sum(axis=(0, 2, 3))
+        block = np.asarray(array.read(np.sort(indices), have), dtype=np.float64)
+        total[index] += block.sum(axis=(0, 2, 3))
+        total_sq[index] += (block**2).sum(axis=(0, 2, 3))
         count += block.shape[0] * block.shape[2] * block.shape[3]
 
+    missing = [i for i in range(N_CHANNELS) if i not in index]
     mean = total / count
     std = np.sqrt(np.maximum(total_sq / count - mean**2, 1e-12))
+    mean[missing] = std[missing] = np.nan
     cache_path.write_text(
         json.dumps(
             {
@@ -140,8 +150,8 @@ def _load_target_frame(
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Output-grid times, the target signal on them, and the onset times.
 
-    The stored ``onset_heatmap`` column is unused; a window rebuilds it from
-    onset *times* on its own output grid instead of resampling the column.
+    The onset target is not cached: a window builds it from the onset *times* on
+    its own output grid.
     """
     frame = pd.read_parquet(entry.target)
     onsets = np.load(entry.events)["onset_times"]
@@ -262,7 +272,7 @@ class WindowDataset(Dataset):
         )
 
         # Keyed by feature path: the clip label is for people and need not be unique.
-        self._arrays: dict[Path, np.ndarray] = {}
+        self._arrays: dict[Path, features.FeatureReader] = {}
         self._targets: dict[Path, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
         self._frame_time_cache: dict[Path, np.ndarray] = {}
         self._span_cache: dict[Path, np.ndarray] = {}
@@ -273,14 +283,13 @@ class WindowDataset(Dataset):
             raise ValueError(f"span must satisfy 0 <= start < stop <= 1, got {span}")
         self.span = span
         self.bounds = {
-            e.features: (int(e.n_frames * span[0]), int(e.n_frames * span[1]))
+            e.stem: (int(e.n_frames * span[0]), int(e.n_frames * span[1]))
             for e in entries
         }
         keep = [
             i
             for i, e in enumerate(entries)
-            if self.bounds[e.features][1] - self.bounds[e.features][0]
-            >= self.max_source
+            if self.bounds[e.stem][1] - self.bounds[e.stem][0] >= self.max_source
         ]
         usable = [entries[i] for i in keep]
         if not usable:
@@ -297,8 +306,8 @@ class WindowDataset(Dataset):
                 (i, float(start))
                 for i, entry in enumerate(usable)
                 for start in np.arange(
-                    self.bounds[entry.features][0],
-                    self.bounds[entry.features][1] - extent,
+                    self.bounds[entry.stem][0],
+                    self.bounds[entry.stem][1] - extent,
                     hop,
                 )
                 if not self._excluded(i, float(start))
@@ -311,8 +320,8 @@ class WindowDataset(Dataset):
             # is not over-represented relative to the data it actually holds.
             offsets = np.array(
                 [
-                    self.bounds[e.features][1]
-                    - self.bounds[e.features][0]
+                    self.bounds[e.stem][1]
+                    - self.bounds[e.stem][0]
                     - self.max_source
                     + 1
                     for e in usable
@@ -342,7 +351,7 @@ class WindowDataset(Dataset):
         share = np.asarray(weights, np.float64) / float(np.sum(weights))
         clip_of, starts, rates = [], [], []
         for clip_i, entry in enumerate(self.usable):
-            lo, hi = self.bounds[entry.features]
+            lo, hi = self.bounds[entry.stem]
             top = hi - 1 - self.extent()
             grid = np.arange(lo, top, self.hop) if top > lo else np.array([float(lo)])
             target_times, _, onsets = _load_target_frame(entry)
@@ -372,27 +381,27 @@ class WindowDataset(Dataset):
     def __len__(self) -> int:
         return len(self.index) if not self.random else self.length
 
-    def _array(self, entry: ClipEntry) -> np.ndarray:
+    def _array(self, entry: ClipEntry) -> features.FeatureReader:
         # Opened lazily and cached per process: DataLoader workers are spawned on
         # Windows, so a memmap opened in the parent would not survive the fork.
-        array = self._arrays.get(entry.features)
+        array = self._arrays.get(entry.stem)
         if array is None:
-            array = np.load(entry.features, mmap_mode="r")
-            self._arrays[entry.features] = array
+            array = features.reader(entry)
+            self._arrays[entry.stem] = array
         return array
 
     def _target(self, entry: ClipEntry) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        target = self._targets.get(entry.features)
+        target = self._targets.get(entry.stem)
         if target is None:
             target = _load_target_frame(entry)
-            self._targets[entry.features] = target
+            self._targets[entry.stem] = target
         return target
 
     def _frame_times(self, entry: ClipEntry) -> np.ndarray:
-        times = self._frame_time_cache.get(entry.features)
+        times = self._frame_time_cache.get(entry.stem)
         if times is None:
             times = np.load(entry.frame_times)
-            self._frame_time_cache[entry.features] = times
+            self._frame_time_cache[entry.stem] = times
         return times
 
     def _draw_start(self, rng: np.random.Generator, lo: int, hi: int) -> float:
@@ -422,12 +431,12 @@ class WindowDataset(Dataset):
         )
 
     def _spans(self, entry: ClipEntry) -> np.ndarray:
-        spans = self._span_cache.get(entry.features)
+        spans = self._span_cache.get(entry.stem)
         if spans is None:
             stored = np.load(entry.events)
             spans = stored["excluded"] if "excluded" in stored.files else np.empty(0)
             spans = np.asarray(spans, np.float64).reshape(-1, 2)
-            self._span_cache[entry.features] = spans
+            self._span_cache[entry.stem] = spans
         return spans
 
     def _excluded(self, clip_i: int, start: float) -> bool:
@@ -448,13 +457,13 @@ class WindowDataset(Dataset):
             c = min(c, len(self._candidate_cdf) - 1)
             clip_i = int(self.candidate_clip[c])
             entry = self.usable[clip_i]
-            lo, hi = self.bounds[entry.features]
+            lo, hi = self.bounds[entry.stem]
             top = max(float(lo), hi - 1 - self.extent())
             start = min(float(self.candidate_start[c] + rng.uniform(0, self.hop)), top)
         else:
             clip_i = int(rng.choice(len(self.usable), p=self.weights))
             entry = self.usable[clip_i]
-            lo, hi = self.bounds[entry.features]
+            lo, hi = self.bounds[entry.stem]
             start = self._draw_start(rng, lo, hi)
         return clip_i, start
 
@@ -482,7 +491,7 @@ class WindowDataset(Dataset):
 
         first = int(np.floor(positions[0]))
         last = int(np.ceil(positions[-1]))
-        slab = self.channels.take(np.asarray(self._array(entry)[first : last + 1]))
+        slab = self._array(entry).read(slice(first, last + 1), self.channels)
         block = gather_positions(slab, positions - first)
 
         in_times = gather_positions(frame_times, positions, dtype=np.float64)

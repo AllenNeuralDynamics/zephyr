@@ -47,9 +47,10 @@ def pick_clips(entries: list, n: int) -> list:
 
 
 def warm_file_cache(entries: list, block: int = 64 << 20) -> int:
-    """Read each distinct ``features`` file once; returns the bytes read."""
+    """Read each distinct channel file once; returns the bytes read."""
     total = 0
-    for path in dict.fromkeys(Path(e.features) for e in entries):
+    files = [e.group_file(g) for e in entries for g in e.groups]
+    for path in dict.fromkeys(Path(f) for f in files):
         with open(path, "rb") as handle:
             while chunk := handle.read(block):
                 total += len(chunk)
@@ -153,10 +154,13 @@ def estimate_flow_preprocessing(entry, n_frames: int = 300) -> dict:
     """
     import cv2
 
-    from zephyr.channels import make_flow_estimator
+    from zephyr import features
+    from zephyr.channels import ChannelSet, make_flow_estimator
 
-    array = np.load(entry.features, mmap_mode="r")
-    gray = np.ascontiguousarray(array[: n_frames + 1, 0])
+    only = ChannelSet.parse("gray")
+    gray = np.ascontiguousarray(
+        features.reader(entry).read(slice(0, n_frames + 1), only)[:, 0]
+    )
     estimator = make_flow_estimator()
     estimator.calc(gray[0], gray[1], None)  # warm-up
     started = time.perf_counter()
@@ -165,8 +169,8 @@ def estimate_flow_preprocessing(entry, n_frames: int = 300) -> dict:
     per_frame = (time.perf_counter() - started) / (len(gray) - 1)
     return {
         "per_frame_ms": per_frame * 1000,
-        "frames_per_clip": int(array.shape[0]),
-        "seconds_per_clip": per_frame * int(array.shape[0]),
+        "frames_per_clip": entry.n_frames,
+        "seconds_per_clip": per_frame * entry.n_frames,
         "opencv": cv2.__version__,
     }
 

@@ -35,8 +35,9 @@ def target_signal(entry) -> np.ndarray:
 
 
 def trace_key(entry) -> str:
-    """Cache key of an entry's trace: its feature file's stem, unique per clip."""
-    return Path(entry.features).stem
+    """Cache key of an entry's trace, unique per clip (``feat-{prefix}``, the name
+    stored traces under ``benchmarks/`` already have)."""
+    return f"feat-{Path(entry.stem).name}"
 
 
 def score_traces(traces, groups) -> dict:

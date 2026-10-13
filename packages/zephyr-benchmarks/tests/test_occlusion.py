@@ -6,6 +6,7 @@ import numpy as np
 import torch
 from torch import nn
 
+from zephyr import features
 from zephyr.benchmarks.occlusion import (
     Occluded,
     head_entry,
@@ -13,6 +14,17 @@ from zephyr.benchmarks.occlusion import (
     patch_origins,
 )
 from zephyr.features import ClipEntry
+
+
+def _save_channels(stem: Path, stack: np.ndarray) -> Path:
+    """Store a (T, 4, h, w) stack as the entry *stem*'s channel group files."""
+    for group, part in (
+        ("gray", stack[:, :1]),
+        ("diff", stack[:, 1:2]),
+        ("flow", stack[:, 2:]),
+    ):
+        np.save(stem.with_name(f"{group}-{stem.name}.npy"), part)
+    return stem
 
 
 class PatchGridTests(unittest.TestCase):
@@ -69,11 +81,11 @@ class HeadEntryTests(unittest.TestCase):
     def test_keeps_the_first_seconds(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
-            np.save(tmp / "f.npy", np.zeros((600, 4, 6, 6), np.uint8))
+            _save_channels(tmp / "f", np.zeros((600, 4, 6, 6), np.uint8))
             np.save(tmp / "ft.npy", np.arange(600) / 60.0)
             np.save(tmp / "t.npy", np.arange(600) / 60.0)
             entry = ClipEntry(
-                "c", "r", 600, 600, tmp / "f.npy", tmp / "ft.npy", tmp / "dt.npy",
+                "c", "r", 600, 600, tmp / "f", tmp / "ft.npy", tmp / "dt.npy",
                 tmp / "t.npy", None, None,
             )  # fmt: skip
             out = tmp / "out"
@@ -82,7 +94,11 @@ class HeadEntryTests(unittest.TestCase):
             self.assertEqual(len(np.load(head.times)), 120)
             self.assertEqual(head.n_output, 120)
             self.assertGreaterEqual(len(np.load(head.frame_times)), 120)
-            self.assertEqual(np.load(head.features).shape[1:], (4, 6, 6))
+            self.assertEqual(
+                features.reader(head).read(slice(None)).shape,
+                (len(np.load(head.frame_times)), 4, 6, 6),
+            )
+            self.assertEqual(np.load(head.group_file("flow")).shape[1:], (2, 6, 6))
 
 
 if __name__ == "__main__":
