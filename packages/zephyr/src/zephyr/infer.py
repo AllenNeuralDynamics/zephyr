@@ -13,6 +13,7 @@ import torch
 
 from zephyr.model import BreathingNet
 
+from . import features
 from .dataset import INTERP_MARGIN, ClipEntry
 
 INPUT_MARGIN = INTERP_MARGIN
@@ -65,7 +66,7 @@ def predict_clip(
         margin = model.receptive_field // 2
 
     channels = model.channels
-    array = np.load(entry.features, mmap_mode="r")
+    array = features.reader(entry)
     frame_times = np.load(entry.frame_times)
     grid = np.load(entry.times)
     n_out = len(grid)
@@ -95,7 +96,7 @@ def predict_clip(
         # Cast in numpy: the memmap slice is read-only, and torch.from_numpy
         # warns on non-writable storage.  The cast has to copy anyway.
         block = torch.from_numpy(
-            channels.take(np.asarray(array[first:last])).astype(np.float32)
+            array.read(slice(first, last), channels).astype(np.float32)
         )
         block = ((block - mean_t) / std_t).unsqueeze(0).to(device, non_blocking=True)
 

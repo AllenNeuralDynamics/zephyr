@@ -27,6 +27,7 @@ from zephyr.augment import (
 )
 from zephyr.channels import ALL_CHANNELS, CHANNEL_NAMES, N_CHANNELS, ChannelSet
 
+from . import features
 from .features import ClipEntry
 from .rates import DEFAULT_RATE_BINS_HZ, balance_weights, rate_track, window_rates
 from .targets import onset_heatmap
@@ -56,6 +57,7 @@ def channel_stats(
     *,
     frames_per_clip: int = 400,
     seed: int = 0,
+    channels: ChannelSet | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Per-channel mean and standard deviation of the stored uint8 codes.
 
@@ -64,36 +66,44 @@ def channel_stats(
     *cache_path* (see :func:`stats_path`) so repeated runs over the same clips
     cannot disagree.
 
-    Always measured over every stored channel, whatever subset a run trains on
-    -- so one cache serves every :class:`zephyr.channels.ChannelSet` with no
-    recompute, and two runs can never disagree about a channel's mean.  Slice
-    the result with :meth:`~.channels.ChannelSet.take_stats`.
+    Measured over every channel all *entries* store (only *channels*, if given: what
+    a run reads), on the same sampled frames whichever channels are measured -- so two
+    runs can never disagree about a channel's mean.  A channel not measured is NaN, and
+    a cached file is measured again once a run needs a channel it lacks.  Full width:
+    slice it with :meth:`~.channels.ChannelSet.take_stats`.
     """
     names = [entry.features.name for entry in entries]
+    wanted = channels.names if channels is not None else CHANNEL_NAMES
+    have = ChannelSet.parse(
+        [n for n in wanted if all(n in e.stored.names for e in entries)]
+    )
+    index = list(have.indices)
     if cache_path.exists():
         cached = json.loads(cache_path.read_text())
-        if cached.get("clips") == names:
-            return np.array(cached["mean"], np.float32), np.array(
-                cached["std"], np.float32
-            )
+        mean = np.array(cached["mean"], np.float32)
+        # Reused unless a channel it lacked has been stored since.
+        if cached.get("clips") == names and np.isfinite(mean[index]).all():
+            return mean, np.array(cached["std"], np.float32)
 
     rng = np.random.default_rng(seed)
     total = np.zeros(N_CHANNELS, np.float64)
     total_sq = np.zeros(N_CHANNELS, np.float64)
     count = 0
     for entry in entries:
-        array = np.load(entry.features, mmap_mode="r")
+        array = features.reader(entry)
         n = min(frames_per_clip, len(array) - 1)
         # Skip frame 0: it has no predecessor, so its diff and flow channels are
         # zero by construction and would drag the motion statistics down.
         indices = rng.choice(np.arange(1, len(array)), size=n, replace=False)
-        block = np.asarray(array[np.sort(indices)], dtype=np.float64)
-        total += block.sum(axis=(0, 2, 3))
-        total_sq += (block**2).sum(axis=(0, 2, 3))
+        block = np.asarray(array.read(np.sort(indices), have), dtype=np.float64)
+        total[index] += block.sum(axis=(0, 2, 3))
+        total_sq[index] += (block**2).sum(axis=(0, 2, 3))
         count += block.shape[0] * block.shape[2] * block.shape[3]
 
+    missing = [i for i in range(N_CHANNELS) if i not in index]
     mean = total / count
     std = np.sqrt(np.maximum(total_sq / count - mean**2, 1e-12))
+    mean[missing] = std[missing] = np.nan
     cache_path.write_text(
         json.dumps(
             {
@@ -262,7 +272,7 @@ class WindowDataset(Dataset):
         )
 
         # Keyed by feature path: the clip label is for people and need not be unique.
-        self._arrays: dict[Path, np.ndarray] = {}
+        self._arrays: dict[Path, features.FeatureReader] = {}
         self._targets: dict[Path, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
         self._frame_time_cache: dict[Path, np.ndarray] = {}
         self._span_cache: dict[Path, np.ndarray] = {}
@@ -372,12 +382,12 @@ class WindowDataset(Dataset):
     def __len__(self) -> int:
         return len(self.index) if not self.random else self.length
 
-    def _array(self, entry: ClipEntry) -> np.ndarray:
+    def _array(self, entry: ClipEntry) -> features.FeatureReader:
         # Opened lazily and cached per process: DataLoader workers are spawned on
         # Windows, so a memmap opened in the parent would not survive the fork.
         array = self._arrays.get(entry.features)
         if array is None:
-            array = np.load(entry.features, mmap_mode="r")
+            array = features.reader(entry)
             self._arrays[entry.features] = array
         return array
 
@@ -482,7 +492,7 @@ class WindowDataset(Dataset):
 
         first = int(np.floor(positions[0]))
         last = int(np.ceil(positions[-1]))
-        slab = self.channels.take(np.asarray(self._array(entry)[first : last + 1]))
+        slab = self._array(entry).read(slice(first, last + 1), self.channels)
         block = gather_positions(slab, positions - first)
 
         in_times = gather_positions(frame_times, positions, dtype=np.float64)

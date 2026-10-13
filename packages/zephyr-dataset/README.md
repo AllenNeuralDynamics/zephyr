@@ -158,6 +158,22 @@ at 720x540, so a global offset is applied later if wanted. `python -m zephyr.cor
 is the helper used to find this method (OWLv2 or template matching, with a preview image);
 it needs `--extra rois` for OWLv2.
 
+## Converting a feature cache
+
+Zephyr stores each channel group of a cache entry in its own file (`gray-`, `diff-`,
+`flow-`), so a gray-only network reads a quarter of the data. A cache made before that
+(one `feat-` file of all four channels per entry) is still read, but in full;
+`split_cache` rewrites it, bit for bit:
+
+```bash
+uv run python -m zephyr.corpus.split_cache s3://aind-scratch-data/vr-foraging/zephyr-cache/features-360x270-box96x96-60hz --workers 16
+uv run python -m zephyr.corpus.split_cache data/features-v2 --out runs/features-v2-split
+```
+
+In place (local or remote) the group files go first, then the sidecar records them, then
+`feat-` is deleted, so an interrupted run leaves every entry readable and a rerun skips
+what is done. `--out` writes a converted copy to a local folder and keeps the source.
+
 ## Known data issues
 
 Camera timestamps (`behavior-videos/<camera>/metadata.csv`) are checked by `videos`

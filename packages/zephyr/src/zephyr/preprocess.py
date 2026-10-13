@@ -11,7 +11,7 @@ per clip; see :mod:`.features`.
 
 CLI
 ---
-    zephyr preprocess examples/clips.toml --cache data/features-example
+    zephyr preprocess examples/clips.toml --cache data/features-example [--channels gray]
 """
 
 import argparse
@@ -26,7 +26,7 @@ import numpy as np
 import pandas as pd
 
 from . import features
-from .channels import N_CHANNELS, encode_stack, make_flow_estimator
+from .channels import CHANNEL_GROUPS, ChannelSet, encode_stack, make_flow_estimator
 from .config import (
     OUTPUT_FS,
     ClipList,
@@ -150,12 +150,16 @@ def _write_target(clip: ResolvedClip, files: dict[str, Path], out_times, sigma_s
 
 
 def preprocess_clip(
-    clip: ResolvedClip, params: PreprocessParams, cache_dir: Path
+    clip: ResolvedClip,
+    params: PreprocessParams,
+    cache_dir: Path,
+    groups: tuple[str, ...] = features.GROUPS,
 ) -> features.ClipEntry:
-    """Preprocess one clip into *cache_dir* and return its entry.
+    """Preprocess the channel *groups* of one clip into *cache_dir*; return its entry.
 
-    Does nothing for a clip already cached; rebuilds only the target when the
-    arrays are cached but the clip's thermistor or event set changed.
+    Does nothing for a clip already cached with those groups; rebuilds only the target
+    when the arrays are cached but the clip's thermistor or event set changed; decodes
+    again for groups the entry lacks, writing only those.
     """
     started = time_module.perf_counter()
     key = features.cache_key(clip, params)
@@ -163,9 +167,12 @@ def preprocess_clip(
     thermistor = clip.thermistor.as_posix() if clip.thermistor else None
     labels = features.events_identity(clip) if thermistor else None
 
+    present: tuple[str, ...] = ()
+    previous: dict = {}
     if files["sidecar"].is_file():
         sidecar = json.loads(files["sidecar"].read_text())
-        if sidecar["key"] == key:
+        stored = sidecar.get("groups", features.GROUPS) if sidecar["key"] == key else ()
+        if sidecar["key"] == key and set(groups) <= set(stored):
             if (sidecar["thermistor"], sidecar.get("events")) != (thermistor, labels):
                 # Arrays are reusable; only the thermistor-derived target is not.
                 stats = {
@@ -178,6 +185,9 @@ def preprocess_clip(
                 sidecar |= {"stats": stats, "thermistor": thermistor, "events": labels}
                 files["sidecar"].write_text(json.dumps(sidecar, indent=2))
             return features.lookup(clip, params, cache_dir)
+        if sidecar["key"] == key and "groups" in sidecar:  # add groups to the entry
+            present, previous = tuple(stored), sidecar["stats"]
+    todo = tuple(g for g in features.GROUPS if g in groups and g not in present)
 
     frame_times = pd.read_parquet(clip.timestamps)["Time"].to_numpy()
     n_expected = len(frame_times)
@@ -191,16 +201,22 @@ def preprocess_clip(
 
     box_w, box_h = clip.box[2], clip.box[3]
     cache_dir.mkdir(parents=True, exist_ok=True)
-    out = np.lib.format.open_memmap(
-        files["features"],
-        mode="w+",
-        dtype=np.uint8,
-        shape=(n_anchors, N_CHANNELS, box_h, box_w),
-    )
+    # Written under a temporary name and renamed once complete, group by group.
+    partial = {g: files[g].with_suffix(".tmp.npy") for g in todo}
+    out = {
+        g: np.lib.format.open_memmap(
+            partial[g],
+            mode="w+",
+            dtype=np.uint8,
+            shape=(n_anchors, len(CHANNEL_GROUPS[g]), box_h, box_w),
+        )
+        for g in todo
+    }
 
-    flow_estimator = make_flow_estimator()
+    flow_estimator = make_flow_estimator() if "flow" in todo else None
     # Frames some anchor will want as its motion reference, held until used.
-    wanted_references = set(reference_indices.tolist())
+    motion = bool({"diff", "flow"} & set(todo))
+    wanted_references = set(reference_indices.tolist()) if motion else set()
     held: dict[int, np.ndarray] = {}
     n_decoded = 0
     n_written = 0
@@ -217,7 +233,7 @@ def preprocess_clip(
                 continue
 
             reference_index = int(reference_indices[n_written])
-            stack, n_diff, n_flow = encode_stack(
+            planes, n_diff, n_flow = encode_stack(
                 frame,
                 held.get(reference_index) if reference_index != index else None,
                 flow_estimator,
@@ -225,8 +241,10 @@ def preprocess_clip(
                 tau=params.motion_tau_s,
                 flow_scale_px=params.flow_scale_px,
                 flow_clip_px=params.flow_clip_px,
+                groups=todo,
             )
-            out[n_written] = stack
+            for group, plane in planes.items():
+                out[group][n_written] = plane
             diff_saturated += n_diff
             flow_saturated += n_flow
             n_written += 1
@@ -236,8 +254,9 @@ def preprocess_clip(
                 for stale in [i for i in held if i < cutoff]:
                     del held[stale]
 
-    out.flush()
-    del out
+    for group in todo:
+        out[group].flush()
+    del out  # closes the memmaps: Windows cannot rename an open file
 
     if n_decoded != n_expected:
         # The timestamp parquet is the authoritative frame record, so a mismatch
@@ -252,6 +271,8 @@ def preprocess_clip(
             f"{n_written} were reached before decoding ended"
         )
 
+    for group in todo:
+        partial[group].replace(files[group])
     out_times = output_times(anchor_times, params.output_fs)
     np.save(files["frame_times"], anchor_times)
     np.save(files["baselines"], baselines.astype(np.float32))
@@ -260,15 +281,17 @@ def preprocess_clip(
     n_pixels = n_written * box_w * box_h
     # Anchor 0 has no motion by construction; excluded from the achieved-dt stat.
     achieved = baselines[1:] if n_anchors > 1 else baselines
-    stats = {
+    stats = {k: v for k, v in previous.items() if k not in TARGET_STATS} | {
         "native_fs_hz": float((n_expected - 1) / (frame_times[-1] - frame_times[0])),
         "select_fs_hz": float(1.0 / np.median(np.diff(anchor_times))),
         "motion_dt_median_ms": float(np.median(achieved) * 1e3),
         "motion_dt_spread_ms": float((achieved.max() - achieved.min()) * 1e3),
-        "diff_saturated_frac": diff_saturated / n_pixels,
-        "flow_saturated_frac": flow_saturated / (2 * n_pixels),
         "elapsed_s": round(time_module.perf_counter() - started, 1),
     }
+    if "diff" in todo:
+        stats["diff_saturated_frac"] = diff_saturated / n_pixels
+    if "flow" in todo:
+        stats["flow_saturated_frac"] = flow_saturated / (2 * n_pixels)
     if thermistor:
         stats |= _write_target(clip, files, out_times, params.onset_sigma_s)
 
@@ -281,6 +304,7 @@ def preprocess_clip(
                 "n_frames": n_written,
                 "n_output": len(out_times),
                 "stats": stats,
+                "groups": [g for g in features.GROUPS if g in set(present) | set(todo)],
             },
             indent=2,
         )
@@ -302,8 +326,12 @@ def _describe(
         f"dt={stats['motion_dt_median_ms']:.2f}"
         f"+-{stats['motion_dt_spread_ms'] / 2:.2f} ms  "
         f"rate={stats.get('breathing_rate_hz', float('nan')):.2f} Hz  "
-        f"sat diff={stats['diff_saturated_frac']:.2e} "
-        f"flow={stats['flow_saturated_frac']:.2e}"
+        f"elapsed {stats['elapsed_s']:.0f} s"
+        + "".join(
+            f"  sat {name}={stats[f'{name}_saturated_frac']:.2e}"
+            for name in ("diff", "flow")
+            if f"{name}_saturated_frac" in stats
+        )
     )
 
 
@@ -313,19 +341,25 @@ def preprocess_clips(
     cache_dir: Path,
     *,
     workers: int = 8,
+    channels: ChannelSet | None = None,
 ) -> list[features.ClipEntry]:
-    """Preprocess *clips* (in parallel) and return their entries in order."""
+    """Preprocess *clips* (in parallel) and return their entries in order; *channels*
+    (default all) says which groups to store."""
+    groups = features.groups_of(channels) if channels else features.GROUPS
     unique: dict[str, ResolvedClip] = {}
     for clip in clips:
         unique.setdefault(features.prefix(clip, params), clip)
-    pending = [
-        c for c in unique.values() if features.lookup(c, params, cache_dir) is None
-    ]
+
+    def done(clip: ResolvedClip) -> bool:
+        entry = features.lookup(clip, params, cache_dir)
+        return entry is not None and set(groups) <= set(entry.groups)
+
+    pending = [c for c in unique.values() if not done(c)]
     print(
         f"{len(unique)} clip(s), {len(unique) - len(pending)} already cached | "
         f"target {params.target_size[0]}x{params.target_size[1]} | select "
         f"{params.select_fs:.1f} Hz -> output {params.output_fs:g} Hz | tau "
-        f"{params.motion_tau_s * 1e3:.1f} ms | {workers} worker(s)",
+        f"{params.motion_tau_s * 1e3:.1f} ms | {'+'.join(groups)} | {workers} worker(s)",
         flush=True,
     )
 
@@ -340,7 +374,7 @@ def preprocess_clips(
     print_lock = threading.Lock()
     with ThreadPoolExecutor(max_workers=workers) as executor:
         futures = {
-            executor.submit(preprocess_clip, clip, params, cache_dir): clip
+            executor.submit(preprocess_clip, clip, params, cache_dir, groups): clip
             for clip in pending
         }
         try:
@@ -360,7 +394,7 @@ def preprocess_clips(
                 waiting.cancel()
             raise
 
-    return features.require(clips, params, cache_dir)
+    return features.require(clips, params, cache_dir, channels)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -387,7 +421,17 @@ def main(argv: list[str] | None = None) -> None:
         "here without Windows' expensive per-worker interpreter relaunch. "
         "1 disables concurrency.",
     )
+    parser.add_argument(
+        "--channels",
+        default="gray+diff+flow",
+        help="Channel groups to store (gray, diff, flow); flow is most of the cost. "
+        "Groups an entry lacks are added by a later run, the rest kept.",
+    )
     args = parser.parse_args(argv)
+    try:
+        channels = ChannelSet.parse(args.channels)
+    except ValueError as exc:
+        raise SystemExit(f"--channels: {exc}") from None
 
     for path in args.clips:
         clip_list = load(ClipList, path)
@@ -406,5 +450,11 @@ def main(argv: list[str] | None = None) -> None:
             )
         native = probe_size(clips[0].video)
         print(f"{path.name}: native {native[0]}x{native[1]}", flush=True)
-        preprocess_clips(clips, clip_list.preprocess, args.cache, workers=args.workers)
+        preprocess_clips(
+            clips,
+            clip_list.preprocess,
+            args.cache,
+            workers=args.workers,
+            channels=channels,
+        )
         print(f"{path.name}: done", flush=True)

@@ -72,6 +72,13 @@ the download).
    uv run zephyr preprocess examples/clips.toml --cache data/features-example
    ```
 
+   Each channel group is its own file (`gray-`, `diff-`, `flow-`), so a network reads only
+   the channels it uses. `--channels gray` stores only gray (no optic flow: about 4x
+   faster, a quarter of the disk); a later run with more channels adds the missing
+   groups to the same entries. Training refuses a network whose channels an entry lacks.
+   Caches made before the split (one `feat-` file) are still read; zephyr-dataset's
+   `python -m zephyr.corpus.split_cache` converts them.
+
 5. **Run.** `zephyr run` trains each (fold, seed) into
    `<output_dir>/<fold name>/seed-<n>/` (`--folds <name>...` runs only some) -- with the resolved config, the list of
    training videos, checkpoints and `evaluation.json` -- then scores the

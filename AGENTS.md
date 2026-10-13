@@ -35,7 +35,8 @@ of paths relative to itself, validated by `packages/zephyr/src/zephyr/config.py`
 (extended by `zephyr-benchmarks`' `config.py`). A misspelt key is an error. To run a new
 experiment, **write or copy a TOML file**. Never:
 
-- add CLI flags for experiment settings;
+- add CLI flags for experiment settings (`zephyr preprocess --channels` is not one: it
+  chooses which channel files to store, never what any stored value is);
 - hardcode paths, split names, camera names, session numbers or dataset layout in `src/`;
 - write scripts that bypass `zephyr run` / `evaluate` (or `zephyr-benchmarks run` / `evaluate`);
 - edit an existing config to repurpose it: copy it under a new name.
@@ -96,6 +97,10 @@ resumable steps; what each does and the folder layout are in its README.
   `preprocess` run on a local copy (`zephyr annotate --remote` only skips checking that
   a list's clips exist and reads cached frames). Never rename remote objects; delete only with
   `clips --prune`.
+- Feature caches store one file per channel group; core writes only that layout and reads
+  channels only through `features.reader`. `python -m zephyr.corpus.split_cache` converts
+  a cache made before (local or S3, in place or `--out`); it is the one tool that deletes
+  from a feature cache, and only the `feat-` file of an entry it has split.
 
 ## When code must change
 

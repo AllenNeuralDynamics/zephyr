@@ -96,13 +96,17 @@ def _render(fig, axes, clip, part, parts, writer, fps, window_s, seconds) -> Non
     raw = results.truth(entry)
     truth_t = out["Time"].to_numpy()
     truth = np.interp(truth_t, raw["Time"].to_numpy(), raw["Signal"].to_numpy())
-    features = np.load(entry.features, mmap_mode="r")
+    stored = results.features.reader(entry)
+
+    def stack(i: int) -> np.ndarray:
+        return stored.read(slice(i, i + 1), results.ALL_CHANNELS)[0]
+
     frame_times = np.load(entry.frame_times)
 
     video_image = plots.frame_with_box(
         axes["video"], np.zeros(clip.target_size[::-1]), clip.box
     )
-    planes = results.channel_planes(features[0])
+    planes = results.channel_planes(stack(0))
     channel_images = {}
     for name in style.CHANNELS:
         channel_images[name] = plots.channel_image(axes[name], name, planes[name])
@@ -127,7 +131,7 @@ def _render(fig, axes, clip, part, parts, writer, fps, window_s, seconds) -> Non
             break
         video_image.set_data(frame)
         index = min(int(np.searchsorted(frame_times, t)), len(frame_times) - 1)
-        for name, plane in results.channel_planes(features[index]).items():
+        for name, plane in results.channel_planes(stack(index)).items():
             channel_images[name].set_data(plane)
         cursor.set_xdata([t, t])
         trace.set_xlim(t - CURSOR * window_s, t + (1 - CURSOR) * window_s)

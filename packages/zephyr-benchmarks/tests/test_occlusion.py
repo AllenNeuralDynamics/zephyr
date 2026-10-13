@@ -6,6 +6,7 @@ import numpy as np
 import torch
 from torch import nn
 
+from zephyr import features
 from zephyr.benchmarks.occlusion import (
     Occluded,
     head_entry,
@@ -82,7 +83,12 @@ class HeadEntryTests(unittest.TestCase):
             self.assertEqual(len(np.load(head.times)), 120)
             self.assertEqual(head.n_output, 120)
             self.assertGreaterEqual(len(np.load(head.frame_times)), 120)
-            self.assertEqual(np.load(head.features).shape[1:], (4, 6, 6))
+            self.assertFalse(head.combined)
+            self.assertEqual(
+                features.reader(head).read(slice(None)).shape,
+                (len(np.load(head.frame_times)), 4, 6, 6),
+            )
+            self.assertEqual(np.load(head.group_file("flow")).shape[1:], (2, 6, 6))
 
 
 if __name__ == "__main__":
