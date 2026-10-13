@@ -17,6 +17,17 @@ FS = 250.0
 GRID_FS = 60.0
 
 
+def _save_channels(stem: Path, stack: np.ndarray) -> Path:
+    """Store a (T, 4, h, w) stack as the entry *stem*'s channel group files."""
+    for group, part in (
+        ("gray", stack[:, :1]),
+        ("diff", stack[:, 1:2]),
+        ("flow", stack[:, 2:]),
+    ):
+        np.save(stem.with_name(f"{group}-{stem.name}.npy"), part)
+    return stem
+
+
 def mixed_breathing(duration_s=40.0):
     """Deep 2 Hz breaths and shallow 3 Hz sniffs, alternating every 10 s.
 
@@ -211,7 +222,7 @@ class ExcludedWindowTests(unittest.TestCase):
             root = Path(tmp)
             n = int(120 * GRID_FS)
             times = np.arange(n) / GRID_FS
-            np.save(root / "features.npy", np.zeros((n, 4, 4, 4), np.uint8))
+            _save_channels(root / "c", np.zeros((n, 4, 4, 4), np.uint8))
             np.save(root / "times.npy", times)
             pd.DataFrame({"time": times, "signal": np.zeros(n)}).to_parquet(
                 root / "t.parquet"
@@ -227,7 +238,7 @@ class ExcludedWindowTests(unittest.TestCase):
                 recording="fake#1",
                 n_frames=n,
                 n_output=n,
-                features=root / "features.npy",
+                stem=root / "c",
                 frame_times=root / "times.npy",
                 baselines=root / "base",
                 times=root / "times.npy",

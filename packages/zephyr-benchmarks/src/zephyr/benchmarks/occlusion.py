@@ -103,10 +103,9 @@ def head_entry(entry: ClipEntry, seconds: float, directory: Path) -> ClipEntry:
         entry,
         n_frames=n_in,
         n_output=n_out,
-        features=directory / "feat-head.npy",
+        stem=directory / "head",
         frame_times=directory / "frame_times.npy",
         times=directory / "times.npy",
-        combined=False,
     )
     array = features.reader(entry)
     for group in entry.groups:

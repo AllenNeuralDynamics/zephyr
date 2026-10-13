@@ -2,9 +2,8 @@
 
 Files share a prefix ``{video stem}-{hash}`` (video, timestamps, recipe, box; see
 :func:`cache_key`). Per entry: the uint8 channels, one file per group (``gray-``,
-``diff-``, ``flow-``; T x n x h x w), only the groups it was asked for (older entries:
-one ``feat-`` file, all four), then ``ftime-``, ``dt-``, ``time-``, ``target-`` and
-``events-``, and a ``{prefix}.json`` sidecar (key, stats, thermistor, events, groups),
+``diff-``, ``flow-``; T x n x h x w), only the groups it was asked for, then
+``ftime-``, ``dt-``, ``time-``, ``target-`` and ``events-``, and a ``{prefix}.json`` sidecar (key, stats, thermistor, events, groups),
 written last so its presence means the arrays are complete. Read channels through
 :func:`reader`, which opens only the groups a model uses.
 """
@@ -32,7 +31,7 @@ def groups_of(channels: ChannelSet) -> tuple[str, ...]:
 class ClipEntry:
     """One preprocessed clip: where its arrays live and what it is.
 
-    *n_frames* is on the selection grid (``features``/``frame_times``);
+    *n_frames* is on the selection grid (channels/``frame_times``);
     *n_output* on the output grid (``times``/``target``).  *clip_id* is a
     human label (folder and file stem); *recording* is the leakage identity,
     see :attr:`zephyr.config.ResolvedClip.recording_id`.  *thermistor* is the raw
@@ -43,9 +42,9 @@ class ClipEntry:
     recording: str
     n_frames: int
     n_output: int
-    features: Path
-    """The entry's identity (keys caches and statistics), and for an entry made before
-    channels were split, its one array of all four channels."""
+    stem: Path
+    """Cache folder / prefix: the entry's identity (keys caches and statistics), and
+    what its channel files are named from (:meth:`group_file`)."""
     frame_times: Path
     baselines: Path
     times: Path
@@ -55,8 +54,6 @@ class ClipEntry:
     video: Path | None = None
     groups: tuple[str, ...] = GROUPS
     """Channel groups stored."""
-    combined: bool = True
-    """All four channels in the one ``features`` file (made before channels were split)."""
 
     @property
     def has_target(self) -> bool:
@@ -68,9 +65,7 @@ class ClipEntry:
         return ChannelSet.parse([n for g in self.groups for n in CHANNEL_GROUPS[g]])
 
     def group_file(self, group: str) -> Path:
-        return self.features.with_name(
-            self.features.name.replace("feat-", f"{group}-", 1)
-        )
+        return self.stem.with_name(f"{group}-{self.stem.name}.npy")
 
 
 def cache_key(clip: ResolvedClip, params: PreprocessParams) -> dict:
@@ -110,7 +105,6 @@ def prefix(clip: ResolvedClip, params: PreprocessParams) -> str:
 def paths(cache_dir: Path, name: str) -> dict[str, Path]:
     """The files of the entry with prefix *name*."""
     return {
-        "features": cache_dir / f"feat-{name}.npy",
         **{group: cache_dir / f"{group}-{name}.npy" for group in GROUPS},
         "frame_times": cache_dir / f"ftime-{name}.npy",
         "baselines": cache_dir / f"dt-{name}.npy",
@@ -143,13 +137,12 @@ def lookup(
         return None
     if wanted and sidecar.get("events") != events_identity(clip):
         return None
-    groups = sidecar.get("groups")
     return ClipEntry(
         clip_id=clip.name,
         recording=clip.recording_id,
         n_frames=sidecar["n_frames"],
         n_output=sidecar["n_output"],
-        features=files["features"],
+        stem=cache_dir / name,
         frame_times=files["frame_times"],
         baselines=files["baselines"],
         times=files["times"],
@@ -157,8 +150,7 @@ def lookup(
         events=files["events"] if wanted else None,
         thermistor=clip.thermistor,
         video=clip.video,
-        groups=GROUPS if groups is None else tuple(groups),
-        combined=groups is None,
+        groups=tuple(sidecar["groups"]),
     )
 
 
@@ -213,10 +205,8 @@ class FeatureReader:
     def _map(self, group: str) -> np.ndarray:
         array = self._maps.get(group)
         if array is None:
-            path = (
-                self.entry.features if group == "feat" else self.entry.group_file(group)
-            )
-            array = self._maps[group] = np.load(path, mmap_mode="r")
+            array = np.load(self.entry.group_file(group), mmap_mode="r")
+            self._maps[group] = array
         return array
 
     def read(self, rows, channels: ChannelSet | None = None) -> np.ndarray:
@@ -224,8 +214,6 @@ class FeatureReader:
         lacking = sorted(set(channels.names) - set(self.entry.stored.names))
         if lacking:
             raise ValueError(f"{self.entry.clip_id} does not store {lacking}")
-        if self.entry.combined:
-            return channels.take(np.asarray(self._map("feat")[rows]))
         parts = []
         for group in groups_of(channels):
             names = CHANNEL_GROUPS[group]

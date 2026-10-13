@@ -49,10 +49,7 @@ def pick_clips(entries: list, n: int) -> list:
 def warm_file_cache(entries: list, block: int = 64 << 20) -> int:
     """Read each distinct channel file once; returns the bytes read."""
     total = 0
-    files = []
-    for e in entries:
-        combined = getattr(e, "combined", True)  # entries made before channels split
-        files += [e.features] if combined else [e.group_file(g) for g in e.groups]
+    files = [e.group_file(g) for e in entries for g in e.groups]
     for path in dict.fromkeys(Path(f) for f in files):
         with open(path, "rb") as handle:
             while chunk := handle.read(block):

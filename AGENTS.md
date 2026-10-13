@@ -97,10 +97,8 @@ resumable steps; what each does and the folder layout are in its README.
   `preprocess` run on a local copy (`zephyr annotate --remote` only skips checking that
   a list's clips exist and reads cached frames). Never rename remote objects; delete only with
   `clips --prune`.
-- Feature caches store one file per channel group; core writes only that layout and reads
-  channels only through `features.reader`. `python -m zephyr.corpus.split_cache` converts
-  a cache made before (local or S3, in place or `--out`); it is the one tool that deletes
-  from a feature cache, and only the `feat-` file of an entry it has split.
+- Feature caches store one file per channel group; core reads channels only through
+  `features.reader`.
 
 ## When code must change
 
@@ -112,6 +110,10 @@ Only when a setting does not exist yet:
 2. Read it from the model where it is used; no new CLI flag.
 3. Add a test; keep module docstrings under 10 lines (`test_module_docstrings.py`); run
    `uv run ruff format . && uv run ruff check . && uv run pytest -q` from the root.
+
+A change of on-disk format (cache, run layout) keeps no backwards compatibility and no
+migration code in the packages: existing data is converted once by a throwaway script,
+and the code reads only the new format.
 
 Whenever a change touches config models, the CLI, run layout, cache, package boundary
 or a rule here, update this file (and the relevant README) in the same change; fix or

@@ -282,7 +282,7 @@ def method_traces(entry: features.ClipEntry) -> pd.DataFrame:
     else:
         print(f"No cache found in {cache}. Calculating from scratch.")
         n = entry.n_output
-        key = Path(entry.features).stem
+        key = f"feat-{entry.stem.name}"  # the stored traces' names
         old_key = f"test_{short_name(entry).removeprefix('face_')}"
         traces: dict[str, NDArray] = {
             TIME_COLUMN: np.load(entry.times)[:n],

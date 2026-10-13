@@ -16,31 +16,23 @@ T, H, W = 50, 6, 8
 VALUES = {"gray": [10], "diff": [20], "flow": [30, 31]}
 
 
-def _write_entry(folder: Path, name: str, groups, combined=False) -> ClipEntry:
-    """An entry of constant channels (gray 10, diff 20, flow 30/31), split or combined."""
-    planes = {
-        g: np.stack([np.full((T, H, W), v, np.uint8) for v in VALUES[g]], axis=1)
-        for g in features.GROUPS
-    }
-    feat = folder / f"feat-{name}.npy"
-    if combined:
-        np.save(feat, np.concatenate([planes[g] for g in features.GROUPS], axis=1))
-    else:
-        for g in groups:
-            np.save(folder / f"{g}-{name}.npy", planes[g])
+def _write_entry(folder: Path, name: str, groups) -> ClipEntry:
+    """An entry of constant channels (gray 10, diff 20, flow 30/31) in *groups*."""
+    for g in groups:
+        plane = np.stack([np.full((T, H, W), v, np.uint8) for v in VALUES[g]], axis=1)
+        np.save(folder / f"{g}-{name}.npy", plane)
     return ClipEntry(
         clip_id=name,
         recording=name,
         n_frames=T,
         n_output=T,
-        features=feat,
+        stem=folder / name,
         frame_times=folder / f"ftime-{name}.npy",
         baselines=folder / f"dt-{name}.npy",
         times=folder / f"time-{name}.npy",
         target=None,
         events=None,
-        groups=tuple(features.GROUPS if combined else groups),
-        combined=combined,
+        groups=tuple(groups),
     )
 
 
@@ -63,14 +55,16 @@ class ReaderTests(_Tmp):
         self.assertTrue((flow_x == 30).all())
         self.assertEqual(set(reader._maps), {"gray", "flow"})
 
-    def test_split_and_combined_entries_read_the_same(self):
-        split = FeatureReader(_write_entry(self.root, "s", features.GROUPS))
-        combined = FeatureReader(_write_entry(self.root, "c", (), combined=True))
+    def test_any_channel_selection_reads_in_stored_order(self):
+        reader = FeatureReader(_write_entry(self.root, "s", features.GROUPS))
+        value = dict(zip(CHANNEL_NAMES, [10, 20, 30, 31], strict=True))
         for spec in ("gray", "diff", "flow", "gray+flow_y", "gray+diff+flow"):
             channels = ChannelSet.parse(spec)
             for rows in (slice(0, 7), np.array([1, 4, 9])):
-                np.testing.assert_array_equal(
-                    split.read(rows, channels), combined.read(rows, channels)
+                block = reader.read(rows, channels)
+                self.assertEqual(
+                    [int(block[0, i, 0, 0]) for i in range(block.shape[1])],
+                    [value[n] for n in channels.names],
                 )
 
     def test_a_channel_not_stored_is_refused(self):
@@ -129,9 +123,8 @@ class RequireTests(_Tmp):
             "n_frames": T,
             "n_output": T,
             "stats": {},
+            "groups": list(groups),
         }
-        if groups is not None:
-            sidecar["groups"] = list(groups)
         name = features.prefix(clip, params)
         (self.root / "cache").mkdir(exist_ok=True)
         features.paths(self.root / "cache", name)["sidecar"].write_text(
@@ -143,20 +136,12 @@ class RequireTests(_Tmp):
         clips, clip_list = self._cached(["gray"])
         cache = self.root / "cache"
         (entry,) = features.require(clips, clip_list.preprocess, cache)
-        self.assertEqual((entry.groups, entry.combined), (("gray",), False))
+        self.assertEqual(entry.groups, ("gray",))
         features.require(clips, clip_list.preprocess, cache, ChannelSet.parse("gray"))
         with self.assertRaisesRegex(SystemExit, "--channels gray\\+flow"):
             features.require(
                 clips, clip_list.preprocess, cache, ChannelSet.parse("gray+flow_x")
             )
-
-    def test_an_entry_made_before_the_split_holds_all_four_combined(self):
-        clips, clip_list = self._cached(None)
-        (entry,) = features.require(
-            clips, clip_list.preprocess, self.root / "cache", ChannelSet.parse("all")
-        )
-        self.assertTrue(entry.combined)
-        self.assertEqual(entry.stored.names, CHANNEL_NAMES)
 
 
 class EncodeStackTests(unittest.TestCase):

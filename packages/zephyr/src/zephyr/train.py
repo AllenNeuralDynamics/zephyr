@@ -35,6 +35,7 @@ from .dataset import (
     channel_stats,
     stats_path,
 )
+from .evaluation import EVENT_TOLERANCE_FRAMES
 from .features import ClipEntry
 from .infer import predict_clip
 from .signal import detect_inhalation_events
@@ -182,6 +183,7 @@ def score_full_clips(
             truth, pred_n = truth[lo:hi], pred_n[lo:hi]
 
         corr = zero_lag_correlation(truth, pred_n)
+        tolerance = EVENT_TOLERANCE_FRAMES / fs
         truth_on, truth_off = detect_inhalation_events(truth, fs)
         pred_on, pred_off = detect_inhalation_events(pred_n, fs)
         rows.append(
@@ -189,8 +191,8 @@ def score_full_clips(
                 "clip_id": entry.clip_id,
                 "recording": entry.recording,
                 "correlation": corr,
-                "inhale_f1": event_f1(truth_on / fs, pred_on / fs),
-                "exhale_f1": event_f1(truth_off / fs, pred_off / fs),
+                "inhale_f1": event_f1(truth_on / fs, pred_on / fs, tolerance),
+                "exhale_f1": event_f1(truth_off / fs, pred_off / fs, tolerance),
                 "n_truth_onsets": len(truth_on),
                 "n_pred_onsets": len(pred_on),
             }

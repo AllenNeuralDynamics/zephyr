@@ -27,7 +27,7 @@ class ScoreTracesTests(unittest.TestCase):
                 clip_id="c1",
                 recording="r1",
                 times=Path(tmp) / "t.npy",
-                features=Path(tmp) / "feat-c1.npy",
+                stem=Path(tmp) / "c1",
                 thermistor=Path(tmp) / "thermistor.parquet",
                 events=Path(tmp) / "events.npz",
             )

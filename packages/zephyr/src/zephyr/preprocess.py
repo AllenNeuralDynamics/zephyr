@@ -35,7 +35,7 @@ from .config import (
     load,
     require_videos,
 )
-from .targets import load_target, onset_heatmap
+from .targets import load_target
 from .video import iter_frames, probe_size
 
 
@@ -113,21 +113,18 @@ TARGET_STATS = (
 """Sidecar stats that come from the thermistor rather than the video."""
 
 
-def _write_target(clip: ResolvedClip, files: dict[str, Path], out_times, sigma_s):
+def _write_target(clip: ResolvedClip, files: dict[str, Path], out_times):
     """Target and event set of a labelled clip; returns their stats.
 
     The events are the clip's ``[events]`` set (by default ``peak_detection``),
-    at the thermistor's own time resolution, never snapped to *out_times*.
+    at the thermistor's own time resolution, never snapped to *out_times*. The
+    onset head's target is not stored: training builds it per window from the
+    event times (``targets.onset_heatmap``).
     """
     target = load_target(clip.thermistor, out_times)
     found = clip.events.for_clip(clip, (out_times[0], out_times[-1]))
-    heatmap = onset_heatmap(out_times, found.inhale, sigma_s=sigma_s)
     pd.DataFrame(
-        {
-            "time": out_times,
-            "signal": target.signal.astype(np.float32),
-            "onset_heatmap": heatmap,
-        }
+        {"time": out_times, "signal": target.signal.astype(np.float32)}
     ).to_parquet(files["target"], index=False)
     np.savez(
         files["events"],
@@ -171,7 +168,7 @@ def preprocess_clip(
     previous: dict = {}
     if files["sidecar"].is_file():
         sidecar = json.loads(files["sidecar"].read_text())
-        stored = sidecar.get("groups", features.GROUPS) if sidecar["key"] == key else ()
+        stored = sidecar["groups"] if sidecar["key"] == key else ()
         if sidecar["key"] == key and set(groups) <= set(stored):
             if (sidecar["thermistor"], sidecar.get("events")) != (thermistor, labels):
                 # Arrays are reusable; only the thermistor-derived target is not.
@@ -179,13 +176,11 @@ def preprocess_clip(
                     k: v for k, v in sidecar["stats"].items() if k not in TARGET_STATS
                 }
                 if thermistor:
-                    stats |= _write_target(
-                        clip, files, np.load(files["times"]), params.onset_sigma_s
-                    )
+                    stats |= _write_target(clip, files, np.load(files["times"]))
                 sidecar |= {"stats": stats, "thermistor": thermistor, "events": labels}
                 files["sidecar"].write_text(json.dumps(sidecar, indent=2))
             return features.lookup(clip, params, cache_dir)
-        if sidecar["key"] == key and "groups" in sidecar:  # add groups to the entry
+        if sidecar["key"] == key:  # add groups to the entry
             present, previous = tuple(stored), sidecar["stats"]
     todo = tuple(g for g in features.GROUPS if g in groups and g not in present)
 
@@ -293,7 +288,7 @@ def preprocess_clip(
     if "flow" in todo:
         stats["flow_saturated_frac"] = flow_saturated / (2 * n_pixels)
     if thermistor:
-        stats |= _write_target(clip, files, out_times, params.onset_sigma_s)
+        stats |= _write_target(clip, files, out_times)
 
     files["sidecar"].write_text(
         json.dumps(

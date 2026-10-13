@@ -26,15 +26,28 @@ from .signal import (
 # Score dataclass
 # ---------------------------------------------------------------------------
 
-EVENT_TOLERANCE_S: float = 1.0 / CANONICAL_BREATHING_SAMPLING_RATE
-"""Default tolerance (seconds) for matching predicted events to GT events: one
-60 Hz frame (16.7 ms) either side.
+EVENT_TOLERANCE_FRAMES: float = 1.5
+"""Event-matching tolerance in frames of the prediction's own grid: a predicted
+event matches a true one on the frame nearest it, or the frame before or after.
 
-GT events are at the thermistor's own resolution while predictions sit on 60 Hz
-frames, so this accepts exactly the two frames that bracket the true event,
-wherever it falls between them; the next frame out is always more than a frame
-away.
+True events are at the thermistor's own resolution, between frames; one a
+fraction d <= 0.5 of a frame from its nearest frame k is 1 + d, d and 1 - d
+frames from k - 1, k and k + 1, and more than 1.5 from any other frame.
+Counting frames, not seconds, keeps the rule the same at any frame rate.
 """
+
+EVENT_TOLERANCE_S: float = EVENT_TOLERANCE_FRAMES / CANONICAL_BREATHING_SAMPLING_RATE
+"""That tolerance in seconds at 60 Hz (25 ms), the default where no frame grid is
+given; :func:`score_clip` uses the prediction's own rate (:func:`frame_tolerance_s`)."""
+
+
+def frame_tolerance_s(times: np.ndarray) -> float:
+    """:data:`EVENT_TOLERANCE_FRAMES` in seconds on the frame grid *times*."""
+    times = np.asarray(times, dtype=np.float64)
+    if len(times) < 2:
+        return EVENT_TOLERANCE_S
+    return EVENT_TOLERANCE_FRAMES * float(np.median(np.diff(times)))
+
 
 MATCH_SLACK_S: float = 1e-9
 """Added to the tolerance when matching, so an exact tie is always a match."""
@@ -302,7 +315,7 @@ def score_clip(
     truth_offset_times_s: np.ndarray | None = None,
     predicted_onset_times_s: np.ndarray | None = None,
     predicted_offset_times_s: np.ndarray | None = None,
-    tolerance_s: float = EVENT_TOLERANCE_S,
+    tolerance_s: float | None = None,
     excluded_s: np.ndarray | None = None,
 ) -> Score:
     """Compute all metrics for one clip and assemble a :class:`Score`.
@@ -331,7 +344,9 @@ def score_clip(
         are auto-detected in practice; predicted events may be supplied
         explicitly, and are otherwise detected from the predicted signal.
     tolerance_s:
-        Event-matching tolerance passed to the event metrics.
+        Event-matching tolerance passed to the event metrics; by default
+        :data:`EVENT_TOLERANCE_FRAMES` frames of *predicted_thermistor*'s own
+        sample grid (the network's output frames), whatever its rate.
     excluded_s:
         Spans ``(n, 2)`` (start, end in seconds) left out of every metric:
         their samples are not correlated, events inside them on either side
@@ -344,6 +359,8 @@ def score_clip(
         Per-clip scoring result.  Fields that cannot be computed are NaN.
     """
     fs = CANONICAL_BREATHING_SAMPLING_RATE
+    if tolerance_s is None:
+        tolerance_s = frame_tolerance_s(predicted_thermistor[TIME_COLUMN].to_numpy())
 
     # Each signal on the canonical grid from its own first sample.  Events are
     # detected there and matched as times, so the two grids need not coincide.
