@@ -10,6 +10,7 @@ from zephyr import features
 from zephyr.channels import CHANNEL_NAMES, ChannelSet, encode_stack, make_flow_estimator
 from zephyr.config import ClipList, load
 from zephyr.dataset import channel_stats
+from zephyr.evaluate import models_channels
 from zephyr.features import ClipEntry, FeatureReader
 
 T, H, W = 50, 6, 8
@@ -142,6 +143,17 @@ class RequireTests(_Tmp):
             features.require(
                 clips, clip_list.preprocess, cache, ChannelSet.parse("gray+flow_x")
             )
+
+
+class ModelsChannelsTests(unittest.TestCase):
+    def test_the_union_of_the_models_channels_is_required(self):
+        class Net:
+            def __init__(self, spec):
+                self.channels = ChannelSet.parse(spec)
+
+        models = [(Net("gray"), None, None), (Net("gray+flow_x"), None, None)]
+        self.assertEqual(models_channels(models).names, ("gray", "flow_x"))
+        self.assertIsNone(models_channels([(object(), None, None)]))
 
 
 class EncodeStackTests(unittest.TestCase):
