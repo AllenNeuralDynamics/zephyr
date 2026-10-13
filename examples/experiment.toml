@@ -27,6 +27,3 @@ held_out = { clips = "clips.toml", groups = ["3"] }
 channels = "gray+diff+flow"
 epochs = 20
 val_fraction = 0                  # no validation tail: train the full budget
-
-[fold.train_params.augmentation]
-time_stretch = 3.0

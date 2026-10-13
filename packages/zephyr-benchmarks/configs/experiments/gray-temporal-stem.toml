@@ -1,0 +1,46 @@
+# Gray-only networks with and without a 3D first layer (temporal_kernel), on the
+# benchmark fold and recipe (benchmark-gray-diff-flow-multitask.toml, channels = gray,
+# and no time stretching, which zephyr no longer has):
+# can a first layer that spans neighbouring frames stand in for the diff and flow
+# channels?  The two folds differ only in temporal_kernel.  A full run needs a GPU:
+#   zephyr run packages/zephyr-benchmarks/configs/experiments/gray-temporal-stem.toml
+seeds = [17, 42, 101, 202, 314]
+output_dir = "../../../../runs/gray-temporal-stem"
+features_dir = "../../../../runs/features-v2-current"  # data/features-v2, its arrays hard-linked, targets rebuilt
+device = "cuda"
+amp = "bf16"
+
+[[fold]]
+name = "gray-multitask"
+[[fold.train]]
+clips = "../clips/face_train.toml"
+
+[fold.test]
+new_animals = "../clips/face_test_new_animals.toml"
+known_animals_new_date = "../clips/face_test_known_animals_new_date.toml"
+
+[fold.train_params]
+channels = "gray"
+epochs = 200
+steps_per_epoch = 200
+val_fraction = 0
+w_corr = 1.0
+w_onset = 0.5
+
+[[fold]]
+name = "gray-temporal3-multitask"
+[[fold.train]]
+clips = "../clips/face_train.toml"
+
+[fold.test]
+new_animals = "../clips/face_test_new_animals.toml"
+known_animals_new_date = "../clips/face_test_known_animals_new_date.toml"
+
+[fold.train_params]
+channels = "gray"
+temporal_kernel = 3
+epochs = 200
+steps_per_epoch = 200
+val_fraction = 0
+w_corr = 1.0
+w_onset = 0.5

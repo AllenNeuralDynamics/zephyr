@@ -246,8 +246,8 @@ class ExcludedWindowTests(unittest.TestCase):
             gridded = WindowDataset([[entry]], stride=60, **kwargs)
             for dataset in (random, gridded):
                 for i in range(len(dataset)):
-                    _, start, _ = dataset.draw(i)
-                    lo, hi = start / GRID_FS, (start + dataset.extent(1.0)) / GRID_FS
+                    _, start = dataset.draw(i)
+                    lo, hi = start / GRID_FS, (start + dataset.extent()) / GRID_FS
                     self.assertFalse(lo <= 90.0 and hi >= 30.0, (lo, hi))
 
 

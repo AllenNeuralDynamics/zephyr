@@ -1,13 +1,11 @@
 """CNN frame encoder + dilated TCN sequence decoder.
 
-``FrameEncoder`` runs on each frame independently (temporally blind, so motion channels
-are precomputed); ``TemporalNet`` sees only the sequence of vectors, with dilated
-convolutions for a wide receptive field in few layers. The encoder runs on the
-*selection* grid and the TCN on the fixed 60 Hz *output* grid, joined by
-:func:`resample_embeddings` using real frame timestamps.
-
-Non-causal on purpose: inference is offline on complete clips, so padding is symmetric.
-Revisit for online closed-loop use.
+``FrameEncoder`` runs on each frame (a ``temporal_kernel > 1`` first layer spans that
+many neighbours; else motion channels are precomputed); ``TemporalNet`` sees only the
+vector sequence, with dilated convolutions for a wide receptive field in few layers.
+The encoder runs on the *selection* grid and the TCN on the 60 Hz *output* grid, joined
+by :func:`resample_embeddings` using real frame timestamps. Non-causal on purpose:
+inference is offline on complete clips, so padding is symmetric.
 """
 
 import torch
@@ -24,6 +22,11 @@ class FrameEncoder(nn.Module):
     grid rather than collapsing to a single vector: a global average would let
     opposite-signed motion in different parts of the crop cancel out, which
     would destroy directional information the loss needs.
+
+    With *temporal_kernel* > 1 (odd) the first stage is a 3D convolution over that
+    many neighbouring frames (``stem``), so the encoder sees pixel-level change
+    between frames itself, as the ``diff`` and flow channels otherwise give it; the
+    later stages stay per frame.  Sequences go through :meth:`encode_sequence`.
     """
 
     def __init__(
@@ -33,11 +36,35 @@ class FrameEncoder(nn.Module):
         embed: int = 128,
         pool: int = 2,
         dropout: float = 0.0,
+        temporal_kernel: int = 1,
     ) -> None:
         super().__init__()
+        if temporal_kernel < 1 or temporal_kernel % 2 == 0:
+            raise ValueError(
+                f"temporal_kernel must be odd and >= 1, got {temporal_kernel}"
+            )
+        self.temporal_kernel = temporal_kernel
+        # Only built when used, so a per-frame encoder keeps its parameters (and
+        # checkpoint keys) exactly as before the option existed.
+        self.stem = None
+        if temporal_kernel > 1:
+            self.stem = nn.Sequential(
+                nn.Conv3d(
+                    in_channels,
+                    widths[0],
+                    (temporal_kernel, 5, 5),
+                    stride=(1, 2, 2),
+                    padding=(temporal_kernel // 2, 2, 2),
+                    bias=False,
+                ),
+                nn.BatchNorm3d(widths[0]),
+                nn.GELU(),
+            )
         layers: list[nn.Module] = []
-        prev = in_channels
+        prev = in_channels if self.stem is None else widths[0]
         for i, width in enumerate(widths):
+            if i == 0 and self.stem is not None:
+                continue
             kernel = 5 if i == 0 else 3
             layers += [
                 nn.Conv2d(
@@ -58,8 +85,35 @@ class FrameEncoder(nn.Module):
         self.embed = embed
 
     def forward(self, frames: torch.Tensor) -> torch.Tensor:
-        """(N, C, H, W) -> (N, embed)."""
+        """(N, C, H, W) -> (N, embed): frames, or the stem's output for them."""
         return self.head(self.pool(self.trunk(frames)))
+
+    def encode_sequence(
+        self, features: torch.Tensor, chunk: int | None = None
+    ) -> torch.Tensor:
+        """(B, T, C, H, W) -> (B, T, embed).
+
+        *chunk* bounds how many frames go through the network at once.  Chunks of
+        the stem overlap by ``temporal_kernel // 2`` frames, so the result is the
+        same as one pass: zero padding in time happens only at the sequence ends.
+        """
+        b, t = features.shape[:2]
+        if self.stem is None:
+            flat = features.reshape(b * t, *features.shape[2:])
+            parts = [flat] if chunk is None else torch.split(flat, chunk)
+            return torch.cat([self(part) for part in parts]).view(b, t, -1)
+
+        x = features.transpose(1, 2)  # B, C, T, H, W
+        step = t if chunk is None else max(1, chunk // b)
+        halo = self.temporal_kernel // 2
+        out = []
+        for start in range(0, t, step):
+            lo, hi = max(0, start - halo), min(t, start + step + halo)
+            keep = slice(start - lo, start - lo + min(step, t - start))
+            stem = self.stem(x[:, :, lo:hi])[:, :, keep]  # B, W0, t', h, w
+            frames = stem.transpose(1, 2).reshape(-1, stem.shape[1], *stem.shape[3:])
+            out.append(self(frames).view(b, -1, self.embed))
+        return torch.cat(out, dim=1)
 
 
 def resample_embeddings(
@@ -233,7 +287,7 @@ class TemporalNet(nn.Module):
 
 
 class BreathingNet(nn.Module):
-    """The full model: per-frame CNN, then TCN over the frame sequence.
+    """The full model: per-frame CNN (optionally a 3D first layer), then TCN.
 
     ``channels`` names the stored channels this model consumes, in order, and
     sets the encoder's input width. Inference code reads it to
@@ -252,11 +306,16 @@ class BreathingNet(nn.Module):
         encoder_dropout: float = 0.0,
         signal_pool: int = 1,
         onset_input: str = "full",
+        temporal_kernel: int = 1,
     ) -> None:
         super().__init__()
         self.channels = channels
         self.encoder = FrameEncoder(
-            len(channels), widths, embed=embed, dropout=encoder_dropout
+            len(channels),
+            widths,
+            embed=embed,
+            dropout=encoder_dropout,
+            temporal_kernel=temporal_kernel,
         )
         self.temporal = TemporalNet(
             embed,
@@ -280,18 +339,7 @@ class BreathingNet(nn.Module):
         which is what makes whole-clip inference fit in 8 GB.  It is not useful
         during training, where activations must be retained anyway.
         """
-        b, t = features.shape[:2]
-        flat = features.reshape(b * t, *features.shape[2:])
-        if chunk is None or chunk >= flat.shape[0]:
-            embeddings = self.encoder(flat)
-        else:
-            embeddings = torch.cat(
-                [
-                    self.encoder(flat[i : i + chunk])
-                    for i in range(0, flat.shape[0], chunk)
-                ]
-            )
-        return embeddings.view(b, t, -1)
+        return self.encoder.encode_sequence(features, chunk)
 
     def forward(
         self,

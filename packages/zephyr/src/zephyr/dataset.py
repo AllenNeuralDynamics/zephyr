@@ -2,8 +2,7 @@
 
 Training samples fixed-length windows from random starts, so every valid offset is
 reachable; validation windows are gridded and non-overlapping so the number is stable.
-``window`` counts 60 Hz output samples; input frames sit on the selection grid at
-fractional positions ``stretch`` apart.
+``window`` counts 60 Hz output samples; input frames sit on the selection grid.
 The draw is keyed on the dataset index alone, never an epoch counter (spawned DataLoader
 workers hold a frozen copy); :class:`EpochRangeSampler` hands out a fresh slice of the
 index space each epoch. The companded uint8 codes are standardised per channel with
@@ -25,8 +24,6 @@ from zephyr.augment import (
     apply_spatial,
     gather_positions,
     jitter_positions,
-    rate_targeted_stretch,
-    scale_motion_channels,
 )
 from zephyr.channels import ALL_CHANNELS, CHANNEL_NAMES, N_CHANNELS, ChannelSet
 
@@ -165,7 +162,7 @@ class WindowDataset(Dataset):
         target.  Windows are drawn across lists in proportion to *weights*.
     window:
         Window length in *output* samples. Input frame count follows from
-        *select_fs* and the drawn stretch.
+        *select_fs*.
     select_fs, output_fs, motion_tau_s, onset_sigma_s:
         From the clips' :class:`~zephyr.config.PreprocessParams`.
     mean, std:
@@ -270,8 +267,8 @@ class WindowDataset(Dataset):
         self._frame_time_cache: dict[Path, np.ndarray] = {}
         self._span_cache: dict[Path, np.ndarray] = {}
 
-        # A clip must be long enough for the widest stretch draw, not just window.
-        self.max_source = int(np.ceil(self.extent(self.augment.max_source_frames))) + 1
+        # Frames a window spans, its margin included.
+        self.max_source = int(np.ceil(self.extent())) + 1
         if not 0.0 <= span[0] < span[1] <= 1.0:
             raise ValueError(f"span must satisfy 0 <= start < stop <= 1, got {span}")
         self.span = span
@@ -294,7 +291,7 @@ class WindowDataset(Dataset):
         self.usable = usable
 
         if stride is not None:
-            extent = self.extent(1.0)  # gridded mode never stretches
+            extent = self.extent()
             hop = max(1.0, stride * self.step_base)
             self.index: list[tuple[int, float]] = [
                 (i, float(start))
@@ -304,7 +301,7 @@ class WindowDataset(Dataset):
                     self.bounds[entry.features][1] - extent,
                     hop,
                 )
-                if not self._excluded(i, float(start), 1.0)
+                if not self._excluded(i, float(start))
             ]
             self.random = False
         else:
@@ -346,7 +343,7 @@ class WindowDataset(Dataset):
         clip_of, starts, rates = [], [], []
         for clip_i, entry in enumerate(self.usable):
             lo, hi = self.bounds[entry.features]
-            top = hi - 1 - self.extent(1.0)
+            top = hi - 1 - self.extent()
             grid = np.arange(lo, top, self.hop) if top > lo else np.array([float(lo)])
             target_times, _, onsets = _load_target_frame(entry)
             first = np.load(entry.frame_times)[grid.astype(int)]
@@ -368,14 +365,9 @@ class WindowDataset(Dataset):
         self.candidate_rate = rates
         self._candidate_cdf = np.cumsum(probability) / probability.sum()
 
-    def extent(self, stretch: float) -> float:
-        """Selection-grid span one window covers at *stretch*, incl. margin."""
-        return (self.n_in - 1) * stretch
-
-    def motion_scale(self, stretch: float) -> float:
-        """Motion-channel rescale factor at *stretch* (equals *stretch* at the
-        default 60 Hz / 16.67 ms pairing)."""
-        return (stretch / self.output_fs) / self.motion_tau_s
+    def extent(self) -> float:
+        """Selection-grid span one window covers, incl. margin."""
+        return float(self.n_in - 1)
 
     def __len__(self) -> int:
         return len(self.index) if not self.random else self.length
@@ -403,31 +395,28 @@ class WindowDataset(Dataset):
             self._frame_time_cache[entry.features] = times
         return times
 
-    def _draw_start(
-        self, rng: np.random.Generator, lo: int, hi: int, stretch: float
-    ) -> float:
+    def _draw_start(self, rng: np.random.Generator, lo: int, hi: int) -> float:
         """Float start position leaving room for the whole window."""
-        top = hi - 1 - self.extent(stretch)
+        top = hi - 1 - self.extent()
         return float(rng.uniform(lo, top)) if top > lo else float(lo)
 
-    def _draw(self, i: int) -> tuple[np.random.Generator | None, int, float, float]:
-        """The ``(rng, clip index, start, stretch)`` of window *i*.
+    def _draw(self, i: int) -> tuple[np.random.Generator | None, int, float]:
+        """The ``(rng, clip index, start)`` of window *i*.
 
         *rng* is the generator positioned after the draw, for the augmentation
         that follows; ``None`` in gridded mode, which draws nothing.
         """
-        stretch = 1.0
         if not self.random:
             clip_i, start = self.index[i]
-            return None, clip_i, start, stretch
+            return None, clip_i, start
 
         rng = np.random.default_rng((self.seed, i))
         # A window overlapping an excluded span is redrawn from the same
         # generator, so clips without spans draw exactly what they always did.
         for _ in range(MAX_REDRAWS):
-            clip_i, start, stretch = self._draw_random(rng)
-            if not self._excluded(clip_i, start, stretch):
-                return rng, clip_i, start, stretch
+            clip_i, start = self._draw_random(rng)
+            if not self._excluded(clip_i, start):
+                return rng, clip_i, start
         raise RuntimeError(
             f"window {i}: {MAX_REDRAWS} draws in a row overlapped excluded spans"
         )
@@ -441,77 +430,52 @@ class WindowDataset(Dataset):
             self._span_cache[entry.features] = spans
         return spans
 
-    def _excluded(self, clip_i: int, start: float, stretch: float) -> bool:
+    def _excluded(self, clip_i: int, start: float) -> bool:
         """Whether the window at *start* overlaps one of its clip's excluded spans."""
         entry = self.usable[clip_i]
         spans = self._spans(entry)
         if not len(spans):
             return False
         frame_times = self._frame_times(entry)
-        last = min(len(frame_times) - 1, int(np.ceil(start + self.extent(stretch))))
+        last = min(len(frame_times) - 1, int(np.ceil(start + self.extent())))
         lo, hi = frame_times[int(start)], frame_times[last]
         return bool(np.any((spans[:, 0] <= hi) & (spans[:, 1] >= lo)))
 
-    def _draw_random(self, rng: np.random.Generator) -> tuple[int, float, float]:
-        """One random ``(clip index, start, stretch)``, ignoring excluded spans."""
-        stretch = 1.0
-        balanced = self.rate_balance > 0
-        if balanced:
+    def _draw_random(self, rng: np.random.Generator) -> tuple[int, float]:
+        """One random ``(clip index, start)``, ignoring excluded spans."""
+        if self.rate_balance > 0:
             c = int(np.searchsorted(self._candidate_cdf, rng.random(), side="right"))
             c = min(c, len(self._candidate_cdf) - 1)
             clip_i = int(self.candidate_clip[c])
             entry = self.usable[clip_i]
             lo, hi = self.bounds[entry.features]
-            top = max(float(lo), hi - 1 - self.extent(1.0))
+            top = max(float(lo), hi - 1 - self.extent())
             start = min(float(self.candidate_start[c] + rng.uniform(0, self.hop)), top)
         else:
             clip_i = int(rng.choice(len(self.usable), p=self.weights))
             entry = self.usable[clip_i]
             lo, hi = self.bounds[entry.features]
-            start = self._draw_start(rng, lo, hi, 1.0)
-        if self.augment.time_stretch > 1.0:
-            # Measure the rate on a provisional window first, then choose
-            # the stretch: the target is already in memory, so this costs a
-            # peak count and nothing else.
-            target_times, signal_all, _ = self._target(entry)
-            probe_t = float(self._frame_times(entry)[int(start)])
-            probe = int(
-                np.clip(
-                    round((probe_t - target_times[0]) * self.output_fs),
-                    0,
-                    max(0, len(signal_all) - self.window),
-                )
-            )
-            stretch = rate_targeted_stretch(
-                signal_all[probe : probe + self.window],
-                rng,
-                self.augment,
-                self.output_fs,
-            )
-            if balanced:  # keep the balanced start; only make the window fit
-                start = min(start, max(float(lo), hi - 1 - self.extent(stretch)))
-            else:
-                start = self._draw_start(rng, lo, hi, stretch)
-        return clip_i, start, stretch
+            start = self._draw_start(rng, lo, hi)
+        return clip_i, start
 
-    def draw(self, i: int) -> tuple[int, float, float]:
-        """Which clip, where, and at what stretch window *i* is cut.
+    def draw(self, i: int) -> tuple[int, float]:
+        """Which clip and where window *i* is cut.
 
         Exposed because the draw is the dataset's whole contract with training:
         a test pins the first draws of a known run, so a refactor that shifted
         them would silently change what every seed trains on.
         """
-        _, clip_i, start, stretch = self._draw(i)
-        return clip_i, start, stretch
+        _, clip_i, start = self._draw(i)
+        return clip_i, start
 
     def __getitem__(self, i: int) -> dict[str, torch.Tensor]:
         window = self.window
-        rng, clip_i, start, stretch = self._draw(i)
+        rng, clip_i, start = self._draw(i)
         entry = self.usable[clip_i]
         target_times, signal_all, onset_times = self._target(entry)
         frame_times = self._frame_times(entry)
 
-        positions = start + np.arange(self.n_in) * stretch
+        positions = start + np.arange(self.n_in, dtype=np.float64)
         if rng is not None and self.augment.select_jitter > 0:
             positions = jitter_positions(positions, rng, self.augment.select_jitter)
         positions = np.clip(positions, 0.0, entry.n_frames - 1)
@@ -523,16 +487,12 @@ class WindowDataset(Dataset):
 
         in_times = gather_positions(frame_times, positions, dtype=np.float64)
         origin = float(in_times[self.margin])
-        out_times = origin + np.arange(window) * (stretch / self.output_fs)
+        out_times = origin + np.arange(window) / self.output_fs
 
         signal = np.interp(out_times, target_times, signal_all).astype(np.float32)
         heatmap = onset_heatmap(out_times, onset_times, sigma_s=self.onset_sigma_s)
 
         if rng is not None and self.augment.enabled:
-            if self.augment.scale_motion:
-                block = scale_motion_channels(
-                    block, self.motion_scale(stretch), self.channels
-                )
             block = apply_spatial(block, rng, self.augment, self.channels)
 
         features = torch.from_numpy(np.ascontiguousarray(block, dtype=np.float32))

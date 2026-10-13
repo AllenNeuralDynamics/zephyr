@@ -28,4 +28,3 @@ w_onset = 0.5
 rate_balance = 1.0
 
 [fold.train_params.augmentation]
-time_stretch = 1.0

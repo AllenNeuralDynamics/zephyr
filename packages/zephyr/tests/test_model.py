@@ -129,5 +129,68 @@ class SignalPoolPlumbingTests(unittest.TestCase):
         self.assertEqual(loaded.temporal.onset_input, "both")
 
 
+def _frames(t=9, size=32, seed=0) -> torch.Tensor:
+    return torch.randn(
+        2, t, 1, size, size, generator=torch.Generator().manual_seed(seed)
+    )
+
+
+class TemporalKernelTests(unittest.TestCase):
+    def test_default_encoder_is_per_frame_with_its_old_keys(self):
+        model = BreathingNet(channels=GRAY)
+        self.assertIsNone(model.encoder.stem)
+        self.assertFalse(any("stem" in k for k in model.state_dict()))
+        self.assertEqual(
+            model.state_dict()["encoder.trunk.0.weight"].shape, (32, 1, 5, 5)
+        )
+        self.assertEqual(ZEPHYR.kwargs(TrainParams()), {})
+
+    def test_the_stem_sees_neighbouring_frames_and_only_them(self):
+        for kernel, reach in ((1, 0), (3, 1), (5, 2)):
+            model = BreathingNet(channels=GRAY, temporal_kernel=kernel).eval()
+            x = _frames()
+            changed = x.clone()
+            changed[:, 4] += 1.0  # one frame changes
+            with torch.no_grad():
+                moved = (model.encode(changed) - model.encode(x)).abs().amax(dim=(0, 2))
+            touched = sorted(int(i) for i in torch.nonzero(moved > 1e-6))
+            self.assertEqual(touched, list(range(4 - reach, 5 + reach)), kernel)
+
+    def test_chunks_give_the_same_embeddings_as_one_pass(self):
+        model = BreathingNet(channels=GRAY, temporal_kernel=3).eval()
+        x = _frames(t=11)
+        with torch.no_grad():
+            whole = model.encode(x)
+            for chunk in (2, 6, 7, 100):
+                torch.testing.assert_close(model.encode(x, chunk=chunk), whole)
+
+    def test_even_kernels_are_refused(self):
+        with self.assertRaisesRegex(ValueError, "odd"):
+            TrainParams(temporal_kernel=2)
+        with self.assertRaisesRegex(ValueError, "odd"):
+            BreathingNet(channels=GRAY, temporal_kernel=4)
+
+    def test_checkpoint_rebuilds_the_stem(self):
+        params = TrainParams(channels="gray", temporal_kernel=3)
+        kwargs = ZEPHYR.kwargs(params)
+        self.assertEqual(kwargs, {"temporal_kernel": 3})
+        model = ZEPHYR.build(GRAY, params, None, None, **kwargs)
+        state = {
+            "model": model.state_dict(),
+            "channels": ["gray"],
+            "feature_config": {"channel_names": list(CHANNEL_NAMES)},
+            "mean": np.zeros(len(CHANNEL_NAMES)),
+            "std": np.ones(len(CHANNEL_NAMES)),
+            "arch": "zephyr",
+            "arch_kwargs": kwargs,
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "best.pt"
+            torch.save(state, path)
+            loaded, *_ = load_checkpoint(path, torch.device("cpu"))
+        self.assertEqual(loaded.encoder.temporal_kernel, 3)
+        self.assertIsNotNone(loaded.encoder.stem)
+
+
 if __name__ == "__main__":
     unittest.main()

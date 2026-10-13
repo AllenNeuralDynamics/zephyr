@@ -28,5 +28,4 @@ w_onset = 0.5
 val_fraction = 0
 
 [fold.train_params.augmentation]
-time_stretch = 1.0
 select_jitter = 0.0

@@ -1,4 +1,7 @@
-"""The shipped benchmark config reproduces the reference runs' inputs.
+"""The shipped benchmark configs match the reference runs' inputs.
+
+Every setting but time stretching, which zephyr no longer has: the benchmark
+fold's runs were trained with it, the baseline folds' were not.
 
 These read local data (``data/``, ``benchmarks/`` at the repository root), which
 is not in the repository, so each test skips when its inputs are absent.
@@ -10,21 +13,14 @@ import re
 import unittest
 from pathlib import Path
 
-import numpy as np
-
-from zephyr import features
 from zephyr.benchmarks.config import BenchmarkExperiment
-from zephyr.channels import ChannelSet
 from zephyr.config import load
-from zephyr.dataset import WindowDataset
-from zephyr.train import augment_config
 
 ROOT = Path(__file__).resolve().parents[3]
 CONFIGS = Path(__file__).resolve().parents[1] / "configs"
 EXPERIMENT = CONFIGS / "experiments/benchmark-gray-diff-flow-multitask.toml"
 RUNS = ROOT / "benchmarks/input-objective-v1/runs"
 FIXTURE = Path(__file__).parent / "fixtures/window_draws_seed42.json"
-CACHE = ROOT / "data/features-v2"
 
 needs_data = unittest.skipUnless((ROOT / "data/train").is_dir(), "no local data")
 
@@ -71,10 +67,9 @@ def _assert_params_match_runs(case, fold, runs, seeds) -> None:
             expected["tscan_img_size"] = _arg(args, "tscan_img_size")
         for key, value in expected.items():
             case.assertEqual(getattr(p, key), value, f"{run.name}: {key}")
+        # Time stretching (time_stretch, rate_range, scale_motion) is gone from zephyr;
+        # runs trained with it are matched on every other setting.
         aug = {
-            "time_stretch": _arg(args, "time_stretch"),
-            "rate_range": tuple(_arg(args, "rate_range")),
-            "scale_motion": not _arg(args, "no_scale_motion"),
             "select_jitter": _arg(args, "select_jitter"),
             "motion_noise": _arg(args, "motion_noise"),
             "shift_px": _arg(args, "shift_px"),
@@ -128,36 +123,6 @@ class BenchmarkFoldTests(unittest.TestCase):
         ]
         (clips,) = self.fold.train_clips()
         self.assertEqual([c.video for c in clips], wanted)
-
-    @unittest.skipUnless(CACHE.is_dir(), "features-v2 not preprocessed")
-    def test_window_draws_match_the_pre_refactor_dataset(self):
-        fixture = json.loads(FIXTURE.read_text())
-        params = self.fold.train_params
-        recipe = self.fold.preprocess
-        (clips,) = self.fold.train_clips()
-        entries = features.require(clips, recipe, CACHE)
-        dataset = WindowDataset(
-            [entries],
-            window=params.window,
-            mean=np.zeros(4),
-            std=np.ones(4),
-            length=params.epochs * params.steps_per_epoch * params.batch_size,
-            seed=fixture["seed"],
-            augment=augment_config(params),
-            channels=ChannelSet.parse(params.channels),
-            select_fs=recipe.select_fs,
-            output_fs=60.0,
-            motion_tau_s=recipe.motion_tau_s,
-            onset_sigma_s=recipe.onset_sigma_s,
-        )
-        for draw in fixture["draws"]:
-            clip_i, start, stretch = dataset.draw(draw["i"])
-            session_part = draw["clip"].removeprefix("train_")
-            self.assertEqual(
-                dataset.usable[clip_i].clip_id, f"train/video_face_{session_part}"
-            )
-            self.assertEqual(start, draw["start"])
-            self.assertEqual(stretch, draw["stretch"])
 
 
 if __name__ == "__main__":

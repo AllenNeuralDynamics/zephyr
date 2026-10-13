@@ -354,7 +354,7 @@ class PhysNetBreathingEvent(nn.Module):
 
 ARCHS = ("zephyr", "tscan", "physnet", "physnet_event")
 ARCH_OPTIONS = {
-    "zephyr": {"signal_pool", "onset_input"},
+    "zephyr": {"signal_pool", "onset_input", "temporal_kernel"},
     "tscan": {"img_size"},
     "physnet": set(),
     "physnet_event": set(),

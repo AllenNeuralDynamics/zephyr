@@ -62,8 +62,10 @@ Clip lists and experiments:
 ## Reference configs
 
 `configs/experiments/benchmark-gray-diff-flow-multitask.toml` and `baselines-nets.toml`
-(zephyr-benchmarks) reproduce the runs in `benchmarks/`, pinned by
-`tests/test_reproduction.py`. Copy them; never edit them.
+(zephyr-benchmarks) hold the settings of the runs in `benchmarks/`, pinned by
+`tests/test_reproduction.py`. Copy them; never edit them. Time stretching has been removed
+from zephyr, and the benchmark fold's runs were trained with it (`time_stretch = 3`), so
+that config no longer reproduces them exactly; `baselines-nets.toml` does.
 
 ## The corpus (zephyr-dataset)
 

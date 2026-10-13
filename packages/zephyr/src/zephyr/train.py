@@ -78,6 +78,8 @@ def _zephyr_kwargs(params: TrainParams) -> dict:
         kwargs["signal_pool"] = params.signal_pool
     if params.onset_input != "full":
         kwargs["onset_input"] = params.onset_input
+    if params.temporal_kernel > 1:
+        kwargs["temporal_kernel"] = params.temporal_kernel
     return kwargs
 
 

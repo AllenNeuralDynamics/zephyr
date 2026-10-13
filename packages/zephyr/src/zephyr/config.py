@@ -441,23 +441,14 @@ class Augmentation(_Model):
     config's own no-op defaults, because they are what a training run wants.
     """
 
-    time_stretch: float = Field(3.0, ge=1.0)
-    rate_range: tuple[float, float] | None = (1.0, 7.0)
-    scale_motion: bool = True
     select_jitter: float = Field(0.25, ge=0)
     motion_noise: float = Field(2.0, ge=0)
     shift_px: int = Field(4, ge=0)
+    scale: float = Field(0.0, ge=0, lt=1)
     brightness: float = Field(0.15, ge=0)
     contrast: float = Field(0.2, ge=0)
     noise: float = Field(2.0, ge=0)
     flip: float = Field(0.0, ge=0, le=1)
-
-    @field_validator("rate_range")
-    @classmethod
-    def _ordered_band(cls, value):
-        if value is not None and not 0 < value[0] < value[1]:
-            raise ValueError(f"rate_range {list(value)} needs 0 < low < high")
-        return value
 
 
 class TrainParams(_Model):
@@ -491,6 +482,9 @@ class TrainParams(_Model):
     """The signal head reads the TCN's output average-pooled by this factor in
     time and upsampled back (smoother trace). 1 is the network without the
     branch."""
+    temporal_kernel: PositiveInt = 1
+    """Frames the encoder's first layer spans (odd): 1 is the per-frame network; 3 or 5
+    make it a 3D convolution that sees change between neighbouring frames itself."""
     onset_input: Literal["full", "pooled", "both"] = "full"
     """What the onset head reads: the TCN's full-rate output, the pooled branch's,
     or both concatenated. ``pooled`` and ``both`` need ``signal_pool > 1``."""
@@ -525,6 +519,23 @@ class TrainParams(_Model):
                 f"rate_bins_hz {list(value)} needs two or more increasing edges > 0"
             )
         return value
+
+    @field_validator("temporal_kernel")
+    @classmethod
+    def _odd_kernel(cls, value: int) -> int:
+        if value % 2 == 0:
+            raise ValueError(f"temporal_kernel must be odd (centred), got {value}")
+        return value
+
+    @model_validator(mode="after")
+    def _zoom_needs_no_flow(self) -> "TrainParams":
+        flow = {"flow_x", "flow_y"} & set(ChannelSet.parse(self.channels).names)
+        if self.augmentation.scale > 0 and flow:
+            raise ValueError(
+                f"augmentation scale cannot zoom the flow channels {sorted(flow)}: "
+                "train on channels without flow (gray, gray+diff) or leave it at 0"
+            )
+        return self
 
     @model_validator(mode="after")
     def _onset_input_needs_the_branch(self) -> "TrainParams":

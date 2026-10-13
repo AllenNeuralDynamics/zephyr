@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 
+import cv2
 import numpy as np
-from scipy.signal import find_peaks
 
 from .channels import ChannelSet
 
@@ -21,22 +21,6 @@ class AugmentConfig:
 
     Attributes
     ----------
-    time_stretch:
-        Bound on the stretch factor.  With *rate_range* unset, factors are drawn
-        log-uniformly on ``[1/time_stretch, time_stretch]``.  With *rate_range*
-        set, this is the clamp applied to the rate-targeted factor.  1.0
-        disables stretching entirely.
-    rate_range:
-        Target signal-rate band in Hz.  When set, each window's own rate is
-        measured and the stretch chosen to land the output at a rate drawn
-        uniformly from this band, which flattens the rate distribution the
-        model sees rather than merely widening it.
-    scale_motion:
-        Rescale the motion channels by the stretch factor.  ``diff`` is
-        ``I(t) - I(t-dt)``, proportional to ``dt`` for small intervals, so
-        changing the effective frame interval must scale it or a stretched
-        sample pairs a slow rhythm with fast-rhythm motion magnitudes.  A no-op
-        when no motion channel is selected.
     select_jitter:
         Maximum perturbation, in selection-grid units, applied independently to
         each input frame's position (its timestamp moves with it).
@@ -48,6 +32,12 @@ class AugmentConfig:
     shift_px:
         Maximum spatial translation in pixels, drawn uniformly per axis.  Guards
         against the model keying on the crop's absolute position.
+    scale:
+        Maximum fractional zoom (``0.1`` draws 0.9 to 1.1), drawn uniformly, one per
+        window about the crop centre with the edge pixels repeated.  Covers camera
+        distance.  The flow channels are companded vectors, which a zoom would have
+        to decode, rescale and encode, so a model that reads them refuses it
+        (``TrainParams``).
     brightness / contrast:
         Applied to the ``gray`` channel only, as fractional deviations from 1.0.
         The motion channels are differences and are already invariant to a
@@ -66,12 +56,10 @@ class AugmentConfig:
     model sees no motion scaling, a motion-only model no photometric jitter.
     """
 
-    time_stretch: float = 1.0
-    rate_range: tuple[float, float] | None = None
-    scale_motion: bool = True
     select_jitter: float = 0.0
     motion_noise: float = 0.0
     shift_px: int = 0
+    scale: float = 0.0
     brightness: float = 0.0
     contrast: float = 0.0
     noise: float = 0.0
@@ -80,87 +68,15 @@ class AugmentConfig:
     @property
     def enabled(self) -> bool:
         return (
-            self.time_stretch > 1.0
-            or self.select_jitter > 0
+            self.select_jitter > 0
             or self.motion_noise > 0
             or self.shift_px > 0
+            or self.scale > 0
             or self.brightness > 0
             or self.contrast > 0
             or self.noise > 0
             or self.flip > 0
         )
-
-    @property
-    def max_source_frames(self) -> float:
-        """Multiplier on the window's selection-grid span at the widest draw."""
-        return max(1.0, self.time_stretch)
-
-
-def draw_stretch(rng: np.random.Generator, max_factor: float) -> float:
-    """Draw a stretch factor log-uniformly on ``[1/max, max]``.
-
-    Log-uniform rather than uniform so that halving and doubling the rate are
-    equally likely; a uniform draw on ``[0.5, 2]`` would spend three quarters of
-    its mass on speeding the recording up, which is the direction that does not
-    need help.
-    """
-    if max_factor <= 1.0:
-        return 1.0
-    log_max = np.log(max_factor)
-    return float(np.exp(rng.uniform(-log_max, log_max)))
-
-
-def local_rate_hz(signal: np.ndarray, fs: float = 60.0) -> float:
-    """Oscillation rate of one window, by counting prominent peaks.
-
-    Peak counting rather than a spectral peak: a short window gives a
-    frequency-domain estimate too little resolution, and its maximum is
-    readily captured by envelope drift.
-    """
-    if len(signal) < 4:
-        return 0.0
-    x = signal - signal.mean()
-    sd = x.std()
-    if sd <= 0:
-        return 0.0
-    peaks, _ = find_peaks(x / sd, distance=max(1, int(fs / 20)), prominence=0.5)
-    return len(peaks) / (len(signal) / fs)
-
-
-def rate_targeted_stretch(
-    signal: np.ndarray,
-    rng: np.random.Generator,
-    config: AugmentConfig,
-    fs: float = 60.0,
-) -> float:
-    """Stretch factor that lands this window's rate inside ``config.rate_range``.
-
-    Falls back to 1.0 when the window's rate cannot be measured.
-    """
-    if config.rate_range is None:
-        return draw_stretch(rng, config.time_stretch)
-    rate = local_rate_hz(signal, fs)
-    if rate <= 0:
-        return 1.0
-    desired = rng.uniform(*config.rate_range)
-    bound = max(1.0, config.time_stretch)
-    return float(np.clip(desired / rate, 1.0 / bound, bound))
-
-
-def scale_motion_channels(
-    block: np.ndarray, stretch: float, channels: ChannelSet
-) -> np.ndarray:
-    """Scale whichever motion channels are selected about their 128 centre."""
-    if stretch == 1.0:
-        return block
-    for name in MOTION_CHANNELS:
-        position = channels.position(name)
-        if position is None:
-            continue
-        block[:, position] = np.clip(
-            (block[:, position] - 128.0) * stretch + 128.0, 0.0, 255.0
-        )
-    return block
 
 
 def gather_positions(
@@ -220,16 +136,37 @@ def noise_scales(
     return sd if sd.any() else None
 
 
+def zoom(block: np.ndarray, factor: float) -> np.ndarray:
+    """Zoom every frame of a ``(T, C, H, W)`` block about its centre."""
+    height, width = block.shape[2:]
+    matrix = cv2.getRotationMatrix2D(((width - 1) / 2, (height - 1) / 2), 0.0, factor)
+    out = np.empty_like(block)
+    for t in range(block.shape[0]):
+        frame = np.ascontiguousarray(block[t].transpose(1, 2, 0))  # H, W, C
+        warped = cv2.warpAffine(
+            frame,
+            matrix,
+            (width, height),
+            flags=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_REPLICATE,
+        )
+        out[t] = warped.reshape(height, width, -1).transpose(2, 0, 1)
+    return out
+
+
 def apply_spatial(
     block: np.ndarray,
     rng: np.random.Generator,
     config: AugmentConfig,
     channels: ChannelSet,
 ) -> np.ndarray:
-    """Shift, flip, and photometrically jitter a ``(T, C, H, W)`` float block.
+    """Zoom, shift, flip, and photometrically jitter a ``(T, C, H, W)`` float block.
 
     *block* holds only the channels in *channels*, in that order.
     """
+    if config.scale > 0:
+        block = zoom(block, float(rng.uniform(1.0 - config.scale, 1.0 + config.scale)))
+
     if config.shift_px > 0:
         dy = int(rng.integers(-config.shift_px, config.shift_px + 1))
         dx = int(rng.integers(-config.shift_px, config.shift_px + 1))
