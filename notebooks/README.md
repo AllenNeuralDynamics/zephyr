@@ -22,6 +22,14 @@ uv run marimo export html notebooks/walkthrough.py -o walkthrough.html --no-incl
   from the corpus's saved DocDB return, and compares the result with the corpus.
   It writes only that new folder, and only when its Rebuild button is pressed
   (about 15 minutes; the raw thermistors come from S3).
+- `test_sets.py`: networks scored on the split's test sets A, B and C, clip by clip:
+  scores per video and per animal, against what is known of each clip (thermistor
+  quality, image statistics, rig), and the time offset between each network's
+  prediction and the thermistor. It reads a local folder (`utils/test_sets.py`, `LAYOUT`;
+  `ZEPHYR_TEST_ROOT`) holding the test lists, their cache entries, the checkpoints and
+  one `zephyr evaluate` result per network, made with `ZEPHYR_PATH_MAP` pointing the
+  folder's dataset copy at `/data/zephyr-dataset`. Image statistics and lags (inference
+  on every clip, behind a button) are cached in `cache/`.
 - `utils/animation.py`: `session_movie(...)` renders a whole test recording (both
   videos) as a real-time MP4 of the scrubber figure (video, the four channels, a
   scrolling trace window), e.g. `uv run --project .. python -m utils.animation 6
