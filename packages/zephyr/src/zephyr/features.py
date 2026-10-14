@@ -16,7 +16,7 @@ from pathlib import Path
 import numpy as np
 
 from .channels import CHANNEL_GROUPS, ChannelSet
-from .config import PreprocessParams, ResolvedClip, dump
+from .config import PreprocessParams, ResolvedClip, canonical, dump
 
 GROUPS = ("gray", "diff", "flow")
 """How channels are stored: one file per group, in stored channel order."""
@@ -80,8 +80,8 @@ def cache_key(clip: ResolvedClip, params: PreprocessParams) -> dict:
         if params.KEY_DEFAULTS.get(k, object()) != v
     }
     return {
-        "video": clip.video.as_posix(),
-        "timestamps": clip.timestamps.as_posix(),
+        "video": canonical(clip.video),
+        "timestamps": canonical(clip.timestamps),
         "preprocess": recipe,
         "box": list(clip.box),
     }
@@ -132,7 +132,7 @@ def lookup(
     sidecar = json.loads(files["sidecar"].read_text())
     if sidecar["key"] != cache_key(clip, params):
         return None
-    wanted = clip.thermistor.as_posix() if clip.thermistor else None
+    wanted = canonical(clip.thermistor) if clip.thermistor else None
     if sidecar["thermistor"] != wanted:
         return None
     if wanted and sidecar.get("events") != events_identity(clip):

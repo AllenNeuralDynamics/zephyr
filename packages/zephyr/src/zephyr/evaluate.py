@@ -29,7 +29,7 @@ from zephyr.channels import ChannelSet
 from zephyr.model import BreathingNet
 
 from . import features
-from .config import ClipList, ResolvedClip, load, require_videos
+from .config import ClipList, ResolvedClip, canonical, load, require_videos
 from .evaluation import Score, score_clip
 from .events import Events
 from .features import ClipEntry
@@ -112,7 +112,7 @@ def refuse_leaked(states: list[dict], clips: list[ResolvedClip]) -> None:
             *state.get("inherited_recordings", ()),
         }
         for clip in clips:
-            if str(clip.video) in trained_videos:
+            if canonical(clip.video) in trained_videos:
                 leaked.append(f"{clip.name} (trained on this video)")
             elif clip.recording_id in trained_recordings:
                 leaked.append(f"{clip.name} (trained on its recording)")
@@ -543,14 +543,28 @@ def main(argv: list[str] | None = None, *, loader: Loader = load_checkpoint) -> 
     if args.name and len(args.clips) != 1:
         raise SystemExit("--name names one group, so it needs exactly one --clips list")
 
-    lists = {(args.name or path.stem): load(ClipList, path) for path in args.clips}
+    # Scoring reads the cache and the thermistor only, so the videos and timestamps may
+    # live elsewhere (cached entries are found by ZEPHYR_PATH_MAP; see config.canonical).
+    lists = {
+        (args.name or path.stem): load(ClipList, path, check_files=False)
+        for path in args.clips
+    }
     recipes = {lst.preprocess for lst in lists.values()}
     if len(recipes) != 1:
         raise SystemExit("the clip lists disagree on [preprocess]")
+    clips = [c for lst in lists.values() for c in lst.resolve()]
     try:
-        require_videos([c for lst in lists.values() for c in lst.resolve()], "scoring")
+        require_videos(clips, "scoring")
     except ValueError as exc:
         raise SystemExit(str(exc)) from None
+    absent = sorted(
+        {str(t) for c in clips if (t := c.thermistor) is not None and not t.is_file()}
+    )
+    if absent:
+        raise SystemExit(
+            f"{len(absent)} thermistor file(s), the truth clips are scored against, do "
+            f"not exist: {absent[:5]}"
+        )
     evaluate_groups(
         args.checkpoint,
         {name: lst.resolve() for name, lst in lists.items()},

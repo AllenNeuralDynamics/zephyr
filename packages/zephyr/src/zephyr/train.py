@@ -28,7 +28,7 @@ from zephyr.channels import CHANNEL_NAMES, ChannelSet
 from zephyr.model import BreathingLoss, BreathingNet
 
 from . import features
-from .config import OUTPUT_FS, Fold, TrainParams, dump
+from .config import OUTPUT_FS, Fold, TrainParams, canonical, dump
 from .dataset import (
     EpochRangeSampler,
     WindowDataset,
@@ -252,7 +252,7 @@ def train_fold(
     ]
     weights = [source.weight for source in fold.train]
     train_entries = [e for source in sources for e in source]
-    train_videos = [str(e.video) for e in train_entries]
+    train_videos = [canonical(e.video) for e in train_entries]
     train_recordings = sorted({e.recording for e in train_entries})
     resolved = {
         "seed": seed,

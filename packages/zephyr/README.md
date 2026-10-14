@@ -100,6 +100,24 @@ the download).
    uv run zephyr evaluate --checkpoint runs/example/fold/seed-42/best.pt --clips <list.toml> --cache data/features-example --out evaluation.json
    ```
 
+   Scoring reads only the cache and each clip's thermistor, so the videos and
+   timestamps need not be on the machine once their entries are cached.
+
+**A copy of a dataset elsewhere.** Cache keys, sidecars and the training record name
+clips by their absolute paths (in `/` form, `config.canonical`), so a cache made at
+`/data/zephyr-dataset` is not found from a copy at `C:/Data/zephyr-dataset`, and a
+checkpoint's record would not catch its own training clips there. Say which folder is
+a copy of which, and the copy is named as the original everywhere a path is an identity
+(files are still read from the copy):
+
+```bash
+ZEPHYR_PATH_MAP="C:/Data/zephyr-dataset=/data/zephyr-dataset" uv run zephyr evaluate ...
+```
+
+Several pairs are separated by `;`. With it set, a cache made on Code Ocean, copied to
+this machine, is used as it is, and one preprocessed here is the one Code Ocean would
+make. Without it nothing changes.
+
 `zephyr.infer.predict_clip` runs inference on an arbitrary preprocessed clip
 and checkpoint; see its docstring.
 

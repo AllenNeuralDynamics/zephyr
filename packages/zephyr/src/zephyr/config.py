@@ -11,8 +11,10 @@ label in two folders is two recordings.
 """
 
 import argparse
+import functools
 import itertools
 import json
+import os
 import re
 import string
 import tomllib
@@ -51,6 +53,41 @@ def _anchor(path: Path, info: ValidationInfo) -> Path:
 
 RelPath = Annotated[Path, AfterValidator(_anchor)]
 """A path written relative to the file it appears in, absolute once loaded."""
+
+PATH_MAP_ENV = "ZEPHYR_PATH_MAP"
+"""``<copy>=<original>[;<copy>=<original>...]``: folders on this machine that are copies of
+folders elsewhere (e.g. ``C:/Data/zephyr-dataset=/data/zephyr-dataset``). See
+:func:`canonical`."""
+
+
+def _fold(text: str) -> str:
+    """*text* for comparing paths: case-blind where the file system is (Windows)."""
+    return text.lower() if os.name == "nt" else text
+
+
+@functools.cache
+def _path_map(text: str) -> tuple[tuple[str, str], ...]:
+    pairs = []
+    for item in filter(None, (part.strip() for part in text.split(";"))):
+        copy, sep, original = item.partition("=")
+        if not sep or not copy.strip() or not original.strip():
+            raise ValueError(f"{PATH_MAP_ENV}: {item!r} is not <copy>=<original>")
+        root = Path(copy.strip()).resolve().as_posix().rstrip("/")
+        pairs.append((_fold(root), original.strip().rstrip("/")))
+    return tuple(pairs)
+
+
+def canonical(path: Path) -> str:
+    """*path* as the cache keys, sidecars and run records name it: in ``/`` form, and
+    inside a copied folder (:data:`PATH_MAP_ENV`) as the original's path, so a copy of a
+    dataset finds the caches made from the original and its checkpoints' training
+    records. Without a map, ``path.as_posix()``."""
+    text = path.as_posix()
+    folded = _fold(text)
+    for root, original in _path_map(os.environ.get(PATH_MAP_ENV, "")):
+        if folded == root or folded.startswith(root + "/"):
+            return original + text[len(root) :]
+    return text
 
 
 class _Model(BaseModel):
@@ -298,7 +335,7 @@ class ResolvedClip(_Model):
     @property
     def recording_id(self) -> str:
         """The recording as one string, for reports and run records."""
-        return f"{self.source.parent.as_posix()}#{self.group}"
+        return f"{canonical(self.source.parent)}#{self.group}"
 
     @property
     def name(self) -> str:

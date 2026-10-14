@@ -1,7 +1,7 @@
 import math
 import unittest
 
-from zephyr.config import ResolvedClip
+from zephyr.config import ResolvedClip, canonical
 from zephyr.evaluate import build_result, refuse_leaked, summarise_rows
 
 
@@ -60,7 +60,7 @@ class RefuseLeakedTests(unittest.TestCase):
     def setUp(self):
         self.trained = _clip("train", "1")
         self.state = {
-            "train_videos": [str(self.trained.video)],
+            "train_videos": [canonical(self.trained.video)],
             "train_recordings": [self.trained.recording_id],
         }
 
@@ -84,9 +84,9 @@ class RefuseLeakedTests(unittest.TestCase):
     def test_refuses_what_the_init_from_parent_trained_on(self):
         parent = _clip("parent", "7")
         fine_tuned = {
-            "train_videos": [str(self.trained.video)],
+            "train_videos": [canonical(self.trained.video)],
             "train_recordings": [self.trained.recording_id],
-            "inherited_videos": [str(parent.video)],
+            "inherited_videos": [canonical(parent.video)],
             "inherited_recordings": [parent.recording_id],
         }
         with self.assertRaisesRegex(SystemExit, "trained on this video"):

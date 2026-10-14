@@ -97,6 +97,10 @@ resumable steps; what each does and the folder layout are in its README.
   `preprocess` run on a local copy (`zephyr annotate --remote` only skips checking that
   a list's clips exist and reads cached frames). Never rename remote objects; delete only with
   `clips --prune`.
+- Paths that identify a clip (cache keys, sidecars, `train_videos`, recordings) go
+  through `config.canonical`, never `str()` or a raw comparison; a local copy of a
+  dataset is named as the original with `ZEPHYR_PATH_MAP` (zephyr README), never by
+  moving or renaming cache entries.
 - Feature caches store one file per channel group; core reads channels only through
   `features.reader`.
 

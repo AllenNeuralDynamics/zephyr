@@ -32,6 +32,7 @@ from .config import (
     ClipList,
     PreprocessParams,
     ResolvedClip,
+    canonical,
     load,
     require_videos,
 )
@@ -161,7 +162,7 @@ def preprocess_clip(
     started = time_module.perf_counter()
     key = features.cache_key(clip, params)
     files = features.paths(cache_dir, features.prefix(clip, params))
-    thermistor = clip.thermistor.as_posix() if clip.thermistor else None
+    thermistor = canonical(clip.thermistor) if clip.thermistor else None
     labels = features.events_identity(clip) if thermistor else None
 
     present: tuple[str, ...] = ()
