@@ -169,6 +169,25 @@ def _(df, done, info, network, root, run_lags, total):
 @app.cell
 def _():
     mo.md("""
+    ## Thermistor quality
+    """)
+    return
+
+
+@app.cell
+def _():
+    return
+
+
+@app.cell
+def _(lag_table, root):
+    test_sets.qc_figure(test_sets.qc_table(root, lag_table))
+    return
+
+
+@app.cell
+def _():
+    mo.md("""
     ## Edge cases
     """)
     return
@@ -227,6 +246,35 @@ def _(duration, length):
 @app.cell
 def _(length, start, traces):
     test_sets.raw_figure(traces, start.value, length.value)
+    return
+
+
+@app.cell
+def _():
+    mo.md("""
+    ## One animal, rig by rig
+    """)
+    return
+
+
+@app.cell
+def _(lag_table):
+    animal = mo.ui.dropdown(
+        test_sets.animal_options(lag_table), value=None, label="Animal", full_width=True
+    )
+    excerpt = mo.ui.slider(
+        1, 30, value=4, step=0.5, label="Excerpt (s)", show_value=True
+    )
+    mo.hstack([animal, excerpt])
+    return animal, excerpt
+
+
+@app.cell
+def _(animal, excerpt, lag_table, network, root):
+    mo.stop(animal.value is None, mo.md("Pick an animal."))
+    test_sets.animal_rig_figure(
+        root, network.value, lag_table, animal.value, excerpt.value
+    )
     return
 
 

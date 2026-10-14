@@ -425,7 +425,8 @@ def lag_diagnosis_figure(m: pd.DataFrame):
         ax["animal"].plot([], [], "o", color=colour, label=label)
     ax["animal"].legend(loc="upper left", fontsize=5)
     off = animals[animals.abs() > edge].index
-    for colour, subject in zip(style.series(len(off)), off, strict=True):
+    animal_colours = dict(zip(off, style.series(len(off)), strict=True))
+    for subject, colour in animal_colours.items():
         d = m[m["subject_id"] == subject].sort_values("date")
         ax["time"].plot(
             d["date"], d["lag_ms"], "o-", ms=2, lw=0.6, color=colour, label=subject
@@ -433,10 +434,30 @@ def lag_diagnosis_figure(m: pd.DataFrame):
     ax["time"].axhspan(-edge, edge, **band)
     ax["time"].set(ylabel="best lag (ms), lagged animals")
     ax["time"].legend(fontsize=4.5, ncol=4)
-    share = (m["lag_ms"].abs() > edge).groupby(m["rig"]).mean().sort_values()
-    ax["rig"].barh(share.index, share, color=style.color("Zephyr"))
-    ax["rig"].set(xlabel="share of clips lagged")
+    _rig_axes(ax["rig"], m, edge, animal_colours)
     return fig
+
+
+def _rig_axes(ax, m: pd.DataFrame, edge: float, animal_colours: dict) -> None:
+    """Share of each rig's clips that are lagged, split by the animal of the lagged clips
+    (lagged animals in their colours from the time panel, any other animal grey)."""
+    lagged = m["lag_ms"].abs() > edge
+    clips = m.groupby("rig").size()
+    part = m[lagged].groupby(["rig", "subject_id"]).size().unstack(fill_value=0)
+    part = part.reindex(clips.index, fill_value=0).div(clips, axis=0)
+    rigs = part.sum(axis=1).sort_values().index
+    order = [s for s in animal_colours if s in part] + [
+        s for s in part if s not in animal_colours
+    ]
+    left = pd.Series(0.0, index=rigs)
+    for subject in order:
+        width = part.loc[rigs, subject]
+        colour = animal_colours.get(subject, "0.75")
+        ax.barh(rigs, width, left=left, color=colour, edgecolor="white", lw=0.3)
+        left += width
+    for y, rig in enumerate(rigs):
+        ax.text(left[rig], y, f" {clips[rig]}", va="center", fontsize=4.5, color="0.4")
+    ax.set(xlabel="share lagged, by animal")
 
 
 def _label(row, what: str) -> str:
@@ -453,11 +474,13 @@ def edge_cases(m: pd.DataFrame) -> dict[str, str]:
         ("aligned", m[(m["lag_s"] == 0) & (m["r_at_0"] > 0.9)].nlargest(1, "r_at_0")),
         ("lagged, rescued by the shift", m[m["case"] == CASES[2]].nlargest(1, "gain")),
     ]
-    sessions = m.groupby("subject_id")["session"].nunique()
-    many = m[m["subject_id"].isin(sessions[sessions >= 4].index)]
-    if len(many):
-        spread = many.groupby("subject_id")["lag_ms"].agg(lambda s: s.max() - s.min())
-        d = m[m["subject_id"] == spread.idxmax()].sort_values("date")
+    per_session = m.groupby(["subject_id", "date"])["lag_ms"].median().reset_index()
+    counts = per_session.groupby("subject_id").size()
+    per_session = per_session[per_session["subject_id"].isin(counts[counts >= 4].index)]
+    if len(per_session):
+        ends = per_session.sort_values("date").groupby("subject_id")["lag_ms"]
+        drifting = (ends.last() - ends.first()).abs().idxmax()  # first vs last session
+        d = m[m["subject_id"] == drifting].sort_values("date")
         chosen += [
             ("same animal, first session", d.iloc[:1]),
             ("same animal, last", d.iloc[-1:]),
@@ -560,6 +583,42 @@ def edge_case_figure(
     return fig
 
 
+def animal_options(m: pd.DataFrame) -> dict[str, str]:
+    """Each animal of *m* (:func:`lag_table`), most negative median lag first:
+    label -> subject."""
+    lag = m.groupby("subject_id")["lag_ms"].median().sort_values()
+    rigs = m.groupby("subject_id")["rig"].nunique()
+    return {f"{s} (median lag {lag[s]:+.0f} ms, rigs: {rigs[s]})": s for s in lag.index}
+
+
+def animal_rig_figure(
+    root: Path, name: str, m: pd.DataFrame, subject: str, seconds: float = 4.0
+):
+    """One excerpt per rig animal *subject* ran on (its clip there with the median lag):
+    thermistor, prediction, and the prediction moved by its best lag."""
+    d = m[m["subject_id"] == subject]
+    rigs = sorted(d["rig"].unique())
+    fig, axes = style.figure("double", 0.17 * len(rigs), nrows=len(rigs), squeeze=False)
+    for ax, rig in zip(axes[:, 0], rigs, strict=True):
+        on = d[d["rig"] == rig].sort_values("lag_ms")
+        row = on.iloc[len(on) // 2]
+        tr = clip_traces(root, name, row["stem"])
+        mid = tr["times"][len(tr["times"]) // 2]
+        _traces_axes(ax, tr, mid, mid + seconds)
+        lags = ", ".join(f"{v:+.0f}" for v in on["lag_ms"])
+        ax.set_title(
+            f"rig {rig}: {row['date']:%Y-%m-%d}, r {row['r_at_0']:+.2f} -> "
+            f"{row['r_best']:+.2f} (lags of its {len(on)} clips here: {lags} ms)",
+            fontweight="normal",
+            loc="left",
+            fontsize=6.5,
+        )
+        ax.set_yticks([])
+        ax.legend(loc="upper right", fontsize=5, ncol=3)
+    axes[-1, 0].set_xlabel("time in clip (s)")
+    return fig
+
+
 def raw_figure(tr: dict, start: float, length: float, n_frames: int = 8):
     """Clip *tr* (:func:`clip_traces`) over [start, start + length] s from its start: gray
     frames, the raw thermistor, target against prediction, and the onset head."""
@@ -600,4 +659,161 @@ def raw_figure(tr: dict, start: float, length: float, n_frames: int = 8):
         fontsize=6.5,
         fontweight="normal",
     )
+    return fig
+
+
+QC = {
+    "session_break_frac": "alternation breaks (session)",
+    "session_consistency_z": "event inconsistency z (session)",
+    "session_good_frac": "good-window fraction (session)",
+    "break_frac": "alternation breaks",
+    "outside_frac": "breaths outside the rate band",
+    "rate_cv": "breath rate CV",
+    "amp_cv": "amplitude CV",
+    "snr_db": "SNR (dB)",
+    "amplitude": "amplitude (ADC)",
+    "mean_rate": "breathing rate (Hz)",
+}
+"""The span QC's metrics (``zephyr.session_selection``), each clip's own unless marked
+session (``qc.parquet``)."""
+RHO = {
+    "r as scored": ("r_at_0", "all"),
+    "r at best lag": ("r_best", "all"),
+    "r at best lag, no offset animals": ("r_best", "steady"),
+    "|lag|": ("abs_lag", "all"),
+}
+
+
+def _noise(x: NDArray) -> float:
+    step = np.diff(x)
+    return 1.4826 * float(np.median(np.abs(step - np.median(step)))) / np.sqrt(2)
+
+
+def clip_qc(root: Path) -> pd.DataFrame:
+    """The span QC's metrics over each test clip's own stretch of thermistor (1 s blocks
+    for amplitude, the clip's inhales and exhales for the rest); cached."""
+    cached = CACHE / "test_sets_clip_qc.parquet"
+    if cached.is_file():
+        return pd.read_parquet(cached)
+    rows = []
+    for stem, (clip, _) in _clips(root).items():
+        entry = _entry(root, stem)
+        if entry is None or not entry.has_target:
+            continue
+        frames = np.load(entry.frame_times)
+        t0, t1 = float(frames[0]), float(frames[-1])
+        raw = pd.read_parquet(clip.thermistor)
+        t = raw["Time"].to_numpy()
+        x = raw["Signal"].to_numpy(float)[(t >= t0) & (t <= t1)]
+        block = round(1 / float(np.median(np.diff(t))))
+        lo, hi = np.percentile(
+            x[: len(x) // block * block].reshape(-1, block), [5, 95], 1
+        )
+        amp = hi - lo
+        events = np.load(entry.events)
+        on, off = (
+            events[k][_window(events[k], t0, t1)]
+            for k in ("onset_times", "offset_times")
+        )
+        kind = np.r_[np.zeros(len(on)), np.ones(len(off))][np.argsort(np.r_[on, off])]
+        rates = 1 / np.diff(np.sort(on))
+        rows.append(
+            {
+                "stem": stem,
+                "snr_db": 20 * np.log10(amp.mean() / _noise(x)),
+                "amplitude": amp.mean(),
+                "amp_cv": amp.std() / amp.mean(),
+                "break_frac": np.mean(kind[1:] == kind[:-1]),
+                "outside_frac": np.mean((rates < 2) | (rates > 15)),
+                "rate_cv": rates.std() / rates.mean(),
+                "mean_rate": rates.mean(),
+            }
+        )
+    out = pd.DataFrame(rows)
+    CACHE.mkdir(parents=True, exist_ok=True)
+    out.to_parquet(cached)
+    return out
+
+
+def qc_table(root: Path, m: pd.DataFrame) -> pd.DataFrame:
+    """*m* (:func:`lag_table`) with the :data:`QC` metrics, ``abs_lag`` and ``steady``
+    (the clip's animal has no offset: median lag within 1.5 frames)."""
+    qc = pd.read_parquet(root / "dataset/qc.parquet").drop_duplicates("session_id")
+    qc = qc.set_index("session_id")
+    m = m.drop(
+        columns=["snr_db", "break_frac", "rate_cv", "good_frac"], errors="ignore"
+    )
+    m = m.merge(clip_qc(root), on="stem")
+    for key in ("break_frac", "consistency_z", "good_frac"):
+        m[f"session_{key}"] = m["session"].map(qc[key])
+    m["abs_lag"] = m["lag_ms"].abs()
+    offset = m.groupby("subject_id")["lag_ms"].transform("median").abs()
+    m["steady"] = offset <= 1.5 * FRAME_S * 1000
+    return m
+
+
+def qc_figure(q: pd.DataFrame):
+    """Whether thermistor quality goes with the network's r (*q* from :func:`qc_table`):
+    Spearman rho of each QC metric with r, r at the best lag (with and without the
+    animals with an offset) and |lag|; each animal's median amplitude against its median
+    lag (offset animals named); r against amplitude, clip by clip."""
+    fig, ax = style.mosaic([["rho", "rho", "amp", "scatter"]], "double", 0.42)
+    rho = pd.DataFrame(
+        {
+            name: [
+                q[q["steady"] | (which == "all")][[key, y]].corr("spearman").iloc[0, 1]
+                for key in QC
+            ]
+            for name, (y, which) in RHO.items()
+        },
+        index=list(QC.values()),
+    )
+    ax["rho"].imshow(rho, cmap="RdBu_r", vmin=-0.6, vmax=0.6, aspect="auto")
+    for (i, j), v in np.ndenumerate(rho.to_numpy()):
+        ax["rho"].text(j, i, f"{v:+.2f}", ha="center", va="center", fontsize=5.5)
+    ax["rho"].set_xticks(
+        range(len(RHO)), list(RHO), rotation=20, ha="right", fontsize=5.5
+    )
+    ax["rho"].set_yticks(range(len(QC)), list(QC.values()), fontsize=5.5)
+    ax["rho"].set_title("Spearman rho over clips", fontweight="normal", fontsize=6.5)
+    groups = {"no offset": q["steady"], "offset animals": ~q["steady"]}
+    colours = {"no offset": style.color("Zephyr"), "offset animals": "#d55e00"}
+    animals = q.groupby("subject_id").agg(
+        amplitude=("amplitude", "median"),
+        lag_ms=("lag_ms", "median"),
+        steady=("steady", "first"),
+    )
+    ax["amp"].axvspan(
+        -1.5 * FRAME_S * 1000, 1.5 * FRAME_S * 1000, color="0.9", zorder=0
+    )
+    for subject, a in animals.iterrows():
+        colour = colours["no offset" if a["steady"] else "offset animals"]
+        ax["amp"].plot(a["lag_ms"], a["amplitude"], "o", ms=2.5, color=colour)
+        if not a["steady"]:
+            ax["amp"].annotate(
+                subject,
+                (a["lag_ms"], a["amplitude"]),
+                fontsize=4.5,
+                xytext=(2, 1),
+                textcoords="offset points",
+            )
+    ax["amp"].set(
+        yscale="log",
+        xlabel="median lag (ms)",
+        ylabel="median thermistor amplitude (ADC)",
+    )
+    ax["amp"].set_title("one dot per animal", fontweight="normal", fontsize=6.5)
+    for k, g in groups.items():
+        ax["scatter"].scatter(
+            q.loc[g, "amplitude"],
+            q.loc[g, "r_at_0"],
+            s=3,
+            alpha=0.6,
+            color=colours[k],
+            label=k,
+        )
+    ax["scatter"].set(
+        xscale="log", xlabel="thermistor amplitude (ADC)", ylabel="r as scored"
+    )
+    ax["scatter"].legend(fontsize=5)
     return fig
