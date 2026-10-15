@@ -27,6 +27,7 @@ METRICS = [
     "outside_frac",
     "rate_cv",
     "amp_cv",
+    "rail_frac",
     "consistency_z",
     "good_frac",
     "artifacts",

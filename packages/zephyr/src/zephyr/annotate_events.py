@@ -421,13 +421,17 @@ class TuneState:
     # ---- checks --------------------------------------------------------------------
 
     def breath_stats(
-        self, i: int | None = None, band: tuple[float, float] = RATE_BAND_HZ
+        self,
+        i: int | None = None,
+        band: tuple[float, float] = RATE_BAND_HZ,
+        whole: bool = False,
     ) -> dict:
         """Live breathing features of the clip: counts, the instantaneous rate of
         each breath (mean, and those outside *band*), inhale->exhale and
         exhale->inhale durations, and same-kind neighbours (``ii_breaks``,
-        ``ee_breaks``)."""
-        spans = self.spans(i)
+        ``ee_breaks``); events touching an excluded span are left out unless
+        *whole*."""
+        spans = np.empty((0, 2)) if whole else self.spans(i)
 
         def touching(first, last):
             if not len(spans) or not len(first):

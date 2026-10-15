@@ -83,6 +83,10 @@ class Qc(_Model):
     min_amplitude: float = Field(ge=0)
     artifact_z: float = Field(gt=0)
     artifact_pad_s: float = Field(ge=0)
+    rails: tuple[float, float] | None
+    """Raw thermistor values at or beyond which it is clipped (low, high)."""
+    max_rail_frac: float = Field(ge=0, le=1)
+    max_session_breaks: float = Field(ge=0, le=1)
 
     def settings(self) -> Settings:
         return Settings(**{f.name: getattr(self, f.name) for f in fields(Settings)})

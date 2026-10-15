@@ -47,6 +47,12 @@ def spiky(t, seed):
     return breathing(t, seed) - 8 * np.exp(-(((t - 25.0) / 0.05) ** 2))
 
 
+def clipped(t, seed):
+    """Breathing pressed against a rail (-0.8) from 10 to 16 s."""
+    x = breathing(t, seed)
+    return np.where((t >= 10) & (t < 16), np.maximum(x, -0.8), x)
+
+
 class SessionSelectionTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -109,6 +115,14 @@ class SessionSelectionTests(unittest.TestCase):
         self.assertTrue(again.entries[5].reviewed)
         self.assertEqual(len(again.spans(7, kind="include")), 1)
 
+    def test_a_rerun_scores_the_same_whatever_spans_the_list_holds(self):
+        first = assess(self.state, SETTINGS)
+        apply(self.state, first)
+        again = assess(self.state, SETTINGS)
+        for column in ("break_frac", "outside_frac", "rate_cv", "mean_rate"):
+            np.testing.assert_allclose(again[column], first[column])
+        self.assertEqual(list(again["included"]), list(first["included"]))
+
     def test_an_artifact_event_cuts_its_surroundings_out_of_the_include_spans(self):
         table = assess(self.state, SETTINGS)
         spiky_row = table.iloc[8]
@@ -134,6 +148,47 @@ class SessionSelectionTests(unittest.TestCase):
         starts = np.arange(4.0)
         self.assertEqual(runs(good, starts, starts + 1, True), [(0.0, 2.0), (3.0, 4.0)])
         self.assertEqual(runs(good, starts, starts + 1, False), [(2.0, 3.0)])
+
+
+class ClippingAndGateTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        root = Path(self.tmp.name)
+        signals = [breathing] * 4 + [clipped]
+        videos = [
+            make_clip(root, g, lambda t, f=f, g=g: f(t, g))
+            for g, f in enumerate(signals, start=1)
+        ]
+        self.state = TuneState(write_list(root / "list.toml", videos))
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_clipped_seconds_leave_the_include_spans(self):
+        rails = Settings(
+            window_s=2.0,
+            min_span_s=6.0,
+            min_amplitude=0.5,
+            rails=(-0.8, 9.0),
+            max_rail_frac=0.0,
+        )
+        row = assess(self.state, rails).iloc[4]
+        self.assertGreater(row["rail_frac"], 0)
+        self.assertFalse(any(s < 13 < e for s, e in row["included"]))
+        self.assertTrue(any(s <= 13 <= e for s, e in row["excluded"]))
+        plain = assess(self.state, SETTINGS).iloc[4]
+        self.assertEqual(plain["rail_frac"], 0.0)
+        self.assertTrue(any(s < 13 < e for s, e in plain["included"]))
+
+    def test_too_many_alternation_breaks_exclude_a_session(self):
+        broken = assess(
+            self.state,
+            Settings(
+                window_s=2.0, min_span_s=6.0, min_amplitude=0.5, max_session_breaks=-1.0
+            ),
+        )
+        self.assertIn("alternation", broken.iloc[0]["reason"])
+        self.assertEqual(assess(self.state, SETTINGS).iloc[0]["suggested"], "include")
 
 
 if __name__ == "__main__":

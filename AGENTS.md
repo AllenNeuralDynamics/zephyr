@@ -74,7 +74,12 @@ Built from one spec (`packages/zephyr-dataset/configs/vr-foraging-sniff.toml`) b
 resumable steps; what each does and the folder layout are in its README.
 
 - **Every setting is in the spec**; `[qc]` writes out every threshold, none defaulted.
-  Hand decisions go in `[[review]]`, so a rebuild from nothing gives the same corpus.
+  Hand decisions go in `[[review]]`, so a rebuild gives the same QC and selection rules.
+  The published split is `folds.parquet` (with the clips in `results.json`): it is the
+  record, and re-running `select` or `folds` draws a new one, so never re-run them on the
+  published corpus.
+- `qc` scores whole sessions, whatever marks the list holds, so re-running it never
+  changes a metric.
 - **The subject always comes from session metadata**, never from a session name.
 - **Never hard-code a camera rate**: thresholds are relative to each camera's own
   interval, and clips read rate, time base and keyframes from the stream.

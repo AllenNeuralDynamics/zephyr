@@ -1,10 +1,11 @@
 """Suggest which clips (sessions) of a clip list to use, and which stretches of them.
 
 Clips are scored in rolling windows (SNR, amplitude, out-of-band breaths, alternation
-breaks), with seconds around artifacts (large excursions) cut out; good runs at least
-``--min-span-s`` long become ``included`` spans, bad stretches ``excluded`` spans.  A
-clip is suggested ``exclude`` for a dead sensor (the list's low SNR mode), a small
-amplitude, inconsistent events, or no accepted span.  Reviewed clips never change.
+breaks, seconds clipped at a rail), with seconds around artifacts (large excursions)
+cut out; good runs at least ``--min-span-s`` long become ``included`` spans, bad
+stretches ``excluded`` spans.  A clip is suggested ``exclude`` for a dead sensor (the
+list's low SNR mode), a small amplitude, too many alternation breaks, inconsistent
+events, or no accepted span.  Reviewed clips never change.
 
     zephyr clips select <list.toml> [--out <list.toml>] [--report <csv>] [--min-span-s 300]
 """
@@ -45,6 +46,12 @@ class Settings:
     which a sample is an artifact."""
     artifact_pad_s: float = 5.0
     """Seconds excluded either side of an artifact."""
+    rails: tuple[float, float] | None = None
+    """Raw values at or beyond which the thermistor is clipped (low, high); None: never."""
+    max_rail_frac: float = 1.0
+    """Most 1 s blocks of a good window that touch a rail (fraction)."""
+    max_session_breaks: float = 1.0
+    """Most events of a clip suggested include that repeat the previous kind (fraction)."""
 
 
 def _noise(x: np.ndarray) -> float:
@@ -54,7 +61,7 @@ def _noise(x: np.ndarray) -> float:
 
 def window_table(state: TuneState, i: int, settings: Settings) -> pd.DataFrame:
     """Per-window quality of clip *i*: ``start``, ``end``, ``snr_db``, ``amplitude``,
-    ``breaths``, ``outside_frac`` and ``break_frac``."""
+    ``breaths``, ``outside_frac``, ``break_frac`` and ``rail_frac``."""
     trace = state.trace(i)
     raw = np.asarray(trace.x if trace.raw is None else trace.raw, float)
     t0, fs = float(trace.t[0]), trace.fs
@@ -81,6 +88,7 @@ def window_table(state: TuneState, i: int, settings: Settings) -> pd.DataFrame:
     block = max(3, round(fs))
     snr = np.full(n, np.nan)
     amplitude = np.full(n, np.nan)
+    rail = np.zeros(n)
     for w in range(n):
         x = raw[w * per : (w + 1) * per]
         blocks = x[: len(x) // block * block].reshape(-1, block)
@@ -89,6 +97,8 @@ def window_table(state: TuneState, i: int, settings: Settings) -> pd.DataFrame:
             lo, hi = np.percentile(blocks, [5, 95], axis=1)
             amplitude[w] = float(np.mean(hi - lo))
             snr[w] = 20 * np.log10(amplitude[w] / noise)
+        if len(blocks):
+            rail[w] = float(np.mean(clipped(blocks, settings.rails)))
     with np.errstate(invalid="ignore", divide="ignore"):
         return pd.DataFrame(
             {
@@ -99,8 +109,16 @@ def window_table(state: TuneState, i: int, settings: Settings) -> pd.DataFrame:
                 "breaths": breaths,
                 "outside_frac": np.where(breaths > 0, outside / breaths, 1.0),
                 "break_frac": np.where(events > 0, breaks / events, 1.0),
+                "rail_frac": rail,
             }
         )
+
+
+def clipped(blocks: np.ndarray, rails: tuple[float, float] | None) -> np.ndarray:
+    """Whether each row of *blocks* touches a rail (all False without rails)."""
+    if rails is None:
+        return np.zeros(len(blocks), bool)
+    return ((blocks <= rails[0]) | (blocks >= rails[1])).any(axis=1)
 
 
 def artifacts(
@@ -202,7 +220,7 @@ def assess(
     def score(i: int):
         windows = window_table(state, i, settings)
         amplitude, snr = state.signal_quality(i)
-        stats = state.breath_stats(i)
+        stats = state.breath_stats(i, whole=True)  # never the list's own spans
         rates = stats["rates"]
         events = max(1, stats["inhales"] + stats["exhales"])
         trace = state.trace(i)
@@ -219,6 +237,9 @@ def assess(
             "outside_frac": stats["outside"] / max(1, len(rates)),
             "rate_cv": float(np.std(rates) / np.mean(rates)) if len(rates) else 1.0,
             "amp_cv": float(np.std(amp) / np.mean(amp)) if len(amp) else 1.0,
+            "rail_frac": float(np.mean(clipped(blocks, settings.rails)))
+            if len(blocks)
+            else 0.0,
         }
         result = record, (windows, artifacts(state, i, settings))
         if release:
@@ -266,6 +287,11 @@ def assess(
             reasons.append(
                 f"amplitude {row['amplitude']:.1f} below {settings.min_amplitude:g}"
             )
+        elif row["break_frac"] > settings.max_session_breaks:
+            reasons.append(
+                f"alternation breaks {row['break_frac']:.4f} above "
+                f"{settings.max_session_breaks:g}"
+            )
         elif row["consistency_z"] > settings.outlier_z:
             reasons.append(f"inconsistent events (z {row['consistency_z']:.1f})")
         elif not row["included"]:
@@ -285,6 +311,7 @@ def _good(windows: pd.DataFrame, settings: Settings, cut: float | None) -> np.nd
         & (windows["break_frac"] <= settings.max_breaks)
         & (windows["breaths"] > 0)
         & (windows["amplitude"] >= settings.min_amplitude)
+        & (windows["rail_frac"] <= settings.max_rail_frac)
         & ((windows["snr_db"] >= cut) if cut is not None else True)
     ).to_numpy()
 

@@ -52,9 +52,16 @@ max_breaks = 0.05
 outlier_z = 3.0
 min_snr_gap_db = 3.0
 snr_ceiling_db = 60.0
-min_amplitude = 20.0
+min_amplitude = 100.0   # in every good window (mean 1 s 5th-95th range), so in every clip
 artifact_z = 8.0
 artifact_pad_s = 2.0
+# Clipping: the thermistor saturates at its floor (about 18-20) or the ADC top (4095); a
+# good window has no second touching either, so clips come only from unclipped stretches.
+rails = [20.0, 4090.0]
+max_rail_frac = 0.0
+# Sessions whose events often fail to alternate (more than 0.3% of them repeat the
+# previous kind) cannot be trusted as a target (why: the README, "Thermistor QC").
+max_session_breaks = 0.003
 
 [select]
 clip_s = 300.0
@@ -82,8 +89,7 @@ train_keep = 2        # ... leaving at least 2 to train on
 tries = 30000
 group_c_min_hz = 300.0   # group C: the 359.2 Hz sessions (rig 4B, 2026-02/03), held out by session
 # Videos too dark to use (mean luminance of the thumbnail under about 40; all of the video
-# is that dark), taken out after the draw; the one add is a bright session of the same animal
-# and rig that has room under the cap.
+# is that dark), taken out after the draw.
 exclude = [
     "815103_2026-02-16_21-15-24",
     "828423_2026-02-10_21-08-50",
@@ -91,9 +97,11 @@ exclude = [
     "828425_2026-02-09_20-39-50",
     "828425_2026-02-13_19-00-32",
     "behavior_828425_2026-01-23_21-01-41",
+    # thermistor traces rejected on review
+    "841299_2026-07-14_20-11-10",
+    "behavior_789917_2025-10-24_20-43-05",
 ]
-add = { "828423_2026-02-24_21-05-41" = "val" }
-group_c = { "841301" = [7, 2, 4], "828415" = [1, 0, 1] }   # (train, val, test) sessions
+group_c = { "841301" = [6, 2, 4], "828415" = [1, 0, 1] }   # (train, val, test) sessions
 
 [folds.rig_families]  # names of one physical rig
 "FRG.4-A" = "4A"
@@ -119,7 +127,7 @@ seed = 2026
 tries = 2000
 test_animals = 4    # of test A's 10
 val_animals = 3     # of validation's 8
-train_animals = 10  # of the 43 training animals; test B keeps their sessions
+train_animals = 10  # of the 32 training animals; test B keeps their sessions
 cap_train = 2
 cap_val = 1
 cap_test = 1
@@ -129,4 +137,17 @@ group_c = [3, 1, 2]  # (train, val, test) sessions of 841301 and 828415
 # decisions made by hand (marked reviewed, so QC never changes them)
 [[review]]
 session_id = "behavior_798279_2025-12-05_17-42-48"
+selection = "exclude"
+
+# thermistor traces rejected on review
+[[review]]
+session_id = "behavior_789917_2025-10-21_19-34-44"
+selection = "exclude"
+
+[[review]]
+session_id = "841299_2026-08-06_20-06-46"
+selection = "exclude"
+
+[[review]]
+session_id = "behavior_798279_2025-10-28_15-41-29"
 selection = "exclude"

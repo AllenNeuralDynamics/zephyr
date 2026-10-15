@@ -22,6 +22,12 @@ uv run marimo export html notebooks/walkthrough.py -o walkthrough.html --no-incl
   from the corpus's saved DocDB return, and compares the result with the corpus.
   It writes only that new folder, and only when its Rebuild button is pressed
   (about 15 minutes; the raw thermistors come from S3).
+- `corpus_selection.py`: where the corpus' sessions go, from every packaged session to
+  the sets, as a flow: each step's losses peel off with their reason and count, each
+  session under the first rule it fails, with a table of the spec's rule behind each
+  (`utils/corpus_flow.py`). It reads a local copy of the dataset folder
+  (`ZEPHYR_DATASET_ROOT`: `inventory.parquet`, `qc.parquet`, `results.json`,
+  `folds.parquet`) and the spec.
 - `test_sets.py`: networks scored on the split's test sets A, B and C, clip by clip:
   scores per video and per animal, against what is known of each clip (thermistor
   quality, image statistics, rig), and the time offset between each network's

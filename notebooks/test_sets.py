@@ -186,6 +186,94 @@ def _(lag_table, root):
 
 
 @app.cell
+def _(lag_table, root):
+    qc = test_sets.qc_table(root, lag_table)
+    QC_FEATURES = [
+        "snr_db",
+        "amplitude",
+        "amp_cv",
+        "break_frac",
+        "outside_frac",
+        "rate_cv",
+        "mean_rate",
+        "session_consistency_z",
+        "session_good_frac",
+    ]
+    sessions = qc.groupby("session").agg(
+        {c: "median" for c in [*QC_FEATURES, "r_best"]}
+        | {k: "first" for k in ("subject_id", "rig", "set", "date")}
+    )
+    sessions["date"] = sessions["date"].astype(str)
+    axis_x = mo.ui.dropdown(QC_FEATURES, value="snr_db", label="X")
+    axis_y = mo.ui.dropdown(QC_FEATURES, value="amplitude", label="Y")
+    axis_z = mo.ui.dropdown(QC_FEATURES, value="break_frac", label="Z")
+    color_by = mo.ui.dropdown(
+        ["r_best", "subject_id", "rig", "set", "date"], value="r_best", label="Colour"
+    )
+    mo.hstack([axis_x, axis_y, axis_z, color_by])
+    return QC_FEATURES, axis_x, axis_y, axis_z, color_by, sessions
+
+
+@app.cell
+def _(QC_FEATURES, sessions):
+    import itertools
+
+    import numpy as np
+    import pandas as pd
+    from scipy.stats import rankdata
+
+    # Rank-regress session r_best on every triple of features; the best triples
+    # are the ones whose thresholds separate good from bad sessions most cleanly.
+    _ranks = np.column_stack([rankdata(sessions[c]) for c in QC_FEATURES])
+    _ranks = (_ranks - _ranks.mean(0)) / _ranks.std(0)
+    _y = rankdata(sessions["r_best"])
+    _y = (_y - _y.mean()) / _y.std()
+
+    def _r2(idx):
+        _x = _ranks[:, idx]
+        _b = np.linalg.lstsq(_x, _y, rcond=None)[0]
+        return 1 - ((_y - _x @ _b) ** 2).sum() / (_y**2).sum()
+
+    triples = (
+        pd.DataFrame(
+            [
+                (*(QC_FEATURES[i] for i in c), _r2(list(c)))
+                for c in itertools.combinations(range(len(QC_FEATURES)), 3)
+            ],
+            columns=["x", "y", "z", "r2_vs_r_best"],
+        )
+        .sort_values("r2_vs_r_best", ascending=False)
+        .round(3)
+        .head(10)
+    )
+    triples
+    return
+
+
+@app.cell
+def _(axis_x, axis_y, axis_z, color_by, sessions):
+    import plotly.express as px
+
+    _fig = px.scatter_3d(
+        sessions.reset_index(),
+        x=axis_x.value,
+        y=axis_y.value,
+        z=axis_z.value,
+        color=color_by.value,
+        hover_data=["session", "subject_id", "rig", "date", "r_best"],
+        height=700,
+    )
+    _fig.update_traces(marker=dict(size=5))
+    for _axis, _feature in zip(
+        ("xaxis", "yaxis", "zaxis"), (axis_x.value, axis_y.value, axis_z.value)
+    ):
+        if _feature == "amplitude":
+            _fig.update_layout(scene={_axis: dict(type="log")})
+    _fig
+    return
+
+
+@app.cell
 def _():
     mo.md("""
     ## Edge cases
