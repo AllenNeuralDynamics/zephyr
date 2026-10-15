@@ -107,6 +107,30 @@ def snapshot_path(run_dir: Path, epoch: int, save_every: int) -> Path | None:
     return None
 
 
+@dataclass
+class Selection:
+    """The best validation xcorr so far and the scorings since, which pick ``best.pt``
+    and stop a run early. The first score of the averaged (EMA) weights starts afresh:
+    the live weights are noisier and can spike above anything the averaged ones reach
+    for many epochs, so a live best is no bar for them."""
+
+    best: float = -np.inf
+    since_best: int = 0
+    on_ema: bool = False
+    """Whether ``best`` was scored on the averaged weights."""
+
+    def offer(self, xcorr: float, ema: bool) -> bool:
+        """Count a scoring of the live (``ema=False``) or averaged weights; ``True`` if
+        it is the new best."""
+        if ema and not self.on_ema:
+            self.best, self.since_best, self.on_ema = -np.inf, 0, True
+        if xcorr > self.best:
+            self.best, self.since_best = xcorr, 0
+            return True
+        self.since_best += 1
+        return False
+
+
 def _mean(values: list[dict], key: str) -> float:
     return float(np.mean([v[key] for v in values])) if values else float("nan")
 
@@ -474,8 +498,9 @@ def train_fold(
             "scheduler": scheduler.state_dict(),
             "scaler": scaler.state_dict(),
             "epoch": epoch,
-            "best": best,
-            "since_best": since_best,
+            "best": selection.best,
+            "since_best": selection.since_best,
+            "best_on_ema": selection.on_ema,
             "history": history,
             "global_step": global_step,
             "torch_rng_state": torch.get_rng_state(),
@@ -518,8 +543,7 @@ def train_fold(
         torch.save(state, temporary)
         temporary.replace(path)
 
-    best = -np.inf
-    since_best = 0
+    selection = Selection()
     history: list[dict] = []
     start_epoch = 0
 
@@ -544,8 +568,7 @@ def train_fold(
         optimiser.load_state_dict(state["optimiser"])
         scheduler.load_state_dict(state["scheduler"])
         scaler.load_state_dict(state["scaler"])
-        best = state["best"]
-        since_best = state.get("since_best", 0)
+        selection = Selection(state["best"], state["since_best"], state["best_on_ema"])
         history = state["history"]
         start_epoch = state["epoch"] + 1
         global_step = state.get("global_step", start_epoch * params.steps_per_epoch)
@@ -560,7 +583,8 @@ def train_fold(
         if state.get("python_rng_state") is not None:
             random.setstate(state["python_rng_state"])
         print(
-            f"resumed from {last_path} at epoch {start_epoch} (best xcorr {best:+.4f})"
+            f"resumed from {last_path} at epoch {start_epoch} "
+            f"(best xcorr {selection.best:+.4f})"
         )
     elif resume:
         print(f"resume requested but {last_path} does not exist; starting fresh")
@@ -629,6 +653,7 @@ def train_fold(
             # evaluating the averaged weights as well is close to free -- and it
             # is the only way to know whether EMA actually helped.
             selected, selected_clips = model, per_clip
+            on_ema = False
             if ema is not None and global_step < ema_ready_step:
                 row["ema_warming"] = True
             if ema is not None:
@@ -650,10 +675,10 @@ def train_fold(
                 if global_step >= ema_ready_step:
                     summary, per_clip = ema_summary, ema_clips
                     selected, selected_clips = ema.module, ema_clips
+                    on_ema = True
 
-            if summary["xcorr"] > best:
-                best = summary["xcorr"]
-                since_best = 0
+            improved = selection.offer(summary["xcorr"], ema=on_ema)
+            if improved:
                 save(
                     run_dir / "best.pt",
                     epoch,
@@ -664,9 +689,7 @@ def train_fold(
                 (run_dir / "best_per_clip.json").write_text(
                     json.dumps(selected_clips, indent=2)
                 )
-            else:
-                since_best += 1
-            row["since_best"] = since_best
+            row["since_best"] = selection.since_best
 
         row["seconds"] = round(time.perf_counter() - started, 1)
         history.append(row)
@@ -685,7 +708,7 @@ def train_fold(
         else:
             message += f"  loss {row['train_loss']:.4f}"
         if scored:
-            marker = " *" if row.get("ema_xcorr", row["xcorr"]) >= best else ""
+            marker = " *" if improved else ""
             message += f"  |  xcorr {row['xcorr']:+.3f}"
             if "ema_xcorr" in row:
                 message += f"  ema {row['ema_xcorr']:+.3f}"
@@ -697,13 +720,13 @@ def train_fold(
         if (
             params.patience
             and scored
-            and since_best >= params.patience
+            and selection.since_best >= params.patience
             and epoch + 1 >= params.min_epochs
         ):
             print(
-                f"early stop: {since_best} scored evaluations "
-                f"({since_best * params.score_every} epochs) without improving on "
-                f"{best:+.4f}",
+                f"early stop: {selection.since_best} scored evaluations "
+                f"({selection.since_best * params.score_every} epochs) without "
+                f"improving on {selection.best:+.4f}",
                 flush=True,
             )
             break
@@ -715,5 +738,7 @@ def train_fold(
         save(run_dir / "best.pt", epoch, {}, [], weights=ema.module if ema else None)
         print(f"final weights (no validation) -> {run_dir / 'best.pt'}")
     else:
-        print(f"best held-out correlation {best:+.4f} -> {run_dir / 'best.pt'}")
+        print(
+            f"best held-out correlation {selection.best:+.4f} -> {run_dir / 'best.pt'}"
+        )
     return run_dir / "best.pt"

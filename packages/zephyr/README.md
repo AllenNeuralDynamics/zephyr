@@ -154,7 +154,9 @@ section explains the ones whose behaviour is not obvious.
   `[fold.val]` selection (written like a test group) validates on whole clips instead,
   e.g. held-out animals. They never train, must share no recording with the training or
   test clips, and replace `val_fraction` (leave it out). `val_fraction = 0` without
-  `[fold.val]` trains a fixed number of epochs.
+  `[fold.val]` trains a fixed number of epochs. With `ema_decay > 0` it selects on the
+  averaged weights once they have relaxed (about 3 / (1 - `ema_decay`) steps), and the
+  count starts afresh then: a live-weights best, noisier, is no bar for them.
 - `rate_balance` (0 to 1, default 0) weights training windows by
   `share(rate bin) ** -rate_balance` over `rate_bins_hz` (default 2-15 Hz), per
   `[[fold.train]]` source, bins under 1% counting as 1% (`zephyr/rates.py`); validation
