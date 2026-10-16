@@ -25,7 +25,7 @@ def _():
 @app.cell
 def _():
     root_text = mo.ui.text(
-        value=os.environ.get(test_sets.ROOT_ENV, "C:/Data/zephyr-local"),
+        value=os.environ.get(test_sets.ROOT_ENV, "C:/Data/zephyr-local-v2"),
         label="Local folder",
         full_width=True,
     )
@@ -138,32 +138,9 @@ def _(df, info, network):
 
 
 @app.cell
-def _():
-    mo.md("""
-    ## Time offset between prediction and thermistor
-    """)
-    return
-
-
-@app.cell
-def _(network, root):
-    done, total = test_sets.n_predicted(root, network.value)
-    run_lags = mo.ui.run_button(
-        label=f"Predict the remaining {total - done} of {total} clips ({network.value})"
-    )
-    run_lags if done < total else None
-    return done, run_lags, total
-
-
-@app.cell
-def _(df, done, info, network, root, run_lags, total):
-    mo.stop(
-        done < total and not run_lags.value,
-        mo.md(f"{done} of {total} clips predicted by {network.value}."),
-    )
-    lag_table = test_sets.lag_table(test_sets.lags(root, network.value), info, df)
-    test_sets.lag_diagnosis_figure(lag_table)
-    return (lag_table,)
+def _(df, info, network):
+    per_clip = test_sets.clip_table(df, info, network.value)
+    return (per_clip,)
 
 
 @app.cell
@@ -175,19 +152,14 @@ def _():
 
 
 @app.cell
-def _():
+def _(per_clip, root):
+    test_sets.qc_figure(test_sets.qc_table(root, per_clip))
     return
 
 
 @app.cell
-def _(lag_table, root):
-    test_sets.qc_figure(test_sets.qc_table(root, lag_table))
-    return
-
-
-@app.cell
-def _(lag_table, root):
-    qc = test_sets.qc_table(root, lag_table)
+def _(per_clip, root):
+    qc = test_sets.qc_table(root, per_clip)
     QC_FEATURES = [
         "snr_db",
         "amplitude",
@@ -200,7 +172,7 @@ def _(lag_table, root):
         "session_good_frac",
     ]
     sessions = qc.groupby("session").agg(
-        {c: "median" for c in [*QC_FEATURES, "r_best"]}
+        {c: "median" for c in [*QC_FEATURES, "r"]}
         | {k: "first" for k in ("subject_id", "rig", "set", "date")}
     )
     sessions["date"] = sessions["date"].astype(str)
@@ -208,7 +180,7 @@ def _(lag_table, root):
     axis_y = mo.ui.dropdown(QC_FEATURES, value="amplitude", label="Y")
     axis_z = mo.ui.dropdown(QC_FEATURES, value="break_frac", label="Z")
     color_by = mo.ui.dropdown(
-        ["r_best", "subject_id", "rig", "set", "date"], value="r_best", label="Colour"
+        ["r", "subject_id", "rig", "set", "date"], value="r", label="Colour"
     )
     mo.hstack([axis_x, axis_y, axis_z, color_by])
     return QC_FEATURES, axis_x, axis_y, axis_z, color_by, sessions
@@ -222,11 +194,11 @@ def _(QC_FEATURES, sessions):
     import pandas as pd
     from scipy.stats import rankdata
 
-    # Rank-regress session r_best on every triple of features; the best triples
+    # Rank-regress session r on every triple of features; the best triples
     # are the ones whose thresholds separate good from bad sessions most cleanly.
     _ranks = np.column_stack([rankdata(sessions[c]) for c in QC_FEATURES])
     _ranks = (_ranks - _ranks.mean(0)) / _ranks.std(0)
-    _y = rankdata(sessions["r_best"])
+    _y = rankdata(sessions["r"])
     _y = (_y - _y.mean()) / _y.std()
 
     def _r2(idx):
@@ -240,9 +212,9 @@ def _(QC_FEATURES, sessions):
                 (*(QC_FEATURES[i] for i in c), _r2(list(c)))
                 for c in itertools.combinations(range(len(QC_FEATURES)), 3)
             ],
-            columns=["x", "y", "z", "r2_vs_r_best"],
+            columns=["x", "y", "z", "r2_vs_r"],
         )
-        .sort_values("r2_vs_r_best", ascending=False)
+        .sort_values("r2_vs_r", ascending=False)
         .round(3)
         .head(10)
     )
@@ -260,7 +232,7 @@ def _(axis_x, axis_y, axis_z, color_by, sessions):
         y=axis_y.value,
         z=axis_z.value,
         color=color_by.value,
-        hover_data=["session", "subject_id", "rig", "date", "r_best"],
+        hover_data=["session", "subject_id", "rig", "date", "r"],
         height=700,
     )
     _fig.update_traces(marker=dict(size=5))
@@ -276,16 +248,22 @@ def _(axis_x, axis_y, axis_z, color_by, sessions):
 @app.cell
 def _():
     mo.md("""
-    ## Edge cases
+    ## Right, but late
     """)
     return
 
 
 @app.cell
-def _(lag_table, network, root):
-    cases = test_sets.edge_cases(lag_table)
-    test_sets.edge_case_figure(root, network.value, cases)
-    return (cases,)
+def _(network, root):
+    test_sets.shift_figure(
+        root,
+        network.value,
+        [
+            "behavior_815104_2026-01-23_21-03-24_span1_FaceCamera",
+            "behavior_815104_2026-01-23_21-03-24_span2_FaceCamera",
+        ],
+    )
+    return
 
 
 @app.cell
@@ -297,11 +275,13 @@ def _():
 
 
 @app.cell
-def _(cases, df, network):
-    stems = sorted(df.loc[df["network"] == network.value, "stem"].unique())
-    options = {label: stem for label, stem in cases.items()} | {s: s for s in stems}
+def _(per_clip):
+    _worst = per_clip.sort_values("r")
     clip = mo.ui.dropdown(
-        options, value=next(iter(cases)), label="Clip", full_width=True
+        {f"{s} (r {r:+.2f})": s for s, r in zip(_worst["stem"], _worst["r"])},
+        value=f"{_worst['stem'].iloc[0]} (r {_worst['r'].iloc[0]:+.2f})",
+        label="Clip (worst first)",
+        full_width=True,
     )
     clip
     return (clip,)
@@ -346,9 +326,9 @@ def _():
 
 
 @app.cell
-def _(lag_table):
+def _(per_clip):
     animal = mo.ui.dropdown(
-        test_sets.animal_options(lag_table), value=None, label="Animal", full_width=True
+        test_sets.animal_options(per_clip), value=None, label="Animal", full_width=True
     )
     excerpt = mo.ui.slider(
         1, 30, value=4, step=0.5, label="Excerpt (s)", show_value=True
@@ -358,11 +338,95 @@ def _(lag_table):
 
 
 @app.cell
-def _(animal, excerpt, lag_table, network, root):
+def _(animal, excerpt, per_clip, network, root):
     mo.stop(animal.value is None, mo.md("Pick an animal."))
     test_sets.animal_rig_figure(
-        root, network.value, lag_table, animal.value, excerpt.value
+        root, network.value, per_clip, animal.value, excerpt.value
     )
+    return
+
+
+@app.cell
+def _():
+    mo.md("""
+    ## Sessions below a threshold
+    """)
+    return
+
+
+@app.cell
+def _():
+    low_below = mo.ui.number(0, 1, step=0.05, value=0.8, label="Session r below")
+    low_which = mo.ui.dropdown(
+        {"worse clip": 0, "better clip": 1}, value="worse clip", label="Clip"
+    )
+    mo.hstack([low_below, low_which])
+    return low_below, low_which
+
+
+@app.cell
+def _(per_clip, low_below, network, root):
+    low = test_sets.low_sessions(per_clip, low_below.value)
+    mo.stop(low.empty, mo.md(f"No session under {low_below.value:g}."))
+    _tr = test_sets.clip_traces(root, network.value, low["stems"].iloc[0][0])
+    _span = float(_tr["times"][-1] - _tr["times"][0])
+    low_window = mo.ui.range_slider(
+        0,
+        _span,
+        value=[_span / 2, _span / 2 + 8],
+        step=0.1,
+        label=f"Start and stop (s) | {len(low)} sessions",
+        show_value=True,
+        full_width=True,
+    )
+    low_window
+    return low, low_window
+
+
+@app.cell
+def _(low, low_which, low_window, network, root):
+    _start, _stop = low_window.value
+    test_sets.low_figure(
+        root, network.value, low, _start, max(_stop - _start, 0.1), low_which.value
+    )
+    return
+
+
+@app.cell
+def _():
+    mo.md("""
+    ## Thumbnail similarity
+    """)
+    return
+
+
+@app.cell
+def _():
+    view = mo.ui.dropdown(
+        test_sets.VIEWS, value="face crop (what the network sees)", label="Image"
+    )
+    view
+    return (view,)
+
+
+@app.cell
+def _(per_clip, low_below, root, view):
+    sim_table = test_sets.nearest_train(root, view.value, per_clip)
+    test_sets.similarity_figure(sim_table, low_below.value)
+    return (sim_table,)
+
+
+@app.cell
+def _():
+    mo.md("""
+    ## Most alike training thumbnails
+    """)
+    return
+
+
+@app.cell
+def _(low, root, sim_table, view):
+    test_sets.nearest_figure(root, view.value, sim_table, low)
     return
 
 

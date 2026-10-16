@@ -2,9 +2,9 @@
 
 Reads a local folder (``ROOT_ENV``) laid out as ``LAYOUT``: copies of the dataset's lists
 and tables, the cache entries of the scored clips, the checkpoints, and one ``zephyr
-evaluate`` result per network. Image statistics and prediction-to-truth lags are computed
-here (inference only) and cached in ``notebooks/cache/``; nothing is trained or written
-into the folder.
+evaluate`` result per network. Image statistics, predictions and thumbnail embeddings
+(DINOv2, the ``rois`` extra) are computed here (inference only) and cached in
+``notebooks/cache/``; nothing is trained or written into the folder.
 """
 
 import functools
@@ -26,7 +26,7 @@ from . import style
 from .results import CACHE
 
 ROOT_ENV = "ZEPHYR_TEST_ROOT"
-"""The local folder; the notebook offers it (or ``C:/Data/zephyr-local``) as the default."""
+"""The local folder; the notebook offers it (or ``C:/Data/zephyr-local-v2``) by default."""
 DATASET_ROOT = "/data/zephyr-dataset"
 """Where the dataset the copy was taken from lives (the cache keys name it)."""
 LAYOUT = {
@@ -35,6 +35,7 @@ LAYOUT = {
     "cache": "cache/features-360x270-box96x96-60hz/",
     "runs": "runs/<network>/dev/seed-17/best.pt",
     "scores": "evaluations/<network>.json",
+    "thumbnails": "dataset/thumbnails/<session>_FaceCamera.png",
 }
 GROUPS = {
     "full_test_a": "A: new animals",
@@ -197,37 +198,6 @@ def prediction(root: Path, name: str, stem: str, device: str = "cuda") -> Path |
     return path
 
 
-def n_predicted(root: Path, name: str) -> tuple[int, int]:
-    """How many of the test clips network *name* has predicted, of how many."""
-    folder = CACHE / f"test_sets_predictions-{name}"
-    stems = _clips(root)
-    return sum((folder / f"{s}.npz").is_file() for s in stems), len(stems)
-
-
-def predictions(root: Path, name: str, device: str = "cuda") -> Path:
-    """Folder of network *name*'s prediction of every test clip (:func:`prediction`)."""
-    stems = list(_clips(root))
-    for i, stem in enumerate(stems, 1):
-        prediction(root, name, stem, device)
-        if i % 100 == 0 or i == len(stems):
-            print(f"{name}: {i}/{len(stems)} clips predicted", flush=True)
-    return CACHE / f"test_sets_predictions-{name}"
-
-
-def lags(root: Path, name: str, device: str = "cuda") -> pd.DataFrame:
-    """Every test clip's best prediction-to-truth lag for network *name*, from its
-    cached predictions (:func:`predictions`)."""
-    rows = []
-    for path in sorted(predictions(root, name, device).glob("*.npz")):
-        if path.name.endswith(".tmp.npz"):
-            continue
-        p = np.load(path)
-        fs = 1.0 / float(np.median(np.diff(p["times"])))
-        lag, r, r0 = best_lag(p["signal"], p["truth"], fs)
-        rows.append({"stem": path.stem, "lag_s": lag, "r_best": r, "r_at_0": r0})
-    return pd.DataFrame(rows).assign(network=name)
-
-
 def summary(df: pd.DataFrame) -> pd.DataFrame:
     """Mean over recordings (clips averaged within their recording first), as zephyr
     reports, per network and set."""
@@ -346,164 +316,31 @@ def covariates_figure(df: pd.DataFrame, info: pd.DataFrame, network: str):
     return fig
 
 
-FRAME_S = 1 / 60
-"""One frame of the output grid: lags within one are no offset at all."""
 CASE_COLOURS = {
     "truth": style.TRUTH,
     "prediction": style.color("Zephyr"),
     "shifted": "#d55e00",
 }
-CASES = [
-    "fine (r >= 0.5)",
-    "fails, no lag",
-    "fails, lagged, rescued",
-    "fails, lagged, not rescued",
-]
 
 
-def lag_table(
-    lag: pd.DataFrame, info: pd.DataFrame, scores_df: pd.DataFrame
-) -> pd.DataFrame:
-    """*lag* (:func:`lags`) with each clip's animal, date, rig, set and failure case."""
-    keep = scores_df[["stem", "network", "set"]]
-    m = lag.merge(info, on="stem").merge(keep, on=["stem", "network"])
-    m["lag_ms"] = m["lag_s"] * 1000
+def clip_table(df: pd.DataFrame, info: pd.DataFrame, name: str) -> pd.DataFrame:
+    """Network *name*'s clips (*df* from :func:`scores`) with each clip's animal, date,
+    rig and set; ``r`` is its correlation as scored."""
+    m = df[df["network"] == name].merge(info, on=["stem", "session"])
     m["date"] = pd.to_datetime(m["date"])
-    lagged = m["lag_s"].abs() > 1.5 * FRAME_S
-    fails = m["r_at_0"] < 0.5
-    m["case"] = np.select([~fails, ~lagged, m["r_best"] >= 0.7], CASES[:3], CASES[3])
-    return m
-
-
-def lag_diagnosis_figure(m: pd.DataFrame):
-    """Whether the prediction-to-truth lag explains the failures (one network, *m* from
-    :func:`lag_table`): every clip's lag, what shifting recovers, the failures it
-    explains, lag by animal, the lagged animals over time, and lag by rig."""
-    layout = [["hist", "gain", "cases"], ["animal"] * 3, ["time", "time", "rig"]]
-    fig, ax = style.mosaic(layout, "double", 1.05)
-    band = {"color": "0.9", "zorder": 0}
-    edge = 1.5 * FRAME_S * 1000
-    bins = np.arange(-200, 201, FRAME_S * 1000) - FRAME_S * 500
-    ax["hist"].hist(m["lag_ms"], bins=bins, color=style.color("Zephyr"))
-    ax["hist"].axvspan(-edge, edge, **band)
-    ax["hist"].set(
-        xlabel="best lag (ms, - prediction earlier)", ylabel="clips", yscale="log"
-    )
-    dots = ax["gain"].scatter(
-        m["r_at_0"],
-        m["r_best"],
-        c=m["lag_ms"].abs(),
-        cmap="viridis",
-        s=4,
-        vmin=0,
-        vmax=120,
-    )
-    ax["gain"].plot([-0.4, 1], [-0.4, 1], color="0.6", lw=0.5)
-    fig.colorbar(dots, ax=ax["gain"], label="|lag| (ms)")
-    ax["gain"].set(xlabel="r unshifted (as scored)", ylabel="r at best lag")
-    counts = m["case"].value_counts().reindex(CASES).fillna(0)
-    colours = ["0.75", "#d55e00", style.color("Zephyr"), "#e69f00"]
-    ax["cases"].barh(counts.index, counts, color=colours)
-    ax["cases"].invert_yaxis()
-    ax["cases"].set(xlabel="clips")
-    animals = m.groupby("subject_id")["lag_ms"].median().sort_values()
-    sets = dict(
-        zip(GROUPS.values(), ["#d55e00", style.color("Zephyr"), "#009e73"], strict=True)
-    )
-    for x, subject in enumerate(animals.index):
-        d = m[m["subject_id"] == subject]
-        colour = sets[d["set"].iloc[0]]
-        ax["animal"].plot(
-            x + _jitter(len(d), x), d["lag_ms"], "o", ms=1.8, alpha=0.6, color=colour
-        )
-    ax["animal"].axhspan(-edge, edge, **band)
-    ax["animal"].set_xticks(
-        range(len(animals)), list(animals.index), rotation=90, fontsize=4.5
-    )
-    ax["animal"].set(ylabel="best lag (ms)")
-    for label, colour in sets.items():
-        ax["animal"].plot([], [], "o", color=colour, label=label)
-    ax["animal"].legend(loc="upper left", fontsize=5)
-    off = animals[animals.abs() > edge].index
-    animal_colours = dict(zip(off, style.series(len(off)), strict=True))
-    for subject, colour in animal_colours.items():
-        d = m[m["subject_id"] == subject].sort_values("date")
-        ax["time"].plot(
-            d["date"], d["lag_ms"], "o-", ms=2, lw=0.6, color=colour, label=subject
-        )
-    ax["time"].axhspan(-edge, edge, **band)
-    ax["time"].set(ylabel="best lag (ms), lagged animals")
-    ax["time"].legend(fontsize=4.5, ncol=4)
-    _rig_axes(ax["rig"], m, edge, animal_colours)
-    return fig
-
-
-def _rig_axes(ax, m: pd.DataFrame, edge: float, animal_colours: dict) -> None:
-    """Share of each rig's clips that are lagged, split by the animal of the lagged clips
-    (lagged animals in their colours from the time panel, any other animal grey)."""
-    lagged = m["lag_ms"].abs() > edge
-    clips = m.groupby("rig").size()
-    part = m[lagged].groupby(["rig", "subject_id"]).size().unstack(fill_value=0)
-    part = part.reindex(clips.index, fill_value=0).div(clips, axis=0)
-    rigs = part.sum(axis=1).sort_values().index
-    order = [s for s in animal_colours if s in part] + [
-        s for s in part if s not in animal_colours
-    ]
-    left = pd.Series(0.0, index=rigs)
-    for subject in order:
-        width = part.loc[rigs, subject]
-        colour = animal_colours.get(subject, "0.75")
-        ax.barh(rigs, width, left=left, color=colour, edgecolor="white", lw=0.3)
-        left += width
-    for y, rig in enumerate(rigs):
-        ax.text(left[rig], y, f" {clips[rig]}", va="center", fontsize=4.5, color="0.4")
-    ax.set(xlabel="share lagged, by animal")
-
-
-def _label(row, what: str) -> str:
-    return (
-        f"{what}: {row.subject_id} {row.date:%Y-%m-%d}, lag {row.lag_ms:+.0f} ms, "
-        f"r {row.r_at_0:+.2f} -> {row.r_best:+.2f}"
-    )
-
-
-def edge_cases(m: pd.DataFrame) -> dict[str, str]:
-    """A few telling clips, chosen by rule from *m* (:func:`lag_table`): label -> stem."""
-    m = m.assign(gain=m["r_best"] - m["r_at_0"])
-    chosen = [
-        ("aligned", m[(m["lag_s"] == 0) & (m["r_at_0"] > 0.9)].nlargest(1, "r_at_0")),
-        ("lagged, rescued by the shift", m[m["case"] == CASES[2]].nlargest(1, "gain")),
-    ]
-    per_session = m.groupby(["subject_id", "date"])["lag_ms"].median().reset_index()
-    counts = per_session.groupby("subject_id").size()
-    per_session = per_session[per_session["subject_id"].isin(counts[counts >= 4].index)]
-    if len(per_session):
-        ends = per_session.sort_values("date").groupby("subject_id")["lag_ms"]
-        drifting = (ends.last() - ends.first()).abs().idxmax()  # first vs last session
-        d = m[m["subject_id"] == drifting].sort_values("date")
-        chosen += [
-            ("same animal, first session", d.iloc[:1]),
-            ("same animal, last", d.iloc[-1:]),
-        ]
-    chosen += [
-        ("lagged, not rescued", m[m["case"] == CASES[3]].nsmallest(1, "r_best")),
-        ("fails without a lag", m[m["case"] == CASES[1]].nsmallest(1, "r_at_0")),
-    ]
-    return {_label(r, what): r.stem for what, rows in chosen for r in rows.itertuples()}
+    return m.assign(r=m["correlation"])
 
 
 def clip_traces(root: Path, name: str, stem: str) -> dict:
     """Everything recorded for clip *stem* and network *name*, on the session clock: the
-    raw thermistor, the target, the prediction and onset head, the truth events, the
-    gray frames, and the best lag."""
+    raw thermistor, the target, the prediction and onset head, the truth events and the
+    gray frames."""
     entry = _entry(root, stem)
     p = np.load(prediction(root, name, stem))
     clip, _ = _clips(root)[stem]
     raw = pd.read_parquet(clip.thermistor)
     events = np.load(entry.events)
     times = p["times"]
-    fs = 1.0 / float(np.median(np.diff(times)))
-    lag, r, r0 = best_lag(p["signal"], p["truth"], fs)
     truth = p["truth"]
     return {
         "stem": stem,
@@ -517,9 +354,6 @@ def clip_traces(root: Path, name: str, stem: str) -> dict:
         "head": times[head_event_indices(p["onset"], times)],
         "frame_t": np.load(entry.frame_times),
         "gray": np.load(entry.group_file("gray"), mmap_mode="r"),
-        "lag_s": lag,
-        "r_best": r,
-        "r_at_0": r0,
     }
 
 
@@ -533,7 +367,7 @@ def _inhale_lines(ax, tr: dict, t0: float, t1: float) -> None:
 
 
 def _traces_axes(ax, tr: dict, t0: float, t1: float) -> None:
-    """Target, prediction and the prediction moved by its best lag, over [t0, t1]."""
+    """Target and prediction over [t0, t1]."""
     w = _window(tr["times"], t0, t1)
     rel = tr["times"][w] - tr["times"][0]
     ax.plot(
@@ -550,33 +384,38 @@ def _traces_axes(ax, tr: dict, t0: float, t1: float) -> None:
         lw=0.9,
         label="prediction",
     )
-    if tr["lag_s"] != 0:
-        moved = f"prediction moved {-tr['lag_s'] * 1000:+.0f} ms"
-        ax.plot(
-            rel - tr["lag_s"],
-            tr["signal"][w],
-            color=CASE_COLOURS["shifted"],
-            lw=0.8,
-            ls="--",
-            label=moved,
-        )
     _inhale_lines(ax, tr, t0, t1)
     ax.set_xlim(t0 - tr["times"][0], t1 - tr["times"][0])
 
 
-def edge_case_figure(
-    root: Path, name: str, cases: dict[str, str], seconds: float = 4.0
-):
-    """One excerpt of each case: thermistor, prediction, and the prediction moved by its
-    best lag (grey lines: the thermistor's inhales)."""
+def shift_figure(root: Path, name: str, stems: list[str], seconds: float = 4.0):
+    """Clips *stems* whose prediction is right but late or early: one excerpt each of
+    the thermistor, the prediction, and the prediction moved by the lag that fits it
+    best (grey lines: the thermistor's inhales)."""
     fig, axes = style.figure(
-        "double", 0.17 * len(cases), nrows=len(cases), squeeze=False
+        "double", 0.17 * len(stems), nrows=len(stems), squeeze=False
     )
-    for ax, (what, stem) in zip(axes[:, 0], cases.items(), strict=True):
+    for ax, stem in zip(axes[:, 0], stems, strict=True):
         tr = clip_traces(root, name, stem)
+        fs = 1.0 / float(np.median(np.diff(tr["times"])))
+        lag, r, r0 = best_lag(tr["signal"], tr["truth"], fs)
         mid = tr["times"][len(tr["times"]) // 2]
         _traces_axes(ax, tr, mid, mid + seconds)
-        ax.set_title(what, fontweight="normal", loc="left", fontsize=6.5)
+        w = _window(tr["times"], mid, mid + seconds)
+        ax.plot(
+            tr["times"][w] - tr["times"][0] - lag,
+            tr["signal"][w],
+            color=CASE_COLOURS["shifted"],
+            lw=0.8,
+            ls="--",
+            label=f"prediction moved {-lag * 1000:+.0f} ms",
+        )
+        ax.set_title(
+            f"{stem}: r {r0:+.2f} as scored, {r:+.2f} moved",
+            fontweight="normal",
+            loc="left",
+            fontsize=6.5,
+        )
         ax.set_yticks([])
         ax.legend(loc="upper right", fontsize=5, ncol=3)
     axes[-1, 0].set_xlabel("time in clip (s)")
@@ -584,37 +423,36 @@ def edge_case_figure(
 
 
 def animal_options(m: pd.DataFrame) -> dict[str, str]:
-    """Each animal of *m* (:func:`lag_table`), most negative median lag first:
-    label -> subject."""
-    lag = m.groupby("subject_id")["lag_ms"].median().sort_values()
+    """Each animal of *m* (:func:`clip_table`), lowest median r first: label -> subject."""
+    r = m.groupby("subject_id")["r"].median().sort_values()
     rigs = m.groupby("subject_id")["rig"].nunique()
-    return {f"{s} (median lag {lag[s]:+.0f} ms, rigs: {rigs[s]})": s for s in lag.index}
+    return {f"{s} (median r {r[s]:+.2f}, rigs: {rigs[s]})": s for s in r.index}
 
 
 def animal_rig_figure(
     root: Path, name: str, m: pd.DataFrame, subject: str, seconds: float = 4.0
 ):
-    """One excerpt per rig animal *subject* ran on (its clip there with the median lag):
-    thermistor, prediction, and the prediction moved by its best lag."""
+    """One excerpt per rig animal *subject* ran on (its clip there with the median r):
+    thermistor and prediction."""
     d = m[m["subject_id"] == subject]
     rigs = sorted(d["rig"].unique())
     fig, axes = style.figure("double", 0.17 * len(rigs), nrows=len(rigs), squeeze=False)
     for ax, rig in zip(axes[:, 0], rigs, strict=True):
-        on = d[d["rig"] == rig].sort_values("lag_ms")
+        on = d[d["rig"] == rig].sort_values("r")
         row = on.iloc[len(on) // 2]
         tr = clip_traces(root, name, row["stem"])
         mid = tr["times"][len(tr["times"]) // 2]
         _traces_axes(ax, tr, mid, mid + seconds)
-        lags = ", ".join(f"{v:+.0f}" for v in on["lag_ms"])
+        rs = ", ".join(f"{v:+.2f}" for v in on["r"])
         ax.set_title(
-            f"rig {rig}: {row['date']:%Y-%m-%d}, r {row['r_at_0']:+.2f} -> "
-            f"{row['r_best']:+.2f} (lags of its {len(on)} clips here: {lags} ms)",
+            f"rig {rig}: {row['date']:%Y-%m-%d}, r {row['r']:+.2f} "
+            f"(r of its {len(on)} clips here: {rs})",
             fontweight="normal",
             loc="left",
             fontsize=6.5,
         )
         ax.set_yticks([])
-        ax.legend(loc="upper right", fontsize=5, ncol=3)
+        ax.legend(loc="upper right", fontsize=5, ncol=2)
     axes[-1, 0].set_xlabel("time in clip (s)")
     return fig
 
@@ -642,7 +480,7 @@ def raw_figure(tr: dict, start: float, length: float, n_frames: int = 8):
     ax["raw"].set(ylabel="thermistor (ADC)", xlim=(start, start + length))
     _traces_axes(ax["trace"], tr, t0, t1)
     ax["trace"].set(ylabel="z-score")
-    ax["trace"].legend(loc="upper right", fontsize=5, ncol=3)
+    ax["trace"].legend(loc="upper right", fontsize=5, ncol=2)
     w = _window(tr["times"], t0, t1)
     rel = tr["times"][w] - tr["times"][0]
     ax["head"].plot(rel, tr["onset"][w], color=CASE_COLOURS["prediction"], lw=0.7)
@@ -654,8 +492,7 @@ def raw_figure(tr: dict, start: float, length: float, n_frames: int = 8):
     ax["head"].set(ylabel="onset head", xlabel="time in clip (s)")
     ax["head"].set(xlim=(start, start + length), ylim=(0, 1.1))
     fig.suptitle(
-        f"{tr['stem']}: r {tr['r_at_0']:+.2f} as scored, {tr['r_best']:+.2f} at lag "
-        f"{tr['lag_s'] * 1000:+.0f} ms (grey: thermistor inhales, triangles: head events)",
+        f"{tr['stem']} (grey: thermistor inhales, triangles: head events)",
         fontsize=6.5,
         fontweight="normal",
     )
@@ -676,12 +513,6 @@ QC = {
 }
 """The span QC's metrics (``zephyr.session_selection``), each clip's own unless marked
 session (``qc.parquet``)."""
-RHO = {
-    "r as scored": ("r_at_0", "all"),
-    "r at best lag": ("r_best", "all"),
-    "r at best lag, no offset animals": ("r_best", "steady"),
-    "|lag|": ("abs_lag", "all"),
-}
 
 
 def _noise(x: NDArray) -> float:
@@ -736,8 +567,7 @@ def clip_qc(root: Path) -> pd.DataFrame:
 
 
 def qc_table(root: Path, m: pd.DataFrame) -> pd.DataFrame:
-    """*m* (:func:`lag_table`) with the :data:`QC` metrics, ``abs_lag`` and ``steady``
-    (the clip's animal has no offset: median lag within 1.5 frames)."""
+    """*m* (:func:`clip_table`) with the :data:`QC` metrics."""
     qc = pd.read_parquet(root / "dataset/qc.parquet").drop_duplicates("session_id")
     qc = qc.set_index("session_id")
     m = m.drop(
@@ -746,74 +576,296 @@ def qc_table(root: Path, m: pd.DataFrame) -> pd.DataFrame:
     m = m.merge(clip_qc(root), on="stem")
     for key in ("break_frac", "consistency_z", "good_frac"):
         m[f"session_{key}"] = m["session"].map(qc[key])
-    m["abs_lag"] = m["lag_ms"].abs()
-    offset = m.groupby("subject_id")["lag_ms"].transform("median").abs()
-    m["steady"] = offset <= 1.5 * FRAME_S * 1000
     return m
 
 
 def qc_figure(q: pd.DataFrame):
     """Whether thermistor quality goes with the network's r (*q* from :func:`qc_table`):
-    Spearman rho of each QC metric with r, r at the best lag (with and without the
-    animals with an offset) and |lag|; each animal's median amplitude against its median
-    lag (offset animals named); r against amplitude, clip by clip."""
-    fig, ax = style.mosaic([["rho", "rho", "amp", "scatter"]], "double", 0.42)
-    rho = pd.DataFrame(
-        {
-            name: [
-                q[q["steady"] | (which == "all")][[key, y]].corr("spearman").iloc[0, 1]
-                for key in QC
-            ]
-            for name, (y, which) in RHO.items()
-        },
+    Spearman rho of each QC metric with r over clips, and r against amplitude."""
+    fig, ax = style.mosaic([["rho", "scatter"]], "double", 0.36)
+    rho = pd.Series(
+        [q[[key, "r"]].corr("spearman").iloc[0, 1] for key in QC],
         index=list(QC.values()),
     )
-    ax["rho"].imshow(rho, cmap="RdBu_r", vmin=-0.6, vmax=0.6, aspect="auto")
-    for (i, j), v in np.ndenumerate(rho.to_numpy()):
-        ax["rho"].text(j, i, f"{v:+.2f}", ha="center", va="center", fontsize=5.5)
-    ax["rho"].set_xticks(
-        range(len(RHO)), list(RHO), rotation=20, ha="right", fontsize=5.5
+    ax["rho"].barh(rho.index, rho, color=style.color("Zephyr"))
+    ax["rho"].axvline(0, color="0.6", lw=0.5)
+    ax["rho"].invert_yaxis()
+    ax["rho"].tick_params(axis="y", labelsize=5.5)
+    ax["rho"].set(xlabel="Spearman rho with r, over clips", xlim=(-0.6, 0.6))
+    ax["scatter"].scatter(
+        q["amplitude"], q["r"], s=3, alpha=0.6, color=style.color("Zephyr")
     )
-    ax["rho"].set_yticks(range(len(QC)), list(QC.values()), fontsize=5.5)
-    ax["rho"].set_title("Spearman rho over clips", fontweight="normal", fontsize=6.5)
-    groups = {"no offset": q["steady"], "offset animals": ~q["steady"]}
-    colours = {"no offset": style.color("Zephyr"), "offset animals": "#d55e00"}
-    animals = q.groupby("subject_id").agg(
-        amplitude=("amplitude", "median"),
-        lag_ms=("lag_ms", "median"),
-        steady=("steady", "first"),
-    )
-    ax["amp"].axvspan(
-        -1.5 * FRAME_S * 1000, 1.5 * FRAME_S * 1000, color="0.9", zorder=0
-    )
-    for subject, a in animals.iterrows():
-        colour = colours["no offset" if a["steady"] else "offset animals"]
-        ax["amp"].plot(a["lag_ms"], a["amplitude"], "o", ms=2.5, color=colour)
-        if not a["steady"]:
-            ax["amp"].annotate(
-                subject,
-                (a["lag_ms"], a["amplitude"]),
-                fontsize=4.5,
-                xytext=(2, 1),
-                textcoords="offset points",
-            )
-    ax["amp"].set(
-        yscale="log",
-        xlabel="median lag (ms)",
-        ylabel="median thermistor amplitude (ADC)",
-    )
-    ax["amp"].set_title("one dot per animal", fontweight="normal", fontsize=6.5)
-    for k, g in groups.items():
-        ax["scatter"].scatter(
-            q.loc[g, "amplitude"],
-            q.loc[g, "r_at_0"],
-            s=3,
-            alpha=0.6,
-            color=colours[k],
-            label=k,
-        )
     ax["scatter"].set(
         xscale="log", xlabel="thermistor amplitude (ADC)", ylabel="r as scored"
     )
-    ax["scatter"].legend(fontsize=5)
+    return fig
+
+
+SPLIT = {
+    "train": "train",
+    "val": "validation",
+    "test_a": GROUPS["full_test_a"],
+    "test_b": GROUPS["full_test_b"],
+    "test_c": GROUPS["full_test_c"],
+}
+"""``folds.parquet``'s sets, named as the scores name them."""
+SPLIT_COLOURS = {
+    "train": "0.6",
+    "validation": "#cc79a7",
+    GROUPS["full_test_a"]: "#d55e00",
+    GROUPS["full_test_b"]: style.color("Zephyr"),
+    GROUPS["full_test_c"]: "#009e73",
+}
+
+_traces = functools.cache(clip_traces)
+""":func:`clip_traces`, kept, so moving a slider only redraws."""
+
+
+def low_sessions(m: pd.DataFrame, below: float) -> pd.DataFrame:
+    """The sessions of *m* (:func:`clip_table`) whose clips' mean r (as scored) is
+    under *below*, worst first, with their clips worst first."""
+    g = m.sort_values("r").groupby("session", sort=False)
+    out = g.agg(
+        subject_id=("subject_id", "first"),
+        rig=("rig", "first"),
+        set=("set", "first"),
+        r=("r", "mean"),
+        stems=("stem", list),
+        clip_r=("r", list),
+    )
+    return out[out["r"] < below].sort_values("r").reset_index()
+
+
+def low_figure(
+    root: Path, name: str, low: pd.DataFrame, start: float, length: float, which: int
+):
+    """Each session of *low* (:func:`low_sessions`), worst first: its *which* clip (0 the
+    worse) over [start, start + length] s of the clip: the frame at *start*, the raw
+    thermistor, and target against prediction (grey lines: the thermistor's inhales)."""
+    layout = []
+    for i in range(len(low)):
+        layout += [[f"img{i}", f"raw{i}"], [f"img{i}", f"tr{i}"]]
+    fig, ax = style.mosaic(
+        layout,
+        "double",
+        0.13 * len(low),
+        width_ratios=[1, 9],
+        height_ratios=[1, 1.4] * len(low),
+    )
+    for i, row in enumerate(low.itertuples()):
+        k = min(which, len(row.stems) - 1)
+        tr = _traces(root, name, row.stems[k])
+        t0 = tr["times"][0] + start
+        t1 = t0 + length
+        f = int(np.clip(np.searchsorted(tr["frame_t"], t0), 0, len(tr["gray"]) - 1))
+        ax[f"img{i}"].imshow(tr["gray"][f, 0], cmap="gray", vmin=0, vmax=255)
+        ax[f"img{i}"].set_axis_off()
+        w = _window(tr["raw_t"], t0, t1)
+        raw = ax[f"raw{i}"]
+        raw.plot(
+            tr["raw_t"][w] - tr["times"][0], tr["raw"][w], color=style.TRUTH, lw=0.5
+        )
+        raw.set_xlim(start, start + length)
+        raw.tick_params(labelbottom=False, labelsize=4.5)
+        raw.set_title(
+            f"{row.session}: {row.subject_id}, rig {row.rig}, {row.set} | clip "
+            f"{k + 1} of {len(row.stems)}: r {row.clip_r[k]:+.2f} (session r "
+            f"{row.r:+.2f})",
+            fontweight="normal",
+            loc="left",
+            fontsize=5.5,
+        )
+        _traces_axes(ax[f"tr{i}"], tr, t0, t1)
+        ax[f"tr{i}"].set_yticks([])
+        if i < len(low) - 1:
+            ax[f"tr{i}"].tick_params(labelbottom=False)
+    ax["tr0"].legend(loc="upper right", fontsize=4.5, ncol=2)
+    ax[f"tr{len(low) - 1}"].set_xlabel("time in clip (s)")
+    return fig
+
+
+VIEWS = {"face crop (what the network sees)": "crop", "whole frame": "frame"}
+EMBEDDER = "facebook/dinov2-small"
+"""A self-supervised image model whose features say how alike two images look."""
+
+
+@functools.cache
+def _boxes(root: Path) -> tuple[dict[str, tuple[int, ...]], tuple[int, int]]:
+    """Session -> its face box, and the frame the boxes are in (``clips.toml``)."""
+    clip_list = load(ClipList, root / "dataset/clips.toml", check_files=False)
+    boxes = {c.group: tuple(c.box) for c in clip_list.resolve()}
+    return boxes, tuple(clip_list.preprocess.target_size)
+
+
+def thumbnail(root: Path, session: str, view: str):
+    """The session's face camera thumbnail (``LAYOUT``), whole or cropped to its box."""
+    from PIL import Image
+
+    image = Image.open(root / "dataset/thumbnails" / f"{session}_FaceCamera.png")
+    image = image.convert("RGB")
+    if view == "crop":
+        boxes, (w, _) = _boxes(root)
+        x, y, bw, bh = (v * image.width / w for v in boxes[session])
+        image = image.crop((x, y, x + bw, y + bh))
+    return image
+
+
+def embeddings(root: Path, view: str) -> pd.DataFrame:
+    """Every session's thumbnail embedding (:data:`EMBEDDER`, unit length; rows by
+    session), for *view* ``crop`` or ``frame``; cached."""
+    cached = CACHE / f"test_sets_thumbnails-{root.name}-{view}.parquet"
+    if cached.is_file():
+        return pd.read_parquet(cached)
+    from transformers import AutoImageProcessor, AutoModel
+
+    sessions = sorted(_boxes(root)[0])
+    processor = AutoImageProcessor.from_pretrained(EMBEDDER)
+    dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = AutoModel.from_pretrained(EMBEDDER).to(dev).eval()
+    rows = []
+    with torch.no_grad():
+        for i in range(0, len(sessions), 32):
+            images = [thumbnail(root, s, view) for s in sessions[i : i + 32]]
+            batch = processor(images=images, return_tensors="pt").to(dev)
+            rows.append(model(**batch).pooler_output.float().cpu().numpy())
+    x = np.concatenate(rows)
+    x /= np.linalg.norm(x, axis=1, keepdims=True)
+    out = pd.DataFrame(x, index=pd.Index(sessions, name="session"))
+    out.columns = [f"e{j}" for j in out.columns]
+    CACHE.mkdir(parents=True, exist_ok=True)
+    out.to_parquet(cached)
+    return out
+
+
+def nearest_train(root: Path, view: str, m: pd.DataFrame) -> pd.DataFrame:
+    """Every session of the split: its set, animal and rig, its r (test sessions, mean
+    over clips of *m*), the thumbnails' first two principal components, and the cosine
+    similarity to the most alike training session (``nearest``, which, its animal), to
+    the most alike of its own animal (``nearest_same``) and of another
+    (``nearest_other``); a training session is not its own neighbour."""
+    folds = pd.read_parquet(root / "dataset/folds.parquet").dropna(subset=["set"])
+    folds = folds.set_index("session_id")
+    e = embeddings(root, view).loc[folds.index].to_numpy()
+    sim = e @ e.T
+    np.fill_diagonal(sim, -np.inf)
+    train = (folds["set"] == "train").to_numpy()
+    animal = folds["subject_id"].astype(str).to_numpy()
+    to_train = np.where(train[None, :], sim, -np.inf)
+    best = to_train.argmax(1)
+    centred = e - e.mean(0)
+    _, _, vt = np.linalg.svd(centred, full_matrices=False)
+    pcs = centred @ vt[:2].T
+    out = folds[["subject_id", "rig"]].assign(
+        set=folds["set"].map(SPLIT),
+        pc1=pcs[:, 0],
+        pc2=pcs[:, 1],
+        nearest=to_train[np.arange(len(e)), best],
+        nearest_session=folds.index[best],
+        nearest_animal=animal[best],
+    )
+    same = animal[:, None] == animal[None, :]
+    for key, mask in (("nearest_same", same), ("nearest_other", ~same)):
+        v = np.where(mask, to_train, -np.inf).max(1)
+        out[key] = np.where(np.isfinite(v), v, np.nan)
+    out["r"] = m.groupby("session")["r"].mean()
+    return out.reset_index(names="session")
+
+
+def similarity_figure(t: pd.DataFrame, below: float):
+    """Whether the sessions the network does badly on look unlike its training sessions
+    (*t* from :func:`nearest_train`): the thumbnails' map (first two principal
+    components; ringed: test sessions under *below*), r against the similarity to the
+    most alike training session, and that similarity by set and outcome."""
+    from scipy.stats import spearmanr
+
+    fig, ax = style.mosaic([["map", "r", "box"]], "double", 0.36)
+    low = t["r"] < below
+    for name, colour in SPLIT_COLOURS.items():
+        d = t[t["set"] == name]
+        ax["map"].scatter(d["pc1"], d["pc2"], s=3, color=colour, label=name, lw=0)
+    ax["map"].scatter(
+        t.loc[low, "pc1"],
+        t.loc[low, "pc2"],
+        s=14,
+        facecolor="none",
+        edgecolor="k",
+        lw=0.5,
+        label=f"r < {below:g}",
+    )
+    ax["map"].set(xlabel="PC 1", ylabel="PC 2", xticks=[], yticks=[])
+    ax["map"].legend(fontsize=4.5, markerscale=1.5)
+    test = t[t["r"].notna()]
+    for name, colour in SPLIT_COLOURS.items():
+        d = test[test["set"] == name]
+        ax["r"].scatter(d["nearest"], d["r"], s=4, color=colour, lw=0)
+    rho = spearmanr(test["nearest"], test["r"]).statistic
+    ax["r"].axhline(below, color="0.6", lw=0.5, ls="--")
+    ax["r"].set(
+        xlabel="similarity to the most alike training session", ylabel="session r"
+    )
+    ax["r"].set_title(
+        f"test sessions, Spearman rho {rho:+.2f}", fontweight="normal", fontsize=6.5
+    )
+    groups = {
+        "train (to another)": t.loc[t["set"] == "train", "nearest"],
+        "validation": t.loc[t["set"] == "validation", "nearest"],
+        f"test, r >= {below:g}": test.loc[test["r"] >= below, "nearest"],
+        f"test, r < {below:g}": test.loc[test["r"] < below, "nearest"],
+    }
+    for x, v in enumerate(groups.values()):
+        ax["box"].plot(x + _jitter(len(v)), v, "o", ms=1.5, alpha=0.5, color="0.4")
+        ax["box"].plot([x - 0.3, x + 0.3], [v.median()] * 2, color=style.POOLED, lw=1.2)
+    ax["box"].set_xticks(
+        range(len(groups)), list(groups), rotation=20, ha="right", fontsize=5.5
+    )
+    ax["box"].set_ylabel("similarity to the most alike training session")
+    return fig
+
+
+def _small(image, size: int = 96):
+    """*image* no larger than *size* pixels a side, so a figure of many stays small."""
+    image = image.copy()
+    image.thumbnail((size, size))
+    return image
+
+
+def nearest_figure(
+    root: Path, view: str, t: pd.DataFrame, low: pd.DataFrame, k: int = 4
+):
+    """Each session of *low* (:func:`low_sessions`), worst first: its thumbnail and the
+    *k* most alike training thumbnails (*t* from :func:`nearest_train`) with their
+    similarity, animal and rig (in red: the session's own animal)."""
+    e = embeddings(root, view)
+    train = t[t["set"] == "train"].set_index("session")
+    vectors = e.loc[train.index].to_numpy()
+    fig, axes = style.figure(
+        "double", 0.155 * len(low), nrows=len(low), ncols=k + 1, squeeze=False
+    )
+    for row, s in zip(axes, low.itertuples(), strict=True):
+        sim = vectors @ e.loc[s.session].to_numpy()
+        order = np.argsort(sim)[::-1][:k]
+        row[0].imshow(_small(thumbnail(root, s.session, view)), interpolation="nearest")
+        row[0].set_title(
+            f"test {s.set.split(':')[0]}: {s.subject_id} rig {s.rig}\nr {s.r:+.2f}",
+            fontsize=5,
+            fontweight="normal",
+            color=SPLIT_COLOURS[s.set],
+        )
+        for ax, j in zip(row[1:], order, strict=True):
+            n = train.index[j]
+            ax.imshow(_small(thumbnail(root, n, view)), interpolation="nearest")
+            same = str(train.loc[n, "subject_id"]) == str(s.subject_id)
+            ax.set_title(
+                f"{train.loc[n, 'subject_id']} rig {train.loc[n, 'rig']}\n"
+                f"sim {sim[j]:.3f}",
+                fontsize=5,
+                fontweight="normal",
+                color="#d55e00" if same else "k",
+            )
+        for ax in row:
+            ax.set_xticks([])
+            ax.set_yticks([])
+            ax.grid(False)
+    axes[0, 0].set_ylabel("test session", fontsize=5.5)
+    axes[0, 1].set_ylabel("most alike training", fontsize=5.5)
     return fig
