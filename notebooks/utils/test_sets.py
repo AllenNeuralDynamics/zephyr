@@ -107,7 +107,7 @@ def _image_stats(gray: NDArray) -> dict[str, float]:
 
 def clip_info(root: Path) -> pd.DataFrame:
     """One row per test clip: animal, rig, date, thermistor QC, box, image statistics."""
-    cached = CACHE / "test_sets_clip_info.parquet"
+    cached = CACHE / f"test_sets_clip_info-{root.name}.parquet"  # one per folder
     if cached.is_file():
         return pd.read_parquet(cached)
     use_copy(root)
@@ -692,7 +692,7 @@ def _noise(x: NDArray) -> float:
 def clip_qc(root: Path) -> pd.DataFrame:
     """The span QC's metrics over each test clip's own stretch of thermistor (1 s blocks
     for amplitude, the clip's inhales and exhales for the rest); cached."""
-    cached = CACHE / "test_sets_clip_qc.parquet"
+    cached = CACHE / f"test_sets_clip_qc-{root.name}.parquet"  # one per folder
     if cached.is_file():
         return pd.read_parquet(cached)
     rows = []
