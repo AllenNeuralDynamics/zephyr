@@ -21,7 +21,7 @@ from zephyr.signal import BREATHING_SIGNAL_COLUMN, TIME_COLUMN
 
 from . import common, facemap_ridge, pixel
 
-PIXEL_METHODS = ("flow", "pca", "snr")
+PIXEL_METHODS = ("flow", "pca", "snr", "motion")
 FACEMAP_VARIANTS = ("motion", "movie", "both")
 
 
@@ -77,6 +77,8 @@ def pixel_trace(method: str, entry, fs: float, bin_factor: int) -> np.ndarray:
         return pixel.pixel_pca(frames, fs)
     if method == "snr":
         return pixel.snr_weighted(frames, fs)
+    if method == "motion":
+        return pixel.motion_energy(frames, fs)
     raise ValueError(f"unknown pixel method {method!r}")
 
 

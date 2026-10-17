@@ -3,8 +3,10 @@
 ``flow``: mean optical flow over the crop on its dominant direction, integrated and
 band-passed. ``pca``: per-pixel band-passed intensity, keeping the PCA component most
 concentrated in one in-band peak (Poh et al., 2010). ``snr``: pixels weighted by in-band
-variance fraction, signed to agree, averaged. None sees the thermistor; polarity is
-fixed afterwards by :func:`.common.blind_polarity`.
+variance fraction, signed to agree, averaged. ``motion``: motion energy, the mean absolute
+frame difference over the crop, band-passed (gray only, rectified: it follows how fast the
+face moves, not which way). None sees the thermistor; polarity is fixed afterwards by
+:func:`.common.blind_polarity`.
 """
 
 import numpy as np
@@ -44,6 +46,13 @@ def pixel_pca(frames: np.ndarray, fs: float = FS, n_components: int = 10) -> np.
     components = x @ top
     scores = [spectral_concentration(components[:, k], fs) for k in range(top.shape[1])]
     return components[:, int(np.argmax(scores))]
+
+
+def motion_energy(frames: np.ndarray, fs: float = FS) -> np.ndarray:
+    """``(T, H, W)`` gray -> band-passed mean absolute frame difference over the crop."""
+    x = frames.reshape(len(frames), -1).astype(np.float64)
+    energy = np.abs(np.diff(x, axis=0, prepend=x[:1])).mean(1)
+    return bandpass(energy - energy.mean(), fs)
 
 
 def snr_weighted(

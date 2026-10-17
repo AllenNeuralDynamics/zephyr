@@ -129,6 +129,12 @@ reproduces their stored results exactly.
   uv run zephyr-benchmarks collect --runs runs/baselines-nets
   ```
 
+  The pixel methods are `flow`, `pca` and `snr` (the default) and `motion`: motion
+  energy, the mean absolute frame difference over the crop, band-passed. It needs only the
+  gray channel, so it runs on a gray-only cache where `flow` cannot (`--methods pca snr
+  motion`). It is rectified, so it follows how fast the face moves rather than the breath
+  itself; its `calibrated` variant fits the sign and lag on the training clips.
+
 - `zephyr-benchmarks report --runs <dir> --out <dir>` builds the figures and
   table for the full 4 inputs x 2 objectives x 5 seeds grid from run output.
 
