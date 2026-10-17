@@ -161,10 +161,11 @@ section explains the ones whose behaviour is not obvious.
   `share(rate bin) ** -rate_balance` over `rate_bins_hz` (default 2-15 Hz), per
   `[[fold.train]]` source, bins under 1% counting as 1% (`zephyr/rates.py`); validation
   windows are never balanced.
-- `[fold.train_params.augmentation]` (defaults on): `shift_px` moves the crop and `scale`
-  zooms it about its centre (default 0), `brightness`/`contrast` act on gray,
-  `motion_noise` on diff and flow. `scale` needs channels without flow (gray, gray+diff):
-  a model that reads the flow channels refuses it.
+- `[fold.train_params.augmentation]` (defaults on): `shift_px` moves the crop, `scale`
+  zooms it and `rotation` (degrees) turns it about its centre (both default 0), `blur`
+  (maximum Gaussian sigma in pixels, default 0) and `brightness`/`contrast` act on gray,
+  `motion_noise` on diff and flow. `scale` and `rotation` need channels without flow (gray,
+  gray+diff): a model that reads the flow channels refuses them.
 - `temporal_kernel` (odd, default 1) makes the encoder's first layer a 3D convolution over
   that many neighbouring frames, so a gray-only network sees change between frames
   itself rather than through the precomputed `diff`/flow channels; later layers stay per

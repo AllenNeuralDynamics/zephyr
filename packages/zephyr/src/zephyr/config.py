@@ -482,6 +482,8 @@ class Augmentation(_Model):
     motion_noise: float = Field(2.0, ge=0)
     shift_px: int = Field(4, ge=0)
     scale: float = Field(0.0, ge=0, lt=1)
+    rotation: float = Field(0.0, ge=0, le=180)
+    blur: float = Field(0.0, ge=0)
     brightness: float = Field(0.15, ge=0)
     contrast: float = Field(0.2, ge=0)
     noise: float = Field(2.0, ge=0)
@@ -567,11 +569,12 @@ class TrainParams(_Model):
     @model_validator(mode="after")
     def _zoom_needs_no_flow(self) -> "TrainParams":
         flow = {"flow_x", "flow_y"} & set(ChannelSet.parse(self.channels).names)
-        if self.augmentation.scale > 0 and flow:
-            raise ValueError(
-                f"augmentation scale cannot zoom the flow channels {sorted(flow)}: "
-                "train on channels without flow (gray, gray+diff) or leave it at 0"
-            )
+        for knob in ("scale", "rotation"):
+            if getattr(self.augmentation, knob) > 0 and flow:
+                raise ValueError(
+                    f"augmentation {knob} cannot warp the flow channels {sorted(flow)}: "
+                    "train on channels without flow (gray, gray+diff) or leave it at 0"
+                )
         return self
 
     @model_validator(mode="after")

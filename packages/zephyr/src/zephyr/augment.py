@@ -38,6 +38,13 @@ class AugmentConfig:
         distance.  The flow channels are companded vectors, which a zoom would have
         to decode, rescale and encode, so a model that reads them refuses it
         (``TrainParams``).
+    rotation:
+        Maximum rotation in degrees, drawn uniformly per window and applied with the
+        zoom about the crop centre.  Covers head tilt and camera mounting.  Flow
+        vectors would have to rotate too, so a model that reads them refuses it.
+    blur:
+        Maximum Gaussian blur sigma in pixels, drawn uniformly per window, on the
+        ``gray`` channel only.  Covers focus and optics that differ between rigs.
     brightness / contrast:
         Applied to the ``gray`` channel only, as fractional deviations from 1.0.
         The motion channels are differences and are already invariant to a
@@ -60,6 +67,8 @@ class AugmentConfig:
     motion_noise: float = 0.0
     shift_px: int = 0
     scale: float = 0.0
+    rotation: float = 0.0
+    blur: float = 0.0
     brightness: float = 0.0
     contrast: float = 0.0
     noise: float = 0.0
@@ -72,6 +81,8 @@ class AugmentConfig:
             or self.motion_noise > 0
             or self.shift_px > 0
             or self.scale > 0
+            or self.rotation > 0
+            or self.blur > 0
             or self.brightness > 0
             or self.contrast > 0
             or self.noise > 0
@@ -136,10 +147,11 @@ def noise_scales(
     return sd if sd.any() else None
 
 
-def zoom(block: np.ndarray, factor: float) -> np.ndarray:
-    """Zoom every frame of a ``(T, C, H, W)`` block about its centre."""
+def zoom(block: np.ndarray, factor: float, angle: float = 0.0) -> np.ndarray:
+    """Zoom (and rotate by *angle* degrees) every frame of a ``(T, C, H, W)`` block
+    about its centre."""
     height, width = block.shape[2:]
-    matrix = cv2.getRotationMatrix2D(((width - 1) / 2, (height - 1) / 2), 0.0, factor)
+    matrix = cv2.getRotationMatrix2D(((width - 1) / 2, (height - 1) / 2), angle, factor)
     out = np.empty_like(block)
     for t in range(block.shape[0]):
         frame = np.ascontiguousarray(block[t].transpose(1, 2, 0))  # H, W, C
@@ -154,18 +166,45 @@ def zoom(block: np.ndarray, factor: float) -> np.ndarray:
     return out
 
 
+def blur(frames: np.ndarray, sigma: float) -> np.ndarray:
+    """Gaussian-blur every frame of a ``(T, H, W)`` stack, edges repeated."""
+    if sigma <= 0:
+        return frames
+    return np.stack(
+        [
+            cv2.GaussianBlur(
+                np.ascontiguousarray(f), (0, 0), sigma, borderType=cv2.BORDER_REPLICATE
+            )
+            for f in frames
+        ]
+    )
+
+
 def apply_spatial(
     block: np.ndarray,
     rng: np.random.Generator,
     config: AugmentConfig,
     channels: ChannelSet,
 ) -> np.ndarray:
-    """Zoom, shift, flip, and photometrically jitter a ``(T, C, H, W)`` float block.
+    """Zoom and rotate, shift, flip, blur, and photometrically jitter a ``(T, C, H, W)``
+    float block.
 
     *block* holds only the channels in *channels*, in that order.
     """
-    if config.scale > 0:
-        block = zoom(block, float(rng.uniform(1.0 - config.scale, 1.0 + config.scale)))
+    # Each draw only when its knob is on, so a config without it draws the same
+    # random sequence as before the knob existed.
+    if config.scale > 0 or config.rotation > 0:
+        factor = (
+            float(rng.uniform(1.0 - config.scale, 1.0 + config.scale))
+            if config.scale > 0
+            else 1.0
+        )
+        angle = (
+            float(rng.uniform(-config.rotation, config.rotation))
+            if config.rotation > 0
+            else 0.0
+        )
+        block = zoom(block, factor, angle)
 
     if config.shift_px > 0:
         dy = int(rng.integers(-config.shift_px, config.shift_px + 1))
@@ -196,15 +235,18 @@ def apply_spatial(
         if flow_x is not None:
             block[:, flow_x] = 255.0 - block[:, flow_x]
 
-    if config.brightness > 0 or config.contrast > 0:
-        gray_channel = channels.position("gray")
-        if gray_channel is not None:
-            gain = 1.0 + rng.uniform(-config.contrast, config.contrast)
-            offset = 255.0 * rng.uniform(-config.brightness, config.brightness)
-            gray = block[:, gray_channel]
-            block[:, gray_channel] = np.clip(
-                (gray - 128.0) * gain + 128.0 + offset, 0.0, 255.0
-            )
+    gray_channel = channels.position("gray")
+    if config.blur > 0 and gray_channel is not None:
+        sigma = float(rng.uniform(0.0, config.blur))
+        block[:, gray_channel] = blur(block[:, gray_channel], sigma)
+
+    if (config.brightness > 0 or config.contrast > 0) and gray_channel is not None:
+        gain = 1.0 + rng.uniform(-config.contrast, config.contrast)
+        offset = 255.0 * rng.uniform(-config.brightness, config.brightness)
+        gray = block[:, gray_channel]
+        block[:, gray_channel] = np.clip(
+            (gray - 128.0) * gain + 128.0 + offset, 0.0, 255.0
+        )
 
     sd = noise_scales(rng, config, channels)
     if sd is not None:
