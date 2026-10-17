@@ -235,12 +235,12 @@ def _(axis_x, axis_y, axis_z, color_by, sessions):
         hover_data=["session", "subject_id", "rig", "date", "r"],
         height=700,
     )
-    _fig.update_traces(marker=dict(size=5))
+    _fig.update_traces(marker={"size": 5})
     for _axis, _feature in zip(
         ("xaxis", "yaxis", "zaxis"), (axis_x.value, axis_y.value, axis_z.value)
     ):
         if _feature == "amplitude":
-            _fig.update_layout(scene={_axis: dict(type="log")})
+            _fig.update_layout(scene={_axis: {"type": "log"}})
     _fig
     return
 
