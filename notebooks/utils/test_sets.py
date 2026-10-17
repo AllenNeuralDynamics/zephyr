@@ -44,7 +44,6 @@ GROUPS = {
 }
 METRICS = ["correlation", "inhale_f1", "exhale_f1", "kl_ibi", "head_inhale_f1"]
 RECIPE = "features-360x270-box96x96-60hz"
-MAX_LAG_S = 0.75
 
 
 def use_copy(root: Path) -> None:
@@ -61,7 +60,8 @@ def networks(root: Path) -> dict[str, Path]:
 
 
 def scores(root: Path, names: list[str]) -> pd.DataFrame:
-    """One row per network and clip: the clip's scores, group, session and stem."""
+    """One row per network and clip of the test lists: the clip's scores, group,
+    session and stem."""
     found = networks(root)
     frames = []
     for name in names:
@@ -71,7 +71,7 @@ def scores(root: Path, names: list[str]) -> pd.DataFrame:
     df["stem"] = df["clip_id"].str.split("/").str[-1]
     df["session"] = df["recording"].str.split("#").str[-1]
     df["set"] = df["group"].map(GROUPS)
-    return df
+    return df[df["stem"].isin(_clips(root))].reset_index(drop=True)
 
 
 @functools.cache
@@ -143,24 +143,6 @@ def clip_info(root: Path) -> pd.DataFrame:
     CACHE.mkdir(parents=True, exist_ok=True)
     info.to_parquet(cached)
     return info
-
-
-def best_lag(signal: NDArray, truth: NDArray, fs: float, max_lag_s: float = MAX_LAG_S):
-    """``(lag_s, r, r_at_0)``: the lag maximising the correlation of *signal* shifted by
-    it with *truth* (positive: the signal comes later than the truth), that correlation,
-    and the correlation unshifted."""
-    n = min(len(signal), len(truth))
-    x = (signal[:n] - signal[:n].mean()) / (signal[:n].std() or 1.0)
-    y = (truth[:n] - truth[:n].mean()) / (truth[:n].std() or 1.0)
-    lags = np.arange(-round(max_lag_s * fs), round(max_lag_s * fs) + 1)
-    r = np.array(
-        [
-            np.mean(x[max(0, k) :][: n - abs(k)] * y[max(0, -k) :][: n - abs(k)])
-            for k in lags
-        ]
-    )
-    best = int(np.argmax(r))
-    return float(lags[best] / fs), float(r[best]), float(r[lags == 0][0])
 
 
 @functools.cache
@@ -319,7 +301,7 @@ def covariates_figure(df: pd.DataFrame, info: pd.DataFrame, network: str):
 CASE_COLOURS = {
     "truth": style.TRUTH,
     "prediction": style.color("Zephyr"),
-    "shifted": "#d55e00",
+    "head": "#d55e00",
 }
 
 
@@ -388,40 +370,6 @@ def _traces_axes(ax, tr: dict, t0: float, t1: float) -> None:
     ax.set_xlim(t0 - tr["times"][0], t1 - tr["times"][0])
 
 
-def shift_figure(root: Path, name: str, stems: list[str], seconds: float = 4.0):
-    """Clips *stems* whose prediction is right but late or early: one excerpt each of
-    the thermistor, the prediction, and the prediction moved by the lag that fits it
-    best (grey lines: the thermistor's inhales)."""
-    fig, axes = style.figure(
-        "double", 0.17 * len(stems), nrows=len(stems), squeeze=False
-    )
-    for ax, stem in zip(axes[:, 0], stems, strict=True):
-        tr = clip_traces(root, name, stem)
-        fs = 1.0 / float(np.median(np.diff(tr["times"])))
-        lag, r, r0 = best_lag(tr["signal"], tr["truth"], fs)
-        mid = tr["times"][len(tr["times"]) // 2]
-        _traces_axes(ax, tr, mid, mid + seconds)
-        w = _window(tr["times"], mid, mid + seconds)
-        ax.plot(
-            tr["times"][w] - tr["times"][0] - lag,
-            tr["signal"][w],
-            color=CASE_COLOURS["shifted"],
-            lw=0.8,
-            ls="--",
-            label=f"prediction moved {-lag * 1000:+.0f} ms",
-        )
-        ax.set_title(
-            f"{stem}: r {r0:+.2f} as scored, {r:+.2f} moved",
-            fontweight="normal",
-            loc="left",
-            fontsize=6.5,
-        )
-        ax.set_yticks([])
-        ax.legend(loc="upper right", fontsize=5, ncol=3)
-    axes[-1, 0].set_xlabel("time in clip (s)")
-    return fig
-
-
 def animal_options(m: pd.DataFrame) -> dict[str, str]:
     """Each animal of *m* (:func:`clip_table`), lowest median r first: label -> subject."""
     r = m.groupby("subject_id")["r"].median().sort_values()
@@ -487,7 +435,7 @@ def raw_figure(tr: dict, start: float, length: float, n_frames: int = 8):
     _inhale_lines(ax["head"], tr, t0, t1)
     head = tr["head"][_window(tr["head"], t0, t1)] - tr["times"][0]
     ax["head"].plot(
-        head, np.full(len(head), 1.02), "v", ms=2.5, color=CASE_COLOURS["shifted"]
+        head, np.full(len(head), 1.02), "v", ms=2.5, color=CASE_COLOURS["head"]
     )
     ax["head"].set(ylabel="onset head", xlabel="time in clip (s)")
     ax["head"].set(xlim=(start, start + length), ylim=(0, 1.1))

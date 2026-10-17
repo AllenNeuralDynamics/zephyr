@@ -248,27 +248,6 @@ def _(axis_x, axis_y, axis_z, color_by, sessions):
 @app.cell
 def _():
     mo.md("""
-    ## Right, but late
-    """)
-    return
-
-
-@app.cell
-def _(network, root):
-    test_sets.shift_figure(
-        root,
-        network.value,
-        [
-            "behavior_815104_2026-01-23_21-03-24_span1_FaceCamera",
-            "behavior_815104_2026-01-23_21-03-24_span2_FaceCamera",
-        ],
-    )
-    return
-
-
-@app.cell
-def _():
-    mo.md("""
     ## Raw data
     """)
     return

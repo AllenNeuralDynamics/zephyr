@@ -29,6 +29,15 @@ class HarpTests(unittest.TestCase):
             ["d/Dev_32.bin", "d/Dev_32_2.bin", "d/Dev_32_10.bin"],
         )
 
+    def test_write_times_are_the_writes_only(self):
+        times = [10.0, 10.5, 11.0]
+        data = b"".join(
+            harp_bytes([t], [0], harp.OPERATION_CONTROL, kind)
+            for t, kind in zip(times, [1, 2, 0x08 | 2])  # read, write, failed write
+        )
+        np.testing.assert_allclose(harp.write_times(data), [10.5, 11.0], atol=32e-6)
+        self.assertEqual(len(harp.write_times(b"")), 0)
+
     def test_address_comes_from_device_yml(self):
         yml = "registers:\n  RawVoltage: {address: 32, type: U16}\n"
         self.assertEqual(harp.address(yml, "RawVoltage"), 32)

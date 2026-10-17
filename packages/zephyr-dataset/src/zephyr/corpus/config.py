@@ -149,6 +149,17 @@ class Folds(_Model):
     """Unassigned sessions put in a set after the draw, in place of excluded ones."""
 
 
+class Sync(_Model):
+    """Whether the thermistor's device keeps the reference device's clock: the read
+    dumps that start a session (``harp.OPERATION_CONTROL``) of both, compared."""
+
+    reference: str
+    """Harp device folder (``behavior/<reference>.harp``) whose clock is the reference."""
+    max_offset_s: float = Field(gt=0)
+    """Largest difference of the two read-dump times kept; ``folds`` takes a session
+    over it out after the draw."""
+
+
 class Small(_Model):
     """The small dataset: a subset of the sessions ``folds`` assigned that keeps its
     structure (``small`` in ``folds.parquet``, ``clips-small.toml``): whole animals held
@@ -194,6 +205,8 @@ class DatasetSpec(_Model):
     qc: Qc
     select: Select
     clips: Clips = Clips()
+    sync: Sync | None = None
+    """The Harp clock check (``sync``); ``folds`` needs it when given."""
     folds: Folds | None = None
     """The train / validation / test assignment (``folds`` refuses to run without)."""
     small: Small | None = None
@@ -215,6 +228,7 @@ class Layout:
         self.results = self.root / "results.json"
         self.video_dir = self.root / "videos"
         self.cameras = self.root / "cameras.parquet"
+        self.sync = self.root / "sync.parquet"
         self.clip_dir = self.root / "clips"
         self.clip_table = self.root / "clips.parquet"
         self.clip_list = self.root / "clips.toml"

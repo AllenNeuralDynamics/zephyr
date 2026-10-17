@@ -11,8 +11,8 @@ uv run zephyr-dataset <step> packages/zephyr-dataset/configs/vr-foraging-sniff.t
 
 Steps, in order: `inventory`, `fetch`, `lists`, `qc`, `select`, `videos`, `select` (again:
 it drops sessions whose camera timestamps are not clean, see
-[Known data issues](#known-data-issues)), `folds`, `clips`; `status` reports progress and
-`build` runs them all.
+[Known data issues](#known-data-issues)), `sync`, `folds`, `clips`; `status` reports
+progress and `build` runs them all.
 
 ## Why these sessions
 
@@ -31,10 +31,10 @@ one physical rig merged, `FRG.4-B` = `4B`), 2025-10 to 2026-10.
 | set | question | held out as | animals | sessions |
 | --- | --- | --- | --- | --- |
 | test A | new animal? (the goal) | 10 whole animals | 10 | 78 |
-| test B | new session of a known animal and rig? | sessions of training animals | 26 | 116 |
+| test B | new session of a known animal and rig? | sessions of training animals | 26 | 115 |
 | test C | the rare 359 Hz camera? | sessions of its two animals (rig 4B) | 2 | 5 |
 | validation | early stopping, tuning | 8 whole animals (+ 2 group C sessions) | 9 | 67 |
-| train | | the rest | 32 | 297 |
+| train | | the rest | 32 | 295 |
 
 - **Whole animals** for test A and validation: an animal's sessions share its face and
   breathing, and validation should reward the same thing test A measures. Comparing A
@@ -45,9 +45,10 @@ one physical rig merged, `FRG.4-B` = `4B`), 2025-10 to 2026-10.
   several rigs, which is accepted.
 - **Caps per animal and rig**, spread over its dates, because such sessions repeat each
   other: train 10, validation 3, test A 5, test B 5 (at most a third of the pair, leaving at
-  least 2 to train). 563 of 1,506 sessions are used; only their clips are cut. Sessions
-  with a dark video and two whose traces were rejected on review are taken out after the
-  draw (`[folds] exclude`, see [Known data issues](#known-data-issues)).
+  least 2 to train). 560 of 1,506 sessions are used; only their clips are cut. Sessions
+  with a dark video, two whose traces were rejected on review (`[folds] exclude`) and those
+  whose SniffDetector is off the Behavior board's clock (`sync`) are taken out after the
+  draw (see [Known data issues](#known-data-issues)).
 - **Group C:** 841301 and 828415 were recorded at 359.2 Hz. Rather than hold the animals
   out (training would never see that rate), their 359 Hz sessions are split 6 / 2 / 4 and
   1 / 0 / 1 (train / val / test C). Both breathe slowly, so test C confounds frame rate with
@@ -89,7 +90,7 @@ whole sessions, whatever marks the list holds, so re-running it never changes a 
 
 ## The small dataset
 
-For small experiments, `[small]` in the spec picks 72 of the 563 sessions and keeps the
+For small experiments, `[small]` in the spec picks 72 of the 560 sessions and keeps the
 structure of the split: `small` in `folds.parquet` marks them and `clips-small.toml` lists
 their clips (boxes and marks as in `clips.toml`). `folds` draws it and `clips` and
 `boxes publish` keep the list current. Preprocess and run from `clips-small.toml` (and select
@@ -101,7 +102,7 @@ the two share a cache.
 - **Train:** 10 of the 32 animals, up to 2 per animal and rig, plus 3 group C sessions (37).
 - **Test B:** 1 session per animal and rig of those 10 training animals (11).
 - **Test C:** 2 of the 5 359 Hz sessions (2). 72 sessions, 144 face clips, about 73 GB (the
-  full set is 563 sessions, 1,126 face clips, about 570 GB), 13 rigs and 13 months.
+  full set is 560 sessions, 1,120 face clips, about 565 GB), 13 rigs and 13 months.
 
 The animals of each role are the best balanced of 2,000 seeded draws, as for the full split;
 every set but test C is within about 6 points of the corpus' rate mix.
@@ -110,7 +111,7 @@ every set but test C is within about 6 points of the corpus' rate mix.
 
 `root` in the spec is a local folder or a URL; the corpus is at
 `s3://aind-scratch-data/vr-foraging/zephyr-dataset` (about 40 GB of metadata, timestamps
-and thermistors, plus about 1 TB of clips for the 563 sessions the folds use). Every
+and thermistors, plus about 1 TB of clips for the 560 sessions the folds use). Every
 step reads and writes it directly, with the AWS profile given by `--profile` (or
 `AWS_PROFILE`); the source bucket, `aind-open-data`, is read anonymously. Writes never
 rename remote objects, and a file appears only once it is complete. The one deletion is
@@ -148,6 +149,7 @@ It holds only what later stages need:
 | `camera_metadata/<session_id>_<camera>.parquet` | each selected camera's `metadata.csv`, unmodified (a cache; the video's frame count in its metadata) |
 | `videos/<session_id>_<camera>.parquet` | the repaired camera timestamps (`ReferenceTime`, `CameraFrameNumber`, `CameraFrameTime`) |
 | `cameras.parquet` | each camera's checks before and after the repair, and whether it is clean |
+| `sync.parquet` | each selected session's read-dump times (the WRITE to `OperationControl`) of the SniffDetector and of `[sync] reference`, and their difference (`offset_s`), or the error that stopped the check |
 | `results.json` | the selection: per session metadata, metrics, marks, spans, clips, camera folders, and `dropped` (why) for sessions left out for their cameras |
 | `folds.parquet` | the split: per selected session its subject, rig, date, camera rate, rate bands, the animal's `role` and the session's `set` (`train`, `val`, `test_a`, `test_b`, `test_c`, or none); see [Why these sessions](#why-these-sessions) |
 | `clips/<session_id>_<span>_<camera>.mp4` | the span cut from the camera's video: whole GOPs, stream-copied (never re-encoded) as fragmented MP4, at the camera's native rate |
@@ -223,3 +225,21 @@ the cut thumbnails were checked, so sessions the folds do not use are not screen
 
 Dropping is done by `select` from `cameras.parquet` (a camera's `clean`), so a repaired
 camera comes back in automatically on the next `videos` + `select`.
+
+**Harp clocks** (`sync`): every Harp device answers the read dump that starts a session
+(its WRITE to `OperationControl`, register 10), and devices on one clock do so within a few
+ms of each other. `sync` reads only that register of the SniffDetector and of the Behavior
+board (`[sync] reference`) from the raw session. Of the 1,506 selected sessions, 1,502 are
+1-10 ms apart (median +3.5 ms); four are not, so every thermistor time of theirs is off by
+as much, and `folds` takes them out after the draw (`[sync] max_offset_s` = 50 ms):
+
+| session | rig | SniffDetector - Behavior | set it had |
+| --- | --- | --- | --- |
+| `behavior_828418_2025-11-14_17-22-06` | 4B | +884 ms | train |
+| `behavior_807093_2026-01-21_16-45-31` | 4A | -321 ms | none |
+| `828415_2026-02-21_00-26-46` | 4B | -202 ms | train |
+| `behavior_815104_2026-01-23_21-03-24` | 4D | -144 ms | test B |
+
+The thermistor of `behavior_815104_2026-01-23_21-03-24` lags the gray network's
+prediction by about the same 150 ms. Their clips and thumbnails are removed by
+`clips --prune`.

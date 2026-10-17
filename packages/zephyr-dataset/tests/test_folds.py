@@ -124,6 +124,17 @@ class ExcludeAddTests(unittest.TestCase):
         )
         folds.check(out.reset_index())
 
+    def test_sessions_off_the_clock_go_like_exclusions(self):
+        base = folds.assign(sessions(), SETTINGS)
+        used = base[base["set"].notna()].session_id.iloc[0]
+        out = folds.assign(sessions(), SETTINGS, drop={used: "clock"})
+        same = folds.assign(sessions(), SETTINGS.model_copy(update={"exclude": [used]}))
+        self.assertTrue(pd.isna(out.set_index("session_id").loc[used, "set"]))
+        self.assertTrue(out["set"].equals(same["set"]))
+        with self.assertRaises(SystemExit):  # nor added back
+            s = SETTINGS.model_copy(update={"add": {used: "train"}})
+            folds.assign(sessions(), s, drop={used: "clock"})
+
     def test_unknown_or_already_assigned_names_stop(self):
         base = folds.assign(sessions(), SETTINGS)
         used = base[base["set"].notna()].session_id.iloc[0]

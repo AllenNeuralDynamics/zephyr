@@ -4,7 +4,8 @@ Test A and validation hold out whole animals, drawn (``[folds] tries`` seeded dr
 best kept) to cover rigs and months and match the corpus' breathing-rate bands; test B
 holds out sessions of training animals per animal and rig; group C (a camera rate no
 other animal has) is held out by session. Each set keeps at most a capped number of
-sessions per animal and rig, spread over its dates. Refuses an assignment in which a
+sessions per animal and rig, spread over its dates; ``[folds] exclude`` and sessions off
+the Harp clock (``sync``) are taken out after the draw. Refuses an assignment in which a
 held-out animal trains. Why: the package README. Rate bands are cached in the file.
 """
 
@@ -18,7 +19,7 @@ import pandas as pd
 
 from zephyr import events, rates
 
-from . import storage
+from . import storage, sync
 from .config import DatasetSpec, Folds, Layout, Small
 from .lists import write_small
 from .remote import thread_map
@@ -163,7 +164,7 @@ class Draw:
         return sorted(best)
 
 
-def assign(df: pd.DataFrame, s: Folds) -> pd.DataFrame:
+def assign(df: pd.DataFrame, s: Folds, drop=()) -> pd.DataFrame:
     """*df* with each animal's ``role`` and each session's ``set`` (None: unused)."""
     df = df.reset_index(drop=True)
     animals = sorted(df.subject_id.unique())
@@ -230,13 +231,13 @@ def assign(df: pd.DataFrame, s: Folds) -> pd.DataFrame:
     if stray:
         raise SystemExit(f"folds: exclude / add name unknown sessions {stray}")
     taken = out.set_index("session_id")["set"]
-    twice = sorted(set(s.exclude) & set(s.add))
+    twice = sorted((set(s.exclude) | set(drop)) & set(s.add))
     used = sorted(x for x in s.add if pd.notna(taken[x]) and x not in s.exclude)
     if twice or used:
         raise SystemExit(
             f"folds: add names excluded {twice} or assigned {used} sessions"
         )
-    out.loc[out.session_id.isin(s.exclude), "set"] = None
+    out.loc[out.session_id.isin([*s.exclude, *drop]), "set"] = None
     for session, name in s.add.items():
         out.loc[out.session_id == session, "set"] = name
     return out
@@ -327,7 +328,12 @@ def run(spec: DatasetSpec, workers: int = 6) -> pd.DataFrame:
     if spec.folds is None:
         raise SystemExit("folds: the spec has no [folds]")
     layout = Layout(spec.root)
-    out = assign(table(spec, layout, workers), spec.folds)
+    frame = table(spec, layout, workers)
+    off = {}
+    if spec.sync is not None:
+        off = sync.out_of_sync(spec, layout, list(frame["session_id"]))
+        print(f"folds: {len(off)} sessions off the Harp clock taken out after the draw")
+    out = assign(frame, spec.folds, drop=off)
     check(out)
     if spec.small is not None:
         out["small"] = out.session_id.isin(choose_small(out, spec.small))

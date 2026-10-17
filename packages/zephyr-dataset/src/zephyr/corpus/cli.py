@@ -12,6 +12,7 @@ CLI
     zephyr-dataset qc <spec.toml>          # marks/spans of unreviewed clips, qc.parquet (local root)
     zephyr-dataset select <spec.toml>      # results.json
     zephyr-dataset videos <spec.toml> [--workers 16] [--limit N]   # videos/, cameras.parquet
+    zephyr-dataset sync <spec.toml> [--workers 32]   # sync.parquet: Harp read-dump times
     zephyr-dataset folds <spec.toml>       # folds.parquet: train / val / test A, B, C (after select)
     zephyr-dataset clips <spec.toml> [--workers 8] [--limit N]     # clips/, clips.parquet, clips.toml
     zephyr-dataset status <spec.toml>
@@ -35,6 +36,7 @@ STEPS = [
     "qc",
     "select",
     "videos",
+    "sync",
     "folds",
     "clips",
     "status",
@@ -66,6 +68,10 @@ def step(name: str, spec: DatasetSpec, args: argparse.Namespace) -> None:
         from . import videos
 
         videos.run(spec, workers=args.workers or 16, limit=args.limit)
+    elif name == "sync":
+        from . import sync
+
+        sync.run(spec, workers=args.workers or 32, limit=args.limit)
     elif name == "folds":
         from . import folds
 
@@ -98,7 +104,7 @@ def run(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "--limit",
         type=int,
-        help="fetch, videos, clips: only the first N sessions",
+        help="fetch, videos, sync, clips: only the first N sessions",
     )
     parser.add_argument(
         "--refresh",

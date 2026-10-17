@@ -23,6 +23,9 @@ DTYPES = {
     0x44: "<f4",
 }
 TIMESTAMPED = 0x10
+WRITE = 0x02
+OPERATION_CONTROL = 10
+"""Core register of every device: a WRITE to it starts the session's read dump."""
 
 
 def natural_key(text: str) -> tuple:
@@ -44,21 +47,32 @@ def chunks(names: list[str], device: str, addr: int) -> list[str]:
     return sorted(found, key=natural_key)
 
 
-def read_messages(data: bytes) -> pd.DataFrame:
-    """``Time`` (seconds) and ``value`` (first payload element) of every message."""
-    if not data:
-        return pd.DataFrame({"Time": [], "value": []})
+def _messages(data: bytes) -> tuple[np.ndarray, np.ndarray]:
+    """The messages of one register as rows of bytes, and their times (seconds)."""
     buf = np.frombuffer(data, np.uint8)
     stride = int(buf[1]) + 2
     if len(buf) % stride:
         raise ValueError("Harp data is not a whole number of messages")
     msgs = buf.reshape(-1, stride)
-    kind = int(msgs[0, 4])
-    if not kind & TIMESTAMPED:
+    if not int(msgs[0, 4]) & TIMESTAMPED:
         raise ValueError("Harp messages without timestamps")
     seconds = msgs[:, 5:9].copy().view("<u4").ravel()
     ticks = msgs[:, 9:11].copy().view("<u2").ravel()
-    payload = msgs[:, 11:-1].copy().view(DTYPES[kind & ~TIMESTAMPED])
-    return pd.DataFrame(
-        {"Time": seconds + ticks * 32e-6, "value": payload[:, 0].astype(float)}
-    )
+    return msgs, seconds + ticks * 32e-6
+
+
+def read_messages(data: bytes) -> pd.DataFrame:
+    """``Time`` (seconds) and ``value`` (first payload element) of every message."""
+    if not data:
+        return pd.DataFrame({"Time": [], "value": []})
+    msgs, times = _messages(data)
+    payload = msgs[:, 11:-1].copy().view(DTYPES[int(msgs[0, 4]) & ~TIMESTAMPED])
+    return pd.DataFrame({"Time": times, "value": payload[:, 0].astype(float)})
+
+
+def write_times(data: bytes) -> np.ndarray:
+    """Times (seconds) of the WRITE messages of one register (error bit or not)."""
+    if not data:
+        return np.array([])
+    msgs, times = _messages(data)
+    return times[(msgs[:, 0] & 0x07) == WRITE]

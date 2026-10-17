@@ -114,8 +114,9 @@ def camera_frame(
     return frame
 
 
-def harp_bytes(times, values, address=32) -> bytes:
-    """Timestamped U16 event messages, as a Harp device logs them."""
+def harp_bytes(times, values, address=32, kind=3) -> bytes:
+    """Timestamped U16 messages (events unless *kind* says otherwise), as a Harp
+    device logs them."""
     dtype = np.dtype(
         [
             ("type", "u1"),
@@ -130,7 +131,7 @@ def harp_bytes(times, values, address=32) -> bytes:
         ]
     )
     msgs = np.zeros(len(times), dtype)
-    msgs["type"], msgs["length"], msgs["address"] = 3, dtype.itemsize - 2, address
+    msgs["type"], msgs["length"], msgs["address"] = kind, dtype.itemsize - 2, address
     msgs["port"], msgs["payload_type"] = 255, harp.TIMESTAMPED | 0x02
     times = np.asarray(times, float)
     msgs["seconds"] = np.floor(times).astype(np.uint32)

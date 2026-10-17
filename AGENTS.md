@@ -85,7 +85,9 @@ resumable steps; what each does and the folder layout are in its README.
   interval, and clips read rate, time base and keyframes from the stream.
 - Clips are **stream-copied, never re-encoded**, and checked before upload.
 - A camera that is not clean is reported and its session dropped, never kept silently;
-  keep the README's "Known data issues" current.
+  keep the README's "Known data issues" current. Likewise a session whose thermistor
+  device is off the reference Harp clock (`sync`, `[sync]`): `folds` takes it out after
+  the draw.
 - The split (`folds`): test A and validation hold out **whole animals**; never weaken
   `folds.check`, which refuses a held-out animal in training. Keep the README's "Why these
   sessions" current with any change to the split.

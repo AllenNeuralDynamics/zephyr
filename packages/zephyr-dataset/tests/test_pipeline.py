@@ -24,11 +24,23 @@ from _corpusfakes import (
 
 from zephyr.annotate_events import TuneState
 from zephyr.config import ClipList, load
-from zephyr.corpus import clips, fetch, inventory, lists, qc, select, storage, videos
+from zephyr.corpus import (
+    clips,
+    fetch,
+    folds,
+    inventory,
+    lists,
+    qc,
+    select,
+    storage,
+    sync,
+    videos,
+)
 from zephyr.corpus.config import DatasetSpec, Layout, Review
 
 FS_HZ = 250.0
 DEVICE_YML = "registers:\n  RawVoltage: {address: 32, type: U16}\n"
+CLOCK_OFF = {"103_2026-01-04_10-00-00": 0.2}  # SniffDetector read dump late (s)
 
 
 def breathing(t, seed):
@@ -91,6 +103,15 @@ def fake_bucket():
             f"{harp_dir}/SniffDetector_32_1.bin", harp_bytes(t[half:], values[half:])
         )
         fs.pipe(f"{harp_dir}/SniffDetector_33.bin", harp_bytes([5000.0], [1], 33))
+        dump = 4999.0 + CLOCK_OFF.get(sid, 0.003)  # the write, then the device's reply
+        fs.pipe(
+            f"{harp_dir}/SniffDetector_10.bin",
+            harp_bytes([dump], [0], 10, 2) + harp_bytes([dump + 0.001], [0], 10, 1),
+        )
+        fs.pipe(
+            f"{bucket}/{raw}/behavior/Behavior.harp/Behavior_10.bin",
+            harp_bytes([4999.0], [0], 10, 2),
+        )
         for name, frame in cameras.items():
             folder = f"{bucket}/{raw}/behavior-videos/{name}"
             fs.pipe(f"{folder}/video.mp4", b"x")
@@ -275,6 +296,24 @@ class PipelineTests(unittest.TestCase):
         self.assertIsNone(dropped["clips"])
         self.assertTrue(any("FaceCamera" in p for p in dropped["dropped"]))
         self.assertTrue(any("dropped frames" in p for p in dropped["dropped"]))
+
+    def test_sync_finds_a_device_off_the_clock_and_folds_takes_it_out(self):
+        results = self.build()
+        spec = DatasetSpec.model_validate(
+            self.spec.model_dump()
+            | {"sync": {"reference": "Behavior", "max_offset_s": 0.05}}
+        )
+        table = sync.run(spec, workers=2, fs=self.fs)
+        self.assertEqual(list(table["session_id"]), results["selected"])
+        first = table.set_index("session_id").loc["100_2026-01-01_10-00-00"]
+        self.assertAlmostEqual(first["offset_s"], 0.003, places=4)
+        off = sync.out_of_sync(spec, self.layout, results["selected"])
+        self.assertEqual(list(off), ["103_2026-01-04_10-00-00"])
+        again = sync.run(spec, workers=2, fs=None)  # resumable: S3 not read again
+        pd.testing.assert_frame_equal(again, table)
+        with self.assertRaises(SystemExit):  # folds needs every session checked
+            sync.out_of_sync(spec, self.layout, [*results["selected"], "other"])
+        self.assertIs(folds.sync, sync)
 
     def test_a_remote_root_works_and_qc_runs_on_a_local_copy(self):
         local = self.build()
