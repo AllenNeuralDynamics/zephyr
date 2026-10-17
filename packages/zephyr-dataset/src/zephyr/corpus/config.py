@@ -183,6 +183,22 @@ class Small(_Model):
     """Group C sessions kept as (train, val, test), over both animals."""
 
 
+class CrossValidation(_Model):
+    """How ``cross_validation`` folds the sessions ``folds`` assigned (why: the package
+    README): whole animals per fold for test A and validation, date blocks of the other
+    animals' sessions for test B, group C as in ``folds.parquet``."""
+
+    seed: int
+    n_folds: int = Field(ge=2)
+    """Groups of animals; every animal outside group C is test A in exactly one fold."""
+    val_animals: int = Field(ge=1)
+    """Whole animals per fold, drawn from those it trains on, for early stopping."""
+    test_b_min_sessions: int = Field(ge=2)
+    """Sessions an animal needs to give test B; one with fewer only trains."""
+    tries: int = Field(ge=1)
+    """Seeded draws of the partition and of each fold's validation animals."""
+
+
 class Review(_Model):
     """A person's decision on one session, written over the suggestions by ``qc`` (with
     ``reviewed = true``); fields left out keep what QC wrote."""
@@ -211,6 +227,8 @@ class DatasetSpec(_Model):
     """The train / validation / test assignment (``folds`` refuses to run without)."""
     small: Small | None = None
     """The small dataset (``folds`` marks its sessions when this is given)."""
+    cross_validation: CrossValidation | None = None
+    """Cross-validation folds (``cross_validation`` refuses to run without)."""
     review: list[Review] = []
     """Reviews made by hand, so a rebuild from nothing gives the same corpus."""
 
@@ -235,6 +253,7 @@ class Layout:
         self.thumbnail_dir = self.root / "thumbnails"
         self.folds = self.root / "folds.parquet"
         self.clip_list_small = self.root / "clips-small.toml"
+        self.cross_validation = self.root / "cross_validation.parquet"
 
     @property
     def local(self) -> bool:

@@ -140,6 +140,15 @@ cap_test = 1
 cap_test_b = 1
 group_c = [3, 1, 2]  # (train, val, test) sessions of 841301 and 828415
 
+# Cross-validation beside the published split (cross_validation.parquet; folds.parquet is
+# only read): every animal outside group C is test A in one fold.
+[cross_validation]
+seed = 2026
+n_folds = 5
+val_animals = 8           # whole animals per fold, for early stopping
+test_b_min_sessions = 4   # fewer sessions: the animal only trains (no test B block)
+tries = 20000
+
 # decisions made by hand (marked reviewed, so QC never changes them)
 [[review]]
 session_id = "behavior_798279_2025-12-05_17-42-48"

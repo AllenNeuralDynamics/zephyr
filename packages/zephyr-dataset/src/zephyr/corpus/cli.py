@@ -15,6 +15,7 @@ CLI
     zephyr-dataset sync <spec.toml> [--workers 32]   # sync.parquet: Harp read-dump times
     zephyr-dataset folds <spec.toml>       # folds.parquet: train / val / test A, B, C (after select)
     zephyr-dataset clips <spec.toml> [--workers 8] [--limit N]     # clips/, clips.parquet, clips.toml
+    zephyr-dataset cross_validation <spec.toml>   # cross_validation.parquet (after folds)
     zephyr-dataset status <spec.toml>
     zephyr-dataset build <spec.toml>       # all of the above
     zephyr-dataset clips <spec.toml> --profile IAmAnywhere   # AWS profile of an s3:// root
@@ -41,6 +42,8 @@ STEPS = [
     "clips",
     "status",
 ]
+OPTIONAL = ["cross_validation"]
+"""Steps ``build`` leaves out: they read the published split and write beside it."""
 
 
 def step(name: str, spec: DatasetSpec, args: argparse.Namespace) -> None:
@@ -89,6 +92,10 @@ def step(name: str, spec: DatasetSpec, args: argparse.Namespace) -> None:
         from . import status
 
         status.run(spec)
+    elif name == "cross_validation":
+        from . import cross_validation
+
+        cross_validation.run(spec)
 
 
 def run(argv: list[str] | None = None) -> None:
@@ -98,7 +105,7 @@ def run(argv: list[str] | None = None) -> None:
         epilog=__doc__.split("CLI\n---\n")[1],
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("command", choices=[*STEPS, "build"])
+    parser.add_argument("command", choices=[*STEPS, *OPTIONAL, "build"])
     parser.add_argument("spec", type=Path)
     parser.add_argument("--workers", type=int, help="threads for S3 work")
     parser.add_argument(

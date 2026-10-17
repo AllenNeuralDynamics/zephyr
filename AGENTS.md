@@ -95,6 +95,10 @@ resumable steps; what each does and the folder layout are in its README.
   corrections in `zephyr annotate --remote`, then `publish`) and live in `clips.toml`;
   `clips` keeps them, and lists the side camera as excluded (`[clips] exclude_cameras`). `python -m zephyr.corpus.rois` is a helper that writes only to a
   local folder, never the dataset or the spec; OWLv2 needs `--extra rois`.
+- Cross-validation (`[cross_validation]`, `cross_validation.parquet`) is drawn beside the
+  published split and only reads `folds.parquet`; never write folds into
+  `folds.parquet`, and never weaken `cross_validation.check_all` (each fold passes
+  `folds.check`). `build` does not run it.
 - The small dataset (`[small]`, `clips-small.toml`) is a subset of the assigned sessions that
   keeps the split's structure; never run a small experiment's test sets against animals
   its training uses (`folds.check` guards the full split).

@@ -57,7 +57,8 @@ one physical rig merged, `FRG.4-B` = `4B`), 2025-10 to 2026-10.
   10 animals with a bootstrap interval over animals; more precision means more animals,
   not more sessions.
 - **Set aside:** a temporal holdout (new animals is what matters), leaving a rig out (rigs
-  are similar and animals move between them), cross-validation (possible later).
+  are similar and animals move between them). Cross-validation over animals is drawn
+  beside this split, never in place of it: see [Cross-validation](#cross-validation).
 
 Test A animals: 806527, 808728, 815103, 828421, 841306, 841312, 849495, 863704, 864846,
 879295. Validation animals: 789917, 828417, 828423, 841299, 846441, 864847, 866061, 866063.
@@ -106,6 +107,33 @@ the two share a cache.
 
 The animals of each role are the best balanced of 2,000 seeded draws, as for the full split;
 every set but test C is within about 6 points of the corpus' rate mix.
+
+## Cross-validation
+
+One split scores 10 test animals, so a few hard animals move test A. `zephyr-dataset
+cross_validation <spec>` (`[cross_validation]`) draws folds over the same 560 sessions so
+that every animal is a test animal once; it writes `cross_validation.parquet` and only
+reads `folds.parquet`, which stays the record of the published split. `build` does not
+run it.
+
+- **Test A:** the 48 animals outside group C in 5 groups (the best balanced of seeded
+  draws, judged by its worst group); fold k tests group k whole, so each animal is scored
+  once by a network that never saw it.
+- **Validation:** 8 whole animals per fold, drawn from those it trains on.
+- **Test B:** each animal with at least 4 sessions is cut by date into one block for each
+  fold it trains in, and that fold tests the block. Blocks rather than random sessions,
+  because sessions days apart look alike: a held-out session should not have its
+  neighbours in training. Each such session is test B once.
+- **Group C** keeps its sets from `folds.parquet` in every fold.
+- **Sizes** per fold: 75-128 test A, 70-119 test B, 87-144 validation and 213-268
+  training sessions; every set of every fold is within about 2 points of the corpus' rate
+  mix.
+- **Columns:** `session_id`, `subject_id`, `cv_group` (the animal's test A fold, -1 for
+  group C), `cv_b_fold` (the session's test B fold, -1 for none) and `fold_<k>` (its set in
+  fold k). Every fold passes `folds.check`.
+
+Report a method by pooling its test A scores of all folds, averaged within each animal,
+with a bootstrap over animals; one seed per fold is enough when seeds vary less than folds.
 
 ## Where the dataset lives
 
@@ -158,6 +186,7 @@ It holds only what later stages need:
 | `thumbnails/<session_id>_<camera>.png` | the camera at full resolution, losslessly: the first frame of the session's first clip |
 | `clips.parquet` | every clip: frames, first frame, span, start and end, rate, bytes, or the error that stopped it |
 | `clips-small.toml` | the sessions `folds.parquet` marks `small`, as a clip list (see [The small dataset](#the-small-dataset)) |
+| `cross_validation.parquet` | per assigned session its animal's test A fold, its test B fold and its set in each fold (see [Cross-validation](#cross-validation)) |
 | `clips.toml` | the clips as a zephyr clip list (`group` = session, zephyr's leakage unit, so test B and C can hold out sessions of training animals; face clips carry their `box`; `[clips] exclude_cameras` lists the side camera as `selection = "exclude"`, so zephyr uses the face camera only and the side files stay in the folder) |
 
 `clips` cuts only the sessions `folds.parquet` assigns, once it exists.
