@@ -6,8 +6,8 @@ the 96 px crop.
 
 Both are wrapped to :class:`~zephyr.model.BreathingNet`'s interface (``forward(features,
 t_in, t_out, chunk=None) -> (signal, onset_logits)``, ``channels``, ``receptive_field``)
-so training and scoring are shared. Onset logits are zeros; an optional
-``postprocess(signal, fs)`` is applied by :func:`~zephyr.infer.predict_clip`.
+so training and scoring are shared, as are the transformers of :mod:`.transformer_nets`.
+:func:`build_model` builds any of them by ``arch``.
 """
 
 import numpy as np
@@ -21,6 +21,7 @@ from torch import nn
 from zephyr.channels import CHANNEL_NAMES, ChannelSet
 from zephyr.model import BreathingNet, pearson_loss, resample_embeddings
 
+from . import transformer_nets
 from .common import BREATH_BAND_HZ
 
 GRAY = ChannelSet.parse("gray")
@@ -352,12 +353,13 @@ class PhysNetBreathingEvent(nn.Module):
         return signal, onset
 
 
-ARCHS = ("zephyr", "tscan", "physnet", "physnet_event")
+ARCHS = ("zephyr", "tscan", "physnet", "physnet_event", *transformer_nets.CORES)
 ARCH_OPTIONS = {
     "zephyr": {"signal_pool", "onset_input", "temporal_kernel"},
     "tscan": {"img_size"},
     "physnet": set(),
     "physnet_event": set(),
+    **{arch: set() for arch in transformer_nets.CORES},
 }
 """Architecture options a checkpoint may record and :func:`build_model` accepts."""
 
@@ -394,4 +396,6 @@ def build_model(
         )
     if arch == "physnet_event":
         return PhysNetBreathingEvent(channels)
+    if arch in transformer_nets.CORES:
+        return transformer_nets.build(arch, channels)
     return PhysNetBreathing(channels, **arch_kwargs)

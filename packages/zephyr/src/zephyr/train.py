@@ -67,7 +67,9 @@ class Architecture:
     name: str
     build: Callable[..., torch.nn.Module]
     """``build(channels, params, mean, std, **kwargs)``; stats are full-width."""
-    criterion: Callable[[TrainParams], torch.nn.Module]
+    criterion: Callable[[TrainParams, float], torch.nn.Module]
+    """``criterion(params, fs)``, *fs* the output rate in Hz. A loss that changes over
+    training defines ``set_epoch(epoch)``, called before each epoch (0-based)."""
     kwargs: Callable[[TrainParams], dict] = lambda params: {}
 
 
@@ -89,7 +91,7 @@ ZEPHYR = Architecture(
     build=lambda channels, params, mean, std, **kwargs: BreathingNet(
         channels=channels, dropout=params.dropout, **kwargs
     ),
-    criterion=lambda params: BreathingLoss(
+    criterion=lambda params, fs: BreathingLoss(
         params.w_corr, params.w_onset, tuple(params.scales)
     ),
     kwargs=_zephyr_kwargs,
@@ -422,7 +424,8 @@ def train_fold(
     if init is not None:
         model.load_state_dict(init["model"])
         print(f"initialised from {fold.init_from} (epoch {init.get('epoch')})")
-    criterion = architecture.criterion(params)
+    criterion = architecture.criterion(params, recipe.output_fs)
+    set_epoch = getattr(criterion, "set_epoch", None)
     optimiser = torch.optim.AdamW(
         model.parameters(), lr=params.lr, weight_decay=params.weight_decay
     )
@@ -591,6 +594,8 @@ def train_fold(
 
     for epoch in range(start_epoch, params.epochs):
         sampler.epoch = epoch
+        if set_epoch is not None:
+            set_epoch(epoch)
         model.train()
         started = time.perf_counter()
         parts: list[dict] = []

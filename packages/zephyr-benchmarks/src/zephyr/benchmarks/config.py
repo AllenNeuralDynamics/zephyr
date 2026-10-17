@@ -18,7 +18,16 @@ class BenchmarkTrainParams(TrainParams):
 
     # The same names as nets.ARCHS (a test keeps them equal); not imported so
     # that this module loads without torch.
-    arch: Literal["zephyr", "tscan", "physnet", "physnet_event"] = "zephyr"
+    arch: Literal[
+        "zephyr",
+        "tscan",
+        "physnet",
+        "physnet_event",
+        "physformer",
+        "physformer_event",
+        "rhythmformer",
+        "rhythmformer_event",
+    ] = "zephyr"
     tscan_img_size: PositiveInt = 36
 
     @model_validator(mode="after")

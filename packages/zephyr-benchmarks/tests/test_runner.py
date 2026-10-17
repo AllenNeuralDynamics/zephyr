@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from zephyr.benchmarks import nets
+from zephyr.benchmarks import nets, transformer_losses
 from zephyr.benchmarks.config import (
     BenchmarkExperiment,
     BenchmarkFold,
@@ -68,7 +68,7 @@ class ArchitectureTests(unittest.TestCase):
         params = BenchmarkTrainParams(arch="tscan", channels="gray", tscan_img_size=48)
         self.assertEqual(arch.name, "tscan")
         self.assertEqual(arch.kwargs(params), {"img_size": 48})
-        self.assertIsInstance(arch.criterion(params), nets.DerivativeMSELoss)
+        self.assertIsInstance(arch.criterion(params, 60.0), nets.DerivativeMSELoss)
         model = arch.build(
             ChannelSet.parse("gray"),
             params,
@@ -84,7 +84,18 @@ class ArchitectureTests(unittest.TestCase):
         params = BenchmarkTrainParams(arch="physnet", channels="gray")
         arch = architecture(_fold(arch="physnet", channels="gray"))
         self.assertEqual(arch.kwargs(params), {})
-        self.assertIsInstance(arch.criterion(params), BreathingLoss)
+        self.assertIsInstance(arch.criterion(params, 60.0), BreathingLoss)
+
+    def test_transformers_train_on_their_papers_losses(self):
+        for name, loss in (
+            ("physformer", transformer_losses.PhysFormerLoss),
+            ("physformer_event", transformer_losses.PhysFormerLoss),
+            ("rhythmformer", transformer_losses.RhythmFormerLoss),
+            ("rhythmformer_event", transformer_losses.RhythmFormerLoss),
+        ):
+            params = BenchmarkTrainParams(arch=name, channels="gray")
+            arch = architecture(_fold(arch=name, channels="gray"))
+            self.assertIsInstance(arch.criterion(params, 60.0), loss, name)
 
 
 class LoadCheckpointTests(unittest.TestCase):

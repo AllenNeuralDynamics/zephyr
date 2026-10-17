@@ -394,6 +394,16 @@ def multiscale_pearson_loss(
     return total / len(scales)
 
 
+def onset_bce(onset_logits: torch.Tensor, onset_true: torch.Tensor) -> torch.Tensor:
+    """Binary cross-entropy against the onset heatmap, ``pos_weight`` from the batch's
+    own positive ratio (see :class:`BreathingLoss`)."""
+    pos_frac = onset_true.mean().clamp_min(1e-3)
+    pos_weight = (1.0 - pos_frac) / pos_frac
+    return F.binary_cross_entropy_with_logits(
+        onset_logits, onset_true, pos_weight=pos_weight.detach()
+    )
+
+
 class BreathingLoss(nn.Module):
     """Multi-scale correlation loss on the trace, plus one auxiliary term.
 
@@ -426,11 +436,7 @@ class BreathingLoss(nn.Module):
         onset_true: torch.Tensor,
     ) -> tuple[torch.Tensor, dict[str, float]]:
         corr = multiscale_pearson_loss(signal_pred, signal_true, self.scales)
-        pos_frac = onset_true.mean().clamp_min(1e-3)
-        pos_weight = (1.0 - pos_frac) / pos_frac
-        onset = F.binary_cross_entropy_with_logits(
-            onset_logits, onset_true, pos_weight=pos_weight.detach()
-        )
+        onset = onset_bce(onset_logits, onset_true)
         total = self.w_corr * corr + self.w_onset * onset
         return total, {
             "loss": float(total.detach()),

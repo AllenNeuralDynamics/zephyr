@@ -2,7 +2,8 @@
 
 :data:`RUNNER` hands :func:`zephyr.run.main` the benchmark config models, the
 architecture each fold's ``train_params.arch`` names, and a loader that rebuilds any of
-the networks, so TS-CAN and PhysNet train and score exactly as zephyr does.
+the networks, so every network trains and scores exactly as zephyr does, each on its
+own paper's loss.
 """
 
 from pathlib import Path
@@ -15,7 +16,7 @@ from zephyr.model import BreathingLoss
 from zephyr.run import Runner
 from zephyr.train import ZEPHYR, Architecture
 
-from . import nets
+from . import nets, transformer_losses
 from .config import BenchmarkExperiment, BenchmarkFold, BenchmarkTrainParams
 
 
@@ -25,9 +26,15 @@ def _build(channels, params: BenchmarkTrainParams, mean, std, **kwargs):
     )
 
 
-def _criterion(params: BenchmarkTrainParams) -> torch.nn.Module:
+def _criterion(params: BenchmarkTrainParams, fs: float) -> torch.nn.Module:
+    """Each network's own paper's loss; PhysNet's (negative Pearson) is zephyr's at
+    ``scales = [1]``, plus the onset term at ``w_onset``."""
     if params.arch == "tscan":
         return nets.DerivativeMSELoss()
+    if params.arch.startswith("physformer"):
+        return transformer_losses.PhysFormerLoss(fs, params.epochs, params.w_onset)
+    if params.arch.startswith("rhythmformer"):
+        return transformer_losses.RhythmFormerLoss(fs, params.w_onset)
     return BreathingLoss(params.w_corr, params.w_onset, tuple(params.scales))
 
 

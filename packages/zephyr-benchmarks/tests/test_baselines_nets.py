@@ -3,7 +3,7 @@ import unittest
 import numpy as np
 import torch
 
-from zephyr.benchmarks import nets
+from zephyr.benchmarks import nets, transformer_nets
 from zephyr.channels import ChannelSet
 
 
@@ -145,6 +145,74 @@ class PhysNetEventTests(unittest.TestCase):
             nets.PhysNetBreathingEvent(ChannelSet.parse("gray+diff"))
 
 
+class CenterDifferenceConvTests(unittest.TestCase):
+    def test_theta_zero_is_a_plain_convolution(self):
+        cdc = transformer_nets.CDC_T(2, 3, theta=0.0)
+        x = torch.randn(1, 2, 5, 6, 6)
+        self.assertTrue(torch.equal(cdc(x), cdc.conv(x)))
+
+    def test_on_a_constant_input_only_the_centre_slice_remains_at_theta_one(self):
+        cdc = transformer_nets.CDC_T(1, 1, theta=1.0)
+        out = cdc(torch.ones(1, 1, 5, 5, 5))[0, 0, 2, 2, 2]  # an interior voxel
+        centre = cdc.conv.weight[0, 0, 1].sum()
+        self.assertTrue(torch.allclose(out, centre, atol=1e-5))
+
+
+class RegionalAttentionTests(unittest.TestCase):
+    def test_routing_every_region_is_dense_attention(self):
+        torch.manual_seed(0)
+        b, c, heads, t, h, w = 1, 8, 2, 4, 4, 4
+        q, k, v = (torch.randn(b, c, t, h, w) for _ in range(3))
+        region = (2, 2, 2)
+        n = (t // 2) * (h // 2) * (w // 2)
+        graph = torch.arange(n).expand(b, heads, n, n)
+        out = transformer_nets.regional_routing_attention(q, k, v, 0.5, graph, region)
+
+        def tokens(x):  # (b, heads, t*h*w, head_dim)
+            return x.view(b, heads, c // heads, -1).transpose(-1, -2)
+
+        dense = torch.softmax(
+            0.5 * tokens(q) @ tokens(k).transpose(-1, -2), -1
+        ) @ tokens(v)
+        dense = dense.transpose(-1, -2).reshape(b, c, t, h, w)
+        self.assertTrue(torch.allclose(out, dense, atol=1e-5))
+
+
+class TransformerTests(unittest.TestCase):
+    def test_cores_give_one_output_per_frame(self):
+        for core, frames in (
+            (transformer_nets.PhysFormer, 8),
+            (transformer_nets.RhythmFormer, 16),
+        ):
+            for onset_head in (False, True):
+                signal, onset = core(onset_head=onset_head).eval()(
+                    torch.randn(1, frames, 128, 128)
+                )
+                self.assertEqual(signal.shape, (1, frames))
+                if onset_head:
+                    self.assertEqual(onset.shape, (1, frames))
+                else:
+                    self.assertIsNone(onset)
+
+    def test_wrappers_pad_odd_lengths_and_resample_to_the_output_grid(self):
+        features = torch.randn(1, 19, 1, 96, 96)
+        t_in = torch.arange(19.0).unsqueeze(0) / 60
+        for arch in transformer_nets.CORES:
+            model = nets.build_model(arch, ChannelSet.parse("gray")).eval()
+            signal, onset = model(features, t_in, t_in[:, 1:-1])
+            self.assertEqual(signal.shape, (1, 17), arch)
+            self.assertEqual(onset.shape, (1, 17), arch)
+            self.assertEqual(
+                bool(torch.all(onset == 0)), not arch.endswith("_event"), arch
+            )
+            self.assertEqual(model.receptive_field, transformer_nets.CONTEXT)
+
+    def test_rejects_non_gray_channels(self):
+        for arch in transformer_nets.CORES:
+            with self.assertRaises(ValueError):
+                nets.build_model(arch, ChannelSet.parse("gray+diff"))
+
+
 class BuildModelTests(unittest.TestCase):
     def test_build_each_arch(self):
         mean, std = np.full(4, 120.0), np.full(4, 30.0)
@@ -186,6 +254,12 @@ class TscanOptionsTests(unittest.TestCase):
 
     def test_there_is_no_reconstruction_delay_option(self):
         gray = ChannelSet.parse("gray")
-        for arch in ("tscan", "physnet", "physnet_event", "zephyr"):
+        for arch in (
+            "tscan",
+            "physnet",
+            "physnet_event",
+            "zephyr",
+            *transformer_nets.CORES,
+        ):
             with self.assertRaises(ValueError):
                 nets.build_model(arch, gray, delay=1.0)

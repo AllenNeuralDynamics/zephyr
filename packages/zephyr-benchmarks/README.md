@@ -7,9 +7,10 @@ and a Facemap-style ridge regression. Imported as `zephyr.benchmarks`; run as
 
 - `configs/` holds every clip list and experiment (with its folds inline) of the benchmark.
 - `zephyr-benchmarks run` and `evaluate` are zephyr's own `run` and `evaluate`,
-  taking the same files plus `train_params.arch` (`zephyr`, `tscan` or
-  `physnet`), so every network trains and scores under one protocol. zephyr
-  folds run with plain `zephyr run` too.
+  taking the same files plus `train_params.arch` (`zephyr`, `tscan`, `physnet`,
+  `physformer`, `rhythmformer`, or one of their `_event` variants), so every network
+  trains and scores under one protocol, each on its own paper's loss. zephyr folds run
+  with plain `zephyr run` too.
 
 Commands below run from the repository root, after
 `uv sync --locked --all-packages --extra gpu` (or `--extra cpu`).
@@ -117,6 +118,23 @@ reproduces their stored results exactly.
   ```bash
   uv run zephyr-benchmarks run $C/experiments/baselines-nets.toml
   ```
+
+- **PhysFormer and RhythmFormer** (`arch = "physformer"`, `"rhythmformer"`, and
+  `"physformer_event"`, `"rhythmformer_event"` with an onset head; `transformer_nets.py`)
+  are the transformers of the field, reimplemented from the authors' code with their
+  published layers and settings: PhysFormer (Yu et al., CVPR 2022, 7.4 M parameters) and
+  RhythmFormer (Zou, Guo et al., 2024, 3.2 M). They train like TS-CAN and PhysNet, on the
+  gray channel upsampled to the 128 px they were built for. Their attention spans a whole
+  window, so set `infer_window` to the training `window` (e.g. both 320, about 5 s at
+  60 Hz): the stitching then keeps the middle half of each window. Their papers trained
+  them at lr 1e-4 (PhysFormer) and 9e-3 with a one-cycle schedule (RhythmFormer), batch 4.
+  Each trains on its own paper's loss (`transformer_losses.py`), as TS-CAN does: negative
+  Pearson plus a cross-entropy over the window's spectrum (one bin per breath per minute
+  across the 1-15 Hz band) against the thermistor's rate in that window. PhysFormer's is
+  `0.1 Pearson + b (CE + KL)` with `b` rising from 1 to 5 over the run's `epochs`,
+  RhythmFormer's `0.2 Pearson + CE`; `w_corr` and `scales` are not used, and `w_onset`
+  adds zephyr's onset term (set it to 0 without an onset head). The optimiser and
+  schedule stay zephyr's, as for every network.
 
 - **Pixel and Facemap-style baselines** take an experiment (and `--fold <name>`
   when it has several) so they see the same
