@@ -18,10 +18,11 @@ uv run marimo export html notebooks/walkthrough.py -o walkthrough.html --no-incl
   minute for a new clip, then cached in `cache/`); it never trains a network. A
   first cell lists any missing input with the command that produces it.
 - `corpus.py`: reruns the default `zephyr-dataset` pipeline
-  (`packages/zephyr-dataset/configs/vr-foraging-sniff.toml`) into a new folder,
-  from the corpus's saved DocDB return, and compares the result with the corpus.
+  (`packages/zephyr-dataset/configs/vr-foraging-sniff.toml`) up to `select` into a new
+  folder, from the corpus's saved DocDB return, and compares the selection with the
+  corpus (not `folds`, which would draw a new split: `folds.parquet` is the record).
   It writes only that new folder, and only when its Rebuild button is pressed
-  (about 15 minutes; the raw thermistors come from S3).
+  (about an hour; the raw thermistors and camera timestamps come from S3).
 - `corpus_selection.py`: where the corpus' sessions go, from every packaged session to
   the sets, as a flow: each step's losses peel off with their reason and count, each
   session under the first rule it fails, with a table of the spec's rule behind each

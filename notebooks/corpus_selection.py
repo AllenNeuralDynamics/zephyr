@@ -31,7 +31,7 @@ def _():
 @app.cell
 def _():
     root_text = mo.ui.text(
-        value=os.environ.get(corpus_flow.ROOT_ENV, "C:/Data/zephyr-local/dataset"),
+        value=os.environ.get(corpus_flow.ROOT_ENV, "C:/Data/zephyr-local-v2/dataset"),
         label="Dataset folder (local copy)",
         full_width=True,
     )
