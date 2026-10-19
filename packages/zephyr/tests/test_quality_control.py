@@ -23,7 +23,7 @@ from zephyr.config import (
     load,
 )
 from zephyr.evaluate import load_checkpoint
-from zephyr.infer import predict_clip, predict_samples
+from zephyr.infer import predict_clip, predict_samples, shift_crop
 from zephyr.model import BreathingNet
 from zephyr.quality_control import load_reports, run
 from zephyr.quality_control.metrics import MEASURES, Video, find_events, measure, spans
@@ -147,6 +147,24 @@ class MeasureTests(unittest.TestCase):
         m = _measure(_video(times, signal, None))
         self.assertGreater(m["too_fast_frac"], 0.9)
         self.assertGreater(m["high_freq_power_frac"], 0.9)
+
+    def test_inhales_at_one_point_of_the_cycle_have_no_phase_spread(self):
+        times, signal, onset = _breathing()
+        steady = _measure(_video(times, signal, onset))["inhale_phase_spread"]
+        rng = np.random.default_rng(0)
+        anywhere = np.zeros(len(times))
+        anywhere[rng.choice(len(times), 150, replace=False)] = 1.0
+        wandering = _measure(_video(times, signal, anywhere))["inhale_phase_spread"]
+        self.assertLess(steady, 0.05)
+        self.assertGreater(wandering, 0.5)
+
+    def test_a_stretch_the_network_flattens_counts_as_flat_breaths(self):
+        times, signal, onset = _breathing(seconds=40)
+        flat = signal.copy()
+        flat[times >= 30] *= 0.05
+        m = _measure(_video(times, flat, onset), span=(30.0, 40.0))
+        self.assertGreater(m["flat_breath_frac"], 0.9)
+        self.assertEqual(_measure(_video(times, signal, onset))["flat_breath_frac"], 0)
 
     def test_windows_cover_the_clip_once(self):
         times = np.arange(0, 95, 1 / FS)
@@ -293,6 +311,31 @@ class PredictSamplesTests(unittest.TestCase):
         self.assertGreater(np.abs(a.signal_draws[0] - a.signal_draws[1]).max(), 1e-3)
         self.assertFalse(any(m.training for m in self.model.modules()))
 
+    def test_a_zero_shift_repeats_the_prediction_and_a_real_one_changes_it(self):
+        samples = predict_samples(
+            self.model,
+            self.entry,
+            self.mean,
+            self.std,
+            shifts=((0, 0), (4, 0)),
+            window=256,
+            device="cpu",
+            amp_dtype=None,
+        )
+        self.assertEqual(samples.signal_shifted.shape, (2, T_FRAMES))
+        np.testing.assert_allclose(samples.signal_shifted[0], samples.signal, atol=1e-5)
+        self.assertGreater(
+            np.abs(samples.signal_shifted[1] - samples.signal).max(), 1e-3
+        )
+
+    def test_a_shift_moves_the_crop_and_repeats_its_edge(self):
+        block = torch.arange(16.0).view(1, 1, 1, 4, 4)
+        moved = shift_crop(block, 1, -2)[0, 0, 0]
+        self.assertEqual(moved.shape, (4, 4))
+        self.assertEqual(moved[1, 0].item(), block[0, 0, 0, 0, 2].item())
+        self.assertEqual(moved[0, 0].item(), moved[1, 0].item())  # top edge repeated
+        self.assertEqual(moved[1, 3].item(), block[0, 0, 0, 0, 3].item())
+
     def test_every_frame_has_one_embedding(self):
         samples = self._samples(0)
         self.assertEqual(samples.embeddings.shape, (T_FRAMES, 8))
@@ -392,6 +435,7 @@ class RunTests(unittest.TestCase):
         self.assertNotIn("truth", data["summary"])
         self.assertEqual(len(data["windows"]), 3)
         self.assertIn("agreement_f1", data["summary"])
+        self.assertIsNotNone(data["summary"]["shift_f1"])  # four shifted crops
         self.assertIn("sharpness", data["windows"][0])
         self.assertTrue(report.with_name("video_face_1_part_1.qc.parquet").is_file())
         videos, windows = load_reports(report.parent)

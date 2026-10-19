@@ -938,6 +938,18 @@ class QualityParams(_Model):
     task, so no slower rate is judged."""
     ambiguous_floor: float = Field(0.2, gt=0, lt=1)
     """Onset-probability peaks from here up to the head's threshold are ambiguous."""
+    shift_px: int = Field(4, ge=0)
+    """The crop is also moved this far up, down, left and right and each copy
+    predicted again (four more encoder passes; 0: none), to see whether the frame
+    encoder's reading survives a shift the training augmentation covered."""
+    flat_ratio: float = Field(0.25, gt=0, lt=1)
+    """A breath swinging less than this share of the clip's median breath is flat."""
+
+    @property
+    def shifts(self) -> tuple[tuple[int, int], ...]:
+        s = self.shift_px
+        return ((s, 0), (-s, 0), (0, s), (0, -s)) if s else ()
+
     save_traces: bool = True
     """Also write each video's trace, onset probability and dropout spread (parquet)."""
 

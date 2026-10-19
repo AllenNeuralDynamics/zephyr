@@ -6,7 +6,7 @@ familiar the input is (with a :class:`~.reference.Reference`). None reads a ther
 """
 
 import itertools
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 from scipy.signal import find_peaks, welch
@@ -31,16 +31,22 @@ MEASURES: dict[str, tuple[str, str, str | None]] = {
     "too_fast_frac": ("rhythm", "Breaths faster than the ceiling", "lower"),
     "high_freq_power_frac": ("rhythm", "Trace power above the ceiling", "lower"),
     "alternation_break_frac": ("rhythm", "Alternation breaks", "lower"),
+    "flat_breath_frac": ("rhythm", "Flat breaths", "lower"),
     "cycle_similarity": ("rhythm", "Breath shape similarity", "higher"),
     "head_trace_f1": ("head", "Head vs trace F1", "higher"),
     "peak_prob": ("head", "Onset peak height", "higher"),
     "ambiguous_peak_frac": ("head", "Ambiguous onset peaks", "lower"),
     "onset_background": ("head", "Onset background", "lower"),
     "expected_precision": ("head", "Expected precision", "higher"),
+    "inhale_phase_spread": ("head", "Inhale phase spread", "lower"),
     "agreement_f1": ("agreement", "Agreement F1", "higher"),
     "event_support": ("agreement", "Event support", "higher"),
     "agreement_corr": ("agreement", "Agreement correlation", "higher"),
     "trace_spread": ("agreement", "Trace spread", "lower"),
+    "shift_f1": ("agreement", "Shifted-crop F1", "higher"),
+    "shift_support": ("agreement", "Shifted-crop event support", "higher"),
+    "shift_corr": ("agreement", "Shifted-crop correlation", "higher"),
+    "shift_spread": ("agreement", "Shifted-crop spread", "lower"),
     "embedding_distance": ("input", "Embedding distance", "lower"),
     "embedding_percentile": ("input", "Embedding percentile", "lower"),
     "unfamiliar_frac": ("input", "Unfamiliar frames", "lower"),
@@ -80,8 +86,9 @@ class Video:
     """Everything measured from one video, on its output grid *times*.
 
     *draws* are the traces compared with the prediction (dropout draws or other
-    checkpoints), *draw_events* their events. *frame_times* index the per-frame
-    *distances* (embedding distance, NaN where unknown) and *image* statistics.
+    checkpoints), *draw_events* their events; *shifted* the predictions from shifted
+    crops, *shifted_events* theirs. *frame_times* index the per-frame *distances*
+    (embedding distance, NaN where unknown) and *image* statistics.
     """
 
     times: np.ndarray
@@ -93,6 +100,8 @@ class Video:
     frame_times: np.ndarray
     distances: np.ndarray | None = None
     image: dict[str, np.ndarray] | None = None
+    shifted: np.ndarray = field(default_factory=lambda: np.empty((0, 0)))
+    shifted_events: tuple[Events, ...] = ()
 
 
 def spans(times: np.ndarray, window_s: float) -> list[tuple[float, float]]:
@@ -246,36 +255,68 @@ def spread(video: Video) -> np.ndarray:
     return np.sqrt(np.mean((video.draws - video.signal) ** 2, axis=0))
 
 
-def agreement(video: Video, span) -> dict:
-    """How far the draws reproduce the prediction's inhales and trace."""
-    out = {
-        "agreement_f1": NAN,
-        "event_support": NAN,
-        "agreement_corr": NAN,
-        "trace_spread": NAN,
-    }
-    if not len(video.draws):
+DRAW_NAMES = ("agreement_f1", "event_support", "agreement_corr", "trace_spread")
+SHIFT_NAMES = ("shift_f1", "shift_support", "shift_corr", "shift_spread")
+
+
+def agreement(
+    video: Video, others: np.ndarray, events: list[Events], span, names=DRAW_NAMES
+) -> dict:
+    """How far other predictions (*others*, with their *events*) reproduce the
+    prediction's inhales and trace: event F1, the share reproducing each inhale,
+    trace correlation and the RMS spread around the trace, under *names*."""
+    out = dict.fromkeys(names, NAN)
+    if not len(others):
         return out
     times = video.times
     tolerance = frame_tolerance_s(times)
     mine = _at(times, video.events.inhale, span)
     found = np.zeros(len(mine))
     f1 = []
-    for events in video.draw_events:
-        theirs = _at(times, events.inhale, span)
+    for other in events:
+        theirs = _at(times, other.inhale, span)
         f1.append(event_f1(mine, theirs, tolerance))
         for i, _ in match_events(mine, theirs, tolerance):
             found[i] += 1
     mask = _inside(times, span)
-    out["agreement_f1"] = _mean(f1)
+    f1_name, support, corr, spread_name = names
+    out[f1_name] = _mean(f1)
     if len(mine):
-        out["event_support"] = float(np.mean(found / len(video.draw_events)))
-    out["agreement_corr"] = _mean(
-        [_correlation(video.signal[mask], d[mask]) for d in video.draws]
-    )
-    deviation = video.draws[:, mask] - video.signal[mask]
-    out["trace_spread"] = float(np.sqrt(np.mean(deviation**2)))
+        out[support] = float(np.mean(found / len(events)))
+    out[corr] = _mean([_correlation(video.signal[mask], d[mask]) for d in others])
+    deviation = others[:, mask] - video.signal[mask]
+    out[spread_name] = float(np.sqrt(np.mean(deviation**2)))
     return out
+
+
+def inhale_phase_spread(times, inhale: np.ndarray, troughs: np.ndarray, span) -> float:
+    """How much the point of the trace's cycle (trough to trough) where the head puts
+    each inhale wanders: 1 minus the resultant length of those phases (0: always the
+    same point; 1: anywhere)."""
+    t_in = _at(times, inhale, span)
+    t_tr = np.sort(times[troughs])
+    after = np.searchsorted(t_tr, t_in, side="right")
+    ok = (after > 0) & (after < len(t_tr))
+    if ok.sum() < 5:
+        return NAN
+    before, after = t_tr[after[ok] - 1], t_tr[after[ok]]
+    phase = (t_in[ok] - before) / (after - before)
+    return float(1 - np.abs(np.mean(np.exp(2j * np.pi * phase))))
+
+
+def flat_breaths(signal: np.ndarray, times, inhale: np.ndarray, span, ratio: float):
+    """Share of the span's breaths (inhale to inhale) whose trace swings less than
+    *ratio* of the clip's median breath: stretches where the trace sees nothing.
+    Breaths are bounded by the inhales, not the trace's own troughs, which a flat
+    stretch would not have."""
+    inhale = np.sort(inhale)
+    if len(inhale) < 3:
+        return NAN
+    swing = np.array([np.ptp(signal[a : b + 1]) for a, b in itertools.pairwise(inhale)])
+    inside = _inside(times[inhale[:-1]], span)
+    if not inside.any():
+        return NAN
+    return float(np.mean(swing[inside] < ratio * np.median(swing)))
 
 
 # --- how familiar the input is ---------------------------------------------------------
@@ -315,6 +356,7 @@ def measure(
     ceiling_hz: float,
     ambiguous_floor: float,
     reference: Reference | None,
+    flat_ratio: float = 0.25,
 ) -> dict[str, float]:
     """Every measure of *video* over *span* (``[start, end)`` on its time axis)."""
     times, ev = video.times, video.events
@@ -330,8 +372,13 @@ def measure(
     out["alternation_break_frac"] = alternation_breaks(
         onsets_s, _at(times, ev.exhale, span)
     )
+    out["flat_breath_frac"] = flat_breaths(
+        video.signal, times, ev.inhale, span, flat_ratio
+    )
     out["cycle_similarity"] = cycle_similarity(video.signal, inside)
     out |= head(video, span, ambiguous_floor, reference)
-    out |= agreement(video, span)
+    out["inhale_phase_spread"] = inhale_phase_spread(times, ev.inhale, ev.exhale, span)
+    out |= agreement(video, video.draws, video.draw_events, span)
+    out |= agreement(video, video.shifted, video.shifted_events, span, SHIFT_NAMES)
     out |= familiarity(video, span, reference)
     return out
