@@ -6,8 +6,8 @@ evaluate`` and the evaluation after :mod:`zephyr.run` share :func:`evaluate_grou
 named groups of clips in, one result out. Clips sharing a video or recording with a
 checkpoint's recorded training set are refused (older checkpoints only warn). Multitask
 checkpoints also report the onset head's inhale F1. Several checkpoints are z-scored
-then averaged; ``--plot`` (one checkpoint) writes :mod:`.plot_diagnosis` figures.
-Only zephyr checkpoints load here; other networks bring their own loader.
+then averaged; ``--plot`` (one checkpoint) writes :mod:`.plot_diagnosis` figures and
+*traces_dir* the traces scored. Other networks than zephyr bring their own loader.
 
 CLI
 ---
@@ -37,6 +37,8 @@ from .infer import predict_clip
 from .plot_diagnosis import ClipPrediction, rate_breakdown, reserved_grid
 from .signal import BREATHING_SIGNAL_COLUMN, TIME_COLUMN
 
+TRACES = "traces"
+"""The folder of a run's predicted traces, beside its ``evaluation.json``."""
 HEAD_THRESHOLD = 0.5
 HEAD_MIN_DISTANCE_S = 0.05
 """Onset-head detector: local maxima of the probability above a fixed
@@ -298,8 +300,10 @@ def score_entries(
     amp_dtype: torch.dtype | None,
     head: bool = False,
     plot_data: list[ClipPrediction] | None = None,
+    traces_dir: Path | None = None,
 ) -> list[dict]:
-    """Score each labelled entry: one row of metrics per clip, printed as it goes."""
+    """Score each labelled entry: one row of metrics per clip, printed as it goes; the
+    traces scored are also written to *traces_dir* when given (:func:`write_trace`)."""
     header = f"{'clip':40s}{'corr':>8s}{'inh_f1':>8s}{'exh_f1':>8s}{'kl_ibi':>8s}" + (
         f"{'head_f1':>8s}" if head else ""
     )
@@ -318,6 +322,10 @@ def score_entries(
         times = np.load(entry.times)
         n = min(len(times), len(signal))
         signal, times = signal[:n], times[:n]
+        if traces_dir is not None:
+            write_trace(
+                traces_dir, entry, times, signal, None if onset is None else onset[:n]
+            )
         predicted = pd.DataFrame(
             {
                 TIME_COLUMN: times.astype(np.float64),
@@ -345,6 +353,34 @@ def score_entries(
         print(line, flush=True)
     print("-" * len(header))
     return rows
+
+
+def trace_name(entry: ClipEntry) -> str:
+    """The file of *entry*'s trace: ``feat-{prefix}.npz``, as the benchmark baselines
+    name theirs."""
+    return f"feat-{Path(entry.stem).name}.npz"
+
+
+def write_trace(
+    folder: Path,
+    entry: ClipEntry,
+    times: np.ndarray,
+    signal: np.ndarray,
+    onset: np.ndarray | None,
+) -> Path:
+    """Write the trace that was scored: ``times`` (s, the clip's output grid), the
+    z-scored ``signal`` and the onset-head ``onset`` probability (empty without one)."""
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / trace_name(entry)
+    np.savez(
+        path,
+        times=np.asarray(times, np.float64),
+        signal=np.asarray(signal, np.float32),
+        onset=np.empty(0, np.float32)
+        if onset is None
+        else np.asarray(onset, np.float32),
+    )
+    return path
 
 
 def has_onset_head(states: list[dict]) -> bool:
@@ -381,6 +417,7 @@ def evaluate_groups(
     plot_dir: Path | None = None,
     plot_options: dict | None = None,
     loader: Loader = load_checkpoint,
+    traces_dir: Path | None = None,
 ) -> dict:
     """Score *checkpoints* on named groups of clips; the one evaluation path.
 
@@ -427,6 +464,7 @@ def evaluate_groups(
             amp_dtype=amp_dtype,
             head=head,
             plot_data=plot_data,
+            traces_dir=traces_dir,
         )
 
     result = build_result(rows_by_group)

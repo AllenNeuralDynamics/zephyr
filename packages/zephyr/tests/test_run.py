@@ -1,8 +1,12 @@
 import argparse
+import tempfile
 import unittest
 from pathlib import Path
 
-from zephyr.config import TrainParams
+import numpy as np
+
+from zephyr.config import Experiment, TrainParams
+from zephyr.evaluate import trace_name, write_trace
 from zephyr.run import choose_machine
 from zephyr.train import snapshot_path
 
@@ -46,6 +50,26 @@ class SnapshotTests(unittest.TestCase):
     def test_off_by_default(self):
         self.assertEqual(TrainParams().save_every, 0)
         self.assertIsNone(snapshot_path(Path("run"), 49, 0))
+
+
+class TraceTests(unittest.TestCase):
+    def test_off_by_default(self):
+        self.assertFalse(Experiment.model_fields["save_traces"].default)
+
+    def test_a_trace_is_written_under_the_entry_prefix_and_reads_back(self):
+        class Entry:
+            stem = Path("cache/clip_span1_FaceCamera-0123456789")
+
+        times = np.arange(5) / 60
+        with tempfile.TemporaryDirectory() as d:
+            path = write_trace(Path(d) / "traces", Entry(), times, times * 2, None)
+            self.assertEqual(path.name, trace_name(Entry()))
+            self.assertEqual(path.name, "feat-clip_span1_FaceCamera-0123456789.npz")
+            with np.load(path) as saved:
+                np.testing.assert_array_equal(saved["times"], times)
+                np.testing.assert_allclose(saved["signal"], times * 2, rtol=1e-6)
+                self.assertEqual(saved["signal"].dtype, np.float32)
+                self.assertEqual(saved["onset"].size, 0)
 
 
 if __name__ == "__main__":

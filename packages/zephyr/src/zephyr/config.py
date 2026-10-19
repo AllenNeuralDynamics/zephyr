@@ -801,6 +801,9 @@ class Experiment(_Model):
     amp: Literal["bf16", "fp16", "off"] | None = None
     num_workers: int | None = Field(None, ge=0)
     """Machine settings, not science: unset means ``zephyr run``'s defaults."""
+    save_traces: bool = False
+    """Also write every test clip's predicted trace into the run's ``traces/`` (one
+    ``.npz`` per clip, :func:`zephyr.evaluate.write_trace`); it changes no score."""
 
     @field_validator("seeds")
     @classmethod

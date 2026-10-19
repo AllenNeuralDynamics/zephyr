@@ -3,8 +3,8 @@
 Which runs are compared, and under which labels, is a results manifest of
 ``zephyr-benchmarks`` (``configs/results/``, :data:`MANIFEST`). What the notebook needs
 of a run (its checkpoint and scores) is downloaded once into ``cache/runs/``
-(the bucket is public: read unsigned, no credentials); traces on the test clips are predicted here
-(inference only), and the tables of :mod:`zephyr.benchmarks.analysis` built from them,
+(the bucket is public: read unsigned, no credentials); traces on the test clips are
+the runs' own ``traces/`` where saved, else predicted here (inference only), and the tables of :mod:`zephyr.benchmarks.analysis` built from them,
 each cached the first time. The clips come from a local copy of the dataset and its
 feature cache (:mod:`.test_sets`).
 """
@@ -25,7 +25,7 @@ from zephyr.benchmarks import analysis, baselines, common, timing
 from zephyr.benchmarks.config import ReportedRun, ResultsManifest
 from zephyr.benchmarks.runner import load_checkpoint
 from zephyr.config import ClipList, load
-from zephyr.evaluate import head_event_indices
+from zephyr.evaluate import TRACES, head_event_indices, trace_name
 from zephyr.infer import predict_clip
 
 from . import test_sets
@@ -251,6 +251,13 @@ def network(name: str) -> tuple:
 
 
 def _infer_network(name: str, e: features.ClipEntry) -> tuple[np.ndarray, np.ndarray]:
+    """The trace the run scored, from its ``traces/`` when it saved them (``zephyr run
+    --save-traces``), else predicted here."""
+    m = ALL[name]
+    saved = _fetch(f"{m.run}/{RESULTS.fold}/{seeds(m.run)[0]}/{TRACES}/{trace_name(e)}")
+    if saved is not None:
+        with np.load(saved) as s:
+            return s["signal"], (s["onset"] if s["onset"].size else None)
     model, mean, std, window, chunk = network(name)
     dev = device()
     return predict_clip(
@@ -272,9 +279,15 @@ def _infer_baseline(name: str, e: features.ClipEntry) -> np.ndarray:
         path = _fetch(f"{m.run}/facemap/{m.variant}/traces/{key}.npy")
         return np.load(path)
     method, variant = m.variant.split("/")
-    trace = common.blind_polarity(
-        common.to_output_grid(e, baselines.pixel_trace(method, e, common.FS, PIXEL_BIN))
+    saved = _fetch(f"{m.run}/pixel/{method}/traces/{baselines.trace_key(e)}.npy")
+    raw = (
+        np.load(saved)
+        if saved is not None
+        else common.to_output_grid(
+            e, baselines.pixel_trace(method, e, common.FS, PIXEL_BIN)
+        )
     )
+    trace = common.blind_polarity(raw)
     if variant == "calibrated":
         fitted = evaluation(name)
         trace = fitted["sign"] * common.shift(trace, fitted["lag_samples"])

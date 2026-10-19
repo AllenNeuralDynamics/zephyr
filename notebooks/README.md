@@ -22,8 +22,9 @@ uv run marimo export html notebooks/walkthrough.py -o walkthrough.html --no-incl
   downloaded once into `cache/runs/`; the clips
   from a local copy of the dataset and its feature cache (`ZEPHYR_TEST_ROOT`, as for
   `test_sets.py`, train and validation clips included for the rate distribution).
-  Scores are the runs' own `evaluation.json`; traces are predicted here (GPU, inference
-  only) and cached in `cache/walkthrough/`. The clip-by-clip sections and the wall
+  Scores are the runs' own `evaluation.json`; traces are the runs' own `traces/` (and
+  the pixel methods'), downloaded, where a run saved them, else predicted here (GPU,
+  inference only); either way cached in `cache/walkthrough/`. The clip-by-clip sections and the wall
   times read only that cache: the notebook never predicts a whole test set or times a
   method, so a method missing from the cache is left out of them (the traces on the
   shown clip are still predicted, one clip each).

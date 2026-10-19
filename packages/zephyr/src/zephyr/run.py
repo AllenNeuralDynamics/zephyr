@@ -1,7 +1,8 @@
 """Run an experiment: train each of its (fold, seed), then score the fold's test groups.
 
 Each (fold, seed) trains into ``{output_dir}/{fold name}/seed-{seed}/``, which receives
-the resolved config, training video list, checkpoints and ``evaluation.json``. Machine
+the resolved config, training video list, checkpoints and ``evaluation.json`` (and
+``traces/`` with ``save_traces`` or ``--save-traces``). Machine
 settings (device, precision, workers) come from the experiment or CLI, never a fold:
 they change how fast a result arrives, not what it is. What is trained and how it is
 loaded is a :class:`Runner`, zephyr's own unless a caller passes another.
@@ -21,7 +22,7 @@ from pathlib import Path
 import torch
 
 from .config import Experiment, Fold, load
-from .evaluate import Loader, evaluate_groups, load_checkpoint
+from .evaluate import TRACES, Loader, evaluate_groups, load_checkpoint
 from .train import ZEPHYR, Architecture, Machine, train_fold
 
 
@@ -53,8 +54,10 @@ def run_fold(
     smoke: bool = False,
     resume: bool = False,
     runner: Runner = ZEPHYR_RUNNER,
+    save_traces: bool = False,
 ) -> None:
-    """Train one fold with one seed, then evaluate its test groups."""
+    """Train one fold with one seed, then evaluate its test groups (writing the traces
+    scored into ``traces/`` with *save_traces*)."""
     if smoke:
         fold = smoke_fold(fold)
     if fold.init_from is not None and not fold.init_from.is_file():
@@ -84,6 +87,7 @@ def run_fold(
         frame_chunk=params.frame_chunk,
         out=run_dir / "evaluation.json",
         loader=runner.loader,
+        traces_dir=run_dir / TRACES if save_traces else None,
     )
 
 
@@ -141,6 +145,12 @@ def main(argv: list[str] | None = None, *, runner: Runner = ZEPHYR_RUNNER) -> No
         action="store_true",
         help="Continue runs that have a last.pt instead of refusing the directory.",
     )
+    parser.add_argument(
+        "--save-traces",
+        action="store_true",
+        help="Also write each test clip's trace into traces/ (or the experiment's "
+        "save_traces); it changes no score.",
+    )
     args = parser.parse_args(argv)
 
     experiment = load(runner.experiment, args.config)
@@ -176,6 +186,7 @@ def main(argv: list[str] | None = None, *, runner: Runner = ZEPHYR_RUNNER) -> No
                 smoke=args.smoke,
                 resume=args.resume,
                 runner=runner,
+                save_traces=args.save_traces or experiment.save_traces,
             )
 
 
