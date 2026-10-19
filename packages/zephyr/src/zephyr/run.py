@@ -44,6 +44,18 @@ def smoke_fold(fold: Fold) -> Fold:
     return fold.model_copy(update={"train_params": params})
 
 
+def needs_training(run_dir: Path, resume: bool) -> bool:
+    """Whether *run_dir* still trains: it has no ``best.pt`` yet, or, with *resume*, it
+    stopped part way (a ``last.pt`` but no ``evaluation.json``, which is written only
+    once training ended); a finished run is only scored again."""
+    if not (run_dir / "best.pt").exists():
+        return True
+    stopped = (run_dir / "last.pt").exists() and not (
+        run_dir / "evaluation.json"
+    ).exists()
+    return resume and stopped
+
+
 def run_fold(
     fold: Fold,
     seed: int,
@@ -63,7 +75,7 @@ def run_fold(
     if fold.init_from is not None and not fold.init_from.is_file():
         raise SystemExit(f"init_from checkpoint {fold.init_from} does not exist")
     best = run_dir / "best.pt"
-    if best.exists():
+    if not needs_training(run_dir, resume):
         print(f"{run_dir}: already trained, skipping to evaluation", flush=True)
     else:
         train_fold(

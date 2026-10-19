@@ -250,14 +250,50 @@ def network(name: str) -> tuple:
     )
 
 
-def _infer_network(name: str, e: features.ClipEntry) -> tuple[np.ndarray, np.ndarray]:
-    """The trace the run scored, from its ``traces/`` when it saved them (``zephyr run
-    --save-traces``), else predicted here."""
+def _saved(
+    name: str, e: features.ClipEntry
+) -> tuple[np.ndarray, np.ndarray | None] | None:
+    """``(trace, onset)`` as the run saved it when it scored *e* (a network's
+    ``traces/``, the baselines' ``traces/``), downloaded; ``None`` if it saved none."""
     m = ALL[name]
-    saved = _fetch(f"{m.run}/{RESULTS.fold}/{seeds(m.run)[0]}/{TRACES}/{trace_name(e)}")
-    if saved is not None:
-        s = pd.read_parquet(saved)
+    if m.kind == "network":
+        path = _fetch(
+            f"{m.run}/{RESULTS.fold}/{seeds(m.run)[0]}/{TRACES}/{trace_name(e)}"
+        )
+        if path is None:
+            return None
+        s = pd.read_parquet(path)
         return s["signal"].to_numpy(), (s["onset"].to_numpy() if "onset" in s else None)
+    if m.kind == "facemap":
+        path = _fetch(
+            f"{m.run}/facemap/{m.variant}/traces/{baselines.trace_key(e)}.npy"
+        )
+        return None if path is None else (np.load(path), None)
+    method = m.variant.split("/")[0]
+    path = _fetch(f"{m.run}/pixel/{method}/traces/{baselines.trace_key(e)}.npy")
+    return None if path is None else (_calibrated(name, np.load(path)), None)
+
+
+def _calibrated(name: str, raw: np.ndarray) -> np.ndarray:
+    """A pixel method's output-grid trace as its variant reports it."""
+    trace = common.blind_polarity(raw)
+    if ALL[name].variant.endswith("/calibrated"):
+        fitted = evaluation(name)
+        trace = fitted["sign"] * common.shift(trace, fitted["lag_samples"])
+    return trace
+
+
+def _predicted(
+    name: str, e: features.ClipEntry
+) -> tuple[np.ndarray, np.ndarray | None]:
+    """``(trace, onset)`` predicted here, for a run that saved no traces."""
+    m = ALL[name]
+    if m.kind == "pixel":
+        method = m.variant.split("/")[0]
+        raw = baselines.pixel_trace(method, e, common.FS, PIXEL_BIN)
+        return _calibrated(name, common.to_output_grid(e, raw)), None
+    if m.kind != "network":
+        raise FileNotFoundError(f"{name}: no saved trace for {e.stem.name}")
     model, mean, std, window, chunk = network(name)
     dev = device()
     return predict_clip(
@@ -272,43 +308,21 @@ def _infer_network(name: str, e: features.ClipEntry) -> tuple[np.ndarray, np.nda
     )
 
 
-def _infer_baseline(name: str, e: features.ClipEntry) -> np.ndarray:
-    m = ALL[name]
-    if m.kind == "facemap":
-        key = baselines.trace_key(e)
-        path = _fetch(f"{m.run}/facemap/{m.variant}/traces/{key}.npy")
-        return np.load(path)
-    method, variant = m.variant.split("/")
-    saved = _fetch(f"{m.run}/pixel/{method}/traces/{baselines.trace_key(e)}.npy")
-    raw = (
-        np.load(saved)
-        if saved is not None
-        else common.to_output_grid(
-            e, baselines.pixel_trace(method, e, common.FS, PIXEL_BIN)
-        )
-    )
-    trace = common.blind_polarity(raw)
-    if variant == "calibrated":
-        fitted = evaluation(name)
-        trace = fitted["sign"] * common.shift(trace, fitted["lag_samples"])
-    return trace
-
-
 def prediction(name: str, stem: str) -> dict:
     """Method *name*'s trace on clip *stem* (z-scored, on the clip's 60 Hz grid), its
-    onset probability (zeros without a head) and the target; cached the first time."""
-    path = (
-        PREDICTIONS
-        / ALL[name].run
-        / (ALL[name].variant.replace("/", "-") or "net")
-        / f"{stem}.npz"
-    )
-    if not path.is_file():
-        e = entry(stem)
-        if ALL[name].kind == "network":
-            signal, onset = _infer_network(name, e)
-        else:
-            signal, onset = _infer_baseline(name, e), None
+    onset probability (zeros without a head) and the target. The trace the run saved
+    is read from its download (:func:`_fetch`), never copied; only a trace predicted
+    here, for a run that saved none, is cached (``cache/walkthrough/``), and a saved
+    one always wins over it."""
+    e = entry(stem)
+    m = ALL[name]
+    path = PREDICTIONS / m.run / (m.variant.replace("/", "-") or "net") / f"{stem}.npz"
+    found = _saved(name, e)
+    if found is None and path.is_file():
+        with np.load(path) as p:
+            out = {k: p[k] for k in p.files}
+    else:
+        signal, onset = found if found is not None else _predicted(name, e)
         times = np.load(e.times)
         n = min(len(times), len(signal))
         signal = signal[:n].astype(np.float32)
@@ -316,22 +330,17 @@ def prediction(name: str, stem: str) -> dict:
         onset = (
             np.zeros(n, np.float32) if onset is None else onset[:n].astype(np.float32)
         )
-        path.parent.mkdir(parents=True, exist_ok=True)
-        part = path.with_suffix(".tmp.npz")
-        np.savez(part, signal=signal, onset=onset, times=times[:n])
-        part.replace(path)
-    p = np.load(path)
-    out = {k: p[k] for k in p.files}
-    if ALL[name].head:
+        out = {"signal": signal, "onset": onset, "times": times[:n]}
+        if found is None:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            part = path.with_suffix(".tmp.npz")
+            np.savez(part, **out)
+            part.replace(path)
+        elif path.is_file():
+            path.unlink()  # a local prediction the run's own trace replaces
+    if m.head:
         out["head"] = out["times"][head_event_indices(out["onset"], out["times"])]
     return out
-
-
-def cached(name: str, stem: str) -> bool:
-    m = ALL[name]
-    return (
-        PREDICTIONS / m.run / (m.variant.replace("/", "-") or "net") / f"{stem}.npz"
-    ).is_file()
 
 
 def truth(stem: str) -> dict:
@@ -392,7 +401,7 @@ def wall_time(names, n_clips: int = 8) -> pd.DataFrame:
             dev = device()
 
             def infer(e, name=name, dev=dev):
-                _infer_network(name, e)
+                _predicted(name, e)  # timed: always inference, never a download
                 if dev.type == "cuda":
                     torch.cuda.synchronize()
 

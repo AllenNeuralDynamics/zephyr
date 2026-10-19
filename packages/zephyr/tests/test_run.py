@@ -8,7 +8,7 @@ import pandas as pd
 
 from zephyr.config import Experiment, TrainParams
 from zephyr.evaluate import trace_name, write_trace
-from zephyr.run import choose_machine
+from zephyr.run import choose_machine, needs_training
 from zephyr.train import snapshot_path
 
 
@@ -51,6 +51,28 @@ class SnapshotTests(unittest.TestCase):
     def test_off_by_default(self):
         self.assertEqual(TrainParams().save_every, 0)
         self.assertIsNone(snapshot_path(Path("run"), 49, 0))
+
+
+class NeedsTrainingTests(unittest.TestCase):
+    def _run(self, d: str, *names: str) -> Path:
+        for name in names:
+            (Path(d) / name).touch()
+        return Path(d)
+
+    def test_a_new_run_trains(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertTrue(needs_training(Path(d), resume=False))
+
+    def test_a_run_stopped_part_way_continues_only_when_resumed(self):
+        with tempfile.TemporaryDirectory() as d:
+            run = self._run(d, "best.pt", "last.pt")
+            self.assertTrue(needs_training(run, resume=True))
+            self.assertFalse(needs_training(run, resume=False))
+
+    def test_a_finished_run_is_only_scored_again(self):
+        with tempfile.TemporaryDirectory() as d:
+            run = self._run(d, "best.pt", "last.pt", "evaluation.json")
+            self.assertFalse(needs_training(run, resume=True))
 
 
 class TraceTests(unittest.TestCase):
