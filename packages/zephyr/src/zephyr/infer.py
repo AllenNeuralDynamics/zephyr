@@ -200,9 +200,8 @@ class Samples:
 
     *signal*/*onset* are what :func:`predict_clip` returns; *signal_draws* and
     *onset_draws* ``(passes, T)`` the same with the temporal network's dropout on
-    (each draw z-scored); *signal_shifted*/*onset_shifted* ``(len(shifts), T)`` the
-    prediction from each shifted crop; *embeddings* ``(n_frames, embed)`` the
-    encoder's output per selection frame (NaN where no window kept the frame).
+    (each draw z-scored); *embeddings* ``(n_frames, embed)`` the encoder's output per
+    selection frame (NaN where no window kept the frame).
     """
 
     signal: np.ndarray
@@ -210,19 +209,6 @@ class Samples:
     signal_draws: np.ndarray
     onset_draws: np.ndarray
     embeddings: np.ndarray
-    signal_shifted: np.ndarray
-    onset_shifted: np.ndarray
-
-
-def shift_crop(block: torch.Tensor, dy: int, dx: int) -> torch.Tensor:
-    """``(B, T, C, H, W)`` frames moved *dy* down and *dx* right, edges repeated."""
-    if not dy and not dx:
-        return block
-    h, w = block.shape[-2:]
-    pad = (max(dx, 0), max(-dx, 0), max(dy, 0), max(-dy, 0), 0, 0)
-    padded = torch.nn.functional.pad(block, pad, mode="replicate")
-    top, left = max(-dy, 0), max(-dx, 0)
-    return padded[..., top : top + h, left : left + w]
 
 
 def _dropout(model: BreathingNet, on: bool) -> None:
@@ -241,19 +227,16 @@ def predict_samples(
     *,
     passes: int = 0,
     seed: int = 0,
-    shifts: tuple[tuple[int, int], ...] = (),
     window: int = 1024,
     device: torch.device | str = "cuda",
     frame_chunk: int = 256,
     amp_dtype: torch.dtype | None = torch.bfloat16,
 ) -> Samples:
-    """:func:`predict_clip` plus *passes* Monte Carlo dropout draws, the prediction
-    from each crop shifted by ``(dy, dx)`` pixels in *shifts*, and the embeddings.
+    """:func:`predict_clip` plus *passes* Monte Carlo dropout draws and the embeddings.
 
-    For the draws the encoder runs once per window and only the temporal network is
-    re-run, all draws as one batch; each shift re-runs the encoder (dropout off).
-    Draws are seeded by *seed* (the global torch generator), so a clip's draws do not
-    depend on what ran before it.
+    The encoder runs once per window; only the temporal network is re-run, all draws
+    as one batch. Draws are seeded by *seed* (the global torch generator), so a clip's
+    draws do not depend on what ran before it.
     """
     model.eval()
     torch.manual_seed(seed)
@@ -269,8 +252,6 @@ def predict_samples(
     onset = np.zeros(n_out, np.float32)
     signal_draws = np.zeros((passes, n_out), np.float32)
     onset_draws = np.zeros((passes, n_out), np.float32)
-    signal_shifted = np.zeros((len(shifts), n_out), np.float32)
-    onset_shifted = np.zeros((len(shifts), n_out), np.float32)
     embeddings: np.ndarray | None = None
     filled = np.zeros(n_out, bool)
 
@@ -289,9 +270,6 @@ def predict_samples(
                     outputs.append(model.temporal(resampled.expand(passes, -1, -1)))
                 finally:
                     _dropout(model, False)
-            for dy, dx in shifts:
-                moved = model.encode(shift_crop(block, dy, dx), chunk=frame_chunk)
-                outputs.append(model.temporal(resample_embeddings(moved, t_in, t_out)))
         keep = slice(lo - start, hi - start)
         s, o = (x.float().cpu().numpy() for x in outputs[0])
         signal[lo:hi], onset[lo:hi] = s[0, keep], _sigmoid(o[0, keep])
@@ -299,10 +277,6 @@ def predict_samples(
             s, o = (x.float().cpu().numpy() for x in outputs[1])
             signal_draws[:, lo:hi] = s[:, keep]
             onset_draws[:, lo:hi] = _sigmoid(o[:, keep])
-        for k, out in enumerate(outputs[1 + bool(passes) :]):
-            s, o = (x.float().cpu().numpy() for x in out)
-            signal_shifted[k, lo:hi] = s[0, keep]
-            onset_shifted[k, lo:hi] = _sigmoid(o[0, keep])
         filled[lo:hi] = True
 
         # Each frame is kept by the window whose kept span holds its time; the
@@ -328,6 +302,4 @@ def predict_samples(
         signal_draws=_zscore_rows(signal_draws),
         onset_draws=onset_draws,
         embeddings=embeddings,
-        signal_shifted=_zscore_rows(signal_shifted),
-        onset_shifted=onset_shifted,
     )

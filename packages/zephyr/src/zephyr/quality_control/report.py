@@ -62,7 +62,7 @@ def machine(config, device: str | None, amp: str | None) -> tuple[str, str]:
     return device, amp or config.amp or "bf16"
 
 
-def _predict(model, mean, std, entry, config, device, amp, passes=0, seed=0, shifts=()):
+def _predict(model, mean, std, entry, config, device, amp, passes=0, seed=0):
     return predict_samples(
         model,
         entry,
@@ -70,7 +70,6 @@ def _predict(model, mean, std, entry, config, device, amp, passes=0, seed=0, shi
         std,
         passes=passes,
         seed=seed,
-        shifts=shifts,
         window=config.infer_window,
         device=device,
         frame_chunk=config.frame_chunk,
@@ -303,22 +302,12 @@ def _video(
     reference: Reference | None,
     head: bool,
 ) -> tuple[Video, np.ndarray]:
-    """Predict *entry* with the first model, its draws (dropout or the others) and
-    its shifted crops."""
+    """Predict *entry* with the first model and its draws (dropout or the others)."""
     params = config.params
     model, mean, std = entries[0]
     passes = params.dropout_passes if params.agreement == "dropout" else 0
     samples = _predict(
-        model,
-        mean,
-        std,
-        entry,
-        config,
-        device,
-        amp,
-        passes=passes,
-        seed=params.seed,
-        shifts=params.shifts,
+        model, mean, std, entry, config, device, amp, passes=passes, seed=params.seed
     )
     times = np.load(entry.times)
     onset = samples.onset if head else None
@@ -355,11 +344,6 @@ def _video(
             reference.distance(samples.embeddings) if reference is not None else None
         ),
         image=frames.statistics(entry) if frames.has_gray(entry) else None,
-        shifted=samples.signal_shifted,
-        shifted_events=tuple(
-            find_events(times, d, o if head else None)
-            for d, o in zip(samples.signal_shifted, samples.onset_shifted, strict=True)
-        ),
     )
     return video, samples.onset
 

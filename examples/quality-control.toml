@@ -16,4 +16,3 @@ groups = ["3"]                    # the held-out recording
 window_s = 30.0
 agreement = "dropout"             # or "checkpoints", with several checkpoints above
 dropout_passes = 16
-shift_px = 4                      # 0: no shifted crops (four fewer encoder passes)

@@ -153,7 +153,7 @@ The measures (`quality_control.metrics.MEASURES`, with which way is better):
 | --- | --- |
 | rhythm | rate (a description), breaths and trace power above `breathing_ceiling_hz` (faster than a mouse breathes), inhale/exhale alternation breaks, flat breaths (the trace swings less than `flat_ratio` of the clip's median breath between two inhales), breath-shape similarity. No slower rate is judged: usual rates change with running, odours and task |
 | head | onset head vs DSP peaks on its own trace (a labelled comparison), median peak height, ambiguous peaks (`ambiguous_floor` to 0.5), background probability, expected precision (reference calibration), inhale phase spread (how much the point of the trace's trough-to-trough cycle where the head puts each inhale wanders) |
-| agreement | with `dropout_passes` draws of the temporal network's dropout (the encoder runs once; batch norms stay frozen), or with the other `checkpoints`: event F1, how many draws reproduce each inhale, trace correlation and spread. The same four against the crop moved `shift_px` up, down, left and right (four more encoder passes), which dropout cannot test: it never touches the frame encoder |
+| agreement | with `dropout_passes` draws of the temporal network's dropout (the encoder runs once; batch norms stay frozen), or with the other `checkpoints`: event F1, how many draws reproduce each inhale, trace correlation and spread. |
 | input | embedding distance and its percentile among unseen animals, unfamiliar frames (reference); brightness, contrast, sharpness, motion and out-of-range frames |
 
 Inhales come from the onset head (or DSP on the trace for a headless checkpoint), as

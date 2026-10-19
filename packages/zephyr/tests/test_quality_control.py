@@ -23,7 +23,7 @@ from zephyr.config import (
     load,
 )
 from zephyr.evaluate import load_checkpoint
-from zephyr.infer import predict_clip, predict_samples, shift_crop
+from zephyr.infer import predict_clip, predict_samples
 from zephyr.model import BreathingNet
 from zephyr.quality_control import load_reports, run
 from zephyr.quality_control.metrics import MEASURES, Video, find_events, measure, spans
@@ -311,31 +311,6 @@ class PredictSamplesTests(unittest.TestCase):
         self.assertGreater(np.abs(a.signal_draws[0] - a.signal_draws[1]).max(), 1e-3)
         self.assertFalse(any(m.training for m in self.model.modules()))
 
-    def test_a_zero_shift_repeats_the_prediction_and_a_real_one_changes_it(self):
-        samples = predict_samples(
-            self.model,
-            self.entry,
-            self.mean,
-            self.std,
-            shifts=((0, 0), (4, 0)),
-            window=256,
-            device="cpu",
-            amp_dtype=None,
-        )
-        self.assertEqual(samples.signal_shifted.shape, (2, T_FRAMES))
-        np.testing.assert_allclose(samples.signal_shifted[0], samples.signal, atol=1e-5)
-        self.assertGreater(
-            np.abs(samples.signal_shifted[1] - samples.signal).max(), 1e-3
-        )
-
-    def test_a_shift_moves_the_crop_and_repeats_its_edge(self):
-        block = torch.arange(16.0).view(1, 1, 1, 4, 4)
-        moved = shift_crop(block, 1, -2)[0, 0, 0]
-        self.assertEqual(moved.shape, (4, 4))
-        self.assertEqual(moved[1, 0].item(), block[0, 0, 0, 0, 2].item())
-        self.assertEqual(moved[0, 0].item(), moved[1, 0].item())  # top edge repeated
-        self.assertEqual(moved[1, 3].item(), block[0, 0, 0, 0, 3].item())
-
     def test_every_frame_has_one_embedding(self):
         samples = self._samples(0)
         self.assertEqual(samples.embeddings.shape, (T_FRAMES, 8))
@@ -435,7 +410,6 @@ class RunTests(unittest.TestCase):
         self.assertNotIn("truth", data["summary"])
         self.assertEqual(len(data["windows"]), 3)
         self.assertIn("agreement_f1", data["summary"])
-        self.assertIsNotNone(data["summary"]["shift_f1"])  # four shifted crops
         self.assertIn("sharpness", data["windows"][0])
         self.assertTrue(report.with_name("video_face_1_part_1.qc.parquet").is_file())
         videos, windows = load_reports(report.parent)
