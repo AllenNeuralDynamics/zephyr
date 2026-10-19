@@ -117,6 +117,22 @@ class SummaryTests(unittest.TestCase):
         self.assertAlmostEqual(ci.loc["Other", "diff low"], 0.1)
         self.assertAlmostEqual(ci.loc["Other", "diff high"], 0.1)
 
+    def test_score_agreement_ranks_clips_across_methods_and_averages_seeds(self):
+        scores = [0.2, 0.5, 0.9, 0.4]
+        rows = [
+            {"set": "A", "clip_id": f"c{i}", "method": m, "seed": seed, "r": value}
+            for i, s in enumerate(scores)
+            for m, value in (("Zephyr", s), ("Same order", s / 2), ("Reversed", -s))
+            for seed in ("17", "42")
+        ]
+        rows.append({"set": "A", "clip_id": "c0", "method": "Zephyr", "seed": "42"})
+        rows[-1]["r"] = 0.2  # a second seed equal to the first leaves the mean alone
+        wide = analysis.clip_scores_wide(pd.DataFrame(rows), "r")
+        self.assertEqual(wide.shape, (4, 3))
+        agree = analysis.score_agreement(pd.DataFrame(rows), "r")
+        self.assertAlmostEqual(agree.loc["Zephyr", "Same order"], 1.0)
+        self.assertAlmostEqual(agree.loc["Zephyr", "Reversed"], -1.0)
+
     def test_rate_distribution_shares_sum_to_one_per_group(self):
         shares = analysis.rate_distribution(
             {

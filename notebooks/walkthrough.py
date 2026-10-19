@@ -548,6 +548,66 @@ def _(names, recording_scores, sets):
 
 
 @app.cell
+def _():
+    mo.md("""
+    ### Do methods fail on the same clips?
+
+    Each square is the Spearman correlation, over test clips, of two methods' clip
+    scores: high when they find the same clips hard and easy, whatever their means.
+    Two methods that agree closely are reading the same thing in the video; a low
+    square between two good methods means they fail on different clips. Drag a box
+    over a square to plot every clip's pair of scores.
+    """)
+    return
+
+
+@app.cell
+def _(sets):
+    agree_metric = mo.ui.dropdown(
+        {plots.METRIC_LABELS[m]: m for m in ("correlation", "inhale")},
+        value=plots.METRIC_LABELS["correlation"],
+        label="Score",
+    )
+    agree_set = mo.ui.dropdown(
+        ["All test sets", *sets], value="All test sets", label="Clips"
+    )
+    mo.hstack([agree_metric, agree_set], justify="start")
+    return agree_metric, agree_set
+
+
+@app.cell
+def _(agree_metric, agree_set, clip_scores, names):
+    _rows = clip_scores[clip_scores["method"].isin(names)]
+    if agree_set.value != "All test sets":
+        _rows = _rows[_rows["set"] == agree_set.value]
+    agree_wide = analysis.clip_scores_wide(_rows, agree_metric.value)[names]
+    agree_names = list(names)
+    _b = "PhysNet" if "PhysNet" in names else names[1]
+    agree_default = ("Zephyr", _b)
+    _i, _j = names.index("Zephyr"), names.index(_b)
+    _agreement = analysis.score_agreement(_rows, agree_metric.value)
+    _fig, _ax = plots.agreement_figure(
+        _agreement.loc[names, names], plots.METRIC_LABELS[agree_metric.value]
+    )
+    agree_matrix = mo.ui.matplotlib(
+        _ax,
+        value={"x": (_j - 0.4, _j + 0.4), "y": (_i - 0.4, _i + 0.4)},
+        debounce=True,
+    )
+    agree_matrix
+    return agree_default, agree_matrix, agree_names, agree_wide
+
+
+@app.cell
+def _(agree_default, agree_matrix, agree_metric, agree_names, agree_wide):
+    _a, _b = plots.picked_pair(agree_matrix.value, agree_names, agree_default)
+    plots.pair_scatter_figure(
+        agree_wide, _a, _b, plots.METRIC_LABELS[agree_metric.value]
+    )
+    return
+
+
+@app.cell
 def _(names):
     _counts = ", ".join(
         f"{n} {sum(runs.cached(n, s) for s in runs.clips())}" for n in names

@@ -279,6 +279,78 @@ def per_animal_figure(
     return fig
 
 
+def agreement_figure(agreement: pd.DataFrame, label: str) -> tuple[Figure, Axes]:
+    """:func:`.analysis.score_agreement` as a matrix, method ``i`` at row and column
+    ``i`` (cell centres on integer coordinates, so a selection maps to a pair)."""
+    names = list(agreement.columns)
+    fig, ax = style.figure("single", 0.85)
+    image = ax.imshow(agreement.to_numpy(), cmap=style.EMBEDDING_CMAP, vmin=-1, vmax=1)
+    for (i, j), r in np.ndenumerate(agreement.to_numpy()):
+        if np.isfinite(r):
+            ax.text(
+                j,
+                i,
+                f"{r:.2f}",
+                ha="center",
+                va="center",
+                fontsize=4.5,
+                color="white" if abs(r) > 0.6 else "black",
+            )
+    ax.set_xticks(range(len(names)), names, rotation=50, ha="right", fontsize=5.5)
+    ax.set_yticks(range(len(names)), names, fontsize=5.5)
+    ax.grid(False)
+    fig.colorbar(image, ax=ax, label=f"Spearman r of clip {label}", shrink=0.7)
+    return fig, ax
+
+
+def picked_pair(
+    selection, names: Sequence[str], default: tuple[str, str]
+) -> tuple[str, str]:
+    """The pair of the matrix cell a box or lasso *selection* on
+    :func:`agreement_figure` covers (the off-diagonal one nearest its middle), or
+    *default* when it covers none."""
+    n = len(names)
+    cols, rows = np.meshgrid(np.arange(n), np.arange(n))
+    cols, rows = cols.ravel(), rows.ravel()
+    mask = selection.get_mask(cols, rows) if selection else np.zeros(n * n, bool)
+    if (mask & (cols != rows)).any():
+        mask &= cols != rows
+    if not mask.any():
+        return default
+    centre = np.array([cols[mask].mean(), rows[mask].mean()])
+    k = np.flatnonzero(mask)[
+        np.argmin(np.hypot(cols[mask] - centre[0], rows[mask] - centre[1]))
+    ]
+    return names[rows[k]], names[cols[k]]
+
+
+def pair_scatter_figure(wide: pd.DataFrame, a: str, b: str, label: str) -> Figure:
+    """Every clip's score by method *a* (x) and *b* (y), coloured by test set, with the
+    identity line; *wide* is :func:`.analysis.clip_scores_wide`."""
+    both = wide[[a, b]].dropna()
+    fig, ax = style.figure("single", 0.85)
+    for name, part in both.groupby(level="set"):
+        ax.scatter(
+            part[a],
+            part[b],
+            s=5,
+            alpha=0.6,
+            lw=0,
+            color=style.color(name),
+            label=f"{name} ({len(part)})",
+        )
+    low = min(both[a].min(), both[b].min())
+    high = max(both[a].max(), both[b].max())
+    ax.plot([low, high], [low, high], color=style.POOLED, lw=0.6, ls="--")
+    r = both[a].corr(both[b], method="spearman")
+    ax.set_title(f"{a} vs {b}: Spearman r {r:.2f}, {len(both)} clips")
+    ax.set_xlabel(f"{a}: clip {label}")
+    ax.set_ylabel(f"{b}: clip {label}")
+    ax.set_aspect("equal")
+    ax.legend(loc="lower right")
+    return fig
+
+
 def bands_figure(
     bands: pd.DataFrame, names: Sequence[str], sets: Sequence[str]
 ) -> Figure:

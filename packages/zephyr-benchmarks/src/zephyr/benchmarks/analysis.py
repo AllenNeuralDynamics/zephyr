@@ -2,7 +2,8 @@
 
 From one clip's prediction and truth: event matches, breathing rate in windows, onset
 timing, band-limited correlation and the errors behind a bad clip; then summaries over
-clips: rate agreement, F1 by breathing rate and a bootstrap over animals. Events are
+clips: rate agreement, F1 by breathing rate, a bootstrap over animals and how alike two
+methods' per-clip scores are (:func:`score_agreement`). Events are
 matched as the scorer matches them (:func:`zephyr.evaluation.match_events`); inhales
 of a network with an onset head come from the head, the rest from DSP on the trace.
 A prediction is ``{"times", "signal", "onset", "head"?}``; a truth is :func:`truth`.
@@ -266,6 +267,21 @@ def bootstrap(
                 }
             rows.append(row)
     return pd.DataFrame(rows)
+
+
+def clip_scores_wide(clips: pd.DataFrame, metric: str) -> pd.DataFrame:
+    """*metric* of every clip (rows, indexed by ``set`` and ``clip_id``; seeds averaged)
+    for every method (columns)."""
+    return clips.groupby(["set", "clip_id", "method"])[metric].mean().unstack("method")
+
+
+def score_agreement(
+    clips: pd.DataFrame, metric: str, method: str = "spearman"
+) -> pd.DataFrame:
+    """How alike two methods' scores are over clips: the correlation (*method*, on the
+    clips both scored) of their per-clip *metric*, for every pair of methods. High means
+    they find the same clips hard, whatever their mean scores."""
+    return clip_scores_wide(clips, metric).corr(method=method)
 
 
 # --- frame embeddings ------------------------------------------------------------------
