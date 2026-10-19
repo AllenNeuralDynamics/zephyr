@@ -873,8 +873,8 @@ class _QualityMachine(_Model):
 
 
 class QualityReference(_QualityMachine):
-    """What ``zephyr quality-control reference`` measures once per checkpoint, so that
-    quality control on new videos needs only the checkpoint and the file it writes."""
+    """The flags of ``zephyr quality-control reference``: what it measures once per
+    checkpoint, so that quality control needs only the checkpoint and the file."""
 
     checkpoint: RelPath
     features_dir: RelPath
@@ -936,7 +936,8 @@ class QualityParams(_Model):
 
 
 class QualityControl(_QualityMachine):
-    """A ``zephyr quality-control run``: which videos, which network, where reports go."""
+    """The flags of ``zephyr quality-control run``: which videos, which network, where
+    reports go, and how they are judged."""
 
     checkpoint: RelPath
     """The network whose predictions are judged (one ordinary inference per video)."""
@@ -964,12 +965,7 @@ class QualityControl(_QualityMachine):
 # JSON schemas, for editor validation of the TOML files
 # ---------------------------------------------------------------------------
 
-SCHEMAS = {
-    "clip-list": ClipList,
-    "experiment": Experiment,
-    "quality-control": QualityControl,
-    "quality-reference": QualityReference,
-}
+SCHEMAS = {"clip-list": ClipList, "experiment": Experiment}
 
 
 def write_schemas(directory: Path) -> list[Path]:

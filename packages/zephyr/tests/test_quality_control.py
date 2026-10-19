@@ -14,14 +14,13 @@ from zephyr.channels import CHANNEL_NAMES, ChannelSet
 from zephyr.config import (
     ClipList,
     QualityControl,
-    QualityReference,
     QualityThresholds,
     TrainParams,
     load,
 )
 from zephyr.evaluate import load_checkpoint
 from zephyr.model import BreathingNet
-from zephyr.quality_control import load_reports, run
+from zephyr.quality_control import configure, load_reports, run
 from zephyr.quality_control.metrics import (
     MEASURES,
     Video,
@@ -178,15 +177,6 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(set(QualityThresholds.model_fields), judged)
 
 
-class ConfigTests(unittest.TestCase):
-    def test_the_examples_load(self):
-        examples = Path(__file__).resolve().parents[3] / "examples"
-        config = load(QualityControl, examples / "quality-control.toml")
-        self.assertEqual(config.params.window_s, 30.0)
-        reference = load(QualityReference, examples / "quality-reference.toml")
-        self.assertTrue(reference.calibration)
-
-
 class ReferenceTests(unittest.TestCase):
     def test_calibration_recovers_how_often_a_peak_is_real(self):
         rng = np.random.default_rng(0)
@@ -276,21 +266,23 @@ class RunTests(unittest.TestCase):
         load_checkpoint(path, torch.device("cpu"))  # the file loads
         return path
 
-    def _config(self, **params) -> QualityControl:
-        lines = [
-            'checkpoint = "best.pt"',
-            'features_dir = "cache"',
-            'output_dir = "qc"',
-            'device = "cpu"',
-            'amp = "off"',
-            "infer_window = 256",
-            '[[clips]]\nclips = "clips.toml"',
-            "[params]\nwindow_s = 3.0",
-            *(f"{k} = {json.dumps(v)}" for k, v in params.items()),
-        ]
-        path = self.root / "qc.toml"
-        path.write_text("\n".join(lines) + "\n")
-        return load(QualityControl, path)
+    def _config(self, *extra: str, window_s: float = 3.0) -> QualityControl:
+        """What ``zephyr quality-control run`` with these flags would run."""
+        r = self.root
+        return configure(
+            [
+                "run",
+                f"--checkpoint={r / 'best.pt'}",
+                f"--clips={r / 'clips.toml'}",
+                f"--cache={r / 'cache'}",
+                f"--out={r / 'qc'}",
+                "--device=cpu",
+                "--amp=off",
+                "--infer-window=256",
+                f"--window-s={window_s}",
+                *extra,
+            ]
+        )
 
     def test_writes_one_report_per_video_and_reads_back(self):
         (report,) = run(self._config(), "cpu", "off")
@@ -309,11 +301,11 @@ class RunTests(unittest.TestCase):
         self.assertEqual(len(videos), 1)
         self.assertEqual(len(windows), 3)
 
-    def test_nan_in_the_toml_leaves_a_measure_unchecked(self):
-        path = self.root / "qc.toml"
-        config = self._config()
-        path.write_text(path.read_text() + "[params.thresholds]\npeak_prob = nan\n")
-        config = load(QualityControl, path)
+    def test_a_threshold_flag_overrides_or_unchecks_a_bound(self):
+        config = self._config(
+            "--threshold", "peak_prob=nan", "--threshold=too_fast_frac=0.5"
+        )
+        self.assertEqual(config.params.thresholds.too_fast_frac, 0.5)
         (report,) = run(config, "cpu", "off")
         self.assertNotIn(
             "peak_prob", json.loads(report.read_text())["summary"]["checks"]
@@ -325,7 +317,7 @@ class RunTests(unittest.TestCase):
         run(self._config(), "cpu", "off")
         self.assertEqual(report.stat().st_mtime_ns, before)
         with self.assertRaisesRegex(SystemExit, "other settings"):
-            run(self._config(flat_ratio=0.3), "cpu", "off")
+            run(self._config(window_s=4.0), "cpu", "off")
 
     def test_the_traces_are_one_parquet_row_per_sample(self):
         (report,) = run(self._config(), "cpu", "off")
@@ -379,6 +371,36 @@ class RunTests(unittest.TestCase):
     def test_a_network_without_a_head_has_nothing_to_calibrate(self):
         with self.assertRaisesRegex(SystemExit, "no onset head"):
             self._calibrate(self._save("headless.pt", w_onset=0.0))
+
+
+class CommandLineTests(unittest.TestCase):
+    def test_a_misspelt_measure_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            clips = write_list(
+                Path(tmp) / "clips.toml",
+                [Path(tmp) / "video_face_1_part_1.mp4"],
+                box=(0, 0, SIZE, SIZE),
+                target_size=(SIZE, SIZE),
+            )
+            argv = ["run", "--checkpoint=x.pt", f"--clips={clips}", "--cache=c"]
+            with self.assertRaises(ValueError):
+                configure([*argv, "--out=o", "--threshold=peak_probability=0.5"])
+
+    def test_groups_are_kept_per_list_and_unknown_ones_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            box = {"box": (0, 0, SIZE, SIZE), "target_size": (SIZE, SIZE)}
+            one = write_list(
+                root / "one.toml", [root / "video_face_1_part_1.mp4"], **box
+            )
+            two = write_list(
+                root / "two.toml", [root / "video_face_2_part_1.mp4"], **box
+            )
+            argv = ["reference", "--checkpoint=x.pt", "--clips", str(one), str(two)]
+            config = configure([*argv, "--cache=c", "--out=r.json", "--groups", "2"])
+            self.assertEqual([s.groups for s in config.calibration], [["2"]])
+            with self.assertRaisesRegex(SystemExit, "in none of the clip lists"):
+                configure([*argv, "--cache=c", "--out=r.json", "--groups", "9"])
 
 
 if __name__ == "__main__":
