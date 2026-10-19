@@ -220,4 +220,6 @@ class QualityTests(unittest.TestCase):
         out = quality_agreement(table, {"good": "higher", "bad": "lower"}, "f1")
         self.assertEqual(list(out["oriented"]), [1.0, 1.0])
         curve = retention(table, "good", "f1", "higher")
+        oracle = retention(table, "f1", "f1", "higher")
+        self.assertAlmostEqual(oracle["mean"].iloc[0], truth[-2:].mean())  # top 2 of 20
         self.assertGreater(curve["mean"].iloc[0], curve["mean"].iloc[-1])

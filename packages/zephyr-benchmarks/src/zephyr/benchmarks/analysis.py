@@ -446,7 +446,7 @@ def retention(
 ) -> pd.DataFrame:
     """Mean true score of the rows a measure keeps: the best *fraction* by the measure
     (``better`` is ``"higher"`` or ``"lower"``), for each fraction."""
-    pair = table[[measure, truth]].dropna()
+    pair = table[list(dict.fromkeys([measure, truth]))].dropna()
     ranked = pair.sort_values(measure, ascending=better == "lower")[truth].to_numpy()
     out = []
     for fraction in fractions:

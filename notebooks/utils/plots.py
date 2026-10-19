@@ -838,13 +838,15 @@ def retention_figure(
         linestyle="--",
         label="Oracle",
     )
-    for name, df in curves.items():
+    for (name, df), colour in zip(
+        curves.items(), style.series(len(curves)), strict=True
+    ):
         ax.plot(
             df["kept"],
             df["mean"],
             marker="o",
             markersize=2,
-            color=style.QUALITY[_family(name)],
+            color=colour,
             label=_measure_label(name),
         )
     ax.axhline(oracle["mean"].iloc[-1], color="0.6", linewidth=0.5, linestyle=":")
@@ -905,7 +907,7 @@ def quality_video_figure(
         )
     ax.axvspan(t0, t1, color="0.9", zorder=0)
     ax.set_xlabel("Time in clip (s)")
-    ax.legend(fontsize=5.5, ncols=3)
+    ax.legend(fontsize=5.5, ncols=4, loc="upper center", bbox_to_anchor=(0.5, -0.25))
     return fig
 
 
