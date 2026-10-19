@@ -11,11 +11,25 @@ from _clipfiles import write_list
 
 from zephyr import features
 from zephyr.channels import CHANNEL_NAMES, ChannelSet
-from zephyr.config import ClipList, QualityControl, QualityReference, TrainParams, load
+from zephyr.config import (
+    ClipList,
+    QualityControl,
+    QualityReference,
+    QualityThresholds,
+    TrainParams,
+    load,
+)
 from zephyr.evaluate import load_checkpoint
 from zephyr.model import BreathingNet
 from zephyr.quality_control import load_reports, run
-from zephyr.quality_control.metrics import MEASURES, Video, find_events, measure, spans
+from zephyr.quality_control.metrics import (
+    MEASURES,
+    Video,
+    check,
+    find_events,
+    measure,
+    spans,
+)
 from zephyr.quality_control.reference import (
     Reference,
     checkpoint_hash,
@@ -64,7 +78,6 @@ class MeasureTests(unittest.TestCase):
         self.assertAlmostEqual(m["rate_hz"], 4.0, places=1)
         self.assertEqual(m["too_fast_frac"], 0.0)
         self.assertEqual(m["alternation_break_frac"], 0.0)
-        self.assertGreater(m["cycle_similarity"], 0.99)
         self.assertGreater(m["head_trace_f1"], 0.95)
         self.assertGreater(m["peak_prob"], 0.9)
         self.assertLess(m["onset_background"], 0.05)
@@ -74,7 +87,6 @@ class MeasureTests(unittest.TestCase):
         times, _, onset = _breathing()
         noise = np.random.default_rng(1).standard_normal(len(times))
         noisy = _measure(_video(times, noise, onset))
-        self.assertLess(noisy["cycle_similarity"], clean["cycle_similarity"])
         self.assertLess(noisy["head_trace_f1"], clean["head_trace_f1"])
 
     def test_without_a_head_its_measures_are_nan(self):
@@ -138,6 +150,34 @@ class MeasureTests(unittest.TestCase):
         for family, _, better in MEASURES.values():
             self.assertIn(family, ("rhythm", "head"))
             self.assertIn(better, ("higher", "lower", None))
+
+
+class CheckTests(unittest.TestCase):
+    def test_each_measure_passes_on_its_good_side(self):
+        values = {"expected_precision": 0.9, "flat_breath_frac": 0.2}
+        bounds = {"expected_precision": 0.8, "flat_breath_frac": 0.1}
+        checks, ok = check(values, bounds)
+        self.assertEqual(
+            checks, {"expected_precision": True, "flat_breath_frac": False}
+        )
+        self.assertFalse(ok)
+
+    def test_a_missing_value_or_bound_is_not_held_against_the_video(self):
+        checks, ok = check(
+            {"expected_precision": float("nan"), "peak_prob": 0.9},
+            {
+                "expected_precision": 0.8,
+                "peak_prob": 0.5,
+                "too_fast_frac": float("nan"),
+            },
+        )
+        self.assertEqual(checks, {"expected_precision": None, "peak_prob": True})
+        self.assertTrue(ok)
+        self.assertEqual(check({}, {"peak_prob": 0.5}), ({"peak_prob": None}, None))
+
+    def test_every_judging_measure_has_a_threshold(self):
+        judged = {m for m, (_, _, better) in MEASURES.items() if better}
+        self.assertEqual(set(QualityThresholds.model_fields), judged)
 
 
 class ConfigTests(unittest.TestCase):
@@ -262,10 +302,25 @@ class RunTests(unittest.TestCase):
         self.assertFalse(data["labelled"])
         self.assertNotIn("truth", data["summary"])
         self.assertEqual(len(data["windows"]), 3)
-        self.assertEqual(set(data["summary"]), set(MEASURES))
+        self.assertEqual(set(data["summary"]), {*MEASURES, "checks", "ok"})
+        checks = data["summary"]["checks"]
+        self.assertEqual(set(checks), {*QualityThresholds.model_fields})
+        self.assertIsNone(checks["expected_precision"])  # no reference: not checked
+        self.assertIn(data["summary"]["ok"], (True, False))
         videos, windows = load_reports(report.parent)
+        self.assertIn("ok_head_trace_f1", windows.columns)
         self.assertEqual(len(videos), 1)
         self.assertEqual(len(windows), 3)
+
+    def test_nan_in_the_toml_leaves_a_measure_unchecked(self):
+        path = self.root / "qc.toml"
+        config = self._config()
+        path.write_text(path.read_text() + "[params.thresholds]\npeak_prob = nan\n")
+        config = load(QualityControl, path)
+        (report,) = run(config, "cpu", "off")
+        self.assertNotIn(
+            "peak_prob", json.loads(report.read_text())["summary"]["checks"]
+        )
 
     def test_a_finished_report_is_kept_and_other_settings_are_refused(self):
         (report,) = run(self._config(), "cpu", "off")

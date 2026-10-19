@@ -896,18 +896,39 @@ class QualityReference(_QualityMachine):
         return self.calibration[0].clip_list().preprocess
 
 
+class QualityThresholds(_Model):
+    """The ``ok`` bound of each measure (``zephyr.quality_control.metrics.MEASURES``
+    says which way is good); ``nan`` (or None): not checked. The defaults pass 99% of the 30 s
+    windows with a true inhale F1 of at least 0.9 on the corpus's validation animals
+    (Zephyr ``full-gray-sched-v3``), each on its own; they were never tuned on a test
+    set. Bounds apply to a window and to a whole video alike."""
+
+    expected_precision: float | None = 0.89
+    head_trace_f1: float | None = 0.91
+    peak_prob: float | None = 0.95
+    ambiguous_peak_frac: float | None = 0.07
+    onset_background: float | None = 0.06
+    inhale_phase_spread: float | None = 0.35
+    alternation_break_frac: float | None = 0.08
+    flat_breath_frac: float | None = 0.02
+    too_fast_frac: float | None = 0.01
+
+
 class QualityParams(_Model):
     """How each video's prediction is judged; written into every report."""
 
     window_s: float = Field(30.0, gt=0)
     """Width of the windows a video is also reported in (equal widths, rounded)."""
     breathing_ceiling_hz: float = Field(15.0, gt=0)
-    """Faster than any mouse breathes: breaths above it are the network's errors. Only a ceiling: usual rates change with running, odours and
-    task, so no slower rate is judged."""
+    """Faster than any mouse breathes: breaths above it are the network's errors.
+    Only a ceiling: usual rates change with running, odours and task, so no slower
+    rate is judged."""
     ambiguous_floor: float = Field(0.2, gt=0, lt=1)
     """Onset-probability peaks from here up to the head's threshold are ambiguous."""
     flat_ratio: float = Field(0.25, gt=0, lt=1)
     """A breath swinging less than this share of the clip's median breath is flat."""
+    thresholds: QualityThresholds = QualityThresholds()
+    """Each report keeps every value and adds a pass/fail per measure and ``ok``."""
     save_traces: bool = True
     """Also write each video's trace, onset probability and inhales (parquet)."""
 

@@ -80,7 +80,9 @@ scores thermistor sessions). Both steps are TOML (`QualityReference`, `QualityCo
 - Judge rates only from above (`breathing_ceiling_hz`): never threshold a rate
   distribution, which changes with running, odours and task.
 - A measure is only trusted once checked against held-out animals
-  (`notebooks/quality_control.py`); thresholds, when added, go in `QualityParams`.
+  (`notebooks/quality_control.py`). Its `ok` bound lives in `QualityThresholds`, chosen
+  on validation animals only (never a test set), and every report keeps the value
+  beside the pass/fail.
 
 ## Reference configs
 

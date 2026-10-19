@@ -36,7 +36,7 @@ from ..events import in_spans
 from ..features import ClipEntry
 from ..infer import predict_clip
 from ..signal import BREATHING_SIGNAL_COLUMN, TIME_COLUMN
-from .metrics import Video, find_events, measure, spans
+from .metrics import Video, check, find_events, measure, spans
 from .reference import Reference, checkpoint_hash, fit_calibration, jsonable
 
 AMP = {"bf16": torch.bfloat16, "fp16": torch.float16, "off": None}
@@ -231,7 +231,9 @@ def report(
 ) -> dict:
     """One video's report: its measures over the whole clip and per window."""
     truth = None
-    if entry.thermistor is not None:
+    # Truth only where the thermistor is at hand: QC never needs it, so a copy of a
+    # dataset without its thermistors is judged all the same.
+    if entry.thermistor is not None and entry.thermistor.is_file():
         truth = (truth_frame(entry), truth_events(entry))
 
     def scores(span, whole=False):
@@ -243,6 +245,7 @@ def report(
             reference=reference,
             flat_ratio=params.flat_ratio,
         )
+        out["checks"], out["ok"] = check(out, dump(params.thresholds))
         if truth is not None:
             inhale_s = video.times[video.events.inhale] if head else None
             out["truth"] = _truth(
@@ -365,11 +368,17 @@ def run(config: QualityControl, device: str, amp: str) -> list[Path]:
 
 def load_reports(folder: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Every report in *folder*: one row per video (its ``summary``) and one per window,
-    each with the report's identity; ``truth`` scores become ``truth_<metric>`` columns."""
+    each with the report's identity; checks become ``ok_<measure>`` columns (beside
+    ``ok``) and ``truth`` scores ``truth_<metric>`` columns."""
 
     def flat(row: dict) -> dict:
         truth = row.pop("truth", None) or {}
-        return row | {f"truth_{k}": v for k, v in truth.items()}
+        checks = row.pop("checks", None) or {}
+        return (
+            row
+            | {f"ok_{k}": v for k, v in checks.items()}
+            | {f"truth_{k}": v for k, v in truth.items()}
+        )
 
     videos, windows = [], []
     for path in sorted(Path(folder).glob(f"*{REPORT}")):

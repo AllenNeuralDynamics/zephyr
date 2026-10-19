@@ -17,8 +17,6 @@ from ..rates import breath_rates
 from ..signal import detect_inhalation_events
 from .reference import Reference
 
-CYCLE_SAMPLES = 32
-"""Points each breath is resampled to before its shape is compared."""
 MIN_SPECTRUM_S = 2.0
 """Shortest span whose spectrum is measured."""
 BACKGROUND_S = 0.1
@@ -31,7 +29,6 @@ MEASURES: dict[str, tuple[str, str, str | None]] = {
     "too_fast_frac": ("rhythm", "Breaths faster than the ceiling", "lower"),
     "alternation_break_frac": ("rhythm", "Alternation breaks", "lower"),
     "flat_breath_frac": ("rhythm", "Flat breaths", "lower"),
-    "cycle_similarity": ("rhythm", "Breath shape similarity", "higher"),
     "head_trace_f1": ("head", "Head vs trace F1", "higher"),
     "peak_prob": ("head", "Onset peak height", "higher"),
     "ambiguous_peak_frac": ("head", "Ambiguous onset peaks", "lower"),
@@ -145,26 +142,6 @@ def alternation_breaks(inhales: np.ndarray, exhales: np.ndarray) -> float:
     return float(np.mean(kinds[1:] == kinds[:-1]))
 
 
-def cycle_similarity(signal: np.ndarray, onsets: np.ndarray) -> float:
-    """Median correlation of each breath (onset to onset) with the median breath."""
-    cycles = []
-    grid = np.linspace(0, 1, CYCLE_SAMPLES)
-    for a, b in itertools.pairwise(onsets):
-        if b - a < 3:
-            continue
-        piece = signal[a : b + 1]
-        cycle = np.interp(grid, np.linspace(0, 1, len(piece)), piece)
-        if cycle.std() > 0:
-            cycles.append((cycle - cycle.mean()) / cycle.std())
-    if len(cycles) < 3:
-        return NAN
-    template = np.median(cycles, axis=0)
-    return _median([_correlation(c, template) for c in cycles])
-
-
-# --- the onset head --------------------------------------------------------------------
-
-
 def head(
     video: Video, span, ambiguous_floor: float, reference: Reference | None
 ) -> dict:
@@ -255,7 +232,6 @@ def measure(
     out["flat_breath_frac"] = flat_breaths(
         video.signal, times, ev.inhale, span, flat_ratio
     )
-    out["cycle_similarity"] = cycle_similarity(video.signal, inside)
     out |= head(video, span, ambiguous_floor, reference)
     if video.onset is not None:  # DSP peaks against the same trace say nothing
         out["inhale_phase_spread"] = inhale_phase_spread(
@@ -264,3 +240,25 @@ def measure(
     else:
         out["inhale_phase_spread"] = NAN
     return out
+
+
+def check(
+    values: dict[str, float], thresholds: dict[str, float | None]
+) -> tuple[dict[str, bool | None], bool | None]:
+    """Whether each measure is on the good side of its threshold (``"higher"`` measures
+    at or above it, ``"lower"`` ones at or below), and whether all are. A measure
+    without a threshold (``None`` or NaN) is not checked; one without a value (NaN) is ``None`` and does
+    not count against ``ok``, which is ``None`` when nothing could be checked."""
+    checks: dict[str, bool | None] = {}
+    for name, bound in thresholds.items():
+        if bound is None or not np.isfinite(bound):  # TOML says "unchecked" with nan
+            continue
+        value = values.get(name)
+        if value is None or not np.isfinite(value):
+            checks[name] = None
+        elif MEASURES[name][2] == "higher":
+            checks[name] = bool(value >= bound)
+        else:
+            checks[name] = bool(value <= bound)
+    known = [v for v in checks.values() if v is not None]
+    return checks, (all(known) if known else None)
