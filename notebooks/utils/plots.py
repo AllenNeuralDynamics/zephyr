@@ -754,3 +754,185 @@ def embedding_smoothness_figure(
     ax["r2"].legend(loc="upper left")
     panel_letters([ax[k] for k in ("truth", "heat", "psd", "r2")])
     return fig
+
+
+# --- quality control ----------------------------------------------------------------------
+
+
+def _measure_label(name: str) -> str:
+    from zephyr.quality_control.metrics import MEASURES
+
+    return MEASURES[name][1]
+
+
+def _family(name: str) -> str:
+    from zephyr.quality_control.metrics import MEASURES
+
+    return MEASURES[name][0]
+
+
+def quality_scatter_figure(
+    table: pd.DataFrame, measures: Sequence[str], truth: str, truth_label: str
+) -> Figure:
+    """Each measure (x) against the true score (y), one point per row, with its
+    Spearman correlation."""
+    measures = [m for m in measures if m in table and table[m].notna().any()]
+    ncols = 5
+    nrows = max(1, -(-len(measures) // ncols))
+    fig, axes = style.figure("double", 0.22 * nrows, nrows=nrows, ncols=ncols)
+    axes = np.atleast_1d(axes).ravel()
+    for ax, name in zip(axes, measures, strict=False):
+        pair = table[[name, truth]].dropna()
+        rho = (
+            pair[name].corr(pair[truth], method="spearman") if len(pair) > 2 else np.nan
+        )
+        ax.scatter(
+            pair[name], pair[truth], s=4, color=style.QUALITY[_family(name)], lw=0
+        )
+        ax.set_title(f"{_measure_label(name)}\nρ = {rho:+.2f}", fontsize=6.5)
+        ax.set_ylim(-0.02, 1.02)
+        ax.tick_params(labelsize=5.5)
+    for ax in axes[len(measures) :]:
+        ax.set_visible(False)
+    for ax in axes[::ncols]:
+        ax.set_ylabel(truth_label)
+    return fig
+
+
+def quality_agreement_figure(by_level: dict[str, pd.DataFrame]) -> Figure:
+    """Oriented Spearman correlation of each judging measure with the truth, per level
+    (videos, windows): above zero, the measure ranks predictions as it should."""
+    first = next(iter(by_level.values()))
+    names = list(first.sort_values("oriented")["measure"])
+    fig, ax = style.figure("single", 1.1)
+    height = 0.8 / len(by_level)
+    for k, (level, df) in enumerate(by_level.items()):
+        values = df.set_index("measure").reindex(names)["oriented"]
+        y = np.arange(len(names)) + (k - (len(by_level) - 1) / 2) * height
+        ax.barh(
+            y,
+            values,
+            height=height,
+            color=[style.QUALITY[_family(n)] for n in names],
+            alpha=1.0 if k == 0 else 0.45,
+            label=level,
+        )
+    ax.axvline(0, color="0.3", linewidth=0.6)
+    ax.set_yticks(range(len(names)), [_measure_label(n) for n in names], fontsize=5.5)
+    ax.set_xlabel("Spearman ρ with the truth, oriented (> 0: ranks correctly)")
+    ax.grid(axis="x")
+    ax.legend(loc="lower right")
+    return fig
+
+
+def retention_figure(
+    curves: dict[str, pd.DataFrame], oracle: pd.DataFrame, truth_label: str
+) -> Figure:
+    """Mean true score of the videos a measure keeps, against the share kept; the
+    oracle keeps by the truth itself, and keeping everything is the last point."""
+    fig, ax = style.figure("single", 0.75)
+    ax.plot(
+        oracle["kept"],
+        oracle["mean"],
+        color=style.TRUTH,
+        linestyle="--",
+        label="Oracle",
+    )
+    for name, df in curves.items():
+        ax.plot(
+            df["kept"],
+            df["mean"],
+            marker="o",
+            markersize=2,
+            color=style.QUALITY[_family(name)],
+            label=_measure_label(name),
+        )
+    ax.axhline(oracle["mean"].iloc[-1], color="0.6", linewidth=0.5, linestyle=":")
+    ax.set_xlabel("Share of videos kept (best first)")
+    ax.set_ylabel(f"Mean {truth_label}")
+    ax.legend(fontsize=5.5)
+    return fig
+
+
+def quality_video_figure(
+    traces: dict, windows: pd.DataFrame, measures: Sequence[str], t0: float, t1: float
+) -> Figure:
+    """One video: an excerpt of its trace with the draws' spread and its onset head,
+    then the chosen measures and the true inhale F1 per window over the whole clip."""
+    fig, axes = style.mosaic(
+        [["trace"], ["onset"], ["windows"]],
+        aspect=0.75,
+        height_ratios=[1.2, 0.6, 1.4],
+    )
+    times = traces["times"] - traces["times"][0]
+    inside = _inside(times, t0, t1)
+    ax = axes["trace"]
+    signal = traces["signal"]
+    if len(traces["spread"]):
+        ax.fill_between(
+            times[inside],
+            (signal - traces["spread"])[inside],
+            (signal + traces["spread"])[inside],
+            color=style.METHODS["Zephyr"],
+            alpha=0.25,
+            lw=0,
+        )
+    ax.plot(times[inside], signal[inside], color=style.METHODS["Zephyr"])
+    inhale = traces["inhale"] - traces["times"][0]
+    mark_events(ax, inhale[_inside(inhale, t0, t1)], ax.get_ylim()[1], style.ONSET)
+    ax.set_ylabel("Trace (z)")
+    onset_head(axes["onset"], times[inside], traces["onset"][inside])
+    axes["onset"].set_xlabel("Time (s)")
+    ax = axes["windows"]
+    middle = (windows["start"] + windows["end"]) / 2 - traces["times"][0]
+    for name in measures:
+        ax.plot(
+            middle,
+            windows[name],
+            marker="o",
+            markersize=2,
+            color=style.QUALITY[_family(name)],
+            label=_measure_label(name),
+        )
+    if "truth_inhale_f1" in windows:
+        ax.plot(
+            middle,
+            windows["truth_inhale_f1"],
+            color=style.TRUTH,
+            marker="s",
+            markersize=2,
+            label="True inhale F1",
+        )
+    ax.axvspan(t0, t1, color="0.9", zorder=0)
+    ax.set_xlabel("Time in clip (s)")
+    ax.legend(fontsize=5.5, ncols=3)
+    return fig
+
+
+def calibration_figure(reference: dict) -> Figure:
+    """Reliability of the calibrated onset head (on the calibration clips) and where
+    an unseen animal's embedding distances fall."""
+    fig, (left, right) = style.figure("double", 0.32, ncols=2)
+    cal = reference.get("onset_calibration")
+    if cal:
+        table = pd.DataFrame(cal["reliability"])
+        left.plot([0, 1], [0, 1], color="0.6", linestyle=":")
+        left.scatter(
+            table["predicted"],
+            table["observed"],
+            s=4 + 40 * table["n"] / table["n"].max(),
+            color=style.ONSET,
+        )
+        left.set_title(
+            f"Onset calibration (ECE {cal['ece_raw']:.3f} raw, {cal['ece']:.3f} calibrated)"
+        )
+    left.set_xlabel("Calibrated P(inhale is real)")
+    left.set_ylabel("Share matched to a true inhale")
+    q = reference["embedding"]["distance_quantiles"]
+    right.plot(q, np.arange(len(q)), color=style.QUALITY["input"])
+    right.set_xlabel("Embedding distance")
+    right.set_ylabel("Percentile")
+    right.set_title(
+        f"Distances of unseen animals ({reference['embedding']['distances_from']})"
+    )
+    return fig

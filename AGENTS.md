@@ -63,6 +63,19 @@ Clip lists and experiments:
 - Never compare scores made before and after a scoring rule changed (time alignment,
   event tolerance; see the zephyr README, "Scoring").
 
+## Quality control (zephyr.quality_control)
+
+Judges predictions on videos without a thermistor (not the corpus's `qc` step, which
+scores thermistor sessions). Both steps are TOML (`QualityReference`, `QualityControl`).
+
+- No measure reads a thermistor; a labelled clip's real scores go only into the report's
+  separate `truth` block, which exists to check the measures.
+- A reference belongs to one checkpoint (SHA-256; a run refuses another's). Its
+  `calibration` clips must be labelled and held out by the checkpoint (refused
+  otherwise); never calibrate on a test set the measures are then checked on.
+- A measure is only trusted once checked against held-out animals
+  (`notebooks/quality_control.py`); thresholds, when added, go in `QualityParams`.
+
 ## Reference configs
 
 `configs/experiments/benchmark-gray-diff-flow-multitask.toml` and `baselines-nets.toml`

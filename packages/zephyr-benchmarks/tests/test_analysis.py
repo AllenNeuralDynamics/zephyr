@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 
 from zephyr.benchmarks import analysis
-from zephyr.benchmarks.config import ReportedRun, ResultsManifest
+from zephyr.benchmarks.config import QualityManifest, ReportedRun, ResultsManifest
 from zephyr.config import load
 
 CONFIGS = Path(__file__).resolve().parents[1] / "configs"
@@ -190,8 +190,10 @@ class ManifestTests(unittest.TestCase):
         self.assertTrue(paths)
         for path in paths:
             with self.subTest(path=path.name):
-                m = load(ResultsManifest, path)
-                self.assertTrue(m.method)
+                if "[[report]]" in path.read_text(encoding="utf-8"):
+                    self.assertTrue(load(QualityManifest, path).report)
+                else:
+                    self.assertTrue(load(ResultsManifest, path).method)
 
     def test_a_variant_is_only_for_a_baseline_and_a_head_only_for_a_network(self):
         with self.assertRaises(ValueError):
@@ -207,3 +209,15 @@ class ManifestTests(unittest.TestCase):
         run = {"label": "Zephyr", "run": "r"}
         with self.assertRaises(ValueError):
             ResultsManifest(root="s3://b", method=[run], variant=[run])
+
+
+class QualityTests(unittest.TestCase):
+    def test_a_measure_that_tracks_the_truth_is_oriented_positive(self):
+        from zephyr.benchmarks.analysis import quality_agreement, retention
+
+        truth = np.linspace(0, 1, 20)
+        table = pd.DataFrame({"good": truth, "bad": -truth, "f1": truth})
+        out = quality_agreement(table, {"good": "higher", "bad": "lower"}, "f1")
+        self.assertEqual(list(out["oriented"]), [1.0, 1.0])
+        curve = retention(table, "good", "f1", "higher")
+        self.assertGreater(curve["mean"].iloc[0], curve["mean"].iloc[-1])

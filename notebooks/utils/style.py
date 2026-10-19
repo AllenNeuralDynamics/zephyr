@@ -132,3 +132,12 @@ def mosaic(
     w = COLUMN_IN[width]
     fig = plt.figure(figsize=(w, w * aspect), layout="constrained")
     return fig, fig.subplot_mosaic(layout, **kwargs)
+
+
+QUALITY: dict[str, str] = {
+    "rhythm": "#0072b2",
+    "head": ONSET,
+    "agreement": "#e69f00",
+    "input": "#cc79a7",
+}
+"""The families of quality-control measures (``zephyr.quality_control.metrics``)."""

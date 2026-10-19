@@ -3,7 +3,8 @@
 Every key zephyr's files take still means the same; ``train_params.arch`` names the
 network (``zephyr`` when omitted, so every zephyr fold loads here unchanged) and
 ``train_params.tscan_img_size`` is TS-CAN's input size. :class:`ResultsManifest` is
-which finished runs a report compares (``configs/results/``).
+which finished runs a report compares, :class:`QualityManifest` which quality-control
+runs it reads (``configs/results/``).
 """
 
 from typing import Literal
@@ -89,6 +90,33 @@ class ResultsManifest(BaseModel):
     @model_validator(mode="after")
     def _labels_are_distinct(self) -> "ResultsManifest":
         labels = [r.label for r in (*self.method, *self.variant)]
+        if len(set(labels)) != len(labels):
+            raise ValueError(f"repeated labels in {labels}")
+        return self
+
+
+class QualityReport(BaseModel):
+    """One ``zephyr quality-control run`` as a report shows it."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    label: str
+    folder: str
+    """Folder under the manifest's ``root`` holding the run's ``*.qc.json``."""
+    reference: str | None = None
+    """The checkpoint's reference file under ``root``, if the run used one."""
+
+
+class QualityManifest(BaseModel):
+    """Which quality-control runs a report reads (``configs/results/``)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    root: str
+    """Where the runs were uploaded: an ``s3://`` prefix or a local folder."""
+    report: list[QualityReport] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _labels_are_distinct(self) -> "QualityManifest":
+        labels = [r.label for r in self.report]
         if len(set(labels)) != len(labels):
             raise ValueError(f"repeated labels in {labels}")
         return self

@@ -1,0 +1,18 @@
+# Example quality-control reference: measured once per checkpoint, shipped beside it.
+#   zephyr quality-control reference examples/quality-reference.toml
+# Every key but the first four is optional (see QualityReference in zephyr.config).
+
+checkpoint = "../runs/example/fold/seed-42/best.pt"
+features_dir = "../data/features-example"
+out = "../runs/example/fold/seed-42/qc-reference.json"
+
+[[clips]]                         # what the network knows: its training clips
+clips = "clips.toml"
+groups = ["1", "2"]
+
+# Labelled clips the checkpoint never trained on (e.g. its [fold.val] animals) calibrate
+# the onset head and say how far an unseen animal's embeddings lie. Without any, the
+# distances come from the clips above and there is no calibration.
+# [[calibration]]
+# clips = "clips.toml"
+# groups = ["..."]

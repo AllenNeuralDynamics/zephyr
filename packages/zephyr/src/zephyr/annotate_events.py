@@ -27,11 +27,9 @@ import pandas as pd
 from . import events
 from .clips import update_clip_list
 from .config import Clip, ClipList, ResolvedClip, load, resolve_clip
-from .rates import breath_rates
+from .rates import RATE_BAND_HZ, breath_rates
 
 POINT_KINDS = ("inhale", "exhale")
-RATE_BAND_HZ = (2.0, 15.0)
-"""Expected breathing rates; a breath outside them is flagged in the stats."""
 METRICS = (
     "inhales",
     "exhales",

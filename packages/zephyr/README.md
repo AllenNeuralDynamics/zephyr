@@ -121,6 +121,43 @@ make. Without it nothing changes.
 `zephyr.infer.predict_clip` runs inference on an arbitrary preprocessed clip
 and checkpoint; see its docstring.
 
+## Quality control without a thermistor
+
+On an animal without a thermistor nothing can be scored, so `zephyr quality-control`
+judges each prediction from the video alone. Its two steps each read a TOML file
+(`QualityReference`, `QualityControl` in `config.py`; `examples/quality-*.toml`):
+
+1. **Reference**, once per checkpoint, by whoever releases it (it needs the training
+   data): `zephyr quality-control reference <reference.toml>` writes a JSON file to ship
+   beside the checkpoint, tied to it by its SHA-256. From the training clips (`clips`):
+   the encoder's embedding mean and shrunk covariance, image-statistic quantiles and
+   the population's breath intervals. From labelled clips the checkpoint never trained
+   on (`calibration`, e.g. the validation animals; refused if it trained on them): how
+   far an unseen animal's embeddings lie, and a logistic calibration of the onset head
+   (the chance that an inhale it asserts with a given peak is real).
+2. **Run**, on any preprocessed clips (`thermistor = false` is fine):
+   `zephyr quality-control run <quality-control.toml>` writes `<video stem>.qc.json`
+   per video into `output_dir`: every measure over the whole clip (`summary`) and per
+   window (`windows`, about `window_s` wide), plus `<video stem>.qc.npz` (trace, onset
+   probability, the draws' spread, inhales). A finished report is kept on a re-run; a
+   folder holding reports made with other settings is refused.
+   `zephyr.quality_control.load_reports(folder)` reads a folder back as two tables.
+
+The measures (`quality_control.metrics.MEASURES`, with which way is better):
+
+| Family | Measures |
+| --- | --- |
+| rhythm | rate, breaths outside `rate_band_hz`, rate jumps (`rate_jump`), inhale/exhale alternation breaks, power in the breathing band and near its peak, breath-shape similarity, interval KL from the population (reference) |
+| head | onset head vs DSP peaks on its own trace (a labelled comparison), median peak height, ambiguous peaks (`ambiguous_floor` to 0.5), background probability, expected precision (reference calibration) |
+| agreement | with `dropout_passes` draws of the temporal network's dropout (the encoder runs once; batch norms stay frozen), or with the other `checkpoints`: event F1, how many draws reproduce each inhale, trace correlation and spread |
+| input | embedding distance and its percentile among unseen animals, unfamiliar frames (reference); brightness, contrast, sharpness, motion and out-of-range frames |
+
+Inhales come from the onset head (or DSP on the trace for a headless checkpoint), as
+everywhere. A labelled clip's report also holds a `truth` block, its real scores scored
+as `zephyr evaluate` scores it (over the whole clip exactly so); no measure reads it.
+It is there to check the measures: they are proxies, and only held-out animals with a
+thermistor say which of them track the real F1 (`notebooks/quality_control.py`).
+
 ## Reference
 
 The models in `src/zephyr/config.py` are the full list of fields and defaults; this

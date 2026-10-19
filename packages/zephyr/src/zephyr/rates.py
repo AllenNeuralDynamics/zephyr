@@ -9,6 +9,9 @@ from collections.abc import Sequence
 
 import numpy as np
 
+RATE_BAND_HZ: tuple[float, float] = (2.0, 15.0)
+"""Expected breathing rates (Hz); a breath outside them is flagged as implausible."""
+
 DEFAULT_RATE_BINS_HZ: tuple[float, ...] = (2, 2.5, 3, 4, 5, 6, 8, 10, 12, 15)
 """Rate bin edges (Hz). Rates outside them count in the first or last bin."""
 

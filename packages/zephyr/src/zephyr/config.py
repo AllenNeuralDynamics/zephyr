@@ -35,7 +35,7 @@ from pydantic import (
 
 from . import events
 from .channels import FLOW_CLIP_PX, FLOW_SCALE_PX, MOTION_TAU_S, ChannelSet
-from .rates import DEFAULT_RATE_BINS_HZ
+from .rates import DEFAULT_RATE_BINS_HZ, RATE_BAND_HZ
 from .signal import CANONICAL_BREATHING_SAMPLING_RATE
 
 OUTPUT_FS = CANONICAL_BREATHING_SAMPLING_RATE
@@ -832,10 +832,143 @@ class Experiment(_Model):
 
 
 # ---------------------------------------------------------------------------
+# Quality control (zephyr.quality_control)
+# ---------------------------------------------------------------------------
+
+
+@functools.lru_cache(maxsize=8)
+def _unchecked_list(path: Path) -> ClipList:
+    """A clip list loaded once (a dataset's list is slow to validate)."""
+    return load(ClipList, path, check_files=False)
+
+
+class QualitySelection(Selection):
+    """A :class:`Selection` whose list is loaded without checking that videos exist:
+    quality control reads only the feature cache (and a thermistor, if any)."""
+
+    def clip_list(self) -> ClipList:
+        return _unchecked_list(self.clips)
+
+    def resolved(self) -> list[ResolvedClip]:
+        clips = self.select(self.clip_list())
+        require_videos(clips, "quality control")
+        return clips
+
+
+def _one_recipe(selections: list[QualitySelection]) -> PreprocessParams:
+    recipes = {s.clip_list().preprocess for s in selections}
+    if len(recipes) != 1:
+        raise ValueError(
+            f"clip lists disagree on [preprocess]: got {len(recipes)} recipes"
+        )
+    return recipes.pop()
+
+
+class _QualityMachine(_Model):
+    device: str | None = None
+    amp: Literal["bf16", "fp16", "off"] | None = None
+    """Machine settings, not science: unset means cuda if any, and bf16."""
+    infer_window: PositiveInt = 1024
+    frame_chunk: PositiveInt = 256
+
+
+class QualityReference(_QualityMachine):
+    """What ``zephyr quality-control reference`` measures once per checkpoint, so that
+    quality control on new videos needs only the checkpoint and the file it writes."""
+
+    checkpoint: RelPath
+    features_dir: RelPath
+    out: RelPath
+    """The reference file (JSON) to write; ship it beside the checkpoint."""
+    clips: list[QualitySelection] = Field(min_length=1)
+    """What the network knows (its training clips): embeddings and image statistics,
+    and the breath intervals of the labelled ones."""
+    calibration: list[QualitySelection] = []
+    """Labelled clips the checkpoint never trained on (e.g. its validation animals):
+    the embedding distances of an unseen animal, and the onset head's calibration.
+    Empty: distances are taken from *clips*, and there is no calibration."""
+    frames_per_clip: PositiveInt = 2000
+    """Frames sampled evenly from each clip for the embedding and image statistics."""
+    shrinkage: float = Field(0.1, ge=0, le=1)
+    """Weight of the scaled identity in the embedding covariance."""
+
+    @model_validator(mode="after")
+    def _one_recipe(self) -> "QualityReference":
+        _one_recipe([*self.clips, *self.calibration])
+        return self
+
+    @property
+    def preprocess(self) -> PreprocessParams:
+        return self.clips[0].clip_list().preprocess
+
+
+class QualityParams(_Model):
+    """How each video's prediction is judged; written into every report."""
+
+    window_s: float = Field(30.0, gt=0)
+    """Width of the windows a video is also reported in (equal widths, rounded)."""
+    agreement: Literal["dropout", "checkpoints"] = "dropout"
+    """What the prediction is compared with: the same network with its temporal
+    dropout left on (``dropout_passes`` draws), or the other ``checkpoints``."""
+    dropout_passes: PositiveInt = 16
+    seed: int = 0
+    """Seeds the dropout draws, per video, so a report is reproducible."""
+    rate_band_hz: tuple[float, float] = RATE_BAND_HZ
+    rate_jump: float = Field(2.0, gt=1)
+    """Ratio of consecutive breaths' rates above which the rate counts as jumping."""
+    ambiguous_floor: float = Field(0.2, gt=0, lt=1)
+    """Onset-probability peaks from here up to the head's threshold are ambiguous."""
+    save_traces: bool = True
+    """Also write each video's trace, onset probability and dropout spread (npz)."""
+
+    @field_validator("rate_band_hz")
+    @classmethod
+    def _ordered(cls, value: tuple[float, float]) -> tuple[float, float]:
+        if not 0 < value[0] < value[1]:
+            raise ValueError(f"rate_band_hz must be 0 < low < high, got {value}")
+        return value
+
+
+class QualityControl(_QualityMachine):
+    """A ``zephyr quality-control run``: which videos, which network, where reports go."""
+
+    checkpoints: list[RelPath] = Field(min_length=1)
+    """The network to judge first; any others only for ``agreement = "checkpoints"``."""
+    reference: RelPath | None = None
+    """From ``zephyr quality-control reference`` on the first checkpoint; without it
+    the metrics that need one are left out."""
+    features_dir: RelPath
+    output_dir: RelPath
+    """One ``<video stem>.qc.json`` per video lands here."""
+    clips: list[QualitySelection] = Field(min_length=1)
+    params: QualityParams = QualityParams()
+
+    @model_validator(mode="after")
+    def _check(self) -> "QualityControl":
+        _one_recipe(self.clips)
+        if self.params.agreement == "checkpoints" and len(self.checkpoints) < 2:
+            raise ValueError('agreement = "checkpoints" needs at least two checkpoints')
+        if self.params.agreement == "dropout" and len(self.checkpoints) > 1:
+            raise ValueError(
+                'several checkpoints are only compared with agreement = "checkpoints"'
+            )
+        return self
+
+    @property
+    def preprocess(self) -> PreprocessParams:
+        return self.clips[0].clip_list().preprocess
+
+
+# ---------------------------------------------------------------------------
 # JSON schemas, for editor validation of the TOML files
 # ---------------------------------------------------------------------------
 
-SCHEMAS = {"clip-list": ClipList, "experiment": Experiment}
+SCHEMAS = {
+    "clip-list": ClipList,
+    "experiment": Experiment,
+    "quality-control": QualityControl,
+    "quality-reference": QualityReference,
+}
 
 
 def write_schemas(directory: Path) -> list[Path]:

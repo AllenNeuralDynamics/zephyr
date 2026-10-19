@@ -1,0 +1,18 @@
+# Example quality control: one <video stem>.qc.json per video, no thermistor needed.
+#   zephyr preprocess examples/clips.toml --cache data/features-example
+#   zephyr quality-control run examples/quality-control.toml
+# Every [params] key is optional (see QualityParams in zephyr.config).
+
+checkpoints = ["../runs/example/fold/seed-42/best.pt"]
+reference = "../runs/example/fold/seed-42/qc-reference.json"   # optional
+features_dir = "../data/features-example"
+output_dir = "../runs/example/quality-control"
+
+[[clips]]
+clips = "clips.toml"
+groups = ["3"]                    # the held-out recording
+
+[params]
+window_s = 30.0
+agreement = "dropout"             # or "checkpoints", with several checkpoints above
+dropout_passes = 16

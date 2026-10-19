@@ -47,6 +47,14 @@ uv run marimo export html notebooks/walkthrough.py -o walkthrough.html --no-incl
   one `zephyr evaluate` result per network, made with `ZEPHYR_PATH_MAP` pointing the
   folder's dataset copy at `/data/zephyr-dataset`. Image statistics and lags (inference
   on every clip, behind a button) are cached in `cache/`.
+- `quality_control.py`: `zephyr quality-control` checked where the truth is known.
+  Every measure of each video's report against its real inhale F1 (per video), how well
+  each ranks videos and windows, how much keeping the best-judged videos raises the
+  mean F1, one video's trace with its dropout spread and its measures over time, and
+  the reference's onset calibration. Which runs is the quality manifest
+  `packages/zephyr-benchmarks/configs/results/quality-control-v3.toml`
+  (`ZEPHYR_QUALITY` names another); reports are copied once into
+  `cache/quality-control/` (`utils/quality.py`).
 - `utils/style.py`: figure sizes, fonts and one fixed colour per method, channel
   and objective. Every figure calls `style.use_style()` and takes its colours
   from here.
