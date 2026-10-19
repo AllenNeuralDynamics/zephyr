@@ -256,8 +256,8 @@ def _infer_network(name: str, e: features.ClipEntry) -> tuple[np.ndarray, np.nda
     m = ALL[name]
     saved = _fetch(f"{m.run}/{RESULTS.fold}/{seeds(m.run)[0]}/{TRACES}/{trace_name(e)}")
     if saved is not None:
-        with np.load(saved) as s:
-            return s["signal"], (s["onset"] if s["onset"].size else None)
+        s = pd.read_parquet(saved)
+        return s["signal"].to_numpy(), (s["onset"].to_numpy() if "onset" in s else None)
     model, mean, std, window, chunk = network(name)
     dev = device()
     return predict_clip(

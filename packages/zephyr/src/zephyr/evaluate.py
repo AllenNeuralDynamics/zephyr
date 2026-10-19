@@ -356,9 +356,9 @@ def score_entries(
 
 
 def trace_name(entry: ClipEntry) -> str:
-    """The file of *entry*'s trace: ``feat-{prefix}.npz``, as the benchmark baselines
-    name theirs."""
-    return f"feat-{Path(entry.stem).name}.npz"
+    """The file of *entry*'s trace: ``feat-{prefix}.parquet`` (the key the benchmark
+    baselines name their traces by)."""
+    return f"feat-{Path(entry.stem).name}.parquet"
 
 
 def write_trace(
@@ -368,18 +368,18 @@ def write_trace(
     signal: np.ndarray,
     onset: np.ndarray | None,
 ) -> Path:
-    """Write the trace that was scored: ``times`` (s, the clip's output grid), the
-    z-scored ``signal`` and the onset-head ``onset`` probability (empty without one)."""
+    """Write the trace that was scored, one row per output sample: ``time`` (s), the
+    z-scored ``signal`` and, with an onset head, its ``onset`` probability (the columns
+    of the quality-control traces)."""
     folder.mkdir(parents=True, exist_ok=True)
     path = folder / trace_name(entry)
-    np.savez(
-        path,
-        times=np.asarray(times, np.float64),
-        signal=np.asarray(signal, np.float32),
-        onset=np.empty(0, np.float32)
-        if onset is None
-        else np.asarray(onset, np.float32),
-    )
+    columns = {
+        "time": np.asarray(times, np.float64),
+        "signal": np.asarray(signal, np.float32),
+    }
+    if onset is not None:
+        columns["onset"] = np.asarray(onset, np.float32)
+    pd.DataFrame(columns).to_parquet(path, index=False)
     return path
 
 

@@ -91,9 +91,9 @@ the download).
    `evaluation.json` reports each clip, each recording, and each named test
    group (plus the onset head's inhale F1 for multitask networks). With
    `save_traces = true` in the experiment (or `--save-traces`; off by default) the run
-   also writes `traces/feat-<entry prefix>.npz` per test clip: the `times`, z-scored
-   `signal` and onset `onset` probability that were scored, so reports need not run the
-   network again.
+   also writes `traces/feat-<entry prefix>.parquet` per test clip, one row per output
+   sample: the `time`, z-scored `signal` and (with an onset head) `onset` probability
+   that were scored, so reports need not run the network again.
 
 6. **Evaluate** any checkpoint on any clip lists; each list is reported as a
    group. A checkpoint records the videos it trained on and `evaluate` refuses

@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 
 from zephyr.config import Experiment, TrainParams
 from zephyr.evaluate import trace_name, write_trace
@@ -62,14 +63,18 @@ class TraceTests(unittest.TestCase):
 
         times = np.arange(5) / 60
         with tempfile.TemporaryDirectory() as d:
-            path = write_trace(Path(d) / "traces", Entry(), times, times * 2, None)
+            folder = Path(d) / "traces"
+            path = write_trace(folder, Entry(), times, times * 2, None)
             self.assertEqual(path.name, trace_name(Entry()))
-            self.assertEqual(path.name, "feat-clip_span1_FaceCamera-0123456789.npz")
-            with np.load(path) as saved:
-                np.testing.assert_array_equal(saved["times"], times)
-                np.testing.assert_allclose(saved["signal"], times * 2, rtol=1e-6)
-                self.assertEqual(saved["signal"].dtype, np.float32)
-                self.assertEqual(saved["onset"].size, 0)
+            self.assertEqual(path.name, "feat-clip_span1_FaceCamera-0123456789.parquet")
+            saved = pd.read_parquet(path)
+            self.assertEqual(list(saved.columns), ["time", "signal"])  # no head
+            np.testing.assert_array_equal(saved["time"], times)
+            np.testing.assert_allclose(saved["signal"], times * 2, rtol=1e-6)
+            self.assertEqual(saved["signal"].dtype, np.float32)
+            onset = np.linspace(0, 1, 5)
+            saved = pd.read_parquet(write_trace(folder, Entry(), times, times, onset))
+            np.testing.assert_allclose(saved["onset"], onset, rtol=1e-6)
 
 
 if __name__ == "__main__":
