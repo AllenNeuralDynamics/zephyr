@@ -897,21 +897,22 @@ class QualityReference(_QualityMachine):
 
 
 class QualityThresholds(_Model):
-    """The ``ok`` bound of each measure (``zephyr.quality_control.metrics.MEASURES``
+    """The pass bound of each measure (``zephyr.quality_control.metrics.MEASURES``
     says which way is good); ``nan`` (or None): not checked. The defaults pass 99% of the 30 s
     windows with a true inhale F1 of at least 0.9 on the corpus's validation animals
-    (Zephyr ``full-gray-sched-v3``), each on its own; they were never tuned on a test
-    set. Bounds apply to a window and to a whole video alike."""
+    (Zephyr ``full-gray-sched-v3``), each on its own, rounded the lenient way; they
+    were never tuned on a test set. Bounds apply to a window and to a whole video
+    alike."""
 
     expected_precision: float | None = 0.89
     head_trace_f1: float | None = 0.91
     peak_prob: float | None = 0.95
-    ambiguous_peak_frac: float | None = 0.07
-    onset_background: float | None = 0.06
-    inhale_phase_spread: float | None = 0.35
-    alternation_break_frac: float | None = 0.08
-    flat_breath_frac: float | None = 0.02
-    too_fast_frac: float | None = 0.01
+    ambiguous_peak_frac: float | None = 0.073
+    onset_background: float | None = 0.063
+    inhale_phase_spread: float | None = 0.36
+    alternation_break_frac: float | None = 0.084
+    flat_breath_frac: float | None = 0.024
+    too_fast_frac: float | None = 0.011
 
 
 class QualityParams(_Model):
@@ -928,7 +929,8 @@ class QualityParams(_Model):
     flat_ratio: float = Field(0.25, gt=0, lt=1)
     """A breath swinging less than this share of the clip's median breath is flat."""
     thresholds: QualityThresholds = QualityThresholds()
-    """Each report keeps every value and adds a pass/fail per measure and ``ok``."""
+    """Each report keeps every value and adds its pass/fail; no video is failed as a
+    whole: which checks matter is the reader's call."""
     save_traces: bool = True
     """Also write each video's trace, onset probability and inhales (parquet)."""
 

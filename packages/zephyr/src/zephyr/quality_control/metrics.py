@@ -244,11 +244,10 @@ def measure(
 
 def check(
     values: dict[str, float], thresholds: dict[str, float | None]
-) -> tuple[dict[str, bool | None], bool | None]:
+) -> dict[str, bool | None]:
     """Whether each measure is on the good side of its threshold (``"higher"`` measures
-    at or above it, ``"lower"`` ones at or below), and whether all are. A measure
-    without a threshold (``None`` or NaN) is not checked; one without a value (NaN) is ``None`` and does
-    not count against ``ok``, which is ``None`` when nothing could be checked."""
+    at or above it, ``"lower"`` ones at or below). A measure without a threshold
+    (``None`` or NaN) is not checked; one without a value (NaN) is ``None``."""
     checks: dict[str, bool | None] = {}
     for name, bound in thresholds.items():
         if bound is None or not np.isfinite(bound):  # TOML says "unchecked" with nan
@@ -260,5 +259,4 @@ def check(
             checks[name] = bool(value >= bound)
         else:
             checks[name] = bool(value <= bound)
-    known = [v for v in checks.values() if v is not None]
-    return checks, (all(known) if known else None)
+    return checks

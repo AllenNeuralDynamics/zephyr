@@ -141,10 +141,11 @@ file (`QualityReference`, `QualityControl` in `config.py`; `examples/quality-*.t
    window (`windows`, about `window_s` wide), plus `<video stem>.qc.parquet` (one row
    per output sample: time, trace, onset probability, inhale). A finished report is
    kept on a re-run; a folder holding reports made with other settings is refused.
-   Every summary and window keeps each measure's value and adds `checks` (each measure
-   against its bound in `[params.thresholds]`: `true` passes, `false` fails, `null`
-   when the measure has no value, e.g. expected precision without a reference) and `ok`
-   (all checks that could be made pass). The default bounds each pass 99% of the good
+   Every summary and window keeps each measure's value and adds `checks`: each measure
+   against its bound in `[params.thresholds]` (`true` passes, `false` fails, `null`
+   when the measure has no value, e.g. expected precision without a reference). No
+   video is failed as a whole; which checks matter is the reader's call. The default
+   bounds each pass 99% of the good
    windows (true inhale F1 >= 0.9) of the corpus's validation animals; a bound of
    `nan` leaves that measure unchecked (`QualityThresholds`).
    `zephyr.quality_control.load_reports(folder)` reads a folder back as two tables

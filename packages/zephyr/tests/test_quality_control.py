@@ -156,14 +156,13 @@ class CheckTests(unittest.TestCase):
     def test_each_measure_passes_on_its_good_side(self):
         values = {"expected_precision": 0.9, "flat_breath_frac": 0.2}
         bounds = {"expected_precision": 0.8, "flat_breath_frac": 0.1}
-        checks, ok = check(values, bounds)
         self.assertEqual(
-            checks, {"expected_precision": True, "flat_breath_frac": False}
+            check(values, bounds),
+            {"expected_precision": True, "flat_breath_frac": False},
         )
-        self.assertFalse(ok)
 
-    def test_a_missing_value_or_bound_is_not_held_against_the_video(self):
-        checks, ok = check(
+    def test_a_missing_value_or_bound_is_not_checked(self):
+        checks = check(
             {"expected_precision": float("nan"), "peak_prob": 0.9},
             {
                 "expected_precision": 0.8,
@@ -172,8 +171,7 @@ class CheckTests(unittest.TestCase):
             },
         )
         self.assertEqual(checks, {"expected_precision": None, "peak_prob": True})
-        self.assertTrue(ok)
-        self.assertEqual(check({}, {"peak_prob": 0.5}), ({"peak_prob": None}, None))
+        self.assertEqual(check({}, {"peak_prob": 0.5}), {"peak_prob": None})
 
     def test_every_judging_measure_has_a_threshold(self):
         judged = {m for m, (_, _, better) in MEASURES.items() if better}
@@ -302,11 +300,10 @@ class RunTests(unittest.TestCase):
         self.assertFalse(data["labelled"])
         self.assertNotIn("truth", data["summary"])
         self.assertEqual(len(data["windows"]), 3)
-        self.assertEqual(set(data["summary"]), {*MEASURES, "checks", "ok"})
+        self.assertEqual(set(data["summary"]), {*MEASURES, "checks"})
         checks = data["summary"]["checks"]
         self.assertEqual(set(checks), {*QualityThresholds.model_fields})
         self.assertIsNone(checks["expected_precision"])  # no reference: not checked
-        self.assertIn(data["summary"]["ok"], (True, False))
         videos, windows = load_reports(report.parent)
         self.assertIn("ok_head_trace_f1", windows.columns)
         self.assertEqual(len(videos), 1)

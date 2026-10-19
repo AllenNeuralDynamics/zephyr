@@ -245,7 +245,7 @@ def report(
             reference=reference,
             flat_ratio=params.flat_ratio,
         )
-        out["checks"], out["ok"] = check(out, dump(params.thresholds))
+        out["checks"] = check(out, dump(params.thresholds))
         if truth is not None:
             inhale_s = video.times[video.events.inhale] if head else None
             out["truth"] = _truth(
@@ -368,8 +368,8 @@ def run(config: QualityControl, device: str, amp: str) -> list[Path]:
 
 def load_reports(folder: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Every report in *folder*: one row per video (its ``summary``) and one per window,
-    each with the report's identity; checks become ``ok_<measure>`` columns (beside
-    ``ok``) and ``truth`` scores ``truth_<metric>`` columns."""
+    each with the report's identity; checks become ``ok_<measure>`` columns and
+    ``truth`` scores ``truth_<metric>`` columns."""
 
     def flat(row: dict) -> dict:
         truth = row.pop("truth", None) or {}

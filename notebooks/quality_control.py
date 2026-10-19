@@ -76,7 +76,7 @@ def _():
 
 @app.cell
 def _(judged, truth, videos):
-    _columns = ["stem", "duration_s", truth, "truth_correlation", "ok", *judged]
+    _columns = ["stem", "duration_s", truth, "truth_correlation", *judged]
     mo.ui.table(videos[_columns].round(3), selection=None, page_size=10)
     return
 
