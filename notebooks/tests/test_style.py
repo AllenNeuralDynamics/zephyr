@@ -31,3 +31,9 @@ def test_figures_have_the_named_width(width: str) -> None:
 
 def test_metric_labels_cover_the_benchmark_metrics() -> None:
     assert set(plots.METRIC_LABELS) == set(runs.METRICS)
+
+
+def test_every_quality_family_has_a_colour() -> None:
+    from zephyr.quality_control.metrics import MEASURES
+
+    assert {family for family, _, _ in MEASURES.values()} == set(style.QUALITY)

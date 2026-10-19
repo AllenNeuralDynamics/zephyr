@@ -404,3 +404,52 @@ def cause_counts(err: pd.DataFrame) -> pd.DataFrame:
             n = int(g["causes"].str.contains(cause, regex=False).sum())
             rows.append({"kind": kind, "cause": cause, "errors": n, "of": len(g)})
     return pd.DataFrame(rows)
+
+
+# --- quality control against the truth ---------------------------------------------------
+
+
+def quality_agreement(
+    table: pd.DataFrame, measures: dict[str, str | None], truth: str
+) -> pd.DataFrame:
+    """Per quality measure: Spearman correlation with the true score *truth* over the
+    rows (videos or windows) both have, and the same oriented so that positive means
+    the measure ranks as it should (*measures* maps each to ``"higher"``/``"lower"``
+    being better, or ``None``: oriented as measured)."""
+    rows = []
+    for name, better in measures.items():
+        if name not in table:
+            continue
+        pair = table[[name, truth]].dropna()
+        rho = (
+            float(pair[name].corr(pair[truth], method="spearman"))
+            if len(pair) > 2
+            else np.nan
+        )
+        rows.append(
+            {
+                "measure": name,
+                "rho": rho,
+                "oriented": -rho if better == "lower" else rho,
+                "n": len(pair),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def retention(
+    table: pd.DataFrame,
+    measure: str,
+    truth: str,
+    better: str,
+    fractions: tuple[float, ...] = tuple(i / 10 for i in range(1, 11)),
+) -> pd.DataFrame:
+    """Mean true score of the rows a measure keeps: the best *fraction* by the measure
+    (``better`` is ``"higher"`` or ``"lower"``), for each fraction."""
+    pair = table[list(dict.fromkeys([measure, truth]))].dropna()
+    ranked = pair.sort_values(measure, ascending=better == "lower")[truth].to_numpy()
+    out = []
+    for fraction in fractions:
+        n = max(1, round(fraction * len(ranked)))
+        out.append({"kept": float(fraction), "mean": float(ranked[:n].mean())})
+    return pd.DataFrame(out)

@@ -832,6 +832,136 @@ class Experiment(_Model):
 
 
 # ---------------------------------------------------------------------------
+# Quality control (zephyr.quality_control)
+# ---------------------------------------------------------------------------
+
+
+@functools.lru_cache(maxsize=8)
+def _unchecked_list(path: Path) -> ClipList:
+    """A clip list loaded once (a dataset's list is slow to validate)."""
+    return load(ClipList, path, check_files=False)
+
+
+class QualitySelection(Selection):
+    """A :class:`Selection` whose list is loaded without checking that videos exist:
+    quality control reads only the feature cache (and a thermistor, if any)."""
+
+    def clip_list(self) -> ClipList:
+        return _unchecked_list(self.clips)
+
+    def resolved(self) -> list[ResolvedClip]:
+        clips = self.select(self.clip_list())
+        require_videos(clips, "quality control")
+        return clips
+
+
+def _one_recipe(selections: list[QualitySelection]) -> PreprocessParams:
+    recipes = {s.clip_list().preprocess for s in selections}
+    if len(recipes) != 1:
+        raise ValueError(
+            f"clip lists disagree on [preprocess]: got {len(recipes)} recipes"
+        )
+    return recipes.pop()
+
+
+class _QualityMachine(_Model):
+    device: str | None = None
+    amp: Literal["bf16", "fp16", "off"] | None = None
+    """Machine settings, not science: unset means cuda if any, and bf16."""
+    infer_window: PositiveInt = 1024
+    frame_chunk: PositiveInt = 256
+
+
+class QualityReference(_QualityMachine):
+    """The flags of ``zephyr quality-control reference``: what it measures once per
+    checkpoint, so that quality control needs only the checkpoint and the file."""
+
+    checkpoint: RelPath
+    features_dir: RelPath
+    out: RelPath
+    """The reference file (JSON) to write; ship it beside the checkpoint."""
+    calibration: list[QualitySelection] = Field(min_length=1)
+    """Labelled clips the checkpoint never trained on (e.g. its validation animals),
+    on which the onset head is calibrated."""
+    max_clips: PositiveInt | None = None
+    """Calibration clips predicted, spread evenly over them; None: all."""
+
+    @model_validator(mode="after")
+    def _one_recipe(self) -> "QualityReference":
+        _one_recipe(self.calibration)
+        return self
+
+    @property
+    def preprocess(self) -> PreprocessParams:
+        return self.calibration[0].clip_list().preprocess
+
+
+class QualityThresholds(_Model):
+    """The pass bound of each measure (``zephyr.quality_control.metrics.MEASURES``
+    says which way is good); ``nan`` (or None): not checked. The defaults pass 99% of the 30 s
+    windows with a true inhale F1 of at least 0.9 on the corpus's validation animals
+    (Zephyr ``full-gray-sched-v3``), each on its own, rounded the lenient way; they
+    were never tuned on a test set. Bounds apply to a window and to a whole video
+    alike."""
+
+    expected_precision: float | None = 0.89
+    head_trace_f1: float | None = 0.91
+    peak_prob: float | None = 0.95
+    ambiguous_peak_frac: float | None = 0.073
+    onset_background: float | None = 0.063
+    inhale_phase_spread: float | None = 0.36
+    alternation_break_frac: float | None = 0.084
+    flat_breath_frac: float | None = 0.024
+    too_fast_frac: float | None = 0.011
+
+
+class QualityParams(_Model):
+    """How each video's prediction is judged; written into every report."""
+
+    window_s: float = Field(30.0, gt=0)
+    """Width of the windows a video is also reported in (equal widths, rounded)."""
+    breathing_ceiling_hz: float = Field(15.0, gt=0)
+    """Faster than any mouse breathes: breaths above it are the network's errors.
+    Only a ceiling: usual rates change with running, odours and task, so no slower
+    rate is judged."""
+    ambiguous_floor: float = Field(0.2, gt=0, lt=1)
+    """Onset-probability peaks from here up to the head's threshold are ambiguous."""
+    flat_ratio: float = Field(0.25, gt=0, lt=1)
+    """A breath swinging less than this share of the clip's median breath is flat."""
+    thresholds: QualityThresholds = QualityThresholds()
+    """Each report keeps every value and adds its pass/fail; no video is failed as a
+    whole: which checks matter is the reader's call."""
+    save_traces: bool = True
+    """Also write each video's trace, onset probability and inhales (parquet)."""
+
+
+class QualityControl(_QualityMachine):
+    """The flags of ``zephyr quality-control run``: which videos, which network, where
+    reports go, and how they are judged."""
+
+    checkpoint: RelPath
+    """The network whose predictions are judged (one ordinary inference per video)."""
+    reference: RelPath | None = None
+    """The checkpoint's reference (``qc-reference.json`` beside it after training, or
+    ``zephyr quality-control reference``); without it the measures that need one are
+    left out."""
+    features_dir: RelPath
+    output_dir: RelPath
+    """One ``<video stem>.qc.json`` per video lands here."""
+    clips: list[QualitySelection] = Field(min_length=1)
+    params: QualityParams = QualityParams()
+
+    @model_validator(mode="after")
+    def _check(self) -> "QualityControl":
+        _one_recipe(self.clips)
+        return self
+
+    @property
+    def preprocess(self) -> PreprocessParams:
+        return self.clips[0].clip_list().preprocess
+
+
+# ---------------------------------------------------------------------------
 # JSON schemas, for editor validation of the TOML files
 # ---------------------------------------------------------------------------
 

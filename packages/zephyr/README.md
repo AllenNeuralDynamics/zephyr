@@ -121,6 +121,53 @@ make. Without it nothing changes.
 `zephyr.infer.predict_clip` runs inference on an arbitrary preprocessed clip
 and checkpoint; see its docstring.
 
+## Quality control without a thermistor
+
+On an animal without a thermistor nothing can be scored, so `zephyr quality-control`
+judges each prediction from the network's output alone, its trace and onset
+probability: one ordinary inference per video and nothing more. Both steps take flags,
+like `zephyr evaluate` (`--clips` takes clip lists, `--groups` keeps some of their
+groups):
+
+```bash
+uv run zephyr quality-control run --checkpoint best.pt --clips <list.toml>     --cache data/features-example --out qc/ [--reference qc-reference.json]
+uv run zephyr quality-control reference --checkpoint best.pt --clips <list.toml>     --groups <validation sessions> --cache data/features-example --out qc-reference.json
+```
+
+1. **Reference** (optional), once per checkpoint: predicts labelled clips the checkpoint
+   never trained on (e.g. its validation animals; refused if it trained on them;
+   `--max-clips` to predict fewer) and fits a logistic calibration of the onset head:
+   the chance that an inhale it asserts with a given peak is real. The JSON file it
+   writes is tied to the checkpoint by its SHA-256; ship it beside it. Without it every
+   measure but expected precision is still reported.
+2. **Run**, on any preprocessed clips (`thermistor = false` is fine): writes
+   `<video stem>.qc.json` per video into `--out`: every measure over the whole clip
+   (`summary`) and per window (`windows`, about `--window-s` wide), plus
+   `<video stem>.qc.parquet` (one row per output sample: time, trace, onset
+   probability, inhale; `--no-traces` skips it). A finished report is kept on a re-run;
+   a folder holding reports made with other settings is refused. Every summary and
+   window keeps each measure's value and adds `checks`: each measure against its pass
+   bound (`true` passes, `false` fails, `null` when the measure has no value, e.g.
+   expected precision without a reference). No video is failed as a whole; which checks
+   matter is the reader's call. The default bounds (`QualityThresholds` in `config.py`)
+   each pass 99% of the good windows (true inhale F1 >= 0.9) of the corpus's
+   validation animals; `--threshold <measure>=<bound>` overrides one, and a bound of
+   `nan` leaves that measure unchecked. `zephyr.quality_control.load_reports(folder)`
+   reads a folder back as two tables (checks as `ok_<measure>` columns).
+
+The measures (`quality_control.metrics.MEASURES`, with which way is better):
+
+| Family | Measures |
+| --- | --- |
+| rhythm | rate (a description), breaths faster than `breathing_ceiling_hz` (faster than a mouse breathes), inhale/exhale alternation breaks, flat breaths (the trace swings less than `flat_ratio` of the clip's median breath between two inhales). No slower rate is judged: usual rates change with running, odours and task |
+| head | onset head vs DSP peaks on its own trace (a labelled comparison), median peak height, ambiguous peaks (`ambiguous_floor` to 0.5), background probability, expected precision (reference calibration), inhale phase spread (how much the point of the trace's trough-to-trough cycle where the head puts each inhale wanders) |
+
+Inhales come from the onset head (or DSP on the trace for a headless checkpoint), as
+everywhere. A labelled clip's report also holds a `truth` block, its real scores scored
+as `zephyr evaluate` scores it (over the whole clip exactly so); no measure reads it.
+It is there to check the measures: they are proxies, and only held-out animals with a
+thermistor say which of them track the real F1 (`notebooks/quality_control.py`).
+
 ## Reference
 
 The models in `src/zephyr/config.py` are the full list of fields and defaults; this

@@ -17,6 +17,10 @@ CLI
     zephyr preprocess <list.toml>... --cache <dir>
     zephyr run <experiment.toml> [--smoke] [--folds <name>...]
     zephyr evaluate --checkpoint <best.pt> --clips <list.toml>... --cache <dir>
+    zephyr quality-control run --checkpoint <best.pt> --clips <list.toml>...
+        --cache <dir> --out <dir> [--reference <ref.json>]
+    zephyr quality-control reference --checkpoint <best.pt> --clips <list.toml>...
+        --cache <dir> --out <ref.json>
     zephyr schema <dir>
 """
 
@@ -81,6 +85,15 @@ class EvaluateCommand(_PassthroughCommand):
         evaluate.main(self.args)
 
 
+class QualityControlCommand(_PassthroughCommand):
+    """Judge predictions on videos without a thermistor. See ``zephyr.quality_control``."""
+
+    def cli_cmd(self) -> None:
+        from . import quality_control
+
+        quality_control.main(self.args)
+
+
 class SchemaCommand(_PassthroughCommand):
     """Write JSON schemas of the config files. See ``zephyr.config``."""
 
@@ -100,6 +113,7 @@ class Zephyr(BaseSettings):
     preprocess: CliSubCommand[PreprocessCommand]
     run: CliSubCommand[RunCommand]
     evaluate: CliSubCommand[EvaluateCommand]
+    quality_control: CliSubCommand[QualityControlCommand]
     schema_: CliSubCommand[SchemaCommand] = Field(alias="schema")
 
     def cli_cmd(self) -> None:

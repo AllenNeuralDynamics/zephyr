@@ -24,22 +24,18 @@ the annotation windows):
 - `notebooks/` (marimo) only read results and never train (the one exception,
   `corpus.py`, rebuilds the corpus into a folder of its own); every figure uses
   `notebooks/utils/style.py`. Which runs a report compares is a results manifest
-  (`zephyr-benchmarks/configs/results/`), never a list in a notebook, and what it
+  (`zephyr-benchmarks/configs/results/`), never a list in a notebook (the quality
+  notebook reads one reports folder, given in the notebook), and what it
   measures beyond `evaluation.json` lives in `zephyr.benchmarks.analysis`; a notebook
   only caches, downloads and draws.
 - Inhale events of a network with an onset head come from the head
   (`head_events`), never from DSP on its trace. DSP is for the thermistor, headless
   methods (labelled "DSP") and exhale F1, or an explicitly labelled comparison.
 
-## Experiments are TOML, not code
+## Experiments
 
-Every input (clips, what trains, what is scored, hyperparameters, seeds) is a TOML file
-of paths relative to itself, validated by `packages/zephyr/src/zephyr/config.py`
-(extended by `zephyr-benchmarks`' `config.py`). A misspelt key is an error. To run a new
-experiment, **write or copy a TOML file**. Never:
+Never:
 
-- add CLI flags for experiment settings (`zephyr preprocess --channels` is not one: it
-  chooses which channel files to store, never what any stored value is);
 - hardcode paths, split names, camera names, session numbers or dataset layout in `src/`;
 - write scripts that bypass `zephyr run` / `evaluate` (or `zephyr-benchmarks run` / `evaluate`);
 - edit an existing config to repurpose it: copy it under a new name.
@@ -62,6 +58,27 @@ Clip lists and experiments:
   experiment rather than deleting results.
 - Never compare scores made before and after a scoring rule changed (time alignment,
   event tolerance; see the zephyr README, "Scoring").
+
+## Quality control (zephyr.quality_control)
+
+Judges predictions on videos without a thermistor (not the corpus's `qc` step, which
+scores thermistor sessions). Both steps take flags, like `zephyr evaluate`.
+
+- No measure reads a thermistor; a labelled clip's real scores go only into the report's
+  separate `truth` block, which exists to check the measures.
+- A measure reads only the network's ordinary output (trace, onset probability);
+  never add one that needs more network passes or the video (dropout draws, shifted
+  crops, other checkpoints, embeddings and image statistics were tried and dropped).
+- A reference belongs to one checkpoint (SHA-256; a run refuses another's). Its
+  `calibration` clips must be labelled and held out by the checkpoint (refused
+  otherwise); never calibrate on a test set the measures are then checked on. Training
+  does not write one.
+- Judge rates only from above (`breathing_ceiling_hz`): never threshold a rate
+  distribution, which changes with running, odours and task.
+- A measure is only trusted once checked against held-out animals
+  (`notebooks/quality_control.py`). Its pass bound lives in `QualityThresholds`, chosen
+  on validation animals only (never a test set); every report keeps the value beside
+  the pass/fail, and never fails a video as a whole.
 
 ## Reference configs
 
@@ -125,7 +142,7 @@ Only when a setting does not exist yet:
 1. Add a field to the right pydantic model with a default that keeps current behaviour,
    so existing configs and `test_reproduction.py` pass unchanged (network settings in
    zephyr's `config.py`, comparison-only settings in `BenchmarkTrainParams`).
-2. Read it from the model where it is used; no new CLI flag.
+2. Read it from the model where it is used.
 3. Add a test; keep module docstrings under 10 lines (`test_module_docstrings.py`); run
    `uv run ruff format . && uv run ruff check . && uv run pytest -q` from the root.
 
