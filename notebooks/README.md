@@ -50,7 +50,7 @@ uv run marimo export html notebooks/walkthrough.py -o walkthrough.html --no-incl
 - `quality_control.py`: `zephyr quality-control` checked where the truth is known.
   Every measure of each video's report against its real inhale F1 (per video), how well
   each ranks videos and windows, how much keeping the best-judged videos raises the
-  mean F1, one video's trace with its dropout spread and its measures over time, and
+  mean F1, one video's trace and onset head and its measures over time, and
   the reference's onset calibration. Which runs is the quality manifest
   `packages/zephyr-benchmarks/configs/results/quality-control-v3.toml`
   (`ZEPHYR_QUALITY` names another); reports are copied once into

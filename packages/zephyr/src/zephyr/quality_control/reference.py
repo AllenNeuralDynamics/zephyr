@@ -1,8 +1,7 @@
 """What a checkpoint's quality control compares new videos with, measured once.
 
 A :class:`Reference` holds the training clips' embedding distribution, the embedding
-distances of unseen labelled animals, image-statistic quantiles and a calibration of
-the onset head's peaks. It is a JSON file shipped beside
+distances of unseen labelled animals and a calibration of the onset head's peaks. It is a JSON file shipped beside
 the checkpoint (``zephyr quality-control reference``), tied to it by its SHA-256.
 """
 
@@ -44,7 +43,6 @@ class Reference:
     embedding_mean: np.ndarray
     embedding_precision: np.ndarray
     distance_quantiles: np.ndarray
-    image_quantiles: dict[str, np.ndarray] | None
     onset_calibration: dict | None
     record: dict
     """Everything else written (clips, settings, reliability): kept as read."""
@@ -69,15 +67,11 @@ class Reference:
     def load(cls, path: Path) -> "Reference":
         data = json.loads(Path(path).read_text())
         embedding = data["embedding"]
-        image = data["image"]
         return cls(
             checkpoint_sha256=data["checkpoint_sha256"],
             embedding_mean=np.asarray(embedding["mean"]),
             embedding_precision=np.asarray(embedding["precision"]),
             distance_quantiles=np.asarray(embedding["distance_quantiles"]),
-            image_quantiles=(
-                {k: np.asarray(v) for k, v in image.items()} if image else None
-            ),
             onset_calibration=data["onset_calibration"],
             record=data,
         )

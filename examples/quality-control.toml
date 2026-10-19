@@ -3,8 +3,8 @@
 #   zephyr quality-control run examples/quality-control.toml
 # Every [params] key is optional (see QualityParams in zephyr.config).
 
-checkpoints = ["../runs/example/fold/seed-42/best.pt"]
-reference = "../runs/example/fold/seed-42/qc-reference.json"   # optional
+checkpoint = "../runs/example/fold/seed-42/best.pt"
+reference = "../runs/example/fold/seed-42/qc-reference.json"   # written by zephyr run
 features_dir = "../data/features-example"
 output_dir = "../runs/example/quality-control"
 
@@ -14,5 +14,4 @@ groups = ["3"]                    # the held-out recording
 
 [params]
 window_s = 30.0
-agreement = "dropout"             # or "checkpoints", with several checkpoints above
-dropout_passes = 16
+embedding_frames = 5              # frames per video the encoder sees for the reference

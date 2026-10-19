@@ -124,8 +124,10 @@ and checkpoint; see its docstring.
 ## Quality control without a thermistor
 
 On an animal without a thermistor nothing can be scored, so `zephyr quality-control`
-judges each prediction from the video alone. Its two steps each read a TOML file
-(`QualityReference`, `QualityControl` in `config.py`; `examples/quality-*.toml`):
+judges each prediction from the network's output alone (its trace and onset
+probability), plus the encoder on a handful of frames per video: one ordinary inference
+per video and nothing more. Its two steps each read a TOML file (`QualityReference`,
+`QualityControl` in `config.py`; `examples/quality-*.toml`):
 
 1. **Reference**, once per checkpoint (it needs the training data): a JSON file to
    ship beside the checkpoint, tied to it by its SHA-256. `zephyr run` writes it after
@@ -133,18 +135,19 @@ judges each prediction from the video alone. Its two steps each read a TOML file
    training clips, calibrated on up to 30 of its `[fold.val]` clips
    (`[fold.quality_reference]`: `enabled`, `max_clips`, `frames_per_clip`, `shrinkage`;
    comparison networks get none); `zephyr quality-control reference <reference.toml>`
-   makes one for any checkpoint. From the training clips (`clips`): the encoder's
-   embedding mean and shrunk covariance and image-statistic quantiles. From labelled
-   clips the checkpoint never trained
-   on (`calibration`, e.g. the validation animals; refused if it trained on them): how
-   far an unseen animal's embeddings lie, and a logistic calibration of the onset head
-   (the chance that an inhale it asserts with a given peak is real).
+   makes one for any checkpoint. From `frames_per_clip` frames sampled from each
+   training clip (`clips`; only those frames are encoded): the encoder's embedding mean
+   and shrunk covariance. From labelled clips the checkpoint never trained on
+   (`calibration`, e.g. the validation animals; refused if it trained on them): how far
+   an unseen animal's sampled embeddings lie, and, predicting these clips whole, a
+   logistic calibration of the onset head (the chance that an inhale it asserts with a
+   given peak is real).
 2. **Run**, on any preprocessed clips (`thermistor = false` is fine):
    `zephyr quality-control run <quality-control.toml>` writes `<video stem>.qc.json`
    per video into `output_dir`: every measure over the whole clip (`summary`) and per
    window (`windows`, about `window_s` wide), plus `<video stem>.qc.parquet` (one row
-   per output sample: time, trace, onset probability, the draws' spread, inhale). A finished report is kept on a re-run; a
-   folder holding reports made with other settings is refused.
+   per output sample: time, trace, onset probability, inhale). A finished report is
+   kept on a re-run; a folder holding reports made with other settings is refused.
    `zephyr.quality_control.load_reports(folder)` reads a folder back as two tables.
 
 The measures (`quality_control.metrics.MEASURES`, with which way is better):
@@ -153,8 +156,7 @@ The measures (`quality_control.metrics.MEASURES`, with which way is better):
 | --- | --- |
 | rhythm | rate (a description), breaths and trace power above `breathing_ceiling_hz` (faster than a mouse breathes), inhale/exhale alternation breaks, flat breaths (the trace swings less than `flat_ratio` of the clip's median breath between two inhales), breath-shape similarity. No slower rate is judged: usual rates change with running, odours and task |
 | head | onset head vs DSP peaks on its own trace (a labelled comparison), median peak height, ambiguous peaks (`ambiguous_floor` to 0.5), background probability, expected precision (reference calibration), inhale phase spread (how much the point of the trace's trough-to-trough cycle where the head puts each inhale wanders) |
-| agreement | with `dropout_passes` draws of the temporal network's dropout (the encoder runs once; batch norms stay frozen), or with the other `checkpoints`: event F1, how many draws reproduce each inhale, trace correlation and spread. |
-| input | embedding distance and its percentile among unseen animals, unfamiliar frames (reference); brightness, contrast, sharpness, motion and out-of-range frames |
+| input | over the whole clip only: embedding distance of `embedding_frames` (5) frames spread over the video, its percentile among unseen animals, and the share beyond their 99th percentile (reference). Head-fixed mice barely move, so a few frames show whether the crop looks like what the network trained on |
 
 Inhales come from the onset head (or DSP on the trace for a headless checkpoint), as
 everywhere. A labelled clip's report also holds a `truth` block, its real scores scored

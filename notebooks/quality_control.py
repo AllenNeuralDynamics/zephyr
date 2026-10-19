@@ -17,9 +17,9 @@ def _():
     mo.md(f"""
     # Quality control without a thermistor
 
-    `zephyr quality-control` judges a prediction from the video alone: is the rhythm
-    plausible, does the onset head agree with the trace, do dropout draws reproduce
-    it, and does the input look like what the network trained on. This notebook
+    `zephyr quality-control` judges a prediction from the network's output alone: is
+    the rhythm plausible, does the onset head agree with the trace, and do a few
+    frames of the video look like what the network trained on. This notebook
     checks those measures where the truth is known: on held-out animals, each
     measure against the clip's real inhale F1, per video and per window.
 
@@ -158,7 +158,7 @@ def _(judged, run, truth, videos):
         list(judged),
         value=[
             m
-            for m in ("agreement_f1", "expected_precision", "cycle_similarity")
+            for m in ("expected_precision", "head_trace_f1", "flat_breath_frac")
             if m in judged
         ],
         label="Measures",

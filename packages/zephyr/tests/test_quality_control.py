@@ -23,9 +23,8 @@ from zephyr.config import (
     load,
 )
 from zephyr.evaluate import load_checkpoint
-from zephyr.infer import predict_clip, predict_samples
 from zephyr.model import BreathingNet
-from zephyr.quality_control import load_reports, run
+from zephyr.quality_control import embeddings, load_reports, run
 from zephyr.quality_control.metrics import MEASURES, Video, find_events, measure, spans
 from zephyr.quality_control.reference import (
     Reference,
@@ -51,24 +50,26 @@ def _breathing(seconds=40.0, rate=4.0, noise=0.0, seed=0):
     return times, signal, onset
 
 
-def _video(times, signal, onset, draws=(), reference_distances=None):
-    draws = np.asarray(draws, float).reshape(-1, len(times))
+def _video(times, signal, onset, distances=None):
     return Video(
         times=times,
         signal=signal,
         onset=onset,
         events=find_events(times, signal, onset),
-        draws=draws,
-        draw_events=[find_events(times, d, onset) for d in draws],
-        frame_times=times,
-        distances=reference_distances,
+        distances=distances,
     )
 
 
 def _measure(video, span=None, reference=None):
+    whole = span is None
     span = span or (video.times[0], np.nextafter(video.times[-1], np.inf))
     return measure(
-        video, span, ceiling_hz=CEILING, ambiguous_floor=0.2, reference=reference
+        video,
+        span,
+        ceiling_hz=CEILING,
+        ambiguous_floor=0.2,
+        reference=reference,
+        whole=whole,
     )
 
 
@@ -78,7 +79,6 @@ def _reference(**overrides) -> Reference:
         "embedding_mean": np.zeros(2),
         "embedding_precision": np.eye(2),
         "distance_quantiles": np.linspace(0, 3, 101),
-        "image_quantiles": None,
         "onset_calibration": None,
         "record": {},
     }
@@ -106,36 +106,23 @@ class MeasureTests(unittest.TestCase):
         self.assertGreater(noisy["high_freq_power_frac"], 0.3)
         self.assertLess(noisy["head_trace_f1"], clean["head_trace_f1"])
 
-    def test_draws_equal_to_the_prediction_agree_fully(self):
-        times, signal, onset = _breathing()
-        m = _measure(_video(times, signal, onset, draws=[signal, signal]))
-        self.assertEqual(m["agreement_f1"], 1.0)
-        self.assertEqual(m["event_support"], 1.0)
-        self.assertAlmostEqual(m["agreement_corr"], 1.0)
-        self.assertEqual(m["trace_spread"], 0.0)
-
-    def test_draws_unlike_the_prediction_agree_less(self):
-        times, signal, onset = _breathing()
-        _, other, _ = _breathing(noise=2.0, seed=3)
-        m = _measure(_video(times, signal, onset, draws=[other]))
-        self.assertLess(m["agreement_corr"], 0.7)
-        self.assertGreater(m["trace_spread"], 0.0)
-
-    def test_without_draws_or_head_those_measures_are_nan(self):
+    def test_without_a_head_its_measures_are_nan(self):
         times, signal, _ = _breathing()
         m = _measure(_video(times, signal, None))
-        for name in ("agreement_f1", "head_trace_f1", "peak_prob"):
+        for name in ("head_trace_f1", "peak_prob", "inhale_phase_spread"):
             self.assertTrue(np.isnan(m[name]), name)
         self.assertAlmostEqual(m["rate_hz"], 4.0, places=1)  # DSP inhales instead
 
-    def test_measures_needing_a_reference_appear_only_with_one(self):
+    def test_embedding_measures_need_a_reference_and_the_whole_clip(self):
         times, signal, onset = _breathing()
         self.assertNotIn("embedding_distance", _measure(_video(times, signal, onset)))
-        video = _video(times, signal, onset, reference_distances=np.ones(len(times)))
+        video = _video(times, signal, onset, distances=np.ones(5))
         m = _measure(video, reference=_reference())
         self.assertEqual(m["embedding_distance"], 1.0)
         self.assertAlmostEqual(m["embedding_percentile"], 100 / 3, places=5)
         self.assertEqual(m["unfamiliar_frac"], 0.0)
+        window = _measure(video, span=(0.0, 10.0), reference=_reference())
+        self.assertNotIn("embedding_distance", window)  # five frames: no window
 
     def test_only_rates_above_the_ceiling_are_judged(self):
         for rate in (2.0, 4.0, 12.0):  # slow, usual and sniffing are all fine
@@ -178,13 +165,13 @@ class ConfigTests(unittest.TestCase):
     def test_the_examples_load(self):
         examples = Path(__file__).resolve().parents[3] / "examples"
         config = load(QualityControl, examples / "quality-control.toml")
-        self.assertEqual(config.params.agreement, "dropout")
+        self.assertEqual(config.params.embedding_frames, 5)
         reference = load(QualityReference, examples / "quality-reference.toml")
         self.assertEqual(reference.calibration, [])
 
     def test_every_judging_measure_says_which_way_is_better(self):
         times, signal, onset = _breathing()
-        video = _video(times, signal, onset, draws=[signal])
+        video = _video(times, signal, onset, distances=np.ones(5))
         produced = set(_measure(video, reference=_reference()))
         self.assertLessEqual(produced, set(MEASURES))
         for family, _, better in MEASURES.values():
@@ -248,7 +235,7 @@ def _tiny_net() -> BreathingNet:
     )
 
 
-class PredictSamplesTests(unittest.TestCase):
+class EmbeddingSampleTests(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
@@ -277,44 +264,34 @@ class PredictSamplesTests(unittest.TestCase):
         self.mean = np.full(len(CHANNEL_NAMES), 128.0)
         self.std = np.full(len(CHANNEL_NAMES), 64.0)
 
-    def _samples(self, passes, seed=0):
-        return predict_samples(
-            self.model,
-            self.entry,
-            self.mean,
-            self.std,
-            passes=passes,
-            seed=seed,
-            window=256,
-            device="cpu",
-            amp_dtype=None,
+    def test_sampled_frames_embed_as_in_a_whole_clip_pass(self):
+        for kernel in (1, 3):
+            torch.manual_seed(0)
+            model = BreathingNet(
+                channels=ChannelSet.parse("gray"),
+                widths=(4, 4, 4, 4),
+                embed=8,
+                tcn_channels=8,
+                dilations=(1, 2),
+                temporal_kernel=kernel,
+            ).eval()
+            vectors, times = embeddings.sample(
+                model, self.mean, self.std, self.entry, 5, "cpu", None
+            )
+            self.assertEqual(vectors.shape, (5, 8))
+            rows = embeddings.spread_rows(T_FRAMES, 5)
+            np.testing.assert_array_equal(times, rows / FS)
+            stack = features.reader(self.entry).read(slice(None), model.channels)
+            block = (torch.from_numpy(stack.astype(np.float32)) - 128) / 64
+            with torch.no_grad():
+                whole = model.encode(block.unsqueeze(0))[0].numpy()
+            np.testing.assert_allclose(vectors, whole[rows], atol=1e-5)
+
+    def test_frames_are_spread_inside_the_clip(self):
+        self.assertEqual(
+            list(embeddings.spread_rows(600, 5)), [100, 200, 300, 400, 500]
         )
-
-    def test_the_prediction_is_predict_clips(self):
-        signal, onset = predict_clip(
-            self.model,
-            self.entry,
-            self.mean,
-            self.std,
-            window=256,
-            device="cpu",
-            amp_dtype=None,
-        )
-        samples = self._samples(4)
-        np.testing.assert_allclose(samples.signal, signal, atol=1e-4)
-        np.testing.assert_allclose(samples.onset, onset, atol=1e-5)
-
-    def test_draws_differ_reproducibly_and_dropout_is_left_off(self):
-        a, b = self._samples(4, seed=1), self._samples(4, seed=1)
-        np.testing.assert_array_equal(a.signal_draws, b.signal_draws)
-        self.assertEqual(a.signal_draws.shape, (4, T_FRAMES))
-        self.assertGreater(np.abs(a.signal_draws[0] - a.signal_draws[1]).max(), 1e-3)
-        self.assertFalse(any(m.training for m in self.model.modules()))
-
-    def test_every_frame_has_one_embedding(self):
-        samples = self._samples(0)
-        self.assertEqual(samples.embeddings.shape, (T_FRAMES, 8))
-        self.assertTrue(np.isfinite(samples.embeddings).all())
+        self.assertEqual(len(embeddings.spread_rows(3, 5)), 3)
 
 
 class RunTests(unittest.TestCase):
@@ -386,14 +363,14 @@ class RunTests(unittest.TestCase):
 
     def _config(self, **params) -> QualityControl:
         lines = [
-            'checkpoints = ["best.pt"]',
+            'checkpoint = "best.pt"',
             'features_dir = "cache"',
             'output_dir = "qc"',
             'device = "cpu"',
             'amp = "off"',
             "infer_window = 256",
             '[[clips]]\nclips = "clips.toml"',
-            "[params]\nwindow_s = 3.0\ndropout_passes = 4",
+            "[params]\nwindow_s = 3.0",
             *(f"{k} = {json.dumps(v)}" for k, v in params.items()),
         ]
         path = self.root / "qc.toml"
@@ -404,13 +381,12 @@ class RunTests(unittest.TestCase):
         (report,) = run(self._config(), "cpu", "off")
         self.assertEqual(report.name, "video_face_1_part_1.qc.json")
         data = json.loads(report.read_text())  # NaN would not parse in strict readers
-        self.assertEqual(data["draws"], 4)
         self.assertEqual(data["inhale_events"], "onset head")
         self.assertFalse(data["labelled"])
         self.assertNotIn("truth", data["summary"])
         self.assertEqual(len(data["windows"]), 3)
-        self.assertIn("agreement_f1", data["summary"])
-        self.assertIn("sharpness", data["windows"][0])
+        self.assertIn("inhale_phase_spread", data["summary"])
+        self.assertNotIn("embedding_distance", data["summary"])  # no reference
         self.assertTrue(report.with_name("video_face_1_part_1.qc.parquet").is_file())
         videos, windows = load_reports(report.parent)
         self.assertEqual(len(videos), 1)
@@ -422,15 +398,13 @@ class RunTests(unittest.TestCase):
         run(self._config(), "cpu", "off")
         self.assertEqual(report.stat().st_mtime_ns, before)
         with self.assertRaisesRegex(SystemExit, "other settings"):
-            run(self._config(seed=7), "cpu", "off")
+            run(self._config(flat_ratio=0.3), "cpu", "off")
 
     def test_the_traces_are_one_parquet_row_per_sample(self):
         (report,) = run(self._config(), "cpu", "off")
         traces = pd.read_parquet(report.with_name("video_face_1_part_1.qc.parquet"))
         self.assertEqual(len(traces), T_FRAMES)
-        self.assertEqual(
-            list(traces.columns), ["time", "signal", "onset", "spread", "inhale"]
-        )
+        self.assertEqual(list(traces.columns), ["time", "signal", "onset", "inhale"])
         self.assertEqual(traces["inhale"].dtype, bool)
 
     def test_a_reference_is_built_then_used(self):
@@ -455,6 +429,7 @@ class RunTests(unittest.TestCase):
         (report,) = run(config, "cpu", "off")
         summary = json.loads(report.read_text())["summary"]
         self.assertIsNotNone(summary["embedding_percentile"])
+        self.assertEqual(record["embedding"]["frames"], 100)  # sampled, not the clip
         self.assertIsNone(summary["expected_precision"])
 
     def test_a_reference_of_another_checkpoint_is_refused(self):
@@ -526,10 +501,6 @@ class RunTests(unittest.TestCase):
         with mock.patch("zephyr.run.evaluate_groups"):
             run_fold(fold, 1, run_dir, cache, Machine(device="cpu", amp="off"))
         self.assertFalse((run_dir / "qc-reference.json").exists())
-
-    def test_agreement_with_checkpoints_needs_several(self):
-        with self.assertRaisesRegex(ValueError, "at least two checkpoints"):
-            self._config(agreement="checkpoints")
 
 
 if __name__ == "__main__":

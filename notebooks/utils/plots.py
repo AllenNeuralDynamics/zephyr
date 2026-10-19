@@ -863,7 +863,7 @@ def quality_video_figure(
     t0: float,
     t1: float,
 ) -> Figure:
-    """One video: an excerpt of its trace with the draws' spread and its onset head,
+    """One video: an excerpt of its trace with its inhales and its onset head,
     then the chosen measures and the true inhale F1 per window over the whole clip."""
     fig, axes = style.mosaic(
         [["trace"], ["onset"], ["windows"]],
@@ -874,16 +874,7 @@ def quality_video_figure(
     times = traces["time"].to_numpy() - origin
     inside = _inside(times, t0, t1)
     ax = axes["trace"]
-    signal, spread = traces["signal"].to_numpy(), traces["spread"].to_numpy()
-    if np.isfinite(spread).any():
-        ax.fill_between(
-            times[inside],
-            (signal - spread)[inside],
-            (signal + spread)[inside],
-            color=style.METHODS["Zephyr"],
-            alpha=0.25,
-            lw=0,
-        )
+    signal = traces["signal"].to_numpy()
     ax.plot(times[inside], signal[inside], color=style.METHODS["Zephyr"])
     inhale = times[traces["inhale"].to_numpy()]
     mark_events(ax, inhale[_inside(inhale, t0, t1)], ax.get_ylim()[1], style.ONSET)

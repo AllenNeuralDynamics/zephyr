@@ -1,8 +1,9 @@
 """Label-free measures of one video's prediction, over any span of it.
 
-Pure numpy on the arrays of :class:`Video`: plausibility of the trace, consistency of
-the onset head with it, agreement with dropout draws (or other checkpoints), and how
-familiar the input is (with a :class:`~.reference.Reference`). None reads a thermistor.
+Pure numpy on the arrays of :class:`Video`, the network's output (its trace and onset
+probability): plausibility of the trace and consistency of the onset head with it; and,
+for the whole clip, how familiar a few sampled frames' embeddings are (with a
+:class:`~.reference.Reference`). None reads a thermistor.
 """
 
 import itertools
@@ -12,7 +13,7 @@ import numpy as np
 from scipy.signal import find_peaks, welch
 
 from ..evaluate import HEAD_MIN_DISTANCE_S, HEAD_THRESHOLD, head_event_indices
-from ..evaluation import event_f1, frame_tolerance_s, match_events
+from ..evaluation import event_f1, frame_tolerance_s
 from ..rates import breath_rates
 from ..signal import detect_inhalation_events
 from .reference import Reference
@@ -39,18 +40,9 @@ MEASURES: dict[str, tuple[str, str, str | None]] = {
     "onset_background": ("head", "Onset background", "lower"),
     "expected_precision": ("head", "Expected precision", "higher"),
     "inhale_phase_spread": ("head", "Inhale phase spread", "lower"),
-    "agreement_f1": ("agreement", "Agreement F1", "higher"),
-    "event_support": ("agreement", "Event support", "higher"),
-    "agreement_corr": ("agreement", "Agreement correlation", "higher"),
-    "trace_spread": ("agreement", "Trace spread", "lower"),
     "embedding_distance": ("input", "Embedding distance", "lower"),
     "embedding_percentile": ("input", "Embedding percentile", "lower"),
     "unfamiliar_frac": ("input", "Unfamiliar frames", "lower"),
-    "brightness": ("input", "Brightness", None),
-    "contrast": ("input", "Contrast", None),
-    "sharpness": ("input", "Sharpness", None),
-    "motion": ("input", "Motion", None),
-    "image_outlier_frac": ("input", "Image outlier frames", "lower"),
 }
 """Every measure: its family, a label, and whether a good prediction scores
 ``"higher"`` or ``"lower"`` (``None``: a description, not a judgement)."""
@@ -79,22 +71,14 @@ def find_events(times: np.ndarray, signal: np.ndarray, onset: np.ndarray | None)
 
 @dataclass(frozen=True)
 class Video:
-    """Everything measured from one video, on its output grid *times*.
-
-    *draws* are the traces compared with the prediction (dropout draws or other
-    checkpoints), *draw_events* their events. *frame_times* index the per-frame
-    *distances* (embedding distance, NaN where unknown) and *image* statistics.
-    """
+    """The network's output for one video, on its output grid *times*, and the
+    embedding *distances* of a few sampled frames (``None`` without a reference)."""
 
     times: np.ndarray
     signal: np.ndarray
     onset: np.ndarray | None
     events: Events
-    draws: np.ndarray
-    draw_events: list[Events]
-    frame_times: np.ndarray
     distances: np.ndarray | None = None
-    image: dict[str, np.ndarray] | None = None
 
 
 def spans(times: np.ndarray, window_s: float) -> list[tuple[float, float]]:
@@ -237,48 +221,6 @@ def head(
     return out
 
 
-# --- agreement with the draws -----------------------------------------------------------
-
-
-def spread(video: Video) -> np.ndarray:
-    """Per sample: RMS deviation of the draws from the prediction (empty without
-    draws); ``trace_spread`` is its RMS over a span."""
-    if not len(video.draws):
-        return np.empty(0)
-    return np.sqrt(np.mean((video.draws - video.signal) ** 2, axis=0))
-
-
-NAMES = ("agreement_f1", "event_support", "agreement_corr", "trace_spread")
-
-
-def agreement(video: Video, others: np.ndarray, events: list[Events], span) -> dict:
-    """How far other predictions (*others*, with their *events*) reproduce the
-    prediction's inhales and trace: event F1, the share reproducing each inhale,
-    trace correlation and the RMS spread around the trace."""
-    out = dict.fromkeys(NAMES, NAN)
-    if not len(others):
-        return out
-    times = video.times
-    tolerance = frame_tolerance_s(times)
-    mine = _at(times, video.events.inhale, span)
-    found = np.zeros(len(mine))
-    f1 = []
-    for other in events:
-        theirs = _at(times, other.inhale, span)
-        f1.append(event_f1(mine, theirs, tolerance))
-        for i, _ in match_events(mine, theirs, tolerance):
-            found[i] += 1
-    mask = _inside(times, span)
-    f1_name, support, corr, spread_name = NAMES
-    out[f1_name] = _mean(f1)
-    if len(mine):
-        out[support] = float(np.mean(found / len(events)))
-    out[corr] = _mean([_correlation(video.signal[mask], d[mask]) for d in others])
-    deviation = others[:, mask] - video.signal[mask]
-    out[spread_name] = float(np.sqrt(np.mean(deviation**2)))
-    return out
-
-
 def inhale_phase_spread(times, inhale: np.ndarray, troughs: np.ndarray, span) -> float:
     """How much the point of the trace's cycle (trough to trough) where the head puts
     each inhale wanders: 1 minus the resultant length of those phases (0: always the
@@ -312,31 +254,16 @@ def flat_breaths(signal: np.ndarray, times, inhale: np.ndarray, span, ratio: flo
 # --- how familiar the input is ---------------------------------------------------------
 
 
-def familiarity(video: Video, span, reference: Reference | None) -> dict:
-    """Embedding distance from what the network knows, and the image statistics."""
-    out: dict[str, float] = {}
-    frames = _inside(video.frame_times, span)
-    if video.distances is not None and reference is not None:
-        d = video.distances[frames]
-        d = d[np.isfinite(d)]
-        out["embedding_distance"] = _median(d)
-        out["embedding_percentile"] = (
-            _median(reference.distance_percentile(d)) if len(d) else NAN
-        )
-        out["unfamiliar_frac"] = (
-            float(np.mean(d > reference.distance_quantiles[99])) if len(d) else NAN
-        )
-    if video.image is not None:
-        for name, values in video.image.items():
-            out[name] = _median(values[frames])
-        if reference is not None and reference.image_quantiles is not None:
-            outside = np.zeros(int(frames.sum()), bool)
-            for name, values in video.image.items():
-                q = reference.image_quantiles[name]
-                v = values[frames]
-                outside |= (v < q[1]) | (v > q[99])
-            out["image_outlier_frac"] = float(outside.mean()) if len(outside) else NAN
-    return out
+def familiarity(video: Video, reference: Reference) -> dict:
+    """Distance of the sampled frames' embeddings from what the network knows."""
+    d = video.distances[np.isfinite(video.distances)]
+    if not len(d):
+        return dict.fromkeys(("embedding_distance", "embedding_percentile"), NAN)
+    return {
+        "embedding_distance": _median(d),
+        "embedding_percentile": _median(reference.distance_percentile(d)),
+        "unfamiliar_frac": float(np.mean(d > reference.distance_quantiles[99])),
+    }
 
 
 def measure(
@@ -347,8 +274,10 @@ def measure(
     ambiguous_floor: float,
     reference: Reference | None,
     flat_ratio: float = 0.25,
+    whole: bool = False,
 ) -> dict[str, float]:
-    """Every measure of *video* over *span* (``[start, end)`` on its time axis)."""
+    """Every measure of *video* over *span* (``[start, end)`` on its time axis); the
+    embedding measures only over the *whole* clip, which its few frames sample."""
     times, ev = video.times, video.events
     inside = ev.inhale[_inside(times[ev.inhale], span)]
     onsets_s = times[inside]
@@ -367,7 +296,12 @@ def measure(
     )
     out["cycle_similarity"] = cycle_similarity(video.signal, inside)
     out |= head(video, span, ambiguous_floor, reference)
-    out["inhale_phase_spread"] = inhale_phase_spread(times, ev.inhale, ev.exhale, span)
-    out |= agreement(video, video.draws, video.draw_events, span)
-    out |= familiarity(video, span, reference)
+    if video.onset is not None:  # DSP peaks against the same trace say nothing
+        out["inhale_phase_spread"] = inhale_phase_spread(
+            times, ev.inhale, ev.exhale, span
+        )
+    else:
+        out["inhale_phase_spread"] = NAN
+    if whole and reference is not None and video.distances is not None:
+        out |= familiarity(video, reference)
     return out

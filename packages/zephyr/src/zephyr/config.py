@@ -630,8 +630,9 @@ class ReferenceSampling(_Model):
     max_clips: PositiveInt | None = None
     """Clips measured of each side (training, calibration), spread evenly over its
     list; None: all."""
-    frames_per_clip: PositiveInt = 2000
-    """Frames sampled evenly from each clip for the embedding and image statistics."""
+    frames_per_clip: PositiveInt = 100
+    """Frames sampled evenly from each clip and encoded (only they, not the clip) for
+    the embedding statistics."""
     shrinkage: float = Field(0.1, ge=0, le=1)
     """Weight of the scaled identity in the embedding covariance."""
 
@@ -926,12 +927,6 @@ class QualityParams(_Model):
 
     window_s: float = Field(30.0, gt=0)
     """Width of the windows a video is also reported in (equal widths, rounded)."""
-    agreement: Literal["dropout", "checkpoints"] = "dropout"
-    """What the prediction is compared with: the same network with its temporal
-    dropout left on (``dropout_passes`` draws), or the other ``checkpoints``."""
-    dropout_passes: PositiveInt = 16
-    seed: int = 0
-    """Seeds the dropout draws, per video, so a report is reproducible."""
     breathing_ceiling_hz: float = Field(15.0, gt=0)
     """Faster than any mouse breathes: breaths above it, and trace power above it, are
     the network's errors. Only a ceiling: usual rates change with running, odours and
@@ -940,19 +935,22 @@ class QualityParams(_Model):
     """Onset-probability peaks from here up to the head's threshold are ambiguous."""
     flat_ratio: float = Field(0.25, gt=0, lt=1)
     """A breath swinging less than this share of the clip's median breath is flat."""
-
+    embedding_frames: PositiveInt = 5
+    """Frames per video, spread over it, whose embeddings are compared with the
+    reference's (head-fixed mice barely move); the encoder runs on these only."""
     save_traces: bool = True
-    """Also write each video's trace, onset probability and dropout spread (parquet)."""
+    """Also write each video's trace, onset probability and inhales (parquet)."""
 
 
 class QualityControl(_QualityMachine):
     """A ``zephyr quality-control run``: which videos, which network, where reports go."""
 
-    checkpoints: list[RelPath] = Field(min_length=1)
-    """The network to judge first; any others only for ``agreement = "checkpoints"``."""
+    checkpoint: RelPath
+    """The network whose predictions are judged (one ordinary inference per video)."""
     reference: RelPath | None = None
-    """From ``zephyr quality-control reference`` on the first checkpoint; without it
-    the metrics that need one are left out."""
+    """The checkpoint's reference (``qc-reference.json`` beside it after training, or
+    ``zephyr quality-control reference``); without it the measures that need one are
+    left out."""
     features_dir: RelPath
     output_dir: RelPath
     """One ``<video stem>.qc.json`` per video lands here."""
@@ -962,12 +960,6 @@ class QualityControl(_QualityMachine):
     @model_validator(mode="after")
     def _check(self) -> "QualityControl":
         _one_recipe(self.clips)
-        if self.params.agreement == "checkpoints" and len(self.checkpoints) < 2:
-            raise ValueError('agreement = "checkpoints" needs at least two checkpoints')
-        if self.params.agreement == "dropout" and len(self.checkpoints) > 1:
-            raise ValueError(
-                'several checkpoints are only compared with agreement = "checkpoints"'
-            )
         return self
 
     @property

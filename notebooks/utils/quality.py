@@ -79,7 +79,7 @@ def reference(label: str) -> dict | None:
 
 
 def traces(label: str, stem: str) -> pd.DataFrame:
-    """A video's saved trace, onset probability, draws' spread and inhales."""
+    """A video's saved trace, onset probability and inhales."""
     return pd.read_parquet(folder(label) / f"{stem}.qc.parquet")
 
 
