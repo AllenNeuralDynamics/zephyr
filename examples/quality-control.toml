@@ -4,7 +4,7 @@
 # Every [params] key is optional (see QualityParams in zephyr.config).
 
 checkpoint = "../runs/example/fold/seed-42/best.pt"
-reference = "../runs/example/fold/seed-42/qc-reference.json"   # written by zephyr run
+reference = "../runs/example/fold/seed-42/qc-reference.json"   # optional: zephyr quality-control reference
 features_dir = "../data/features-example"
 output_dir = "../runs/example/quality-control"
 
@@ -14,4 +14,3 @@ groups = ["3"]                    # the held-out recording
 
 [params]
 window_s = 30.0
-embedding_frames = 5              # frames per video the encoder sees for the reference

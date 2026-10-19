@@ -7,34 +7,21 @@ from unittest import mock
 import numpy as np
 import pandas as pd
 import torch
-from _clipfiles import touch_clip, write_list
+from _clipfiles import write_list
 
 from zephyr import features
 from zephyr.channels import CHANNEL_NAMES, ChannelSet
-from zephyr.config import (
-    ClipList,
-    Fold,
-    FoldReference,
-    QualityControl,
-    QualityReference,
-    ReferenceSampling,
-    TrainParams,
-    canonical,
-    load,
-)
+from zephyr.config import ClipList, QualityControl, QualityReference, TrainParams, load
 from zephyr.evaluate import load_checkpoint
 from zephyr.model import BreathingNet
-from zephyr.quality_control import embeddings, load_reports, run
+from zephyr.quality_control import load_reports, run
 from zephyr.quality_control.metrics import MEASURES, Video, find_events, measure, spans
 from zephyr.quality_control.reference import (
     Reference,
     checkpoint_hash,
-    embedding_statistics,
     fit_calibration,
 )
-from zephyr.quality_control.report import _spread_out, fold_reference, measure_reference
-from zephyr.run import run_fold
-from zephyr.train import Machine
+from zephyr.quality_control.report import _spread_out, measure_reference
 
 FS = 60.0
 CEILING = 15.0
@@ -50,38 +37,24 @@ def _breathing(seconds=40.0, rate=4.0, noise=0.0, seed=0):
     return times, signal, onset
 
 
-def _video(times, signal, onset, distances=None):
+def _video(times, signal, onset):
     return Video(
         times=times,
         signal=signal,
         onset=onset,
         events=find_events(times, signal, onset),
-        distances=distances,
     )
 
 
 def _measure(video, span=None, reference=None):
-    whole = span is None
     span = span or (video.times[0], np.nextafter(video.times[-1], np.inf))
     return measure(
-        video,
-        span,
-        ceiling_hz=CEILING,
-        ambiguous_floor=0.2,
-        reference=reference,
-        whole=whole,
+        video, span, ceiling_hz=CEILING, ambiguous_floor=0.2, reference=reference
     )
 
 
 def _reference(**overrides) -> Reference:
-    fields = {
-        "checkpoint_sha256": "x",
-        "embedding_mean": np.zeros(2),
-        "embedding_precision": np.eye(2),
-        "distance_quantiles": np.linspace(0, 3, 101),
-        "onset_calibration": None,
-        "record": {},
-    }
+    fields = {"checkpoint_sha256": "x", "onset_calibration": None, "record": {}}
     return Reference(**(fields | overrides))
 
 
@@ -111,16 +84,16 @@ class MeasureTests(unittest.TestCase):
             self.assertTrue(np.isnan(m[name]), name)
         self.assertAlmostEqual(m["rate_hz"], 4.0, places=1)  # DSP inhales instead
 
-    def test_embedding_measures_need_a_reference_and_the_whole_clip(self):
+    def test_expected_precision_needs_a_calibration(self):
         times, signal, onset = _breathing()
-        self.assertNotIn("embedding_distance", _measure(_video(times, signal, onset)))
-        video = _video(times, signal, onset, distances=np.ones(5))
-        m = _measure(video, reference=_reference())
-        self.assertEqual(m["embedding_distance"], 1.0)
-        self.assertAlmostEqual(m["embedding_percentile"], 100 / 3, places=5)
-        self.assertEqual(m["unfamiliar_frac"], 0.0)
-        window = _measure(video, span=(0.0, 10.0), reference=_reference())
-        self.assertNotIn("embedding_distance", window)  # five frames: no window
+        self.assertTrue(
+            np.isnan(_measure(_video(times, signal, onset))["expected_precision"])
+        )
+        fit = {"slope": 1.0, "intercept": 0.0}
+        m = _measure(
+            _video(times, signal, onset), reference=_reference(onset_calibration=fit)
+        )
+        self.assertAlmostEqual(m["expected_precision"], m["peak_prob"], delta=0.05)
 
     def test_only_rates_above_the_ceiling_are_judged(self):
         for rate in (2.0, 4.0, 12.0):  # slow, usual and sniffing are all fine
@@ -156,53 +129,27 @@ class MeasureTests(unittest.TestCase):
         inside = sum(((times >= a) & (times < b)).sum() for a, b in windows)
         self.assertEqual(inside, len(times))
 
+    def test_every_judging_measure_says_which_way_is_better(self):
+        times, signal, onset = _breathing()
+        fit = {"slope": 1.0, "intercept": 0.0}
+        video = _video(times, signal, onset)
+        produced = set(_measure(video, reference=_reference(onset_calibration=fit)))
+        self.assertEqual(produced, set(MEASURES))
+        for family, _, better in MEASURES.values():
+            self.assertIn(family, ("rhythm", "head"))
+            self.assertIn(better, ("higher", "lower", None))
+
 
 class ConfigTests(unittest.TestCase):
     def test_the_examples_load(self):
         examples = Path(__file__).resolve().parents[3] / "examples"
         config = load(QualityControl, examples / "quality-control.toml")
-        self.assertEqual(config.params.embedding_frames, 5)
+        self.assertEqual(config.params.window_s, 30.0)
         reference = load(QualityReference, examples / "quality-reference.toml")
-        self.assertEqual(reference.calibration, [])
-
-    def test_every_judging_measure_says_which_way_is_better(self):
-        times, signal, onset = _breathing()
-        video = _video(times, signal, onset, distances=np.ones(5))
-        produced = set(_measure(video, reference=_reference()))
-        self.assertLessEqual(produced, set(MEASURES))
-        for family, _, better in MEASURES.values():
-            self.assertIn(family, ("rhythm", "head", "agreement", "input"))
-            self.assertIn(better, ("higher", "lower", None))
-
-
-class FoldReferenceTests(unittest.TestCase):
-    def test_training_writes_a_reference_by_default(self):
-        self.assertTrue(FoldReference().enabled)
-        self.assertEqual(FoldReference().max_clips, 30)
-
-    def test_a_fold_can_turn_it_off(self):
-        fold = mock.Mock(quality_reference=FoldReference(enabled=False))
-        with tempfile.TemporaryDirectory() as tmp:
-            self.assertIsNone(
-                fold_reference(fold, Path(tmp), Path(tmp), "cpu", "off", smoke=False)
-            )
-        fold.train_clips.assert_not_called()
-
-    def test_clips_are_spread_over_the_list(self):
-        self.assertEqual(_spread_out(list(range(10)), 3), [0, 4, 9])
-        self.assertEqual(_spread_out(list(range(2)), 3), [0, 1])
-        self.assertEqual(_spread_out(list(range(4)), None), [0, 1, 2, 3])
+        self.assertTrue(reference.calibration)
 
 
 class ReferenceTests(unittest.TestCase):
-    def test_distance_is_mahalanobis(self):
-        rng = np.random.default_rng(0)
-        x = rng.standard_normal((5000, 3)) * [1.0, 2.0, 4.0]
-        mean, precision = embedding_statistics(x, shrinkage=0.0)
-        ref = _reference(embedding_mean=mean, embedding_precision=precision)
-        d = ref.distance(np.array([[0.0, 0.0, 4.0], [1.0, 0.0, 0.0]]))
-        np.testing.assert_allclose(d, [1.0, 1.0], atol=0.05)
-
     def test_calibration_recovers_how_often_a_peak_is_real(self):
         rng = np.random.default_rng(0)
         peaks = rng.uniform(0.5, 1.0, 4000)
@@ -215,79 +162,14 @@ class ReferenceTests(unittest.TestCase):
     def test_too_few_events_give_no_calibration(self):
         self.assertIsNone(fit_calibration(np.full(5, 0.9), np.ones(5)))
 
+    def test_clips_are_spread_over_the_list(self):
+        self.assertEqual(_spread_out(list(range(10)), 3), [0, 4, 9])
+        self.assertEqual(_spread_out(list(range(2)), 3), [0, 1])
+        self.assertEqual(_spread_out(list(range(4)), None), [0, 1, 2, 3])
+
 
 T_FRAMES, SIZE = 600, 16
-
-
-def _tiny_net() -> BreathingNet:
-    torch.manual_seed(0)
-    return BreathingNet(
-        channels=ChannelSet.parse("gray"),
-        widths=(4, 4, 4, 4),
-        embed=8,
-        tcn_channels=8,
-        dilations=(1, 2),
-        dropout=0.3,
-    )
-
-
-class EmbeddingSampleTests(unittest.TestCase):
-    def setUp(self):
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        self.root = Path(tmp.name)
-        rng = np.random.default_rng(0)
-        name = "clip"
-        stack = rng.integers(0, 255, (T_FRAMES, 1, SIZE, SIZE), dtype=np.uint8)
-        np.save(self.root / f"gray-{name}.npy", stack)
-        times = np.arange(T_FRAMES) / FS
-        np.save(self.root / f"ftime-{name}.npy", times)
-        np.save(self.root / f"time-{name}.npy", times)
-        self.entry = features.ClipEntry(
-            clip_id=name,
-            recording=name,
-            n_frames=T_FRAMES,
-            n_output=T_FRAMES,
-            stem=self.root / name,
-            frame_times=self.root / f"ftime-{name}.npy",
-            baselines=self.root / f"dt-{name}.npy",
-            times=self.root / f"time-{name}.npy",
-            target=None,
-            events=None,
-            groups=("gray",),
-        )
-        self.model = _tiny_net().eval()
-        self.mean = np.full(len(CHANNEL_NAMES), 128.0)
-        self.std = np.full(len(CHANNEL_NAMES), 64.0)
-
-    def test_sampled_frames_embed_as_in_a_whole_clip_pass(self):
-        for kernel in (1, 3):
-            torch.manual_seed(0)
-            model = BreathingNet(
-                channels=ChannelSet.parse("gray"),
-                widths=(4, 4, 4, 4),
-                embed=8,
-                tcn_channels=8,
-                dilations=(1, 2),
-                temporal_kernel=kernel,
-            ).eval()
-            vectors, times = embeddings.sample(
-                model, self.mean, self.std, self.entry, 5, "cpu", None
-            )
-            self.assertEqual(vectors.shape, (5, 8))
-            rows = embeddings.spread_rows(T_FRAMES, 5)
-            np.testing.assert_array_equal(times, rows / FS)
-            stack = features.reader(self.entry).read(slice(None), model.channels)
-            block = (torch.from_numpy(stack.astype(np.float32)) - 128) / 64
-            with torch.no_grad():
-                whole = model.encode(block.unsqueeze(0))[0].numpy()
-            np.testing.assert_allclose(vectors, whole[rows], atol=1e-5)
-
-    def test_frames_are_spread_inside_the_clip(self):
-        self.assertEqual(
-            list(embeddings.spread_rows(600, 5)), [100, 200, 300, 400, 500]
-        )
-        self.assertEqual(len(embeddings.spread_rows(3, 5)), 3)
+NET = {"widths": (4, 4, 4, 4), "embed": 8, "tcn_channels": 8, "dilations": (1, 2)}
 
 
 class RunTests(unittest.TestCase):
@@ -309,11 +191,11 @@ class RunTests(unittest.TestCase):
         clips.write_text(
             clips.read_text().replace("box =", "thermistor = false\nbox =")
         )
-        clip_list = load(ClipList, clips, check_files=False)
-        (clip,) = clip_list.resolve()
+        self.clip_list = load(ClipList, clips, check_files=False)
+        (clip,) = self.clip_list.resolve()
         cache = self.root / "cache"
         cache.mkdir()
-        name = features.prefix(clip, clip_list.preprocess)
+        name = features.prefix(clip, self.clip_list.preprocess)
         files = features.paths(cache, name)
         rng = np.random.default_rng(0)
         np.save(
@@ -326,7 +208,7 @@ class RunTests(unittest.TestCase):
         files["sidecar"].write_text(
             json.dumps(
                 {
-                    "key": features.cache_key(clip, clip_list.preprocess),
+                    "key": features.cache_key(clip, self.clip_list.preprocess),
                     "thermistor": None,
                     "n_frames": T_FRAMES,
                     "n_output": T_FRAMES,
@@ -334,28 +216,27 @@ class RunTests(unittest.TestCase):
                 }
             )
         )
-        model = _tiny_net()
-        self.checkpoint = self.root / "best.pt"
+        self.checkpoint = self._save("best.pt", w_onset=0.5)
+
+    def _save(self, name: str, w_onset: float) -> Path:
+        torch.manual_seed(0)
+        model = BreathingNet(channels=ChannelSet.parse("gray"), **NET)
+        path = self.root / name
         torch.save(
             {
                 "model": model.state_dict(),
                 "channels": ["gray"],
-                "arch_kwargs": {
-                    "widths": (4, 4, 4, 4),
-                    "embed": 8,
-                    "tcn_channels": 8,
-                    "dilations": (1, 2),
-                    "dropout": 0.3,
-                },
+                "arch_kwargs": NET,
                 "mean": np.full(len(CHANNEL_NAMES), 128.0),
                 "std": np.full(len(CHANNEL_NAMES), 64.0),
-                "params": {"w_onset": 0.5},
+                "params": {"w_onset": w_onset},
                 "train_videos": [],
                 "epoch": 1,
             },
-            self.checkpoint,
+            path,
         )
-        load_checkpoint(self.checkpoint, torch.device("cpu"))  # the file loads
+        load_checkpoint(path, torch.device("cpu"))  # the file loads
+        return path
 
     def _config(self, **params) -> QualityControl:
         lines = [
@@ -381,9 +262,7 @@ class RunTests(unittest.TestCase):
         self.assertFalse(data["labelled"])
         self.assertNotIn("truth", data["summary"])
         self.assertEqual(len(data["windows"]), 3)
-        self.assertIn("inhale_phase_spread", data["summary"])
-        self.assertNotIn("embedding_distance", data["summary"])  # no reference
-        self.assertTrue(report.with_name("video_face_1_part_1.qc.parquet").is_file())
+        self.assertEqual(set(data["summary"]), set(MEASURES))
         videos, windows = load_reports(report.parent)
         self.assertEqual(len(videos), 1)
         self.assertEqual(len(windows), 3)
@@ -403,30 +282,22 @@ class RunTests(unittest.TestCase):
         self.assertEqual(list(traces.columns), ["time", "signal", "onset", "inhale"])
         self.assertEqual(traces["inhale"].dtype, bool)
 
-    def test_a_reference_is_built_then_used(self):
+    def test_a_reference_calibrates_the_head(self):
         reference = self.root / "qc-reference.json"
-        clip_list = load(ClipList, self.root / "clips.toml", check_files=False)
-        measure_reference(
-            self.checkpoint,
-            clip_list.resolve(),
-            [],
-            clip_list.preprocess,
-            self.root / "cache",
-            reference,
-            ReferenceSampling(frames_per_clip=100),
-            TrainParams(infer_window=256),  # what training passes
-            "cpu",
-            "off",
+        reference.write_text(
+            json.dumps(
+                {
+                    "checkpoint_sha256": checkpoint_hash(self.checkpoint),
+                    "onset_calibration": {"slope": 1.0, "intercept": 0.0},
+                }
+            )
         )
-        record = json.loads(reference.read_text())
-        self.assertEqual(record["embedding"]["distances_from"], "clips")
-        self.assertIsNone(record["onset_calibration"])  # no calibration clips
         config = self._config().model_copy(update={"reference": reference})
         (report,) = run(config, "cpu", "off")
         summary = json.loads(report.read_text())["summary"]
-        self.assertIsNotNone(summary["embedding_percentile"])
-        self.assertEqual(record["embedding"]["frames"], 100)  # sampled, not the clip
-        self.assertIsNone(summary["expected_precision"])
+        self.assertEqual(
+            summary["expected_precision"] is None, summary["peak_prob"] is None
+        )
 
     def test_a_reference_of_another_checkpoint_is_refused(self):
         other = self.root / "other.json"
@@ -436,67 +307,26 @@ class RunTests(unittest.TestCase):
             with self.assertRaisesRegex(SystemExit, "another checkpoint"):
                 run(config, "cpu", "off")
 
-    def _trained_fold(self, extra: str = "") -> tuple:
-        """A fold training on one labelled clip with a cache entry, and a run folder
-        whose ``best.pt`` is already there (so ``run_fold`` skips training)."""
-        data = self.root / "labelled"
-        videos = [touch_clip(data, g, 1) for g in (1, 2)]
-        clips = write_list(
-            self.root / "labelled.toml",
-            videos,
-            box=(0, 0, SIZE, SIZE),
-            target_size=(SIZE, SIZE),
+    def _calibrate(self, checkpoint: Path):
+        return measure_reference(
+            checkpoint,
+            self.clip_list.resolve(),
+            self.clip_list.preprocess,
+            self.root / "cache",
+            self.root / "ref.json",
+            None,
+            TrainParams(infer_window=256),
+            "cpu",
+            "off",
         )
-        clip_list = load(ClipList, clips)
-        clip = clip_list.resolve()[0]
-        cache = self.root / "cache"
-        files = features.paths(cache, features.prefix(clip, clip_list.preprocess))
-        rng = np.random.default_rng(1)
-        np.save(
-            files["gray"],
-            rng.integers(0, 255, (T_FRAMES, 1, SIZE, SIZE), dtype=np.uint8),
-        )
-        times = np.arange(T_FRAMES) / FS
-        np.save(files["frame_times"], times)
-        np.save(files["times"], times)
-        files["sidecar"].write_text(
-            json.dumps(
-                {
-                    "key": features.cache_key(clip, clip_list.preprocess),
-                    "thermistor": canonical(clip.thermistor),
-                    "events": features.events_identity(clip),
-                    "n_frames": T_FRAMES,
-                    "n_output": T_FRAMES,
-                    "groups": ["gray"],
-                }
-            )
-        )
-        fold_file = self.root / "fold.toml"
-        fold_file.write_text(
-            'name = "fold"\n[[train]]\nclips = "labelled.toml"\ngroups = ["1"]\n'
-            '[test]\nheld = { clips = "labelled.toml", groups = ["2"] }\n'
-            '[train_params]\nchannels = "gray"\ninfer_window = 256\n' + extra
-        )
-        run_dir = self.root / "run"
-        run_dir.mkdir()
-        (run_dir / "best.pt").write_bytes(self.checkpoint.read_bytes())
-        return load(Fold, fold_file), run_dir, cache
 
-    def test_training_ends_with_the_reference(self):
-        fold, run_dir, cache = self._trained_fold()
-        with mock.patch("zephyr.run.evaluate_groups") as evaluate:
-            run_fold(fold, 1, run_dir, cache, Machine(device="cpu", amp="off"))
-        evaluate.assert_called_once()
-        record = json.loads((run_dir / "qc-reference.json").read_text())
-        self.assertEqual(record["clips"], [fold.train_clips()[0][0].name])
-        self.assertEqual(record["checkpoint_sha256"], checkpoint_hash(self.checkpoint))
+    def test_calibration_clips_need_a_thermistor(self):
+        with self.assertRaisesRegex(SystemExit, "need a thermistor"):
+            self._calibrate(self.checkpoint)
 
-    def test_a_fold_without_the_reference_writes_none(self):
-        extra = "[quality_reference]\nenabled = false\n"
-        fold, run_dir, cache = self._trained_fold(extra)
-        with mock.patch("zephyr.run.evaluate_groups"):
-            run_fold(fold, 1, run_dir, cache, Machine(device="cpu", amp="off"))
-        self.assertFalse((run_dir / "qc-reference.json").exists())
+    def test_a_network_without_a_head_has_nothing_to_calibrate(self):
+        with self.assertRaisesRegex(SystemExit, "no onset head"):
+            self._calibrate(self._save("headless.pt", w_onset=0.0))
 
 
 if __name__ == "__main__":

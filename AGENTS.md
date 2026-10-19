@@ -70,16 +70,14 @@ scores thermistor sessions). Both steps are TOML (`QualityReference`, `QualityCo
 
 - No measure reads a thermistor; a labelled clip's real scores go only into the report's
   separate `truth` block, which exists to check the measures.
-- A measure reads only the network's ordinary output (trace, onset probability) or the
-  encoder on a handful of sampled frames (`embedding_frames`); never add one that needs
-  more network passes (dropout draws, shifted crops, other checkpoints were tried and
-  dropped as too costly).
+- A measure reads only the network's ordinary output (trace, onset probability);
+  never add one that needs more network passes or the video (dropout draws, shifted
+  crops, other checkpoints, embeddings and image statistics were tried and dropped).
 - A reference belongs to one checkpoint (SHA-256; a run refuses another's). Its
   `calibration` clips must be labelled and held out by the checkpoint (refused
-  otherwise); never calibrate on a test set the measures are then checked on.
-- `zephyr run` writes a zephyr checkpoint's reference after training
-  (`[fold.quality_reference]`, on by default); it never changes what is trained or
-  scored. Judge rates only from above (`breathing_ceiling_hz`): never threshold a rate
+  otherwise); never calibrate on a test set the measures are then checked on. Training
+  does not write one.
+- Judge rates only from above (`breathing_ceiling_hz`): never threshold a rate
   distribution, which changes with running, odours and task.
 - A measure is only trusted once checked against held-out animals
   (`notebooks/quality_control.py`); thresholds, when added, go in `QualityParams`.

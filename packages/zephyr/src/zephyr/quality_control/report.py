@@ -17,11 +17,9 @@ import torch
 
 from .. import features
 from ..config import (
-    Fold,
     QualityControl,
     QualityParams,
     QualityReference,
-    ReferenceSampling,
     ResolvedClip,
     canonical,
     dump,
@@ -38,16 +36,8 @@ from ..events import in_spans
 from ..features import ClipEntry
 from ..infer import predict_clip
 from ..signal import BREATHING_SIGNAL_COLUMN, TIME_COLUMN
-from . import embeddings
 from .metrics import Video, find_events, measure, spans
-from .reference import (
-    Reference,
-    checkpoint_hash,
-    embedding_statistics,
-    fit_calibration,
-    jsonable,
-    quantiles,
-)
+from .reference import Reference, checkpoint_hash, fit_calibration, jsonable
 
 AMP = {"bf16": torch.bfloat16, "fp16": torch.float16, "off": None}
 SETTINGS = "quality-control.json"
@@ -101,103 +91,54 @@ def _spread_out(clips: list[ResolvedClip], n: int | None) -> list[ResolvedClip]:
 
 def measure_reference(
     checkpoint: Path,
-    known: list[ResolvedClip],
     unseen: list[ResolvedClip],
     recipe,
     features_dir: Path,
     out: Path,
-    sampling: ReferenceSampling,
+    max_clips: int | None,
     inference,
     device: str,
     amp: str,
 ) -> dict:
-    """Measure what :class:`~.reference.Reference` holds for *checkpoint* from the clips
-    it knows and labelled clips it never trained on, and write it to *out*.
-
-    Embeddings come from ``frames_per_clip`` sampled frames of each clip, never a
-    whole-clip pass; only the calibration clips are predicted whole, for the onset
-    head's calibration. *inference* gives ``infer_window`` and ``frame_chunk``.
-    """
+    """Calibrate *checkpoint*'s onset head on labelled clips it never trained on, and
+    write the :class:`~.reference.Reference` to *out*. *inference* gives
+    ``infer_window`` and ``frame_chunk``."""
     torch_device = torch.device(device)
     model, mean, std, state = load_checkpoint(checkpoint, torch_device)
-    head = has_onset_head([state])
-    known = _spread_out(known, sampling.max_clips)
-    unseen = _spread_out(unseen, sampling.max_clips)
+    if not has_onset_head([state]):
+        raise SystemExit(
+            f"{checkpoint} has no onset head: there is nothing to calibrate"
+        )
+    unseen = _spread_out(unseen, max_clips)
     unlabelled = [c.name for c in unseen if not c.labelled]
     if unlabelled:
         raise SystemExit(f"calibration clips need a thermistor: {unlabelled}")
     refuse_leaked([state], unseen)
 
-    def embed(entry):
-        vectors, _ = embeddings.sample(
-            model,
-            mean,
-            std,
-            entry,
-            sampling.frames_per_clip,
-            torch_device,
-            AMP[amp],
-        )
-        return vectors
-
-    entries = features.require(known, recipe, features_dir, model.channels)
-    vectors = []
+    peaks, real = [], []
+    entries = features.require(unseen, recipe, features_dir, model.channels)
     for k, entry in enumerate(entries):
-        print(f"[reference {k + 1}/{len(entries)}] {entry.clip_id}", flush=True)
-        vectors.append(embed(entry))
-    centre, precision = embedding_statistics(
-        np.concatenate(vectors), sampling.shrinkage
-    )
-    reference = Reference(
-        checkpoint_sha256="",
-        embedding_mean=centre,
-        embedding_precision=precision,
-        distance_quantiles=np.empty(0),
-        onset_calibration=None,
-        record={},
-    )
+        print(f"[calibration {k + 1}/{len(entries)}] {entry.clip_id}", flush=True)
+        signal, onset = _predict(model, mean, std, entry, inference, torch_device, amp)
+        times = np.load(entry.times)
+        events = find_events(times, signal, onset)
+        p, r = _head_matches(entry, times, onset, events.inhale)
+        peaks.append(p)
+        real.append(r)
 
-    distances, peaks, real = [], [], []
-    if unseen:
-        entries = features.require(unseen, recipe, features_dir, model.channels)
-        for k, entry in enumerate(entries):
-            print(f"[calibration {k + 1}/{len(entries)}] {entry.clip_id}", flush=True)
-            distances.append(reference.distance(embed(entry)))
-            if head:
-                signal, onset = _predict(
-                    model, mean, std, entry, inference, torch_device, amp
-                )
-                times = np.load(entry.times)
-                events = find_events(times, signal, onset)
-                p, r = _head_matches(entry, times, onset, events.inhale)
-                peaks.append(p)
-                real.append(r)
-    else:
-        distances = [reference.distance(v) for v in vectors]
-
-    record = {
-        "checkpoint": canonical(checkpoint),
-        "checkpoint_sha256": checkpoint_hash(checkpoint),
-        "epoch": state.get("epoch"),
-        "created": datetime.now(UTC).isoformat(timespec="seconds"),
-        "zephyr_version": version("zephyr"),
-        "clips": [c.name for c in known],
-        "calibration_clips": [c.name for c in unseen],
-        "embedding": {
-            "mean": centre,
-            "precision": precision,
-            "distance_quantiles": quantiles(np.concatenate(distances)),
-            "distances_from": "calibration" if unseen else "clips",
-            "frames": int(sum(len(v) for v in vectors)),
-        },
-        "onset_calibration": (
-            fit_calibration(np.concatenate(peaks), np.concatenate(real))
-            if peaks
-            else None
-        ),
-        "sampling": dump(sampling),
-    }
-    record = jsonable(record)
+    record = jsonable(
+        {
+            "checkpoint": canonical(checkpoint),
+            "checkpoint_sha256": checkpoint_hash(checkpoint),
+            "epoch": state.get("epoch"),
+            "created": datetime.now(UTC).isoformat(timespec="seconds"),
+            "zephyr_version": version("zephyr"),
+            "calibration_clips": [c.name for c in unseen],
+            "onset_calibration": fit_calibration(
+                np.concatenate(peaks), np.concatenate(real)
+            ),
+        }
+    )
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(record, indent=1))
     print(f"wrote {out}")
@@ -208,48 +149,15 @@ def build_reference(config: QualityReference, device: str, amp: str) -> dict:
     """``zephyr quality-control reference``: the reference *config* describes."""
     return measure_reference(
         config.checkpoint,
-        [c for s in config.clips for c in s.resolved()],
         [c for s in config.calibration for c in s.resolved()],
         config.preprocess,
         config.features_dir,
         config.out,
-        config,
+        config.max_clips,
         config,
         device,
         amp,
     )
-
-
-FOLD_REFERENCE = "qc-reference.json"
-"""What ``zephyr run`` writes beside each checkpoint."""
-
-
-def fold_reference(
-    fold: Fold, run_dir: Path, features_dir: Path, device: str, amp: str, smoke: bool
-) -> Path | None:
-    """The reference of a fold's ``best.pt``, from its training clips and calibrated on
-    its ``[fold.val]`` clips; kept if it exists, skipped when the fold turns it off."""
-    params = fold.quality_reference
-    out = run_dir / FOLD_REFERENCE
-    if not params.enabled:
-        return None
-    if out.is_file():
-        return out
-    if smoke:
-        params = params.model_copy(update={"max_clips": 1, "frames_per_clip": 10})
-    measure_reference(
-        run_dir / "best.pt",
-        [c for clips in fold.train_clips() for c in clips],
-        fold.val_clips(),
-        fold.preprocess,
-        features_dir,
-        out,
-        params,
-        fold.train_params,
-        device,
-        amp,
-    )
-    return out
 
 
 # --- one report per video ----------------------------------------------------------------
@@ -299,23 +207,15 @@ def _video(
     reference: Reference | None,
     head: bool,
 ) -> tuple[Video, np.ndarray]:
-    """The network's prediction for *entry* (one ordinary pass) and, with a reference,
-    the embedding distances of ``embedding_frames`` sampled frames."""
+    """The network's prediction for *entry*: one ordinary pass."""
     signal, onset = _predict(model, mean, std, entry, config, device, amp)
     times = np.load(entry.times)
-    distances = None
-    if reference is not None:
-        vectors, _ = embeddings.sample(
-            model, mean, std, entry, config.params.embedding_frames, device, AMP[amp]
-        )
-        distances = reference.distance(vectors)
     judged = onset if head else None
     video = Video(
         times=times,
         signal=signal,
         onset=judged,
         events=find_events(times, signal, judged),
-        distances=distances,
     )
     return video, onset
 
@@ -342,7 +242,6 @@ def report(
             ambiguous_floor=params.ambiguous_floor,
             reference=reference,
             flat_ratio=params.flat_ratio,
-            whole=whole,
         )
         if truth is not None:
             inhale_s = video.times[video.events.inhale] if head else None

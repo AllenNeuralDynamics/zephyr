@@ -1,9 +1,8 @@
 """Label-free measures of one video's prediction, over any span of it.
 
 Pure numpy on the arrays of :class:`Video`, the network's output (its trace and onset
-probability): plausibility of the trace and consistency of the onset head with it; and,
-for the whole clip, how familiar a few sampled frames' embeddings are (with a
-:class:`~.reference.Reference`). None reads a thermistor.
+probability): plausibility of the trace, and consistency of the onset head with it
+(calibrated by a :class:`~.reference.Reference`). None reads a thermistor.
 """
 
 import itertools
@@ -39,9 +38,6 @@ MEASURES: dict[str, tuple[str, str, str | None]] = {
     "onset_background": ("head", "Onset background", "lower"),
     "expected_precision": ("head", "Expected precision", "higher"),
     "inhale_phase_spread": ("head", "Inhale phase spread", "lower"),
-    "embedding_distance": ("input", "Embedding distance", "lower"),
-    "embedding_percentile": ("input", "Embedding percentile", "lower"),
-    "unfamiliar_frac": ("input", "Unfamiliar frames", "lower"),
 }
 """Every measure: its family, a label, and whether a good prediction scores
 ``"higher"`` or ``"lower"`` (``None``: a description, not a judgement)."""
@@ -70,14 +66,12 @@ def find_events(times: np.ndarray, signal: np.ndarray, onset: np.ndarray | None)
 
 @dataclass(frozen=True)
 class Video:
-    """The network's output for one video, on its output grid *times*, and the
-    embedding *distances* of a few sampled frames (``None`` without a reference)."""
+    """The network's output for one video, on its output grid *times*."""
 
     times: np.ndarray
     signal: np.ndarray
     onset: np.ndarray | None
     events: Events
-    distances: np.ndarray | None = None
 
 
 def spans(times: np.ndarray, window_s: float) -> list[tuple[float, float]]:
@@ -240,21 +234,6 @@ def flat_breaths(signal: np.ndarray, times, inhale: np.ndarray, span, ratio: flo
     return float(np.mean(swing[inside] < ratio * np.median(swing)))
 
 
-# --- how familiar the input is ---------------------------------------------------------
-
-
-def familiarity(video: Video, reference: Reference) -> dict:
-    """Distance of the sampled frames' embeddings from what the network knows."""
-    d = video.distances[np.isfinite(video.distances)]
-    if not len(d):
-        return dict.fromkeys(("embedding_distance", "embedding_percentile"), NAN)
-    return {
-        "embedding_distance": _median(d),
-        "embedding_percentile": _median(reference.distance_percentile(d)),
-        "unfamiliar_frac": float(np.mean(d > reference.distance_quantiles[99])),
-    }
-
-
 def measure(
     video: Video,
     span: tuple[float, float],
@@ -263,10 +242,8 @@ def measure(
     ambiguous_floor: float,
     reference: Reference | None,
     flat_ratio: float = 0.25,
-    whole: bool = False,
 ) -> dict[str, float]:
-    """Every measure of *video* over *span* (``[start, end)`` on its time axis); the
-    embedding measures only over the *whole* clip, which its few frames sample."""
+    """Every measure of *video* over *span* (``[start, end)`` on its time axis)."""
     times, ev = video.times, video.events
     inside = ev.inhale[_inside(times[ev.inhale], span)]
     onsets_s = times[inside]
@@ -286,6 +263,4 @@ def measure(
         )
     else:
         out["inhale_phase_spread"] = NAN
-    if whole and reference is not None and video.distances is not None:
-        out |= familiarity(video, reference)
     return out

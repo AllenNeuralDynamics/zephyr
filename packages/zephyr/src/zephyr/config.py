@@ -624,28 +624,6 @@ class TrainSource(Selection):
     """Relative to the other sources: weights 0.5 / 0.5 and 1 / 1 are the same."""
 
 
-class ReferenceSampling(_Model):
-    """How much of its clips a quality-control reference measures."""
-
-    max_clips: PositiveInt | None = None
-    """Clips measured of each side (training, calibration), spread evenly over its
-    list; None: all."""
-    frames_per_clip: PositiveInt = 100
-    """Frames sampled evenly from each clip and encoded (only they, not the clip) for
-    the embedding statistics."""
-    shrinkage: float = Field(0.1, ge=0, le=1)
-    """Weight of the scaled identity in the embedding covariance."""
-
-
-class FoldReference(ReferenceSampling):
-    """The quality-control reference ``zephyr run`` writes beside each checkpoint
-    (``qc-reference.json``): from the fold's training clips, calibrated on its
-    ``[fold.val]`` clips (no calibration without them)."""
-
-    enabled: bool = True
-    max_clips: PositiveInt | None = 30
-
-
 FOLD_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 
@@ -669,8 +647,6 @@ class Fold(_Model):
     of the time-tail of the training clips (``val_fraction``). They never train and
     must share no recording with the training or test clips."""
     train_params: TrainParams = TrainParams()
-    quality_reference: FoldReference = FoldReference()
-    """Measured after training; never changes what is trained or scored."""
 
     @field_validator("name")
     @classmethod
@@ -896,30 +872,28 @@ class _QualityMachine(_Model):
     frame_chunk: PositiveInt = 256
 
 
-class QualityReference(_QualityMachine, ReferenceSampling):
+class QualityReference(_QualityMachine):
     """What ``zephyr quality-control reference`` measures once per checkpoint, so that
-    quality control on new videos needs only the checkpoint and the file it writes.
-    ``zephyr run`` also measures it after training (:class:`FoldReference`)."""
+    quality control on new videos needs only the checkpoint and the file it writes."""
 
     checkpoint: RelPath
     features_dir: RelPath
     out: RelPath
     """The reference file (JSON) to write; ship it beside the checkpoint."""
-    clips: list[QualitySelection] = Field(min_length=1)
-    """What the network knows (its training clips): embeddings and image statistics."""
-    calibration: list[QualitySelection] = []
-    """Labelled clips the checkpoint never trained on (e.g. its validation animals):
-    the embedding distances of an unseen animal, and the onset head's calibration.
-    Empty: distances are taken from *clips*, and there is no calibration."""
+    calibration: list[QualitySelection] = Field(min_length=1)
+    """Labelled clips the checkpoint never trained on (e.g. its validation animals),
+    on which the onset head is calibrated."""
+    max_clips: PositiveInt | None = None
+    """Calibration clips predicted, spread evenly over them; None: all."""
 
     @model_validator(mode="after")
     def _one_recipe(self) -> "QualityReference":
-        _one_recipe([*self.clips, *self.calibration])
+        _one_recipe(self.calibration)
         return self
 
     @property
     def preprocess(self) -> PreprocessParams:
-        return self.clips[0].clip_list().preprocess
+        return self.calibration[0].clip_list().preprocess
 
 
 class QualityParams(_Model):
@@ -934,9 +908,6 @@ class QualityParams(_Model):
     """Onset-probability peaks from here up to the head's threshold are ambiguous."""
     flat_ratio: float = Field(0.25, gt=0, lt=1)
     """A breath swinging less than this share of the clip's median breath is flat."""
-    embedding_frames: PositiveInt = 5
-    """Frames per video, spread over it, whose embeddings are compared with the
-    reference's (head-fixed mice barely move); the encoder runs on these only."""
     save_traces: bool = True
     """Also write each video's trace, onset probability and inhales (parquet)."""
 

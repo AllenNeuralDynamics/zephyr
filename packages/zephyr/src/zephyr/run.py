@@ -1,8 +1,7 @@
 """Run an experiment: train each of its (fold, seed), then score the fold's test groups.
 
 Each (fold, seed) trains into ``{output_dir}/{fold name}/seed-{seed}/``, which receives
-the resolved config, training video list, checkpoints, ``evaluation.json`` and the
-quality-control reference (``qc-reference.json``, ``[fold.quality_reference]``). Machine
+the resolved config, training video list, checkpoints and ``evaluation.json``. Machine
 settings (device, precision, workers) come from the experiment or CLI, never a fold:
 they change how fast a result arrives, not what it is. What is trained and how it is
 loaded is a :class:`Runner`, zephyr's own unless a caller passes another.
@@ -86,13 +85,6 @@ def run_fold(
         out=run_dir / "evaluation.json",
         loader=runner.loader,
     )
-    # The reference reads a zephyr network's embeddings; comparison networks get none.
-    if runner.architecture(fold) is ZEPHYR:
-        from .quality_control.report import fold_reference
-
-        fold_reference(
-            fold, run_dir, features_dir, machine.device, machine.amp, smoke=smoke
-        )
 
 
 def choose_machine(args: argparse.Namespace, defaults: dict) -> Machine:

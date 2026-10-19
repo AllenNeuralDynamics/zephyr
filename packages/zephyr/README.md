@@ -124,24 +124,17 @@ and checkpoint; see its docstring.
 ## Quality control without a thermistor
 
 On an animal without a thermistor nothing can be scored, so `zephyr quality-control`
-judges each prediction from the network's output alone (its trace and onset
-probability), plus the encoder on a handful of frames per video: one ordinary inference
-per video and nothing more. Its two steps each read a TOML file (`QualityReference`,
-`QualityControl` in `config.py`; `examples/quality-*.toml`):
+judges each prediction from the network's output alone, its trace and onset
+probability: one ordinary inference per video and nothing more. Both steps read a TOML
+file (`QualityReference`, `QualityControl` in `config.py`; `examples/quality-*.toml`):
 
-1. **Reference**, once per checkpoint (it needs the training data): a JSON file to
-   ship beside the checkpoint, tied to it by its SHA-256. `zephyr run` writes it after
-   every training as `qc-reference.json` in the run folder, from up to 30 of the fold's
-   training clips, calibrated on up to 30 of its `[fold.val]` clips
-   (`[fold.quality_reference]`: `enabled`, `max_clips`, `frames_per_clip`, `shrinkage`;
-   comparison networks get none); `zephyr quality-control reference <reference.toml>`
-   makes one for any checkpoint. From `frames_per_clip` frames sampled from each
-   training clip (`clips`; only those frames are encoded): the encoder's embedding mean
-   and shrunk covariance. From labelled clips the checkpoint never trained on
-   (`calibration`, e.g. the validation animals; refused if it trained on them): how far
-   an unseen animal's sampled embeddings lie, and, predicting these clips whole, a
-   logistic calibration of the onset head (the chance that an inhale it asserts with a
-   given peak is real).
+1. **Reference** (optional), once per checkpoint:
+   `zephyr quality-control reference <reference.toml>` predicts labelled clips the
+   checkpoint never trained on (`calibration`, e.g. its validation animals; refused if
+   it trained on them; `max_clips` to predict fewer) and fits a logistic calibration of
+   the onset head: the chance that an inhale it asserts with a given peak is real. The
+   JSON file it writes is tied to the checkpoint by its SHA-256; ship it beside it.
+   Without it every measure but expected precision is still reported.
 2. **Run**, on any preprocessed clips (`thermistor = false` is fine):
    `zephyr quality-control run <quality-control.toml>` writes `<video stem>.qc.json`
    per video into `output_dir`: every measure over the whole clip (`summary`) and per
@@ -156,7 +149,6 @@ The measures (`quality_control.metrics.MEASURES`, with which way is better):
 | --- | --- |
 | rhythm | rate (a description), breaths faster than `breathing_ceiling_hz` (faster than a mouse breathes), inhale/exhale alternation breaks, flat breaths (the trace swings less than `flat_ratio` of the clip's median breath between two inhales), breath-shape similarity. No slower rate is judged: usual rates change with running, odours and task |
 | head | onset head vs DSP peaks on its own trace (a labelled comparison), median peak height, ambiguous peaks (`ambiguous_floor` to 0.5), background probability, expected precision (reference calibration), inhale phase spread (how much the point of the trace's trough-to-trough cycle where the head puts each inhale wanders) |
-| input | over the whole clip only: embedding distance of `embedding_frames` (5) frames spread over the video, its percentile among unseen animals, and the share beyond their 99th percentile (reference). Head-fixed mice barely move, so a few frames show whether the crop looks like what the network trained on |
 
 Inhales come from the onset head (or DSP on the trace for a headless checkpoint), as
 everywhere. A labelled clip's report also holds a `truth` block, its real scores scored

@@ -137,6 +137,5 @@ def mosaic(
 QUALITY: dict[str, str] = {
     "rhythm": "#0072b2",
     "head": ONSET,
-    "input": "#cc79a7",
 }
 """The families of quality-control measures (``zephyr.quality_control.metrics``)."""

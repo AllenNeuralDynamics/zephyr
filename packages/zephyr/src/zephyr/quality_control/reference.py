@@ -1,8 +1,9 @@
-"""What a checkpoint's quality control compares new videos with, measured once.
+"""What a checkpoint's quality control needs from labelled data, measured once.
 
-A :class:`Reference` holds the training clips' embedding distribution, the embedding
-distances of unseen labelled animals and a calibration of the onset head's peaks. It is a JSON file shipped beside
-the checkpoint (``zephyr quality-control reference``), tied to it by its SHA-256.
+A :class:`Reference` is a calibration of the onset head's peaks on labelled clips the
+checkpoint never trained on (its validation animals): the chance that an inhale the
+head asserts is real. It is a JSON file beside the checkpoint (written after training,
+or by ``zephyr quality-control reference``), tied to it by its SHA-256.
 """
 
 import hashlib
@@ -14,8 +15,6 @@ from pathlib import Path
 import numpy as np
 from scipy.optimize import minimize
 
-QUANTILES = np.arange(101)
-"""Percentiles every distribution is stored at."""
 RELIABILITY_BINS = 10
 EPS = 1e-6
 
@@ -40,23 +39,9 @@ def _sigmoid(x: np.ndarray) -> np.ndarray:
 @dataclass(frozen=True)
 class Reference:
     checkpoint_sha256: str
-    embedding_mean: np.ndarray
-    embedding_precision: np.ndarray
-    distance_quantiles: np.ndarray
     onset_calibration: dict | None
     record: dict
     """Everything else written (clips, settings, reliability): kept as read."""
-
-    def distance(self, embeddings: np.ndarray) -> np.ndarray:
-        """Mahalanobis distance of each row from the training embeddings (NaN rows
-        stay NaN)."""
-        centred = np.asarray(embeddings, np.float64) - self.embedding_mean
-        squared = np.einsum("ij,jk,ik->i", centred, self.embedding_precision, centred)
-        return np.sqrt(np.maximum(squared, 0))
-
-    def distance_percentile(self, distances: np.ndarray) -> np.ndarray:
-        """Where each distance falls among an unseen animal's (0 to 100)."""
-        return np.interp(distances, self.distance_quantiles, QUANTILES)
 
     def calibrate(self, peak_probability: np.ndarray) -> np.ndarray:
         """Probability that an inhale the head asserts with this peak is real."""
@@ -66,27 +51,11 @@ class Reference:
     @classmethod
     def load(cls, path: Path) -> "Reference":
         data = json.loads(Path(path).read_text())
-        embedding = data["embedding"]
         return cls(
             checkpoint_sha256=data["checkpoint_sha256"],
-            embedding_mean=np.asarray(embedding["mean"]),
-            embedding_precision=np.asarray(embedding["precision"]),
-            distance_quantiles=np.asarray(embedding["distance_quantiles"]),
             onset_calibration=data["onset_calibration"],
             record=data,
         )
-
-
-def embedding_statistics(
-    embeddings: np.ndarray, shrinkage: float
-) -> tuple[np.ndarray, np.ndarray]:
-    """Mean and precision (inverse of the covariance shrunk toward a scaled identity)."""
-    x = np.asarray(embeddings, np.float64)
-    mean = x.mean(axis=0)
-    cov = np.cov(x, rowvar=False)
-    target = np.trace(cov) / len(cov) * np.eye(len(cov))
-    shrunk = (1 - shrinkage) * cov + shrinkage * target
-    return mean, np.linalg.inv(shrunk)
 
 
 def fit_calibration(peaks: np.ndarray, real: np.ndarray) -> dict | None:
@@ -136,12 +105,6 @@ def expected_calibration_error(predicted: np.ndarray, real: np.ndarray) -> float
     return float(
         sum(r["n"] * abs(r["predicted"] - r["observed"]) for r in rows) / total
     )
-
-
-def quantiles(values: np.ndarray) -> list[float]:
-    values = np.asarray(values, float)
-    values = values[np.isfinite(values)]
-    return np.percentile(values, QUANTILES).tolist() if len(values) else []
 
 
 def jsonable(value):

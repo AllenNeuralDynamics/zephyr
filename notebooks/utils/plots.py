@@ -908,29 +908,19 @@ def quality_video_figure(
 
 
 def calibration_figure(reference: dict) -> Figure:
-    """Reliability of the calibrated onset head (on the calibration clips) and where
-    an unseen animal's embedding distances fall."""
-    fig, (left, right) = style.figure("double", 0.32, ncols=2)
+    """Reliability of the calibrated onset head on the calibration clips."""
+    fig, ax = style.figure("single", 0.8)
     cal = reference.get("onset_calibration")
     if cal:
         table = pd.DataFrame(cal["reliability"])
-        left.plot([0, 1], [0, 1], color="0.6", linestyle=":")
-        left.scatter(
+        ax.plot([0, 1], [0, 1], color="0.6", linestyle=":")
+        ax.scatter(
             table["predicted"],
             table["observed"],
             s=4 + 40 * table["n"] / table["n"].max(),
             color=style.ONSET,
         )
-        left.set_title(
-            f"Onset calibration (ECE {cal['ece_raw']:.3f} raw, {cal['ece']:.3f} calibrated)"
-        )
-    left.set_xlabel("Calibrated P(inhale is real)")
-    left.set_ylabel("Share matched to a true inhale")
-    q = reference["embedding"]["distance_quantiles"]
-    right.plot(q, np.arange(len(q)), color=style.QUALITY["input"])
-    right.set_xlabel("Embedding distance")
-    right.set_ylabel("Percentile")
-    right.set_title(
-        f"Distances of unseen animals ({reference['embedding']['distances_from']})"
-    )
+        ax.set_title(f"ECE {cal['ece_raw']:.3f} raw, {cal['ece']:.3f} calibrated")
+    ax.set_xlabel("Calibrated P(inhale is real)")
+    ax.set_ylabel("Share matched to a true inhale")
     return fig
