@@ -2,7 +2,7 @@
 
 A run is a folder of reports (``*.qc.json``, ``*.qc.parquet``), local or ``s3://``;
 an ``s3://`` folder and a reference file there are copied once into
-``cache/quality-control/`` (credentials from ``AWS_PROFILE``). ``ZEPHYR_QC_REPORTS``
+``cache/quality-control/`` (read unsigned: the bucket is public). ``ZEPHYR_QC_REPORTS``
 and ``ZEPHYR_QC_REFERENCE`` give the notebook's defaults.
 """
 
@@ -35,7 +35,7 @@ def local(location: str) -> Path | None:
         return path if path.exists() else None
     import fsspec
 
-    s3 = fsspec.filesystem("s3")
+    s3 = fsspec.filesystem("s3", anon=True)  # read only, and the bucket is public
     key = location.removeprefix("s3://").rstrip("/")
     copy = LOCAL / key
     if copy.exists():
