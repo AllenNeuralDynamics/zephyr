@@ -91,7 +91,6 @@ class MeasureTests(unittest.TestCase):
         self.assertAlmostEqual(m["rate_hz"], 4.0, places=1)
         self.assertEqual(m["too_fast_frac"], 0.0)
         self.assertEqual(m["alternation_break_frac"], 0.0)
-        self.assertLess(m["high_freq_power_frac"], 0.01)
         self.assertGreater(m["cycle_similarity"], 0.99)
         self.assertGreater(m["head_trace_f1"], 0.95)
         self.assertGreater(m["peak_prob"], 0.9)
@@ -103,7 +102,6 @@ class MeasureTests(unittest.TestCase):
         noise = np.random.default_rng(1).standard_normal(len(times))
         noisy = _measure(_video(times, noise, onset))
         self.assertLess(noisy["cycle_similarity"], clean["cycle_similarity"])
-        self.assertGreater(noisy["high_freq_power_frac"], 0.3)
         self.assertLess(noisy["head_trace_f1"], clean["head_trace_f1"])
 
     def test_without_a_head_its_measures_are_nan(self):
@@ -129,11 +127,9 @@ class MeasureTests(unittest.TestCase):
             times, signal, _ = _breathing(rate=rate, seconds=20)
             m = _measure(_video(times, signal, None))
             self.assertEqual(m["too_fast_frac"], 0.0, rate)
-            self.assertLess(m["high_freq_power_frac"], 0.05, rate)
         times, signal, _ = _breathing(rate=20.0, seconds=20)
         m = _measure(_video(times, signal, None))
         self.assertGreater(m["too_fast_frac"], 0.9)
-        self.assertGreater(m["high_freq_power_frac"], 0.9)
 
     def test_inhales_at_one_point_of_the_cycle_have_no_phase_spread(self):
         times, signal, onset = _breathing()

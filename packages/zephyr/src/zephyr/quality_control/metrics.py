@@ -10,7 +10,7 @@ import itertools
 from dataclasses import dataclass
 
 import numpy as np
-from scipy.signal import find_peaks, welch
+from scipy.signal import find_peaks
 
 from ..evaluate import HEAD_MIN_DISTANCE_S, HEAD_THRESHOLD, head_event_indices
 from ..evaluation import event_f1, frame_tolerance_s
@@ -30,7 +30,6 @@ MEASURES: dict[str, tuple[str, str, str | None]] = {
     "n_inhales": ("rhythm", "Inhales", None),
     "rate_hz": ("rhythm", "Breathing rate (Hz)", None),
     "too_fast_frac": ("rhythm", "Breaths faster than the ceiling", "lower"),
-    "high_freq_power_frac": ("rhythm", "Trace power above the ceiling", "lower"),
     "alternation_break_frac": ("rhythm", "Alternation breaks", "lower"),
     "flat_breath_frac": ("rhythm", "Flat breaths", "lower"),
     "cycle_similarity": ("rhythm", "Breath shape similarity", "higher"),
@@ -152,16 +151,6 @@ def alternation_breaks(inhales: np.ndarray, exhales: np.ndarray) -> float:
     return float(np.mean(kinds[1:] == kinds[:-1]))
 
 
-def high_frequency_power(x: np.ndarray, fs: float, ceiling_hz: float) -> float:
-    """Share of the trace's power above *ceiling_hz*, faster than any breath: jitter
-    the network adds, not breathing (NaN when the grid cannot resolve the ceiling)."""
-    if len(x) < MIN_SPECTRUM_S * fs or ceiling_hz >= fs / 2:
-        return NAN
-    freq, power = welch(x, fs=fs, nperseg=min(len(x), int(4 * fs)))
-    total = power[freq > 0].sum()
-    return float(power[freq > ceiling_hz].sum() / total) if total > 0 else NAN
-
-
 def cycle_similarity(signal: np.ndarray, onsets: np.ndarray) -> float:
     """Median correlation of each breath (onset to onset) with the median breath."""
     cycles = []
@@ -281,13 +270,8 @@ def measure(
     times, ev = video.times, video.events
     inside = ev.inhale[_inside(times[ev.inhale], span)]
     onsets_s = times[inside]
-    fs = 1.0 / float(np.median(np.diff(times)))
-    mask = _inside(times, span)
     out: dict[str, float] = {"n_inhales": float(len(inside))}
     out |= rhythm(onsets_s, ceiling_hz)
-    out["high_freq_power_frac"] = high_frequency_power(
-        video.signal[mask], fs, ceiling_hz
-    )
     out["alternation_break_frac"] = alternation_breaks(
         onsets_s, _at(times, ev.exhale, span)
     )

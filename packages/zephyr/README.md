@@ -154,7 +154,7 @@ The measures (`quality_control.metrics.MEASURES`, with which way is better):
 
 | Family | Measures |
 | --- | --- |
-| rhythm | rate (a description), breaths and trace power above `breathing_ceiling_hz` (faster than a mouse breathes), inhale/exhale alternation breaks, flat breaths (the trace swings less than `flat_ratio` of the clip's median breath between two inhales), breath-shape similarity. No slower rate is judged: usual rates change with running, odours and task |
+| rhythm | rate (a description), breaths faster than `breathing_ceiling_hz` (faster than a mouse breathes), inhale/exhale alternation breaks, flat breaths (the trace swings less than `flat_ratio` of the clip's median breath between two inhales), breath-shape similarity. No slower rate is judged: usual rates change with running, odours and task |
 | head | onset head vs DSP peaks on its own trace (a labelled comparison), median peak height, ambiguous peaks (`ambiguous_floor` to 0.5), background probability, expected precision (reference calibration), inhale phase spread (how much the point of the trace's trough-to-trough cycle where the head puts each inhale wanders) |
 | input | over the whole clip only: embedding distance of `embedding_frames` (5) frames spread over the video, its percentile among unseen animals, and the share beyond their 99th percentile (reference). Head-fixed mice barely move, so a few frames show whether the crop looks like what the network trained on |
 

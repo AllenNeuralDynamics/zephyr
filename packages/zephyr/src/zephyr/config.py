@@ -928,8 +928,7 @@ class QualityParams(_Model):
     window_s: float = Field(30.0, gt=0)
     """Width of the windows a video is also reported in (equal widths, rounded)."""
     breathing_ceiling_hz: float = Field(15.0, gt=0)
-    """Faster than any mouse breathes: breaths above it, and trace power above it, are
-    the network's errors. Only a ceiling: usual rates change with running, odours and
+    """Faster than any mouse breathes: breaths above it are the network's errors. Only a ceiling: usual rates change with running, odours and
     task, so no slower rate is judged."""
     ambiguous_floor: float = Field(0.2, gt=0, lt=1)
     """Onset-probability peaks from here up to the head's threshold are ambiguous."""
