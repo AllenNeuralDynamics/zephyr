@@ -29,7 +29,7 @@ def _():
     (`zephyr-compute-sandbox`) and uploaded to
     [`{runs.S3_RUNS}`](https://us-west-2.console.aws.amazon.com/s3/buckets/aind-scratch-data?prefix=vr-foraging/zephyr-runs/).
     What a cell needs of a run is downloaded once into `notebooks/cache/runs/`
-    (credentials from `AWS_PROFILE`), and every prediction is cached in
+    (unsigned: the bucket is public, nothing is written), and every prediction is cached in
     `notebooks/cache/walkthrough/`, so only the first run computes anything. The
     clips come from a local copy of the dataset and its feature cache
     (`ZEPHYR_TEST_ROOT`, default `{runs.DEFAULT_ROOT}`).
@@ -63,12 +63,12 @@ def _():
     _error = None
     try:
         run_table = runs.runs_table()
-    except Exception as _e:  # noqa: BLE001 -- shown to the user (credentials, network)
+    except Exception as _e:  # noqa: BLE001 -- shown to the user (network)
         _error = _e
     mo.stop(
         _error is not None,
         mo.callout(
-            mo.md(f"Cannot list the runs on S3 ({_error}). Set `AWS_PROFILE`."),
+            mo.md(f"Cannot list the runs on S3 ({_error}). Check the network."),
             kind="danger",
         ),
     )

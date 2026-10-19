@@ -18,7 +18,7 @@ uv run marimo export html notebooks/walkthrough.py -o walkthrough.html --no-incl
   what was happening there. Which runs, under which labels, is the results manifest
   `packages/zephyr-benchmarks/configs/results/corpus-v3.toml` (`ZEPHYR_RESULTS` names
   another); the measures are `zephyr.benchmarks.analysis`. The runs come from
-  `s3://aind-scratch-data/vr-foraging/zephyr-runs/` (credentials from `AWS_PROFILE`),
+  `s3://aind-scratch-data/vr-foraging/zephyr-runs/` (read unsigned, no credentials: the bucket is public),
   downloaded once into `cache/runs/`; the clips
   from a local copy of the dataset and its feature cache (`ZEPHYR_TEST_ROOT`, as for
   `test_sets.py`, train and validation clips included for the rate distribution).

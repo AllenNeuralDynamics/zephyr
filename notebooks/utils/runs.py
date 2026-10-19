@@ -3,7 +3,7 @@
 Which runs are compared, and under which labels, is a results manifest of
 ``zephyr-benchmarks`` (``configs/results/``, :data:`MANIFEST`). What the notebook needs
 of a run (its checkpoint and scores) is downloaded once into ``cache/runs/``
-(credentials from ``AWS_PROFILE``); traces on the test clips are predicted here
+(the bucket is public: read unsigned, no credentials); traces on the test clips are predicted here
 (inference only), and the tables of :mod:`zephyr.benchmarks.analysis` built from them,
 each cached the first time. The clips come from a local copy of the dataset and its
 feature cache (:mod:`.test_sets`).
@@ -75,7 +75,9 @@ def root() -> Path:
 def _s3():
     import fsspec
 
-    return fsspec.filesystem("s3" if S3_RUNS.startswith("s3://") else "file")
+    if S3_RUNS.startswith("s3://"):
+        return fsspec.filesystem("s3", anon=True)  # read only, and the bucket is public
+    return fsspec.filesystem("file")
 
 
 def _fetch(key: str) -> Path | None:
