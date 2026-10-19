@@ -23,8 +23,9 @@ from zephyr.evaluate import head_event_indices, load_checkpoint
 from zephyr.infer import predict_clip
 
 from . import style
-from .results import CACHE
 
+CACHE = Path(__file__).resolve().parents[1] / "cache"
+"""``notebooks/cache/``: everything the notebooks compute once (ignored by git)."""
 ROOT_ENV = "ZEPHYR_TEST_ROOT"
 """The local folder; the notebook offers it (or ``C:/Data/zephyr-local-v2``) by default."""
 DATASET_ROOT = "/data/zephyr-dataset"

@@ -9,14 +9,22 @@ uv run marimo run notebooks/walkthrough.py      # serve as a read-only app
 uv run marimo export html notebooks/walkthrough.py -o walkthrough.html --no-include-code
 ```
 
-- `walkthrough.py`: one test clip from video to breathing trace, every method on
-  it, the benchmark, two ablations, and the time-stretch augmentation ablation
-  (scores and a trace comparison against the no-stretch network), the training
-  set's breathing-rate distribution, and test performance by breathing rate
-  (`utils/breathing.py`; the latter needs Zephyr's outputs on all 24 test clips,
-  cached after the first run). Inference only (CPU is enough, about a
-  minute for a new clip, then cached in `cache/`); it never trains a network. A
-  first cell lists any missing input with the command that produces it.
+- `walkthrough.py`: the benchmark on the corpus's test sets A, B and C. One test clip
+  from crop to breathing trace, every method on it (with how each works), then every
+  method on every test clip: scores with bootstrap intervals over animals, by animal,
+  by frequency band and by breathing rate; breathing-rate agreement (MAE, Bland-Altman);
+  inhale timing; inference wall time on the GPU; the augmentation variant against
+  Zephyr; examples; and Zephyr's worst sessions with every missed and false inhale and
+  what was happening there. Which runs, under which labels, is the results manifest
+  `packages/zephyr-benchmarks/configs/results/corpus-v3.toml` (`ZEPHYR_RESULTS` names
+  another); the measures are `zephyr.benchmarks.analysis`. The runs come from
+  `s3://aind-scratch-data/vr-foraging/zephyr-runs/` (credentials from `AWS_PROFILE`),
+  downloaded once into `cache/runs/`; the clips
+  from a local copy of the dataset and its feature cache (`ZEPHYR_TEST_ROOT`, as for
+  `test_sets.py`, train and validation clips included for the rate distribution).
+  Scores are the runs' own `evaluation.json`; traces are predicted here (GPU, inference
+  only) and cached in `cache/walkthrough/`. Predicting every method on every test clip
+  and timing them are behind buttons: hours the first time, seconds after.
 - `corpus.py`: reruns the default `zephyr-dataset` pipeline
   (`packages/zephyr-dataset/configs/vr-foraging-sniff.toml`) up to `select` into a new
   folder, from the corpus's saved DocDB return, and compares the selection with the
@@ -37,17 +45,12 @@ uv run marimo export html notebooks/walkthrough.py -o walkthrough.html --no-incl
   one `zephyr evaluate` result per network, made with `ZEPHYR_PATH_MAP` pointing the
   folder's dataset copy at `/data/zephyr-dataset`. Image statistics and lags (inference
   on every clip, behind a button) are cached in `cache/`.
-- `utils/animation.py`: `session_movie(...)` renders a whole test recording (both
-  videos) as a real-time MP4 of the scrubber figure (video, the four channels, a
-  scrolling trace window), e.g. `uv run --project .. python -m utils.animation 6
-  figures/rec-6.mp4` from `notebooks/` (about 30 min for a 10 min session;
-  `--seconds 10` for a preview). `pipeline_gif(...)` renders a short excerpt as a
-  GIF. Neither is used by the notebook.
 - `utils/style.py`: figure sizes, fonts and one fixed colour per method, channel
   and objective. Every figure calls `style.use_style()` and takes its colours
   from here.
-- `utils/plots.py`: reusable figure components. `utils/results.py`: where results
-  live and how they are loaded.
+- `utils/plots.py`: reusable figure components. `utils/runs.py`: downloads the
+  manifest's runs, predicts and caches their traces, and caches the
+  `zephyr.benchmarks.analysis` tables built from them.
 
 Notebooks only read results (`runs/`, `benchmarks/`, `data/`); they never write
 into them. Keep notebooks declarative: logic that a second notebook would need

@@ -1,0 +1,72 @@
+# The corpus benchmark: every method trained and scored on Code Ocean on the split of
+# full-gray-sched-v3 (zephyr-compute-sandbox matrices full-gray-sched-v3, benchmarks-v3,
+# transformers-v3, full-gray-sched-v3-geo-blur), seed 17 so far. Read by
+# notebooks/walkthrough.py; a run that has not finished is left out until it has.
+root = "s3://aind-scratch-data/vr-foraging/zephyr-runs"
+fold = "dev"
+
+[[method]]
+label = "Zephyr"
+run = "full-gray-sched-v3"
+head = true
+
+[[method]]
+label = "PhysNet + head"
+run = "physnet-event-v3"
+head = true
+
+[[method]]
+label = "PhysNet"
+run = "physnet-v3"
+
+[[method]]
+label = "TS-CAN"
+run = "tscan-v3"
+
+[[method]]
+label = "PhysFormer + head"
+run = "physformer-event-v3"
+head = true
+
+[[method]]
+label = "PhysFormer"
+run = "physformer-v3"
+
+[[method]]
+label = "RhythmFormer + head"
+run = "rhythmformer-event-v3"
+head = true
+
+[[method]]
+label = "RhythmFormer"
+run = "rhythmformer-v3"
+
+[[method]]
+label = "Facemap"
+run = "pixel-facemap-v3"
+kind = "facemap"
+variant = "both"
+
+[[method]]
+label = "Pixel (motion)"
+run = "pixel-facemap-v3"
+kind = "pixel"
+variant = "motion/calibrated"
+
+[[method]]
+label = "Pixel (PCA)"
+run = "pixel-facemap-v3"
+kind = "pixel"
+variant = "pca/calibrated"
+
+[[method]]
+label = "Pixel (SNR)"
+run = "pixel-facemap-v3"
+kind = "pixel"
+variant = "snr/calibrated"
+
+# Zephyr trained with more augmentation (shift 8 px, zoom 0.15, rotation 10, blur 1)
+[[variant]]
+label = "Zephyr, more augmentation"
+run = "full-gray-sched-v3-geo-blur"
+head = true

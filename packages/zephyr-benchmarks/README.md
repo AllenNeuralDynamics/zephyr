@@ -156,6 +156,23 @@ reproduces their stored results exactly.
 - `zephyr-benchmarks report --runs <dir> --out <dir>` builds the figures and
   table for the full 4 inputs x 2 objectives x 5 seeds grid from run output.
 
+## Reports beyond `evaluation.json`
+
+`configs/results/*.toml` (`ResultsManifest`) names the finished runs a report compares
+and the label each is shown under: a `root` (an `s3://` prefix or a folder), then one
+`[[method]]` per method (`run` folder, `kind` `network`/`facemap`/`pixel`, the baseline's
+`variant`, and `head = true` for a network with an onset head) and `[[variant]]`s of the
+first method. `corpus-v3.toml` is the corpus benchmark that `notebooks/walkthrough.py`
+reports. To report other runs, copy it under a new name.
+
+`analysis.py` measures, clip by clip, what a run's own scores do not: every true inhale
+and whether it was found, every false event, onset lags, breathing rate counted in 10 s
+windows, and correlation by frequency band (`clip_tables`), plus each error's likely
+cause (`errors`); then, over clips, rate agreement (MAE, RMSE, Bland-Altman),
+F1 by breathing rate and a bootstrap over animals with paired differences (`bootstrap`).
+Events are matched exactly as the scorer matches them; inhales of a network with an
+onset head come from the head.
+
 `zephyr-benchmarks occlusion --checkpoint <best.pt> --clips <a>.toml ... --cache <dir> --out <file.npz>`
 is inference-only analysis, not an experiment: per-channel patch-occlusion maps of event
 F1 on the first `--window-s` seconds of each clip (`--patch`, `--stride`).

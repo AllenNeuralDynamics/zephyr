@@ -23,7 +23,10 @@ the annotation windows):
   `__init__.py` at `packages/*/src/zephyr/`.
 - `notebooks/` (marimo) only read results and never train (the one exception,
   `corpus.py`, rebuilds the corpus into a folder of its own); every figure uses
-  `notebooks/utils/style.py`.
+  `notebooks/utils/style.py`. Which runs a report compares is a results manifest
+  (`zephyr-benchmarks/configs/results/`), never a list in a notebook, and what it
+  measures beyond `evaluation.json` lives in `zephyr.benchmarks.analysis`; a notebook
+  only caches, downloads and draws.
 - Inhale events of a network with an onset head come from the head
   (`head_events`), never from DSP on its trace. DSP is for the thermistor, headless
   methods (labelled "DSP") and exhale F1, or an explicitly labelled comparison.

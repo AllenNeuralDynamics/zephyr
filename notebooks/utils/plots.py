@@ -1,65 +1,32 @@
-"""Reusable figure components. Every colour and size comes from :mod:`.style`."""
+"""Reusable figure components. Every colour and size comes from :mod:`.style`.
+
+Times on a clip's traces are seconds from the clip's first output sample.
+"""
 
 import string
 from collections.abc import Sequence
 from pathlib import Path
-from typing import NamedTuple
 
 import numpy as np
 import pandas as pd
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
-from matplotlib.image import AxesImage
-from matplotlib.lines import Line2D
 from matplotlib.patches import Rectangle
 from numpy.typing import NDArray
 
 from . import style
 
 FIGURES: Path = Path(__file__).resolve().parents[1] / "figures"
-INPUT_LABELS: dict[str, str] = {
-    "gray": "Gray",
-    "gray-diff": "Gray + diff",
-    "gray-flow": "Gray + flow",
-    "gray-diff-flow": "Gray + diff + flow",
-}
+CROP_EDGE: str = "#d55e00"
+"""Outline of the crop the network sees, on the whole frame."""
 METRIC_LABELS: dict[str, str] = {
-    "correlation": "Pearson correlation",
-    "inhale_f1": "Inhalation F1",
-    "exhale_f1": "Exhalation F1",
+    "correlation": "Correlation",
+    "inhale": "Inhale F1",
+    "exhale_f1": "Exhale F1 (DSP)",
     "kl_ibi": "KL-IBI (lower is better)",
 }
-STRATUM_LABELS: dict[str, str] = {
-    "new_animals": "Held-out animals",
-    "known_animals_new_date": "Held-out sessions",
-}
-HEAD_COLUMNS: dict[str, str] = {
-    "inhale_f1": "head_inhale_f1",
-    "kl_ibi": "head_kl_ibi",
-}
-"""Metrics Zephyr can also be scored on with events from its onset head."""
-RATE_ROWS: dict[str, str] = {
-    **STRATUM_LABELS,
-    "side_held_out": "Held-out side session",
-    "Zephyr, 60 Hz frames": "60 Hz frames",
-    "Zephyr, 30 Hz frames": "30 Hz frames",
-    "training": "Training (in-sample)",
-}
-"""Rows of the by-rate figure, in the order they are drawn: the test groups, the
-held-out side session, the two frame-rate networks (each over every test clip),
-then the clips the network fit. Only the rows present in the tables are drawn."""
-STRATUM_MARKERS: dict[str, str] = {"new_animals": "o", "known_animals_new_date": "s"}
-CHANNEL_RANGES: dict[str, tuple[float, float]] = {
-    "gray": (0, 255),
-    "diff": (-40, 40),
-    "flow_x": (-2, 2),
-    "flow_y": (-2, 2),
-}
-CROP_EDGE: str = "#d55e00"
-"""Outline of the crop the network sees, on the frame and around the crop itself."""
-OBJECTIVE_MARKERS: dict[str, str] = dict(zip(style.OBJECTIVES, "oD^", strict=True))
-SIGNAL, MULTI, HEAD = style.OBJECTIVES
-"""Series of the ablation: ``(objective, column)`` of each is in :func:`ablation_figure`."""
+TOLERANCE_MS = 25.0
+"""The scorer's event tolerance at 60 Hz (1.5 frames), drawn on timing plots."""
 
 
 def panel_letters(axes: Axes | Sequence[Axes] | NDArray) -> None:
@@ -75,873 +42,600 @@ def save(fig: Figure, name: str) -> None:
         fig.savefig(FIGURES / f"{name}.{ext}")
 
 
-def points(
-    ax: Axes,
-    x: float,
-    values: NDArray,
-    color: str,
-    marker: str = "o",
-    spread: float = 0.1,
-) -> None:
-    """One dot per run around *x*, and a bar at their mean."""
-    jitter = np.random.default_rng(0).uniform(-spread, spread, len(values))
-    ax.scatter(
-        x + jitter,
-        values,
-        s=12,
-        color=color,
-        marker=marker,
-        edgecolor="white",
-        linewidth=0.4,
-        zorder=3,
-    )
-    ax.hlines(np.mean(values), x - 0.17, x + 0.17, color="k", linewidth=1.6, zorder=4)
-
-
-def ablation_panel(
-    ax: Axes, df: pd.DataFrame, series: list[tuple[str, str, str]]
-) -> None:
-    """Dots per input set for each ``(series, objective, column)``, side by side."""
-    offsets = np.linspace(-0.15, 0.15, len(series)) if len(series) > 1 else [0.0]
-    for (name, objective, column), offset in zip(series, offsets, strict=True):
-        for i, inputs in enumerate(INPUT_LABELS):
-            values = df[(df.inputs == inputs) & (df.objective == objective)][column]
-            points(
-                ax,
-                i + offset,
-                values.to_numpy(),
-                style.OBJECTIVES[name],
-                OBJECTIVE_MARKERS[name],
-            )
-    ax.set_xticks(
-        range(len(INPUT_LABELS)), list(INPUT_LABELS.values()), rotation=20, ha="right"
-    )
-
-
-def ablation_figure(df: pd.DataFrame) -> Figure:
-    """Input set x objective, one row per stratum: correlation, then inhalation F1
-    from the trace (DSP event detection) and from the onset head, on a shared axis."""
-    fig, axes = style.figure("double", 0.55, nrows=2, ncols=3, sharex=True)
-    columns = {
-        "correlation": [
-            (SIGNAL, "signal", "correlation"),
-            (MULTI, "multitask", "correlation"),
-        ],
-        "inhale_f1": [
-            (SIGNAL, "signal", "inhale_f1"),
-            (MULTI, "multitask", "inhale_f1"),
-        ],
-        "head_inhale_f1": [(HEAD, "multitask", "head_inhale_f1")],
-    }
-    ylabels = {
-        "correlation": METRIC_LABELS["correlation"],
-        "inhale_f1": "Inhalation F1 from trace\n(DSP, for comparison only)",
-        "head_inhale_f1": "Inhalation F1\nfrom onset head",
-    }
-    for row, stratum in enumerate(STRATUM_LABELS):
-        data = df[df.stratum == stratum]
-        axes[row, 2].sharey(axes[row, 1])
-        for col, (key, series) in enumerate(columns.items()):
-            ablation_panel(axes[row, col], data, series)
-            axes[row, col].set_ylabel(ylabels[key])
-        axes[row, 0].annotate(
-            STRATUM_LABELS[stratum], (-0.35, 0.5), xycoords="axes fraction",
-            rotation=90, va="center", ha="center", weight="bold",
-        )  # fmt: skip
-    handles = [
-        Line2D(
-            [],
-            [],
-            marker=OBJECTIVE_MARKERS[k],
-            linestyle="",
-            color=c,
-            label=k,
-            markersize=4,
-        )
-        for k, c in style.OBJECTIVES.items()
-    ]
-    handles.append(
-        Line2D([], [], color="k", linewidth=1.6, label="Mean of five networks")
-    )
-    fig.legend(handles=handles, loc="outside upper center", ncol=4)
-    panel_letters(axes)
-    return fig
-
-
-def benchmark_means(df: pd.DataFrame) -> pd.DataFrame:
-    """The means :func:`benchmark_figure` draws as bars: one row per method and
-    test group, one column per metric, from the same columns (Zephyr's inhale F1
-    and KL-IBI from its onset head), plus each method's inhale-event source."""
-    rows = []
-    for method in style.METHODS:
-        for stratum, label in STRATUM_LABELS.items():
-            runs = df[(df.method == method) & (df.stratum == stratum)]
-            row: dict[str, object] = {"method": method, "test group": label}
-            for metric, name in METRIC_LABELS.items():
-                headed = method == "Zephyr" and metric in HEAD_COLUMNS
-                row[name] = runs[HEAD_COLUMNS[metric] if headed else metric].mean()
-            row["inhale events"] = "head" if method == "Zephyr" else "DSP"
-            row["runs"] = len(runs)
-            rows.append(row)
-    return pd.DataFrame(rows)
-
-
-def benchmark_figure(df: pd.DataFrame) -> Figure:
-    """Every method on each metric; dots are runs, marker shape is the stratum.
-
-    On the inhale and KL-IBI panels Zephyr is scored with its onset head's events
-    and the headless methods with DSP on their trace; exhale F1 is DSP for all.
-    Tick labels name the event source.
-    """
-    fig, axes = style.figure("double", 0.62, nrows=2, ncols=2)
-    for ax, (metric, label) in zip(axes.flat, METRIC_LABELS.items(), strict=True):
-        ticks = []
-        for i, method in enumerate(style.METHODS):
-            headed = method == "Zephyr" and metric in HEAD_COLUMNS
-            column = HEAD_COLUMNS[metric] if headed else metric
-            for offset, stratum in zip((-0.2, 0.2), STRATUM_MARKERS, strict=True):
-                values = df[(df.method == method) & (df.stratum == stratum)][column]
-                points(
-                    ax, i + offset, values.to_numpy(), style.METHODS[method],
-                    STRATUM_MARKERS[stratum], spread=0.05,
-                )  # fmt: skip
-            source = "head" if headed else "DSP"
-            ticks.append(method if metric == "correlation" else f"{method} ({source})")
-        ax.set_xticks(range(len(ticks)), ticks, rotation=30, ha="right")
-        ax.set_ylabel(label)
-    handles = [
-        Line2D(
-            [], [], marker=m, linestyle="", color="0.4", label=STRATUM_LABELS[s],
-            markersize=4,
-        )
-        for s, m in STRATUM_MARKERS.items()
-    ]  # fmt: skip
-    fig.legend(handles=handles, loc="outside upper center", ncol=2)
-    panel_letters(axes)
-    return fig
-
-
-def frame_with_box(
-    ax: Axes, frame: NDArray, box: tuple[int, int, int, int]
-) -> AxesImage:
-    """A video frame with the crop the network sees outlined."""
-    image = ax.imshow(frame, cmap="gray", vmin=0, vmax=255)
-    x, y, w, h = box
-    ax.add_patch(Rectangle((x, y), w, h, fill=False, edgecolor=CROP_EDGE, linewidth=1))
-    ax.axis("off")
-    return image
-
-
-class DomainPanel(NamedTuple):
-    """One column of :func:`domain_figure`."""
-
-    title: str
-    frame: NDArray
-    """The full video frame, at the working frame size the box is measured in."""
-    box: tuple[int, int, int, int]
-    thermistor: pd.DataFrame
-    """``Time`` and ``Signal`` (filtered, ADC units)."""
-    rate_hz: float
-    """The clip's mean breathing rate."""
-
-
-def domain_figure(panels: Sequence[DomainPanel], t0: float, duration: float) -> Figure:
-    """What each recording looks like: one column per clip, rows are the full frame
-    at *t0* with the crop outlined, the crop the network sees, and the thermistor
-    from *t0* for *duration* seconds on a shared amplitude scale."""
-    fig, axes = style.figure(
-        "double",
-        0.75,
-        nrows=3,
-        ncols=len(panels),
-        height_ratios=[0.75, 1, 0.7],
-        squeeze=False,
-    )
-    for col, panel in enumerate(panels):
-        top, middle, bottom = axes[:, col]
-        frame_with_box(top, panel.frame, panel.box)
-        top.set_title(panel.title)
-        x, y, w, h = panel.box
-        middle.imshow(panel.frame[y : y + h, x : x + w], cmap="gray", vmin=0, vmax=255)
-        middle.set_xticks([])
-        middle.set_yticks([])
-        middle.grid(False)
-        for spine in middle.spines.values():
-            spine.set_visible(True)
-            spine.set_edgecolor(CROP_EDGE)
-        shown = panel.thermistor[
-            (panel.thermistor.Time >= t0) & (panel.thermistor.Time <= t0 + duration)
-        ]
-        bottom.plot(shown.Time, shown.Signal, color=style.TRUTH, linewidth=0.7)
-        bottom.set_xlim(t0, t0 + duration)
-        bottom.set_xlabel("Time (s)")
-        bottom.set_title(f"{panel.rate_hz:.1f} breaths/s", fontweight="normal")
-        if col:
-            bottom.tick_params(labelleft=False)
-    # One amplitude scale for every clip, from every excerpt's own range.
-    low = min(ax.dataLim.y0 for ax in axes[2])
-    high = max(ax.dataLim.y1 for ax in axes[2])
-    pad = 0.05 * (high - low)
-    for ax in axes[2]:
-        ax.set_ylim(low - pad, high + pad)
-    axes[2, 0].set_ylabel("Thermistor\n(ADC, filtered)")
-    panel_letters(axes[:, 0])
-    return fig
-
-
-OOD_METRIC_LABELS: dict[str, str] = {
-    "correlation": METRIC_LABELS["correlation"],
-    "inhale_f1": "Inhalation F1\n(head; DSP where marked)",
-}
-
-
-def ood_figure(scores: pd.DataFrame) -> Figure:
-    """Each out-of-distribution network on each kind of data it can be scored on:
-    one dot per clip, bars are means; correlation, then inhale F1 (the onset head's,
-    or DSP for a network named "(DSP)")."""
-    networks = list(dict.fromkeys(scores["network"]))
-    fig, axes = style.figure("double", 0.55, nrows=len(OOD_METRIC_LABELS), sharex=True)
-    width = 0.8 / len(style.OOD_DATA)
-    rng = np.random.default_rng(0)  # fixed jitter, so the figure never changes
-    for ax, (metric, label) in zip(axes, OOD_METRIC_LABELS.items(), strict=True):
-        for i, network in enumerate(networks):
-            mine = scores[scores.network == network]
-            present = [d for d in style.OOD_DATA if (mine.data == d).any()]
-            for j, data in enumerate(present):
-                x = i + (j - (len(present) - 1) / 2) * width
-                values = mine.loc[mine.data == data, metric].to_numpy()
-                colour = style.OOD_DATA[data]
-                ax.bar(x, values.mean(), width * 0.9, color=colour, alpha=0.35)
-                jitter = rng.uniform(-0.25, 0.25, len(values)) * width
-                ax.plot(x + jitter, values, "o", color=colour, ms=2.5)
-        labels = [n.replace("), ", "),\n") for n in networks]  # "PhysNet (DSP),"
-        ax.set_xticks(range(len(networks)), labels)
-        ax.set_ylabel(label)
-        ax.set_ylim(min(0.0, scores[metric].min() - 0.05), 1)
-        ax.axhline(0, color="0.6", linewidth=0.5)
-    axes[-1].set_xlabel("Trained on")
-    handles = [
-        Rectangle((0, 0), 1, 1, color=c, alpha=0.6) for c in style.OOD_DATA.values()
-    ]
-    fig.legend(handles, style.OOD_DATA, loc="outside upper center", ncol=3)
-    panel_letters(axes)
-    return fig
-
-
-SHIFT_LIMIT: float = 6.0
-"""Distances beyond this many robust z are drawn at the edge, with an arrow."""
-
-
-def thermistor_figure(shifts: pd.DataFrame, labels: dict[str, str]) -> Figure:
-    """Every clip's thermistor features as a distance from the training clips.
-
-    One row per feature (*labels*, feature -> name), one lane per set of clips
-    (``set`` column of *shifts*, from :func:`thermistor.shift_from_train`); a dot is
-    a clip, a bar the set's median, the shaded band the training clips' usual range
-    (2 robust z either side).
-    """
-    sets = list(style.CLIP_SETS)
-    fig, ax = style.figure("double", 0.42)
-    rng = np.random.default_rng(0)  # fixed jitter, so the figure never changes
-    lane = 0.26
-    ax.axvspan(-2, 2, color="0.92", linewidth=0)
-    ax.axvline(0, color="0.6", linewidth=0.5)
-    for row, feature in enumerate(labels):
-        for j, name in enumerate(sets):
-            y = row + (j - 1) * lane
-            z = shifts.loc[shifts["set"] == name, feature].to_numpy()
-            colour = style.CLIP_SETS[name]
-            shown = np.clip(z, -SHIFT_LIMIT, SHIFT_LIMIT)
-            jitter = rng.uniform(-0.06, 0.06, len(z))
-            inside = np.abs(z) <= SHIFT_LIMIT
-            ax.plot(
-                shown[inside], y + jitter[inside], "o", color=colour, ms=2.4, alpha=0.8
-            )
-            if (~inside).any():  # off the scale: parked at the edge, pointing out
-                ax.plot(
-                    shown[~inside],
-                    y + jitter[~inside],
-                    ">",
-                    color=colour,
-                    ms=3,
-                    alpha=0.8,
-                )
-            ax.plot(
-                [np.median(z).clip(-SHIFT_LIMIT, SHIFT_LIMIT)] * 2,
-                [y - 0.1, y + 0.1],
-                color="black",
-                linewidth=1.2,
-            )
-    ax.set_yticks(range(len(labels)), list(labels.values()))
-    ax.set_ylim(len(labels) - 0.5, -0.5)
-    ax.set_xlim(-SHIFT_LIMIT - 0.4, SHIFT_LIMIT + 0.4)
-    ax.set_xlabel(
-        "Distance from the training clips (robust z; log10 for amplitude and resolution)"
-    )
-    ax.grid(False, axis="y")
-    ax.grid(True, axis="x")
-    ax.spines["left"].set_visible(False)
-    ax.tick_params(axis="y", length=0)
-    handles = [
-        Line2D([], [], marker="o", linestyle="", color=c, markersize=3.5, label=n)
-        for n, c in style.CLIP_SETS.items()
-    ]
-    handles.append(Line2D([], [], color="black", linewidth=1.2, label="median"))
-    fig.legend(handles=handles, loc="outside upper center", ncol=4)
-    return fig
-
-
-def channel_image(ax: Axes, name: str, plane: NDArray) -> AxesImage:
-    """One input channel on its own value range."""
-    low, high = CHANNEL_RANGES[name]
-    cmap = "gray" if name == "gray" else "RdBu_r"
-    image = ax.imshow(plane, cmap=cmap, vmin=low, vmax=high)
-    ax.axis("off")
-    return image
-
-
-def channel_strip(axes: Sequence[Axes], frames: dict[str, NDArray]) -> None:
-    """The network's four inputs side by side, titled by channel."""
-    for ax, (name, plane) in zip(axes, frames.items(), strict=True):
-        channel_image(ax, name, plane)
-        ax.set_title(name, color=style.CHANNELS[name])
-
-
-def trace_panel(
-    ax: Axes, traces: pd.DataFrame, truth: pd.DataFrame, t0: float, duration: float
-) -> None:
-    """The thermistor and Zephyr's trace over one excerpt."""
-    shown = traces[(traces.Time >= t0) & (traces.Time <= t0 + duration)]
-    shown_truth = truth[(truth.Time >= t0) & (truth.Time <= t0 + duration)]
-    z = (shown_truth.Signal - shown_truth.Signal.mean()) / shown_truth.Signal.std()
-    ax.plot(shown_truth.Time, z, color=style.TRUTH, label="Thermistor")
-    ax.plot(shown.Time, shown.Zephyr, color=style.color("Zephyr"), label="Zephyr")
-    ax.set_xlim(t0, t0 + duration)
-    ax.set_xlabel("Time (s)")
-    ax.set_ylabel("Breathing (z-score)")
-    ax.legend(loc="lower right", bbox_to_anchor=(1, 1), ncol=2)
-
-
-def scrubber(
-    frame: NDArray,
-    channels: dict[str, NDArray],
-    box: tuple[int, int, int, int],
-    now: float,
-    traces: pd.DataFrame,
-    truth: pd.DataFrame,
-    t0: float,
-    duration: float,
-) -> Figure:
-    """The video and the four network inputs at time *now*, over the traces."""
-    fig, axes = style.mosaic(
-        [["video", *style.CHANNELS], ["trace"] * 5],
-        "double",
-        0.5,
-        width_ratios=[1.33, 1, 1, 1, 1],
-        height_ratios=[1, 0.9],
-    )
-    frame_with_box(axes["video"], frame, box)
-    axes["video"].set_title(f"t = {now:.2f} s")
-    for name in style.CHANNELS:
-        channel_image(axes[name], name, channels[name])
-        axes[name].set_title(name, color=style.CHANNELS[name])
-    trace_panel(axes["trace"], traces, truth, t0, duration)
-    axes["trace"].axvline(now, color="#d55e00", linewidth=1)
-    return fig
-
-
 def mark_events(
-    ax: Axes, times: NDArray, y: float, color: str, marker: str = "v"
+    ax: Axes, times: NDArray, y: float, color: str, marker: str = "v", size: float = 3
 ) -> None:
     """Mark event times along height *y* of an axes."""
     ax.plot(
-        times, np.full(len(times), y), marker, color=color, markersize=3, clip_on=False
+        times,
+        np.full(len(times), y),
+        marker,
+        color=color,
+        markersize=size,
+        clip_on=False,
+        lw=0,
     )
 
 
-def trace_stack(
-    ax: Axes,
-    frame: pd.DataFrame,
-    truth: pd.DataFrame,
-    scores: pd.DataFrame,
-    t0: float,
-    duration: float,
-) -> None:
-    """The thermistor and every method's trace, stacked, over one excerpt."""
-    names = ["Truth", *style.METHODS]
-    for row, name in enumerate(reversed(names)):
-        source = truth.rename(columns={"Signal": name}) if name == "Truth" else frame
-        t, y = source["Time"].to_numpy(), source[name].to_numpy()
-        keep = (t >= t0) & (t <= t0 + duration)
-        y = y[keep] - y[keep].mean()
-        ax.plot(t[keep], 4 * row + 1.6 * y / np.abs(y).max(), color=style.color(name))
-        label = (
-            name if name == "Truth" else f"{name}  r = {scores.correlation[name]:.2f}"
-        )
-        ax.text(
-            t0 - 0.01 * duration,
-            4 * row,
-            label,
-            ha="right",
-            va="center",
-            color=style.color(name),
-        )
-    ax.set_xlim(t0, t0 + duration)
-    ax.set_yticks([])
-    ax.set_xlabel("Time (s)")
-    ax.spines["left"].set_visible(False)
-    ax.grid(False)
-
-
-def _band_lines(
-    ax: Axes, summary: pd.DataFrame, series: Sequence[str], ylabel: str
-) -> None:
-    """One line per series over frequency bands, its 95% interval shaded. A series
-    named ``<method> (DSP)`` is that method's colour, dashed."""
-    for name in series:
-        s = summary[name]
-        method = name.split(" (")[0]
-        colour = style.color(method)
-        ax.fill_between(s.index, s["lo"], s["hi"], color=colour, alpha=0.2, linewidth=0)
-        ax.plot(
-            s.index,
-            s["mean"],
-            "o--" if name.endswith("(DSP)") else "o-",
-            color=colour,
-            markersize=2.5,
-            linewidth=1.4 if method == "Zephyr" else 0.9,
-            label=name,
-        )
-    ax.set_ylabel(ylabel)
-
-
-def band_correlation_figure(summary: pd.DataFrame) -> Figure:
-    """Each method's mean correlation with the thermistor by frequency band, over
-    the test clips, with its 95% interval shaded (``summary`` from
-    :func:`breathing.band_correlation_summary`)."""
-    fig, ax = style.figure("double", 0.4)
-    _band_lines(ax, summary, list(style.METHODS), "Pearson correlation")
-    ax.axhline(0, color="0.6", linewidth=0.5)
-    rate_axis(ax, (summary.index[0], summary.index[-1]))
-    ax.set_xlabel("Frequency (Hz)")
-    ax.legend(loc="lower right", bbox_to_anchor=(1, 1), ncol=len(style.METHODS))
-    return fig
-
-
-def band_comparison_figure(
-    correlation: pd.DataFrame,
-    f1: pd.DataFrame,
-    methods: Sequence[str] = tuple(style.METHODS),
-) -> Figure:
-    """Waveform correlation and local inhale F1 by frequency band, side by side.
-
-    *correlation* is :func:`breathing.band_correlation_summary`, *f1* is
-    :func:`breathing.event_f1_band_summary`; both are means over the test clips with
-    95% bootstrap intervals. Zephyr's F1 is shown from its onset head and, dashed,
-    from DSP on its trace; the methods without a head are scored with DSP. *methods*
-    are the correlation series (the columns of *correlation*).
-    """
-    fig, axes = style.figure("double", 0.4, ncols=2)
-    _band_lines(axes[0], correlation, list(methods), "Pearson correlation")
-    axes[0].axhline(0, color="0.6", linewidth=0.5)
-    axes[0].set_xlabel("Frequency (Hz)")
-    series = [name for name in f1.columns.get_level_values(0).unique()]
-    _band_lines(axes[1], f1, series, "Local inhale F1")
-    axes[1].set_xlabel("Breathing rate (Hz)")
-    axes[1].set_ylim(0, 1.02)
-    for ax in axes:
-        rate_axis(ax, (correlation.index[0], correlation.index[-1]))
-    axes[0].set_xlabel("Frequency (Hz)")
-    handles: dict[str, Line2D] = {}
-    for ax in axes:
-        for handle, label in zip(*ax.get_legend_handles_labels(), strict=True):
-            handles.setdefault(label, handle)
-    fig.legend(
-        list(handles.values()), list(handles), loc="outside upper center", ncol=4
-    )
-    panel_letters(axes)
-    return fig
-
-
-def onset_head(ax: Axes, times: pd.Series, probability: pd.Series) -> None:
+def onset_head(ax: Axes, times: NDArray, probability: NDArray) -> None:
     """The onset head's probability, with its 0.5 threshold."""
-    ax.plot(times, probability, color=style.OBJECTIVES[HEAD])
+    ax.plot(times, probability, color=style.ONSET)
     ax.axhline(0.5, color="0.6", linewidth=0.5, linestyle=":")
+    ax.set_ylim(-0.05, 1.15)
     ax.set_ylabel("Onset probability")
 
 
-def variant_traces_figure(
-    traces: pd.DataFrame,
-    variant: pd.DataFrame,
-    truth: pd.DataFrame,
-    events: dict[str, NDArray],
+def _inside(x: NDArray, t0: float, t1: float) -> NDArray:
+    return (x >= t0) & (x <= t1)
+
+
+def _crop_image(ax: Axes, image: NDArray, title: str) -> None:
+    ax.imshow(image, cmap="gray", vmin=0, vmax=255)
+    ax.set_title(title, fontsize=7, weight="normal")
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.grid(False)
+
+
+# --- one clip ---------------------------------------------------------------------------
+
+
+def clip_figure(
+    thumbnail: NDArray | None,
+    box: tuple[int, int, int, int],
+    crop: NDArray,
+    now: float,
+    truth: dict,
+    prediction: dict,
+    origin: float,
     t0: float,
     duration: float,
 ) -> Figure:
-    """Zephyr and a training variant against the thermistor over one excerpt.
-
-    *events* holds inhale times by name: ``"Truth"``, ``"Zephyr"`` and the variant's
-    column name. Rows: Zephyr, the variant, then both onset heads overlaid.
-    """
-    name = next(c for c in variant.columns if c not in ("Time", "onset"))
-    fig, axes = style.figure(
-        "double", 0.5, nrows=3, sharex=True, height_ratios=[2, 2, 1.2]
+    """(a) The session's whole frame with the crop (orange), (b) the gray crop the
+    networks see at time *now*, (c) the thermistor and Zephyr's trace over the
+    excerpt, the cursor at *now*."""
+    fig, ax = style.mosaic(
+        [["frame", "crop", "trace"]], aspect=0.27, width_ratios=[1.35, 1, 3.4]
     )
-    shown_truth = truth[(truth.Time >= t0) & (truth.Time <= t0 + duration)]
-    z = (shown_truth.Signal - shown_truth.Signal.mean()) / shown_truth.Signal.std()
-
-    def inside(x: NDArray) -> NDArray:
-        return x[(x >= t0) & (x <= t0 + duration)]
-
-    for ax, label, frame, column in zip(
-        axes[:2], ("Zephyr", name), (traces, variant), ("Zephyr", name), strict=True
-    ):
-        shown = frame[(frame.Time >= t0) & (frame.Time <= t0 + duration)]
-        ax.plot(shown_truth.Time, z, color=style.TRUTH, label="Thermistor")
-        ax.plot(shown.Time, shown[column], color=style.color(label), label=label)
-        mark_events(ax, inside(events["Truth"]), 3.3, style.TRUTH)
-        mark_events(ax, inside(events[label]), 2.8, style.color(label), "^")
-        ax.set_ylabel("Breathing (z-score)")
-        ax.legend(loc="lower right", bbox_to_anchor=(1, 1), ncol=2)
-    for label, frame in (("Zephyr", traces), (name, variant)):
-        shown = frame[(frame.Time >= t0) & (frame.Time <= t0 + duration)]
-        axes[2].plot(shown.Time, shown.onset, color=style.color(label), label=label)
-    axes[2].axhline(0.5, color="0.6", linewidth=0.5, linestyle=":")
-    axes[2].set_ylabel("Onset probability")
-    axes[2].set_xlim(t0, t0 + duration)
-    axes[2].set_xlabel("Time (s)")
-    panel_letters(axes)
+    if thumbnail is not None:
+        _crop_image(ax["frame"], thumbnail, "Session's first frame")
+        ax["frame"].add_patch(
+            Rectangle(
+                box[:2], box[2], box[3], fill=False, edgecolor=CROP_EDGE, linewidth=1
+            )
+        )
+    else:
+        ax["frame"].set_axis_off()
+    _crop_image(ax["crop"], crop, f"Crop at {now:.2f} s")
+    tt, tp = truth["times"] - origin, prediction["times"] - origin
+    keep_t, keep_p = _inside(tt, t0, t0 + duration), _inside(tp, t0, t0 + duration)
+    ax["trace"].plot(
+        tt[keep_t], truth["signal"][keep_t], color=style.TRUTH, label="Thermistor"
+    )
+    ax["trace"].plot(
+        tp[keep_p],
+        prediction["signal"][keep_p],
+        color=style.color("Zephyr"),
+        label="Zephyr",
+    )
+    ax["trace"].axvline(now, color=CROP_EDGE, linewidth=0.8)
+    ax["trace"].set_xlim(t0, t0 + duration)
+    ax["trace"].set_xlabel("Time (s)")
+    ax["trace"].set_ylabel("Breathing (z-score)")
+    ax["trace"].legend(loc="lower right", bbox_to_anchor=(1, 1), ncol=2)
+    panel_letters([ax["frame"], ax["crop"], ax["trace"]])
     return fig
 
 
-def frame_rate_traces_figure(
-    frames: dict[str, pd.DataFrame],
-    truth: pd.DataFrame,
-    events: dict[str, NDArray],
+def network_figure(
+    truth: dict, prediction: dict, origin: float, t0: float, duration: float
+) -> Figure:
+    """Zephyr's trace over the thermistor (top) and its onset head (bottom), with the
+    thermistor's inhales (black) and the head's (blue)."""
+    fig, (top, bottom) = style.figure(
+        "double", 0.36, nrows=2, sharex=True, height_ratios=[2, 1]
+    )
+    tt, tp = truth["times"] - origin, prediction["times"] - origin
+    t1 = t0 + duration
+    kt, kp = _inside(tt, t0, t1), _inside(tp, t0, t1)
+    true_on = truth["inhale"] - origin
+    head = prediction["head"] - origin
+    true_on, head = true_on[_inside(true_on, t0, t1)], head[_inside(head, t0, t1)]
+    top.plot(tt[kt], truth["signal"][kt], color=style.TRUTH, label="Thermistor")
+    top.plot(
+        tp[kp], prediction["signal"][kp], color=style.color("Zephyr"), label="Zephyr"
+    )
+    mark_events(top, true_on, 3.3, style.TRUTH)
+    mark_events(top, head, 2.8, style.color("Zephyr"), "^")
+    top.set_ylabel("Breathing (z-score)")
+    top.legend(loc="lower right", bbox_to_anchor=(1, 1), ncol=2)
+    onset_head(bottom, tp[kp], prediction["onset"][kp])
+    mark_events(bottom, true_on, 1.1, style.TRUTH)
+    mark_events(bottom, head, 1.02, style.color("Zephyr"), "^")
+    bottom.set_xlim(t0, t1)
+    bottom.set_xlabel("Time (s)")
+    panel_letters([top, bottom])
+    return fig
+
+
+def trace_stack(
+    predictions: dict[str, dict],
+    truth: dict,
+    scores: dict[str, float],
+    origin: float,
     t0: float,
     duration: float,
 ) -> Figure:
-    """Both frame-rate networks over one excerpt, drawn on top of each other.
-
-    *frames* maps each network's label to its ``zephyr_outputs`` (``Time``,
-    ``Zephyr``, ``onset``) and *events* the inhale times of ``"Truth"`` and of each
-    label. Rows: the two traces over the thermistor, each source's inhales ticked
-    above them, then both onset heads.
-    """
-    fig, axes = style.figure(
-        "double", 0.45, nrows=2, sharex=True, height_ratios=[2, 1.2]
-    )
-
-    def excerpt(frame: pd.DataFrame) -> pd.DataFrame:
-        return frame[(frame.Time >= t0) & (frame.Time <= t0 + duration)]
-
-    def inside(times: NDArray) -> NDArray:
-        return times[(times >= t0) & (times <= t0 + duration)]
-
-    shown_truth = excerpt(truth)
-    z = (shown_truth.Signal - shown_truth.Signal.mean()) / shown_truth.Signal.std()
-    axes[0].plot(shown_truth.Time, z, color=style.TRUTH, label="Thermistor")
-    mark_events(axes[0], inside(events["Truth"]), 3.6, style.TRUTH)
-    for row, (label, frame) in enumerate(frames.items()):
-        shown, colour = excerpt(frame), style.color(label)
-        axes[0].plot(shown.Time, shown.Zephyr, color=colour, label=label)
-        mark_events(axes[0], inside(events[label]), 3.1 - 0.5 * row, colour, "^")
-        axes[1].plot(shown.Time, shown.onset, color=colour, label=label)
-    axes[0].set_ylabel("Breathing (z-score)")
-    axes[0].legend(loc="lower right", bbox_to_anchor=(1, 1), ncol=3)
-    axes[1].axhline(0.5, color="0.6", linewidth=0.5, linestyle=":")
-    axes[1].set_ylabel("Onset probability")
-    axes[1].set_xlim(t0, t0 + duration)
-    axes[1].set_xlabel("Time (s)")
-    panel_letters(axes)
-    return fig
-
-
-RATE_TICKS: tuple[float, ...] = (1, 1.5, 2, 3, 4, 6, 8, 12)
-
-
-def rate_axis(ax: Axes, bins: Sequence[float]) -> None:
-    """Log breathing-rate x axis spanning *bins*."""
-    ax.set_xscale("log")
-    ax.set_xlim(bins[0], bins[-1])
-    ticks = [t for t in RATE_TICKS if bins[0] <= t <= bins[-1]]
-    ax.set_xticks(ticks, [f"{t:g}" for t in ticks])
-    ax.minorticks_off()
-    ax.set_xlabel("Breathing rate (Hz)")
-
-
-def _series_lines(
-    ax: Axes,
-    frame: pd.DataFrame,
-    x: str,
-    y: str,
-    colours: dict[str, str],
-    by: str = "recording",
-    **kwargs,
-) -> None:
-    """One line per *by* value, plus a heavier ``pooled`` line on top."""
-    for name, rows in frame[frame[by] != "pooled"].groupby(by):
-        rows = rows.sort_values(x)
-        ax.plot(rows[x], rows[y], color=colours[name], linewidth=0.8, **kwargs)
-    pooled = frame[frame[by] == "pooled"].sort_values(x)
-    ax.plot(
-        pooled[x], pooled[y], "s--", color=style.POOLED, markersize=2.5, linewidth=1.2
-    )
-
-
-def recording_colours(names: Sequence[str]) -> dict[str, str]:
-    """A fixed colour per recording, in sorted order."""
-    names = sorted(set(names) - {"pooled"}, key=lambda s: int(s.split()[-1]))
-    return dict(zip(names, style.series(len(names)), strict=True))
-
-
-def training_rates_figure(
-    by_recording: pd.DataFrame,
-    by_video: pd.DataFrame,
-    spectra: pd.DataFrame,
-    time_share: pd.Series,
-    bins: Sequence[float],
-) -> Figure:
-    """Training breaths by rate: per recording (with the pooled share of time), per
-    video, and power spectra."""
-    fig, axes = style.figure("double", 0.34, ncols=3)
-    colours = recording_colours(by_recording["recording"])
-    _series_lines(axes[0], by_recording, "centre", "share", colours, marker="o", ms=2)
-    axes[0].plot(
-        time_share.index, time_share.values, ":", color=style.POOLED, linewidth=1.4
-    )
-    axes[0].legend(
-        handles=[
-            Line2D([], [], ls="--", marker="s", ms=2.5, color=style.POOLED),
-            Line2D([], [], ls=":", color=style.POOLED, linewidth=1.4),
-        ],
-        labels=["pooled, share of breaths", "pooled, share of time"],
-        loc="upper left",
-    )
-    axes[0].set_title("Per recording")
-    recording_of = by_video.groupby("video")["recording"].first()
-    for video, rows in by_video[by_video.video != "pooled"].groupby("video"):
-        rows = rows.sort_values("centre")
-        part_two = video.endswith("part_2")
-        axes[1].plot(
-            rows.centre,
-            rows.share,
-            "--" if part_two else "-",
-            color=colours[recording_of[video]],
-            linewidth=0.8,
+    """Every method's trace on the same excerpt, one row each over the thermistor (grey),
+    labelled with its correlation on the whole clip."""
+    names = list(predictions)
+    fig, ax = style.figure("double", 0.075 * len(names) + 0.08)
+    t1 = t0 + duration
+    tt = truth["times"] - origin
+    kt = _inside(tt, t0, t1)
+    for row, name in enumerate(names):
+        y = -3.2 * row
+        p = predictions[name]
+        tp = p["times"] - origin
+        kp = _inside(tp, t0, t1)
+        ax.plot(tt[kt], truth["signal"][kt] + y, color="0.75", linewidth=0.7)
+        ax.plot(tp[kp], p["signal"][kp] + y, color=style.color(name), linewidth=0.9)
+        r = scores.get(name, np.nan)
+        ax.text(
+            t1 + 0.1,
+            y,
+            f"{name}\nr = {r:.2f}",
+            va="center",
+            fontsize=6.5,
+            color=style.color(name),
         )
-    axes[1].set_title("Per video (part 2 dashed)")
-    for ax in axes[:2]:
-        ax.set_ylabel("Share of breaths")
-    mean = spectra.groupby("freq")["power"].mean()
-    for _, rows in spectra.groupby("video"):
-        rec = rows.recording.iloc[0]
-        axes[2].plot(
-            rows.freq, rows.power, color=colours[rec], linewidth=0.5, alpha=0.6
-        )
-    axes[2].plot(mean.index, mean.values, "--", color=style.POOLED, linewidth=1.2)
-    axes[2].set_title("Power spectrum per video")
-    axes[2].set_ylabel("Power (unit area)")
-    for ax in axes:
-        rate_axis(ax, bins)
-    axes[2].set_xlabel("Frequency (Hz)")
-    panel_letters(axes)
+    ax.set_yticks([])
+    ax.set_xlim(t0, t1)
+    ax.set_xlabel("Time (s)")
+    ax.grid(False)
     return fig
 
 
-def drawn_rates_figure(natural: pd.Series, balanced: pd.Series) -> Figure:
-    """Share of training windows drawn per rate bin, without and with rate balancing."""
-    fig, ax = style.figure("single", 0.8)
-    ax.plot(natural.index, natural.values, "o--", ms=2.5, color=style.POOLED)
-    ax.plot(balanced.index, balanced.values, "o-", ms=2.5, color=style.color("Zephyr"))
-    ax.legend(["rate_balance 0", "as trained"], loc="upper right")
-    ax.set_ylabel("Share of drawn windows")
-    rate_axis(ax, [natural.index[0] * 0.8, natural.index[-1] * 1.25])
-    return fig
+# --- the benchmark --------------------------------------------------------------------
 
 
-def test_rates_figure(
-    recall: pd.DataFrame,
-    chance: pd.DataFrame,
-    f1: pd.DataFrame,
-    f1_dsp: pd.DataFrame,
-    windows: pd.DataFrame,
-    share: pd.DataFrame,
-    centres: NDArray,
-    bins: Sequence[float],
+def benchmark_figure(
+    ci: dict[str, pd.DataFrame], names: Sequence[str], sets: Sequence[str]
 ) -> Figure:
-    """Performance by true breathing rate, one row per group in :data:`RATE_ROWS`
-    present in *recall*: the two test groups, then the training clips (in-sample).
-
-    Columns: recall within one frame (head), local inhale F1 from the head and,
-    for comparison, from DSP on the trace, waveform correlation in 3 s windows,
-    and where each recording's breaths fall.
-    """
-    groups = {k: v for k, v in RATE_ROWS.items() if k in set(recall.stratum)}
+    """Each method's mean over animals with its 95% bootstrap interval (animals
+    resampled), one panel per metric (rows) and test set (columns). *ci* maps a
+    metric to :func:`.analysis.bootstrap`'s table."""
+    metrics = list(ci)
     fig, axes = style.figure(
         "double",
-        0.26 * len(groups),
-        nrows=len(groups),
-        ncols=5,
-        sharex=True,
+        0.2 * len(metrics) + 0.12,
+        nrows=len(metrics),
+        ncols=len(sets),
+        sharey="row",
         squeeze=False,
     )
-    for row, stratum in enumerate(groups):
-        ax_a, ax_c, ax_d, ax_e, ax_f = axes[row]
-        r = recall[recall.stratum == stratum]
-        colours = recording_colours(r["recording"])
-        _series_lines(ax_a, r, "centre", "recall", colours, marker="o", ms=2)
-        c = chance[(chance.stratum == stratum) & (chance.recording == "pooled")]
-        c = c.sort_values("centre")
-        ax_a.plot(c.centre, c.recall, ":", color="0.5", label="chance (shifted)")
-        ax_a.set_ylabel(f"{groups[stratum]}\nRecall (1 frame)")
-        for ax, table in ((ax_c, f1), (ax_d, f1_dsp)):
-            part = table[table.stratum == stratum]
-            _series_lines(ax, part, "centre", "f1", colours, marker="o", ms=2)
-            ax.set_ylabel("Local inhale F1")
-        for ax in (ax_a, ax_c, ax_d):
-            ax.set_ylim(0, 1.02)
-        w = windows[
-            (windows.stratum == stratum)
-            & (windows.rate >= bins[0])
-            & (windows.rate < bins[-1])
-        ].copy()
-        for name, points_ in w.groupby("recording"):
-            ax_e.plot(
-                points_.rate, points_.r, ".", color=colours[name], ms=1.2, alpha=0.3
+    for r, metric in enumerate(metrics):
+        table = ci[metric]
+        for c, name in enumerate(sets):
+            ax = axes[r, c]
+            for x, method in enumerate(names):
+                row = table[(table["set"] == name) & (table["method"] == method)]
+                if row.empty:
+                    continue
+                row = row.iloc[0]
+                ax.errorbar(
+                    x,
+                    row["mean"],
+                    yerr=[[row["mean"] - row["low"]], [row["high"] - row["mean"]]],
+                    fmt="o",
+                    ms=3.5,
+                    color=style.color(method),
+                    elinewidth=1,
+                    capsize=0,
+                )
+            ax.set_xticks(
+                range(len(names)),
+                names if r == len(metrics) - 1 else [""] * len(names),
+                rotation=40,
+                ha="right",
             )
-        w["centre"] = centres[
-            np.clip(np.searchsorted(bins, w.rate) - 1, 0, len(centres) - 1)
-        ]
-        per = w.groupby(["recording", "centre"])["r"].mean().reset_index()
-        pooled = (
-            w.groupby("centre")["r"].mean().reset_index().assign(recording="pooled")
+            if r == 0:
+                ax.set_title(name)
+            if c == 0:
+                ax.set_ylabel(METRIC_LABELS[metric])
+    return fig
+
+
+def per_animal_figure(
+    recordings: pd.DataFrame, names: Sequence[str], sets: Sequence[str]
+) -> Figure:
+    """Each animal's mean recording correlation (rows, worst first by Zephyr) for each
+    method (columns), one panel per test set."""
+    tables = []
+    for name in sets:
+        t = recordings[recordings["set"] == name].pivot_table(
+            index="subject", columns="method", values="correlation", aggfunc="mean"
         )
-        _series_lines(ax_e, pd.concat([per, pooled]), "centre", "r", colours)
-        ax_e.set_ylim(0, 1.02)
-        ax_e.set_ylabel("Pearson r, 3 s windows")
-        s = share[share.stratum == stratum]
-        _series_lines(ax_f, s, "centre", "share", colours, drawstyle="steps-mid")
-        ax_f.set_ylabel("Share of breaths")
-        for ax in axes[row]:
-            rate_axis(ax, bins)
-            if row < len(groups) - 1:
-                ax.set_xlabel("")
-    axes[0, 0].legend(loc="lower right")
-    for ax, title in zip(
-        axes[0],
-        (
-            "Breaths detected (head)",
-            "Local F1 (head)",
-            "Local F1 (DSP)",
-            "Waveform correlation",
-            "Rate distribution",
-        ),
-        strict=True,
-    ):
-        ax.set_title(title, pad=12)
-    panel_letters(axes)
-    return fig
-
-
-def _importance_row(
-    axes: Sequence[Axes], maps: Sequence[NDArray], vmax: float
-) -> AxesImage:
-    for ax, m in zip(axes, maps, strict=True):
-        image = ax.imshow(m, cmap=style.IMPORTANCE_CMAP, vmin=0, vmax=vmax)
-        ax.axis("off")
-    return image
-
-
-def _row_label(ax: Axes, channel: str, size: float = 7) -> None:
-    ax.text(
-        -0.06,
-        0.5,
-        channel,
-        transform=ax.transAxes,
-        rotation=90,
-        va="center",
-        ha="right",
-        color=style.CHANNELS.get(channel, style.TRUTH),
-        weight="bold",
-        size=size,
+        t = t[[n for n in names if n in t.columns]]
+        tables.append(t.sort_values("Zephyr") if "Zephyr" in t else t)
+    height = max(len(t) for t in tables)
+    fig, axes = style.figure(
+        "double", 0.02 * height + 0.25, ncols=len(tables), squeeze=False
     )
-
-
-def _clip_names(occlusion: dict[str, NDArray]) -> list[str]:
-    """``test/video_face_6_part_1`` -> ``face_6_part_1`` for every clip."""
-    return [str(c).removeprefix("test/video_") for c in occlusion["clips"]]
-
-
-def channel_importance_figure(
-    occlusion: dict[str, NDArray], frames: dict[str, NDArray]
-) -> Figure:
-    """Mean frame and mean importance map of each channel, per test stratum and overall.
-
-    One row per group, one column per channel; the first column is the mean gray
-    frame, for orientation.
-    """
-    rows = {**STRATUM_LABELS, "all": "All 24 clips"}
-    # occlusion names groups after the clip-list stem (face_test_<stratum>)
-    groups = np.array([str(g).removeprefix("face_test_") for g in occlusion["groups"]])
-    mean_frames = np.stack([frames[name] for name in _clip_names(occlusion)])
-    fig, axes = style.figure("double", 0.62, nrows=len(rows), ncols=5)
-    vmax = max(occlusion[c].mean(0).max() for c in style.CHANNELS)
     image = None
-    for row, (key, label) in zip(axes, rows.items(), strict=True):
-        keep = slice(None) if key == "all" else groups == key
-        row[0].imshow(mean_frames[keep].mean(0), cmap="gray")
-        row[0].axis("off")
-        maps = [occlusion[c][keep].mean(0) for c in style.CHANNELS]
-        image = _importance_row(row[1:], maps, vmax)
-        _row_label(row[0], label)
-    axes[0, 0].set_title("mean frame")
-    for ax, channel in zip(axes[0, 1:], style.CHANNELS, strict=True):
-        ax.set_title(channel, color=style.CHANNELS[channel])
+    for ax, name, t in zip(axes[0], sets, tables, strict=True):
+        image = ax.imshow(
+            t.to_numpy(), aspect="auto", cmap=style.EMBEDDING_CMAP, vmin=-1, vmax=1
+        )
+        ax.set_yticks(range(len(t)), t.index, fontsize=5)
+        ax.set_xticks(
+            range(len(t.columns)), t.columns, rotation=50, ha="right", fontsize=6
+        )
+        ax.set_title(f"{name} ({len(t)} animals)")
+        ax.grid(False)
     fig.colorbar(
-        image, ax=axes[:, 1:], shrink=0.6, label="Drop in event F1 when hidden"
+        image, ax=axes[0].tolist(), label="Mean recording correlation", shrink=0.6
     )
     return fig
 
 
-def importance_by_clip_figure(
-    occlusion: dict[str, NDArray], frames: dict[str, NDArray], per_block: int = 13
+def bands_figure(
+    bands: pd.DataFrame, names: Sequence[str], sets: Sequence[str]
 ) -> Figure:
-    """Per clip (columns), then the mean: its frame, then each channel's importance
-    map. Each column is divided by its own largest value across all four channels, so
-    channels compare within a clip and clips compare in where, not how much (no colour
-    bar: every column runs 0 to 1). Clips wrap into blocks of *per_block* columns; the
-    mean closes the last block."""
-    names = _clip_names(occlusion)
-    clip_frames = [frames[name] for name in names]
-    maps = {c: [*occlusion[c], occlusion[c].mean(0)] for c in style.CHANNELS}
-    peak = [max(maps[c][i].max() for c in maps) for i in range(len(names) + 1)]
-    titles = [n.removeprefix("face_").replace("_part_", ".") for n in names] + ["mean"]
-    columns = [*clip_frames, np.mean(clip_frames, axis=0)]
-    blocks = [
-        range(i, min(i + per_block, len(columns)))
-        for i in range(0, len(columns), per_block)
-    ]
-    rows = 1 + len(maps)
+    """Mean clip correlation of each method with the thermistor after both are
+    band-passed to each frequency band, one panel per test set."""
+    columns = [c for c in bands.columns if c.endswith("Hz")]
+    fig, axes = style.figure("double", 0.3, ncols=len(sets), sharey=True, squeeze=False)
+    for ax, name in zip(axes[0], sets, strict=True):
+        part = bands[bands["set"] == name]
+        for method in names:
+            values = part.loc[part["method"] == method, columns]
+            if values.empty:
+                continue
+            ax.plot(
+                range(len(columns)),
+                values.mean(),
+                "o-",
+                ms=2.5,
+                color=style.color(method),
+                label=method,
+            )
+        ax.set_xticks(range(len(columns)), columns, rotation=30, ha="right")
+        ax.set_title(name)
+    axes[0, 0].set_ylabel("Correlation in band")
+    axes[0, -1].legend(loc="center left", bbox_to_anchor=(1, 0.5), fontsize=5.5)
+    return fig
+
+
+def timing_figure(timing: pd.DataFrame, accuracy: pd.Series) -> Figure:
+    """(a) Inference seconds per minute of video, log scale, and (b) test-A correlation
+    against it: the cost and the benefit of each method."""
+    t = timing.set_index("method")
+    order = t["s per min of video"].sort_values().index
+    fig, (a, b) = style.figure("double", 0.34, ncols=2, width_ratios=[1, 1.2])
+    a.barh(
+        range(len(order)),
+        t.loc[order, "s per min of video"],
+        color=[style.color(n) for n in order],
+    )
+    a.set_yticks(
+        range(len(order)),
+        [f"{n} ({'CPU' if 'cpu' in t.loc[n, 'device'] else 'GPU'})" for n in order],
+        fontsize=6,
+    )
+    a.set_xscale("log")
+    a.set_xlabel("Inference s per min of video")
+    a.axvline(60, color="0.5", linewidth=0.6, linestyle=":")
+    a.text(60, len(order) - 0.4, " real time", fontsize=6, color="0.4")
+    a.grid(axis="x")
+    for name in order:
+        if name in accuracy:
+            b.scatter(
+                t.loc[name, "s per min of video"],
+                accuracy[name],
+                s=18,
+                color=style.color(name),
+                zorder=3,
+            )
+            b.annotate(
+                name,
+                (t.loc[name, "s per min of video"], accuracy[name]),
+                fontsize=5.5,
+                xytext=(3, 2),
+                textcoords="offset points",
+            )
+    b.set_xscale("log")
+    b.set_xlabel("Inference s per min of video")
+    b.set_ylabel("Correlation, test A")
+    panel_letters([a, b])
+    return fig
+
+
+def rate_agreement_figure(windows: pd.DataFrame, names: Sequence[str]) -> Figure:
+    """Breathing rate counted in each 10 s window, predicted against true (top) and the
+    Bland-Altman difference against the mean (bottom), test sets pooled."""
+    fig, axes = style.figure("double", 0.42, nrows=2, ncols=len(names), squeeze=False)
+    for c, name in enumerate(names):
+        w = windows[windows["method"] == name]
+        if w.empty:
+            continue
+        top, bottom = axes[0, c], axes[1, c]
+        top.scatter(
+            w["true_hz"],
+            w["pred_hz"],
+            s=1,
+            alpha=0.15,
+            color=style.color(name),
+            rasterized=True,
+        )
+        hi = float(np.nanpercentile(w[["true_hz", "pred_hz"]].to_numpy(), 99.5)) + 0.5
+        top.plot([0, hi], [0, hi], color="0.5", linewidth=0.6)
+        top.set_xlim(0, hi)
+        top.set_ylim(0, hi)
+        top.set_title(name, fontsize=7)
+        mean = (w["true_hz"] + w["pred_hz"]) / 2
+        diff = w["pred_hz"] - w["true_hz"]
+        bias, limit = diff.mean(), 1.96 * diff.std()
+        bottom.scatter(
+            mean, diff, s=1, alpha=0.15, color=style.color(name), rasterized=True
+        )
+        for y, ls in ((bias, "-"), (bias - limit, ":"), (bias + limit, ":")):
+            bottom.axhline(y, color="0.3", linewidth=0.7, linestyle=ls)
+        bottom.set_xlabel("Mean rate (Hz)")
+        if c == 0:
+            top.set_ylabel("Predicted rate (Hz)")
+            bottom.set_ylabel("Predicted minus true (Hz)")
+        top.set_xlabel("True rate (Hz)")
+    return fig
+
+
+def lag_figure(lags: pd.DataFrame, names: Sequence[str]) -> Figure:
+    """Predicted minus true inhale time for every true inhale with a predicted one
+    within 100 ms; the dotted lines are the scorer's tolerance (25 ms)."""
+    fig, ax = style.figure("single", 0.75)
+    bins = np.arange(-100, 101, 5)
+    for name in names:
+        values = lags.loc[lags["method"] == name, "lag_s"] * 1000
+        if values.empty:
+            continue
+        ax.hist(
+            values,
+            bins,
+            histtype="step",
+            density=True,
+            color=style.color(name),
+            label=f"{name} (median {values.median():+.0f} ms)",
+        )
+    for x in (-TOLERANCE_MS, TOLERANCE_MS):
+        ax.axvline(x, color="0.5", linewidth=0.6, linestyle=":")
+    ax.set_xlabel("Predicted minus true inhale (ms)")
+    ax.set_ylabel("Density")
+    ax.legend(loc="upper left", fontsize=5.5)
+    return fig
+
+
+def rate_f1_figure(
+    f1: pd.DataFrame, shares: pd.DataFrame, names: Sequence[str], sets: Sequence[str]
+) -> Figure:
+    """Inhale F1 per breathing-rate bin (top, one panel per test set), and where the
+    breaths of each split fall in rate (bottom)."""
+    bins = list(dict.fromkeys(f1["bin"].astype(str)))
     fig, axes = style.figure(
         "double",
-        0.07 * rows * len(blocks) + 0.1,
-        nrows=rows * len(blocks),
-        ncols=per_block,
+        0.48,
+        nrows=2,
+        ncols=len(sets),
+        sharex=True,
+        squeeze=False,
+        height_ratios=[1.6, 1],
     )
-    for ax in axes.flat:
-        ax.axis("off")
-    for k, block in enumerate(blocks):
-        top = k * rows
-        _row_label(axes[top, 0], "frame", size=5)
-        for channel, row in zip(maps, axes[top + 1 : top + rows], strict=True):
-            _row_label(row[0], channel, size=5)
-        for j, i in enumerate(block):
-            axes[top, j].imshow(columns[i], cmap="gray")
-            axes[top, j].set_title(titles[i], size=5)
-            for channel, row in zip(maps, axes[top + 1 : top + rows], strict=True):
-                _importance_row([row[j]], [maps[channel][i] / peak[i]], 1.0)
+    for c, name in enumerate(sets):
+        ax = axes[0, c]
+        part = f1[f1["set"] == name]
+        for method in names:
+            m = part[part["method"] == method]
+            if m.empty:
+                continue
+            ax.plot(
+                range(len(bins)),
+                m["f1"],
+                "o-",
+                ms=2,
+                color=style.color(method),
+                label=method,
+            )
+        ax.set_title(name)
+        ax.set_ylim(0, 1.02)
+        if c == 0:
+            ax.set_ylabel("Inhale F1 in bin")
+        bottom = axes[1, c]
+        for split in ("Train", name):
+            s = shares[shares["clips"] == split]
+            bottom.plot(
+                range(len(bins)),
+                s["share"],
+                "o-" if split != "Train" else "--",
+                ms=2,
+                color=style.color(split),
+                label=split,
+            )
+        bottom.set_xticks(range(len(bins)), bins, rotation=45, ha="right")
+        bottom.set_xlabel("Breathing rate (Hz)")
+        bottom.legend(fontsize=5.5)
+        if c == 0:
+            bottom.set_ylabel("Share of breaths")
+    axes[0, -1].legend(loc="center left", bbox_to_anchor=(1, 0.5), fontsize=5.5)
     return fig
+
+
+def splits_rate_figure(shares: pd.DataFrame) -> Figure:
+    """Share of breaths per breathing-rate bin in each split."""
+    fig, ax = style.figure("single", 0.7)
+    for split, s in shares.groupby("clips", sort=False):
+        ax.plot(
+            range(len(s)),
+            s["share"],
+            "o-",
+            ms=2.5,
+            color=style.color(split),
+            label=split,
+        )
+    bins = list(dict.fromkeys(shares["bin"].astype(str)))
+    ax.set_xticks(range(len(bins)), bins, rotation=45, ha="right")
+    ax.set_xlabel("Breathing rate (Hz)")
+    ax.set_ylabel("Share of breaths")
+    ax.legend(fontsize=6)
+    return fig
+
+
+def paired_figure(diff: pd.DataFrame, label: str, sets: Sequence[str]) -> Figure:
+    """Per-recording difference in correlation and inhale F1 (one dot each) and the
+    mean, per test set."""
+    fig, axes = style.figure("double", 0.26, ncols=2, squeeze=False)
+    rng = np.random.default_rng(0)
+    for ax, metric in zip(axes[0], ("correlation", "inhale"), strict=True):
+        for x, name in enumerate(sets):
+            v = diff.loc[diff["set"] == name, metric].dropna().to_numpy()
+            ax.scatter(
+                x + rng.uniform(-0.18, 0.18, len(v)),
+                v,
+                s=3,
+                alpha=0.5,
+                color=style.color(name),
+            )
+            ax.hlines(v.mean(), x - 0.25, x + 0.25, color="k", linewidth=1.4)
+        ax.axhline(0, color="0.5", linewidth=0.6)
+        ax.set_xticks(range(len(sets)), sets)
+        ax.set_ylabel(f"{METRIC_LABELS[metric]}: {label}")
+    panel_letters(axes[0])
+    return fig
+
+
+def examples_figure(
+    rows: list[dict], origin_key: str = "origin", duration: float = 6.0
+) -> Figure:
+    """Short excerpts of chosen clips: thermistor and Zephyr, titled with what they are."""
+    n = len(rows)
+    cols = 3
+    fig, axes = style.figure(
+        "double",
+        0.13 * int(np.ceil(n / cols)) + 0.05,
+        nrows=int(np.ceil(n / cols)),
+        ncols=cols,
+        squeeze=False,
+    )
+    for ax, row in zip(axes.ravel(), rows, strict=False):
+        t, p, t0 = row["truth"], row["prediction"], row["start"]
+        tt, tp = t["times"] - row[origin_key], p["times"] - row[origin_key]
+        kt, kp = _inside(tt, t0, t0 + duration), _inside(tp, t0, t0 + duration)
+        ax.plot(tt[kt], t["signal"][kt], color=style.TRUTH, linewidth=0.7)
+        ax.plot(tp[kp], p["signal"][kp], color=style.color("Zephyr"), linewidth=0.8)
+        ax.set_title(row["title"], fontsize=6, weight="normal")
+        ax.set_yticks([])
+        ax.set_xlim(t0, t0 + duration)
+    for ax in axes.ravel()[n:]:
+        ax.set_axis_off()
+    return fig
+
+
+# --- failure modes --------------------------------------------------------------------
+
+
+def failure_figure(
+    truth: dict,
+    prediction: dict,
+    errors: pd.DataFrame,
+    origin: float,
+    at: float,
+    frames: Sequence[tuple[float, NDArray]],
+    half: float = 2.0,
+) -> Figure:
+    """A window around one error: the thermistor and Zephyr's trace with every true
+    inhale (black), head event (blue), miss (FN) and false event (FP) marked, the onset
+    head below, and the gray crops around the error's time."""
+    n = len(frames)
+    layout = [["trace"] * n, ["onset"] * n, [f"f{i}" for i in range(n)]]
+    fig, ax = style.mosaic(layout, aspect=0.55, height_ratios=[1.6, 0.8, 1])
+    t0, t1 = at - half, at + half
+    tt, tp = truth["times"] - origin, prediction["times"] - origin
+    kt, kp = _inside(tt, t0, t1), _inside(tp, t0, t1)
+    tr = truth["raw_t"] - origin
+    kr = _inside(tr, t0, t1)
+    if kr.any():
+        raw = truth["raw"][kr]
+        ax["trace"].plot(
+            tr[kr],
+            (raw - raw.mean()) / (raw.std() or 1.0),
+            color="0.7",
+            linewidth=0.5,
+            label="Raw thermistor",
+        )
+    ax["trace"].plot(tt[kt], truth["signal"][kt], color=style.TRUTH, label="Target")
+    ax["trace"].plot(
+        tp[kp], prediction["signal"][kp], color=style.color("Zephyr"), label="Zephyr"
+    )
+    true_on = truth["inhale"] - origin
+    head = prediction["head"] - origin
+    mark_events(ax["trace"], true_on[_inside(true_on, t0, t1)], 3.4, style.TRUTH)
+    mark_events(
+        ax["trace"], head[_inside(head, t0, t1)], 2.9, style.color("Zephyr"), "^"
+    )
+    shown = errors[_inside(errors["time"].to_numpy() - origin, t0, t1)]
+    for kind, g in shown.groupby("kind"):
+        x = g["time"].to_numpy() - origin
+        ax["trace"].plot(
+            x,
+            np.full(len(x), -3.4),
+            "x" if "FP" in kind else "o",
+            color=style.ERRORS[kind],
+            ms=4,
+            mfc="none",
+            label=kind,
+            clip_on=False,
+        )
+        for xi in x:
+            ax["trace"].axvline(xi, color=style.ERRORS[kind], linewidth=0.5, alpha=0.6)
+            ax["onset"].axvline(xi, color=style.ERRORS[kind], linewidth=0.5, alpha=0.6)
+    ax["trace"].axvline(at, color="0.2", linewidth=0.8, linestyle="--")
+    ax["trace"].set_xlim(t0, t1)
+    ax["trace"].set_ylim(-3.8, 3.8)
+    ax["trace"].set_ylabel("z-score")
+    ax["trace"].legend(loc="lower right", bbox_to_anchor=(1, 1), ncol=4, fontsize=6)
+    onset_head(ax["onset"], tp[kp], prediction["onset"][kp])
+    ax["onset"].set_xlim(t0, t1)
+    ax["onset"].set_xlabel("Time (s)")
+    for i, (ft, image) in enumerate(frames):
+        _crop_image(ax[f"f{i}"], image, f"{ft - at:+.2f} s")
+    panel_letters([ax["trace"], ax["onset"], ax["f0"]])
+    return fig
+
+
+def causes_figure(counts: pd.DataFrame) -> Figure:
+    """Share of misses and of false events that carry each cause."""
+    fig, ax = style.figure("single", 0.6)
+    causes = list(dict.fromkeys(counts["cause"]))
+    kinds = list(dict.fromkeys(counts["kind"]))
+    height = 0.8 / len(kinds)
+    for k, kind in enumerate(kinds):
+        c = counts[counts["kind"] == kind].set_index("cause").loc[causes]
+        ax.barh(
+            np.arange(len(causes)) + k * height,
+            c["errors"] / c["of"].clip(lower=1),
+            height,
+            color=style.ERRORS[kind],
+            label=f"{kind} (n = {int(c['of'].iloc[0])})",
+        )
+    ax.set_yticks(
+        np.arange(len(causes)) + height * (len(kinds) - 1) / 2, causes, fontsize=6
+    )
+    ax.invert_yaxis()
+    ax.set_xlabel("Share of errors")
+    ax.grid(axis="x")
+    ax.legend(fontsize=6, loc="lower right")
+    return fig
+
+
+# --- frame embeddings ------------------------------------------------------------------
 
 
 def embedding_smoothness_figure(
@@ -955,12 +649,11 @@ def embedding_smoothness_figure(
 ) -> Figure:
     """Are the CNN's frame embeddings smooth enough to interpolate linearly?
 
-    (a) The filtered thermistor at the frame times (*reference*) above (b) every
-    embedding dimension, z-scored and ordered by its first-PC loading, from *t0* for
-    *duration* s; the PCA is fitted on all of *embeddings*, not only that span.
-    (c) *spectra*: name -> (frequency, power density, unit area).
-    (d) *r2*: name -> per-dimension R² of rebuilding each frame from its two
-    neighbours.
+    (a) The target at the frame times (*reference*) above (b) every embedding
+    dimension, z-scored and ordered by its first-PC loading, from *t0* for *duration*
+    s; the PCA is fitted on all of *embeddings*. (c) *spectra*: name -> (frequency,
+    power density, unit area). (d) *r2*: name -> per-dimension R² of rebuilding each
+    frame from its two neighbours.
     """
     fig, ax = style.mosaic(
         [["truth"] * 2, ["heat"] * 2, ["psd", "r2"]],

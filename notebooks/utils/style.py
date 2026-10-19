@@ -10,28 +10,26 @@ COLUMN_IN: dict[str, float] = {"single": 3.5, "double": 7.2}
 """Figure widths in inches: one journal column, or the full page width."""
 
 METHODS: dict[str, str] = {
-    "Pixel": "#8c8c8c",
-    "Facemap": "#cc79a7",
-    "TS-CAN": "#e69f00",
-    "PhysNet": "#56b4e9",
     "Zephyr": "#0072b2",
+    "PhysNet + head": "#009e73",
+    "PhysNet": "#56b4e9",
+    "TS-CAN": "#e69f00",
+    "PhysFormer + head": "#d55e00",
+    "PhysFormer": "#f4a582",
+    "RhythmFormer + head": "#882255",
+    "RhythmFormer": "#cc6677",
+    "Facemap": "#cc79a7",
+    "Pixel (motion)": "#5f5f5f",
+    "Pixel (PCA)": "#8c8c8c",
+    "Pixel (SNR)": "#b3b3b3",
 }
-"""Compared methods. Zephyr is always the same blue."""
+"""Compared methods (the keys of ``utils/runs.METHODS``). Zephyr is always the same blue;
+a network and its onset-head version share a hue."""
 
 VARIANTS: dict[str, str] = {
-    "Zephyr": METHODS["Zephyr"],
-    "Zephyr, no stretch": "#7b3294",
-    "Zephyr, 60 Hz frames": METHODS["Zephyr"],
-    "Zephyr, 30 Hz frames": "#d55e00",
+    "Zephyr, more augmentation": "#7b3294",
 }
-"""Zephyr and its training variants, for ablations that compare networks directly."""
-
-OBJECTIVES: dict[str, str] = {
-    "Signal only: F1 from signal": "#0072b2",
-    "Multitask: F1 from signal": "#d55e00",
-    "Multitask: F1 from event head": "#009e73",
-}
-"""Ablation of the training objective, and where the F1 is read from."""
+"""Zephyr trained differently, compared with Zephyr directly."""
 
 CHANNELS: dict[str, str] = {
     "gray": "#4d4d4d",
@@ -39,22 +37,25 @@ CHANNELS: dict[str, str] = {
     "flow_x": "#b8860b",
     "flow_y": "#aa4499",
 }
-"""The four input channels."""
+"""The input channels."""
 
-OOD_DATA: dict[str, str] = {
-    "Face, held out": "#0072b2",
-    "Side, trained on": "#e69f00",
-    "Side, held out": "#d55e00",
-}
-"""What an out-of-distribution network is scored on: which camera, and whether it
-trained on those clips."""
-
-CLIP_SETS: dict[str, str] = {
+SETS: dict[str, str] = {
     "Train": "#7f7f7f",
-    "Test": "#009e73",
-    "OOD (side camera)": "#d55e00",
+    "Validation": "#bbbbbb",
+    "A: new animals": "#0072b2",
+    "B: new sessions": "#009e73",
+    "C: 359 Hz": "#d55e00",
 }
-"""The sets of clips the thermistor is compared across."""
+"""The training and validation clips and the three test sets."""
+
+ERRORS: dict[str, str] = {
+    "missed (FN)": "#d55e00",
+    "false (FP)": "#cc79a7",
+}
+"""Event errors: a true inhale missed, a predicted inhale with no true one."""
+
+ONSET: str = "#009e73"
+"""The onset head's probability."""
 
 TRUTH: str = "#000000"
 """The thermistor, wherever it is drawn."""
@@ -71,9 +72,6 @@ def series(n: int) -> list[str]:
     cmap = mpl.colormaps[SERIES_CMAP]
     return [mpl.colors.to_hex(cmap(i % cmap.N)) for i in range(n)]
 
-
-IMPORTANCE_CMAP: str = "inferno"
-"""Colour map of every importance (drop) map."""
 
 EMBEDDING_CMAP: str = "RdBu_r"
 """Colour map of z-scored network features (diverging around 0)."""
@@ -127,8 +125,8 @@ def figure(
 
 
 def color(name: str) -> str:
-    """The colour of a method, a variant, a channel, or ``"Truth"``."""
-    return {**METHODS, **VARIANTS, **CHANNELS, "Truth": TRUTH}[name]
+    """The colour of a method, a variant, a channel, a set of clips, or ``"Truth"``."""
+    return {**METHODS, **VARIANTS, **CHANNELS, **SETS, "Truth": TRUTH}[name]
 
 
 def mosaic(

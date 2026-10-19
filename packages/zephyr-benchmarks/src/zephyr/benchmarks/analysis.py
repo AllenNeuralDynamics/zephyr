@@ -1,0 +1,390 @@
+"""What a benchmark reports beyond each run's ``evaluation.json``, clip by clip.
+
+From one clip's prediction and truth: event matches, breathing rate in windows, onset
+timing, band-limited correlation and the errors behind a bad clip; then summaries over
+clips: rate agreement, F1 by breathing rate and a bootstrap over animals. Events are
+matched as the scorer matches them (:func:`zephyr.evaluation.match_events`); inhales
+of a network with an onset head come from the head, the rest from DSP on the trace.
+A prediction is ``{"times", "signal", "onset", "head"?}``; a truth is :func:`truth`.
+"""
+
+import itertools
+from collections.abc import Callable
+
+import numpy as np
+import pandas as pd
+import torch
+from scipy.signal import butter, sosfiltfilt, welch
+
+from zephyr import features
+from zephyr.evaluation import frame_tolerance_s, match_events
+from zephyr.events import in_spans
+from zephyr.signal import detect_inhalation_events
+
+RATE_WINDOW_S = 10.0
+"""Window over which a breathing rate is counted, for rate agreement."""
+LAG_WINDOW_S = 0.1
+"""Widest predicted-minus-true onset offset counted for the timing histogram, and the
+distance within which a miss and a false event count as one near miss."""
+BANDS_HZ = ((1.0, 3.0), (3.0, 6.0), (6.0, 10.0), (10.0, 15.0))
+"""Frequency bands the trace correlation is broken into."""
+RATE_BINS_HZ = (1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0, 12.0, 15.0)
+"""Bins of instantaneous breathing rate (1 / interval to the next inhale)."""
+LOCAL_S = 0.25
+"""Half-width of the window an error's motion and amplitude are measured over."""
+TABLES = ("breaths", "false_positives", "lags", "windows", "bands")
+"""The tables :func:`clip_tables` returns."""
+
+
+def truth(entry: features.ClipEntry) -> dict:
+    """A clip's target (on its output grid, z-scored), its inhale and exhale events,
+    the spans excluded from scoring, and the raw thermistor."""
+    times = np.load(entry.times)
+    target = pd.read_parquet(entry.target)["signal"].to_numpy(np.float64)[: len(times)]
+    events = np.load(entry.events)
+    raw = pd.read_parquet(entry.thermistor)
+    excluded = events["excluded"] if "excluded" in events.files else np.empty((0, 2))
+    return {
+        "times": times[: len(target)],
+        "signal": (target - target.mean()) / (target.std() or 1.0),
+        "inhale": events["onset_times"],
+        "exhale": events["offset_times"],
+        "excluded": excluded,
+        "raw_t": raw["Time"].to_numpy(),
+        "raw": raw["Signal"].to_numpy(),
+    }
+
+
+def predicted_inhales(p: dict, head: bool) -> np.ndarray:
+    """Inhale times a method asserts: its head's events, or DSP peaks of its trace."""
+    if head:
+        return p["head"]
+    fs = 1.0 / float(np.median(np.diff(p["times"])))
+    inhale, _ = detect_inhalation_events(p["signal"], fs)
+    return p["times"][inhale]
+
+
+def _scored(times: np.ndarray, t: dict, span: tuple[float, float]) -> np.ndarray:
+    """*times* inside *span* and outside the clip's excluded spans."""
+    keep = (times >= span[0]) & (times <= span[1])
+    if len(t["excluded"]):
+        keep &= ~in_spans(times, t["excluded"])
+    return times[keep]
+
+
+def clip_events(p: dict, t: dict, head: bool) -> dict:
+    """True and predicted inhales of one clip in the span both cover, which of them
+    matched (``hit``, ``used``), and each true breath's rate."""
+    span = (max(p["times"][0], t["times"][0]), min(p["times"][-1], t["times"][-1]))
+    true_on = _scored(t["inhale"], t, span)
+    pred_on = _scored(predicted_inhales(p, head), t, span)
+    pairs = match_events(true_on, pred_on, frame_tolerance_s(p["times"]))
+    hit = np.zeros(len(true_on), bool)
+    used = np.zeros(len(pred_on), bool)
+    for i, j in pairs:
+        hit[i], used[j] = True, True
+    rate = np.full(len(true_on), np.nan)
+    rate[:-1] = 1.0 / np.diff(true_on)
+    return {
+        "span": span,
+        "true": true_on,
+        "pred": pred_on,
+        "hit": hit,
+        "used": used,
+        "rate": rate,
+    }
+
+
+def _local_rate(at: np.ndarray, true_on: np.ndarray, rate: np.ndarray) -> np.ndarray:
+    """The true breathing rate at times *at*: that of the breath they fall in."""
+    if len(true_on) < 2:
+        return np.full(len(at), np.nan)
+    i = np.clip(np.searchsorted(true_on, at) - 1, 0, len(true_on) - 2)
+    return rate[i]
+
+
+def band_correlations(a: np.ndarray, b: np.ndarray, fs: float) -> dict[str, float]:
+    """Correlation of *a* and *b* after both are band-passed to each of :data:`BANDS_HZ`."""
+    out = {}
+    for lo, hi in BANDS_HZ:
+        sos = butter(2, (lo, min(hi, 0.45 * fs)), btype="bandpass", fs=fs, output="sos")
+        r = np.corrcoef(sosfiltfilt(sos, a), sosfiltfilt(sos, b))[0, 1]
+        out[f"{lo:g}-{hi:g} Hz"] = float(r)
+    return out
+
+
+def _rate_windows(ev: dict, t: dict) -> pd.DataFrame:
+    rows = []
+    edges = np.arange(ev["span"][0], ev["span"][1] - RATE_WINDOW_S, RATE_WINDOW_S)
+    for w0 in edges:
+        w1 = w0 + RATE_WINDOW_S
+        ex = t["excluded"]
+        if len(ex) and np.any((ex[:, 0] < w1) & (ex[:, 1] > w0)):
+            continue
+        n_true = np.sum((ev["true"] >= w0) & (ev["true"] < w1))
+        n_pred = np.sum((ev["pred"] >= w0) & (ev["pred"] < w1))
+        rows.append(
+            {
+                "start": w0,
+                "true_hz": n_true / RATE_WINDOW_S,
+                "pred_hz": n_pred / RATE_WINDOW_S,
+            }
+        )
+    return pd.DataFrame(rows, columns=["start", "true_hz", "pred_hz"])
+
+
+def clip_tables(p: dict, t: dict, head: bool) -> dict[str, pd.DataFrame]:
+    """One clip's :data:`TABLES`: every true breath (rate, detected), every false event
+    (true rate there), the lag of every true inhale with a prediction within
+    :data:`LAG_WINDOW_S`, the counted rates per window, and the band correlations."""
+    ev = clip_events(p, t, head)
+    fp_t = ev["pred"][~ev["used"]]
+    wide = match_events(ev["true"], ev["pred"], LAG_WINDOW_S)
+    n = min(len(p["signal"]), len(t["signal"]))
+    fs = 1.0 / float(np.median(np.diff(p["times"])))
+    return {
+        "breaths": pd.DataFrame(
+            {"time": ev["true"], "rate_hz": ev["rate"], "detected": ev["hit"]}
+        ),
+        "false_positives": pd.DataFrame(
+            {"time": fp_t, "rate_hz": _local_rate(fp_t, ev["true"], ev["rate"])}
+        ),
+        "lags": pd.DataFrame(
+            {"lag_s": [ev["pred"][j] - ev["true"][i] for i, j in wide]}, dtype=float
+        ),
+        "windows": _rate_windows(ev, t),
+        "bands": pd.DataFrame(
+            [band_correlations(p["signal"][:n], t["signal"][:n], fs)]
+        ),
+    }
+
+
+# --- summaries over clips --------------------------------------------------------------
+
+
+def rate_agreement(windows: pd.DataFrame) -> pd.DataFrame:
+    """Per method and set: MAE, RMSE and Pearson r of the windowed breathing rate, and
+    the Bland-Altman bias and 95% limits (predicted minus true, in Hz)."""
+
+    def one(g: pd.DataFrame) -> pd.Series:
+        d = g["pred_hz"] - g["true_hz"]
+        return pd.Series(
+            {
+                "MAE (Hz)": d.abs().mean(),
+                "RMSE (Hz)": np.sqrt((d**2).mean()),
+                "r": np.corrcoef(g["pred_hz"], g["true_hz"])[0, 1],
+                "bias (Hz)": d.mean(),
+                "limits (Hz)": 1.96 * d.std(),
+                "windows": len(g),
+            }
+        )
+
+    return windows.groupby(["method", "set"], sort=False).apply(
+        one, include_groups=False
+    )
+
+
+def rate_bins(bins=RATE_BINS_HZ) -> list[str]:
+    """Labels of the breathing-rate bins, ``"lo-hi"`` in Hz."""
+    return [f"{lo:g}-{hi:g}" for lo, hi in itertools.pairwise(bins)]
+
+
+def f1_by_rate(
+    breaths: pd.DataFrame, false: pd.DataFrame, bins=RATE_BINS_HZ
+) -> pd.DataFrame:
+    """Inhale F1 per breathing-rate bin, per method and set: misses binned by the
+    breath's own rate, false events by the true rate at their time; with the share of
+    breaths in each bin."""
+    cut = {"bins": list(bins), "labels": rate_bins(bins)}
+    b = breaths.assign(bin=pd.cut(breaths["rate_hz"], **cut))
+    f = false.assign(bin=pd.cut(false["rate_hz"], **cut))
+    keys = ["method", "set", "bin"]
+    tp = b[b["detected"]].groupby(keys, observed=False).size()
+    fn = b[~b["detected"]].groupby(keys, observed=False).size()
+    fp = f.groupby(keys, observed=False).size()
+    out = pd.DataFrame({"tp": tp, "fn": fn, "fp": fp}).fillna(0)
+    out["f1"] = (
+        2 * out["tp"] / (2 * out["tp"] + out["fn"] + out["fp"]).replace(0, np.nan)
+    )
+    in_bin = out["tp"] + out["fn"]
+    out["share"] = in_bin / in_bin.groupby(["method", "set"]).transform("sum")
+    return out.reset_index()
+
+
+def rate_distribution(onsets: dict[str, list[np.ndarray]]) -> pd.DataFrame:
+    """Share of breaths per rate bin in each named group of clips, from each clip's
+    true inhale times."""
+    rows = []
+    for label, clips in onsets.items():
+        rates = np.concatenate([1.0 / np.diff(on) for on in clips]) if clips else []
+        share = pd.cut(
+            pd.Series(rates, dtype=float), list(RATE_BINS_HZ), labels=rate_bins()
+        ).value_counts(normalize=True, sort=False)
+        rows += [{"clips": label, "bin": b, "share": s} for b, s in share.items()]
+    return pd.DataFrame(rows)
+
+
+def bootstrap(
+    recordings: pd.DataFrame,
+    metric: str,
+    reference: str = "Zephyr",
+    n: int = 2000,
+    seed: int = 0,
+) -> pd.DataFrame:
+    """Mean of *metric* over animals with a 95% bootstrap interval, resampling animals
+    (each the mean of its rows: recordings, seeds), per ``set`` and ``method``; and the
+    paired difference to *reference* on the same resamples. Needs a ``subject``."""
+    rng = np.random.default_rng(seed)
+    per_animal = (
+        recordings.groupby(["set", "method", "subject"])[metric]
+        .mean()
+        .unstack("method")
+    )
+    rows = []
+    for name, table in per_animal.groupby(level="set"):
+        table = table.droplevel("set")
+        draws = rng.integers(0, len(table), size=(n, len(table)))
+        values = table.to_numpy()
+        means = np.stack([np.nanmean(values[d], axis=0) for d in draws])
+        methods = list(table.columns)
+        ref = methods.index(reference) if reference in methods else None
+        for k, method in enumerate(methods):
+            row = {
+                "set": name,
+                "method": method,
+                "mean": np.nanmean(values[:, k]),
+                "low": np.nanpercentile(means[:, k], 2.5),
+                "high": np.nanpercentile(means[:, k], 97.5),
+                "animals": int(np.isfinite(values[:, k]).sum()),
+            }
+            if ref is not None and k != ref:
+                diff = means[:, ref] - means[:, k]
+                row |= {
+                    f"{reference} minus": np.nanmean(values[:, ref] - values[:, k]),
+                    "diff low": np.nanpercentile(diff, 2.5),
+                    "diff high": np.nanpercentile(diff, 97.5),
+                }
+            rows.append(row)
+    return pd.DataFrame(rows)
+
+
+# --- frame embeddings ------------------------------------------------------------------
+
+
+@torch.no_grad()
+def frame_embeddings(
+    model,
+    mean,
+    std,
+    entry: features.ClipEntry,
+    seconds: float,
+    device,
+    chunk: int = 256,
+) -> tuple[np.ndarray, np.ndarray]:
+    """A per-frame encoder's (``model.encode``) embeddings over the first *seconds* of
+    a clip, before they are resampled onto the output grid: ``(frame_times, (T, D))``."""
+    times = np.load(entry.frame_times)
+    n = int(np.searchsorted(times, times[0] + seconds))
+    mu, sd = (
+        np.asarray(v, np.float32).reshape(1, -1, 1, 1)
+        for v in model.channels.take_stats(mean, std)
+    )
+    stack = features.reader(entry).read(slice(0, n), model.channels).astype(np.float32)
+    frames = torch.from_numpy((stack - mu) / sd).unsqueeze(0).to(device)
+    return times[:n], model.encode(frames, chunk=chunk)[0].float().cpu().numpy()
+
+
+def interpolation_r2(times: np.ndarray, x: np.ndarray) -> np.ndarray:
+    """Per column of ``(T, D)`` *x*: R² of rebuilding each sample by linear
+    interpolation between its two neighbours (at the real *times*); 1 is smooth,
+    about -0.5 is white noise."""
+    x = x.reshape(len(x), -1)
+    weight = ((times[1:-1] - times[:-2]) / (times[2:] - times[:-2]))[:, None]
+    rebuilt = x[:-2] + (x[2:] - x[:-2]) * weight
+    middle = x[1:-1]
+    return 1 - ((middle - rebuilt) ** 2).mean(0) / middle.var(0)
+
+
+def mean_spectrum(times: np.ndarray, x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Welch density of each z-scored column of *x*, averaged and scaled to unit area."""
+    x = x.reshape(len(x), -1)
+    fs = 1.0 / float(np.median(np.diff(times)))
+    z = (x - x.mean(0)) / x.std(0)
+    freq, power = welch(z, fs=fs, nperseg=int(4 * fs), axis=0)
+    power = power.mean(1)
+    return freq, power / np.trapezoid(power, freq)
+
+
+# --- failure modes ---------------------------------------------------------------------
+
+MISSED, FALSE = "missed (FN)", "false (FP)"
+CAUSES: dict[str, Callable[[pd.Series], bool]] = {
+    "near miss (other error within 100 ms)": lambda e: e["near_miss"],
+    "fast breathing (> 8 Hz)": lambda e: e["rate_hz"] > 8,
+    "face motion (top 10% of the clip)": lambda e: e["motion"] > 0.9,
+    "shallow breath (bottom 25%)": lambda e: e["amplitude"] < 0.25,
+}
+"""What each error is checked against, in order; an error can have several, or none."""
+NO_CAUSE = "none of these"
+
+
+def _around(
+    times: np.ndarray, values: np.ndarray, at: np.ndarray, reduce
+) -> np.ndarray:
+    """``reduce`` of *values* within :data:`LOCAL_S` of each time in *at*."""
+    out = np.full(len(at), np.nan)
+    for k, a in enumerate(at):
+        m = (times >= a - LOCAL_S) & (times <= a + LOCAL_S)
+        if m.any():
+            out[k] = reduce(values[m])
+    return out
+
+
+def errors(
+    p: dict, t: dict, head: bool, frame_times: np.ndarray, frames: np.ndarray
+) -> pd.DataFrame:
+    """Every missed true inhale and unmatched predicted inhale of one clip, with the
+    true rate there, the breath's size and the face motion around it (each a quantile
+    of the clip's true breaths), and the :data:`CAUSES` it carries. *frames* are the
+    gray crops ``(T, 1, H, W)`` at *frame_times*."""
+    ev = clip_events(p, t, head)
+    motion = np.abs(np.diff(frames[:, 0].astype(np.float32), axis=0)).mean(axis=(1, 2))
+    motion_t = frame_times[1:]
+    df = pd.concat(
+        [
+            pd.DataFrame({"time": ev["true"][~ev["hit"]], "kind": MISSED}),
+            pd.DataFrame({"time": ev["pred"][~ev["used"]], "kind": FALSE}),
+        ],
+        ignore_index=True,
+    ).sort_values("time", ignore_index=True)
+    at = df["time"].to_numpy()
+    df["rate_hz"] = _local_rate(at, ev["true"], ev["rate"])
+    by_kind = {k: df.loc[df["kind"] == k, "time"].to_numpy() for k in (MISSED, FALSE)}
+    other = [by_kind[FALSE] if k == MISSED else by_kind[MISSED] for k in df["kind"]]
+    df["near_miss"] = [
+        bool(len(o) and np.min(np.abs(o - t0)) <= LAG_WINDOW_S)
+        for t0, o in zip(at, other, strict=True)
+    ]
+    clip_motion = _around(motion_t, motion, ev["true"], np.mean)
+    clip_size = _around(t["times"], t["signal"], ev["true"], np.ptp)
+    df["motion"] = [
+        np.mean(clip_motion <= v) for v in _around(motion_t, motion, at, np.mean)
+    ]
+    df["amplitude"] = [
+        np.mean(clip_size <= v) for v in _around(t["times"], t["signal"], at, np.ptp)
+    ]
+    df["causes"] = [
+        ", ".join(c for c, rule in CAUSES.items() if rule(row)) or NO_CAUSE
+        for _, row in df.iterrows()
+    ]
+    return df
+
+
+def cause_counts(err: pd.DataFrame) -> pd.DataFrame:
+    """How many errors of each kind carry each cause (an error may carry several)."""
+    rows = []
+    for kind, g in err.groupby("kind"):
+        for cause in [*CAUSES, NO_CAUSE]:
+            n = int(g["causes"].str.contains(cause, regex=False).sum())
+            rows.append({"kind": kind, "cause": cause, "errors": n, "of": len(g)})
+    return pd.DataFrame(rows)
