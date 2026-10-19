@@ -21,8 +21,6 @@ CYCLE_SAMPLES = 32
 """Points each breath is resampled to before its shape is compared."""
 MIN_SPECTRUM_S = 2.0
 """Shortest span whose spectrum is measured."""
-MIN_INTERVALS = 5
-"""Fewest breath intervals a span needs for their distribution to be compared."""
 BACKGROUND_S = 0.1
 """Onset probability further than this from any inhale is background."""
 NAN = float("nan")
@@ -30,13 +28,10 @@ NAN = float("nan")
 MEASURES: dict[str, tuple[str, str, str | None]] = {
     "n_inhales": ("rhythm", "Inhales", None),
     "rate_hz": ("rhythm", "Breathing rate (Hz)", None),
-    "out_of_band_frac": ("rhythm", "Breaths outside the rate band", "lower"),
-    "rate_jump_frac": ("rhythm", "Rate jumps", "lower"),
+    "too_fast_frac": ("rhythm", "Breaths faster than the ceiling", "lower"),
+    "high_freq_power_frac": ("rhythm", "Trace power above the ceiling", "lower"),
     "alternation_break_frac": ("rhythm", "Alternation breaks", "lower"),
-    "band_power_frac": ("rhythm", "Power in the breathing band", "higher"),
-    "spectral_peak_frac": ("rhythm", "Band power near its peak", "higher"),
     "cycle_similarity": ("rhythm", "Breath shape similarity", "higher"),
-    "interval_kl": ("rhythm", "Interval KL from population", "lower"),
     "head_trace_f1": ("head", "Head vs trace F1", "higher"),
     "peak_prob": ("head", "Onset peak height", "higher"),
     "ambiguous_peak_frac": ("head", "Ambiguous onset peaks", "lower"),
@@ -150,16 +145,15 @@ def _correlation(a: np.ndarray, b: np.ndarray) -> float:
 # --- plausibility of the trace -------------------------------------------------------
 
 
-def rhythm(onsets: np.ndarray, band: tuple[float, float], jump: float) -> dict:
-    """Median rate, the share of breaths outside *band*, and of rate jumps."""
+def rhythm(onsets: np.ndarray, ceiling_hz: float) -> dict:
+    """Median rate (a description), and the share of breaths faster than a mouse
+    breathes (*ceiling_hz*). Nothing is assumed about which slower rates are usual:
+    they change with running, odours and task."""
     rates = breath_rates(onsets) if len(onsets) > 1 else np.empty(0)
-    out = {"rate_hz": NAN, "out_of_band_frac": NAN, "rate_jump_frac": NAN}
+    out = {"rate_hz": NAN, "too_fast_frac": NAN}
     if len(rates):
         out["rate_hz"] = float(np.median(rates))
-        out["out_of_band_frac"] = float(np.mean((rates < band[0]) | (rates > band[1])))
-    if len(rates) > 1:
-        ratio = rates[1:] / rates[:-1]
-        out["rate_jump_frac"] = float(np.mean(np.maximum(ratio, 1 / ratio) > jump))
+        out["too_fast_frac"] = float(np.mean(rates > ceiling_hz))
     return out
 
 
@@ -172,21 +166,14 @@ def alternation_breaks(inhales: np.ndarray, exhales: np.ndarray) -> float:
     return float(np.mean(kinds[1:] == kinds[:-1]))
 
 
-def spectrum(x: np.ndarray, fs: float, band: tuple[float, float]) -> dict:
-    """Share of power in the breathing band, and of the band's power near its peak."""
-    out = {"band_power_frac": NAN, "spectral_peak_frac": NAN}
-    if len(x) < MIN_SPECTRUM_S * fs:
-        return out
+def high_frequency_power(x: np.ndarray, fs: float, ceiling_hz: float) -> float:
+    """Share of the trace's power above *ceiling_hz*, faster than any breath: jitter
+    the network adds, not breathing (NaN when the grid cannot resolve the ceiling)."""
+    if len(x) < MIN_SPECTRUM_S * fs or ceiling_hz >= fs / 2:
+        return NAN
     freq, power = welch(x, fs=fs, nperseg=min(len(x), int(4 * fs)))
-    in_band = (freq >= band[0]) & (freq <= band[1])
-    total = power[freq >= band[0] / 2].sum()
-    if total <= 0 or not in_band.any() or power[in_band].sum() <= 0:
-        return out
-    peak = freq[in_band][np.argmax(power[in_band])]
-    near = in_band & (freq >= peak / 1.2) & (freq <= peak * 1.2)
-    out["band_power_frac"] = float(power[in_band].sum() / total)
-    out["spectral_peak_frac"] = float(power[near].sum() / power[in_band].sum())
-    return out
+    total = power[freq > 0].sum()
+    return float(power[freq > ceiling_hz].sum() / total) if total > 0 else NAN
 
 
 def cycle_similarity(signal: np.ndarray, onsets: np.ndarray) -> float:
@@ -204,19 +191,6 @@ def cycle_similarity(signal: np.ndarray, onsets: np.ndarray) -> float:
         return NAN
     template = np.median(cycles, axis=0)
     return _median([_correlation(c, template) for c in cycles])
-
-
-def interval_divergence(onsets_s: np.ndarray, reference: Reference) -> float:
-    """KL divergence of the span's breath intervals from the population's."""
-    intervals = np.diff(onsets_s)
-    if len(intervals) < MIN_INTERVALS or reference.interval_density is None:
-        return NAN
-    edges = reference.interval_edges
-    clipped = np.clip(intervals, edges[0], np.nextafter(edges[-1], 0))
-    p = np.histogram(clipped, bins=edges)[0] + 1e-6
-    p = p / p.sum()
-    q = reference.interval_density
-    return float(np.sum(p * np.log(p / q)))
 
 
 # --- the onset head --------------------------------------------------------------------
@@ -338,8 +312,7 @@ def measure(
     video: Video,
     span: tuple[float, float],
     *,
-    band: tuple[float, float],
-    jump: float,
+    ceiling_hz: float,
     ambiguous_floor: float,
     reference: Reference | None,
 ) -> dict[str, float]:
@@ -350,14 +323,14 @@ def measure(
     fs = 1.0 / float(np.median(np.diff(times)))
     mask = _inside(times, span)
     out: dict[str, float] = {"n_inhales": float(len(inside))}
-    out |= rhythm(onsets_s, band, jump)
+    out |= rhythm(onsets_s, ceiling_hz)
+    out["high_freq_power_frac"] = high_frequency_power(
+        video.signal[mask], fs, ceiling_hz
+    )
     out["alternation_break_frac"] = alternation_breaks(
         onsets_s, _at(times, ev.exhale, span)
     )
-    out |= spectrum(video.signal[mask], fs, band)
     out["cycle_similarity"] = cycle_similarity(video.signal, inside)
-    if reference is not None:
-        out["interval_kl"] = interval_divergence(onsets_s, reference)
     out |= head(video, span, ambiguous_floor, reference)
     out |= agreement(video, span)
     out |= familiarity(video, span, reference)

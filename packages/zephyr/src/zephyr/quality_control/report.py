@@ -3,7 +3,7 @@
 A report (``<video stem>.qc.json``) holds the video's measures over the whole clip
 (``summary``) and per window (``windows``); a labelled clip also gets a ``truth`` block
 (its real scores, never used by a measure) so the measures can be checked against it.
-``<video stem>.qc.npz`` keeps the trace, onset probability and the draws' spread.
+``<video stem>.qc.parquet`` keeps the trace, onset probability and the draws' spread.
 """
 
 import json
@@ -17,9 +17,11 @@ import torch
 
 from .. import features
 from ..config import (
+    Fold,
     QualityControl,
     QualityParams,
     QualityReference,
+    ReferenceSampling,
     ResolvedClip,
     canonical,
     dump,
@@ -39,12 +41,10 @@ from ..signal import BREATHING_SIGNAL_COLUMN, TIME_COLUMN
 from . import frames
 from .metrics import Video, find_events, measure, spans, spread
 from .reference import (
-    INTERVAL_EDGES,
     Reference,
     checkpoint_hash,
     embedding_statistics,
     fit_calibration,
-    interval_density,
     jsonable,
     quantiles,
 )
@@ -53,7 +53,7 @@ AMP = {"bf16": torch.bfloat16, "fp16": torch.float16, "off": None}
 SETTINGS = "quality-control.json"
 """The run's settings, written once into its output folder."""
 REPORT = ".qc.json"
-TRACES = ".qc.npz"
+TRACES = ".qc.parquet"
 
 
 def machine(config, device: str | None, amp: str | None) -> tuple[str, str]:
@@ -85,19 +85,6 @@ def _sample_rows(embeddings: np.ndarray, n: int) -> np.ndarray:
     return known[np.linspace(0, len(known) - 1, n).round().astype(int)]
 
 
-def _truth_intervals(entry: ClipEntry) -> np.ndarray:
-    """Intervals between the clip's true inhales, none reaching into an excluded span."""
-    found = truth_events(entry)
-    onsets = np.sort(np.asarray(found.inhale, float))
-    if len(onsets) < 2:
-        return np.empty(0)
-    start, stop = onsets[:-1], onsets[1:]
-    keep = np.ones(len(start), bool)
-    for lo, hi in np.asarray(found.excluded, float).reshape(-1, 2):
-        keep &= ~((start <= hi) & (stop >= lo))
-    return (stop - start)[keep]
-
-
 def _head_matches(
     entry: ClipEntry, times, onset, inhale
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -114,32 +101,49 @@ def _head_matches(
     return onset[asserted], real
 
 
-def build_reference(config: QualityReference, device: str, amp: str) -> dict:
-    """Measure what :class:`~.reference.Reference` holds and write it to ``config.out``."""
+def _spread_out(clips: list[ResolvedClip], n: int | None) -> list[ResolvedClip]:
+    """Up to *n* of *clips*, spread evenly over the list (all when ``None``)."""
+    if n is None or len(clips) <= n:
+        return list(clips)
+    return [clips[i] for i in np.linspace(0, len(clips) - 1, n).round().astype(int)]
+
+
+def measure_reference(
+    checkpoint: Path,
+    known: list[ResolvedClip],
+    unseen: list[ResolvedClip],
+    recipe,
+    features_dir: Path,
+    out: Path,
+    sampling: ReferenceSampling,
+    inference,
+    device: str,
+    amp: str,
+) -> dict:
+    """Measure what :class:`~.reference.Reference` holds for *checkpoint* from the clips
+    it knows and labelled clips it never trained on, and write it to *out*.
+    *inference* gives ``infer_window`` and ``frame_chunk``."""
     torch_device = torch.device(device)
-    model, mean, std, state = load_checkpoint(config.checkpoint, torch_device)
+    model, mean, std, state = load_checkpoint(checkpoint, torch_device)
     head = has_onset_head([state])
-    known = [c for s in config.clips for c in s.resolved()]
-    unseen = [c for s in config.calibration for c in s.resolved()]
+    known = _spread_out(known, sampling.max_clips)
+    unseen = _spread_out(unseen, sampling.max_clips)
     unlabelled = [c.name for c in unseen if not c.labelled]
     if unlabelled:
         raise SystemExit(f"calibration clips need a thermistor: {unlabelled}")
     refuse_leaked([state], unseen)
-    recipe = config.preprocess
 
-    embeddings, image, intervals = [], [], []
-    entries = features.require(known, recipe, config.features_dir, model.channels)
+    embeddings, image = [], []
+    entries = features.require(known, recipe, features_dir, model.channels)
     for k, entry in enumerate(entries):
-        print(f"[{k + 1}/{len(entries)}] {entry.clip_id}", flush=True)
-        samples = _predict(model, mean, std, entry, config, torch_device, amp)
-        rows = _sample_rows(samples.embeddings, config.frames_per_clip)
+        print(f"[reference {k + 1}/{len(entries)}] {entry.clip_id}", flush=True)
+        samples = _predict(model, mean, std, entry, inference, torch_device, amp)
+        rows = _sample_rows(samples.embeddings, sampling.frames_per_clip)
         embeddings.append(samples.embeddings[rows])
         if frames.has_gray(entry):
             image.append(frames.statistics(entry, rows))
-        if entry.events is not None:
-            intervals.append(_truth_intervals(entry))
     centre, precision = embedding_statistics(
-        np.concatenate(embeddings), config.shrinkage
+        np.concatenate(embeddings), sampling.shrinkage
     )
     reference = Reference(
         checkpoint_sha256="",
@@ -147,19 +151,17 @@ def build_reference(config: QualityReference, device: str, amp: str) -> dict:
         embedding_precision=precision,
         distance_quantiles=np.empty(0),
         image_quantiles=None,
-        interval_edges=INTERVAL_EDGES,
-        interval_density=None,
         onset_calibration=None,
         record={},
     )
 
     distances, peaks, real = [], [], []
     if unseen:
-        entries = features.require(unseen, recipe, config.features_dir, model.channels)
+        entries = features.require(unseen, recipe, features_dir, model.channels)
         for k, entry in enumerate(entries):
             print(f"[calibration {k + 1}/{len(entries)}] {entry.clip_id}", flush=True)
-            samples = _predict(model, mean, std, entry, config, torch_device, amp)
-            rows = _sample_rows(samples.embeddings, config.frames_per_clip)
+            samples = _predict(model, mean, std, entry, inference, torch_device, amp)
+            rows = _sample_rows(samples.embeddings, sampling.frames_per_clip)
             distances.append(reference.distance(samples.embeddings[rows]))
             if head:
                 times = np.load(entry.times)
@@ -171,8 +173,8 @@ def build_reference(config: QualityReference, device: str, amp: str) -> dict:
         distances = [reference.distance(e) for e in embeddings]
 
     record = {
-        "checkpoint": canonical(config.checkpoint),
-        "checkpoint_sha256": checkpoint_hash(config.checkpoint),
+        "checkpoint": canonical(checkpoint),
+        "checkpoint_sha256": checkpoint_hash(checkpoint),
         "epoch": state.get("epoch"),
         "created": datetime.now(UTC).isoformat(timespec="seconds"),
         "zephyr_version": version("zephyr"),
@@ -193,25 +195,66 @@ def build_reference(config: QualityReference, device: str, amp: str) -> dict:
             if image
             else None
         ),
-        "intervals": {
-            "edges": INTERVAL_EDGES,
-            "density": interval_density(np.concatenate(intervals))
-            if intervals
-            else None,
-            "n": int(sum(len(i) for i in intervals)),
-        },
         "onset_calibration": (
             fit_calibration(np.concatenate(peaks), np.concatenate(real))
             if peaks
             else None
         ),
-        "settings": dump(config),
+        "sampling": dump(sampling),
     }
     record = jsonable(record)
-    config.out.parent.mkdir(parents=True, exist_ok=True)
-    config.out.write_text(json.dumps(record, indent=1))
-    print(f"wrote {config.out}")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(record, indent=1))
+    print(f"wrote {out}")
     return record
+
+
+def build_reference(config: QualityReference, device: str, amp: str) -> dict:
+    """``zephyr quality-control reference``: the reference *config* describes."""
+    return measure_reference(
+        config.checkpoint,
+        [c for s in config.clips for c in s.resolved()],
+        [c for s in config.calibration for c in s.resolved()],
+        config.preprocess,
+        config.features_dir,
+        config.out,
+        config,
+        config,
+        device,
+        amp,
+    )
+
+
+FOLD_REFERENCE = "qc-reference.json"
+"""What ``zephyr run`` writes beside each checkpoint."""
+
+
+def fold_reference(
+    fold: Fold, run_dir: Path, features_dir: Path, device: str, amp: str, smoke: bool
+) -> Path | None:
+    """The reference of a fold's ``best.pt``, from its training clips and calibrated on
+    its ``[fold.val]`` clips; kept if it exists, skipped when the fold turns it off."""
+    params = fold.quality_reference
+    out = run_dir / FOLD_REFERENCE
+    if not params.enabled:
+        return None
+    if out.is_file():
+        return out
+    if smoke:
+        params = params.model_copy(update={"max_clips": 1, "frames_per_clip": 200})
+    measure_reference(
+        run_dir / "best.pt",
+        [c for clips in fold.train_clips() for c in clips],
+        fold.val_clips(),
+        fold.preprocess,
+        features_dir,
+        out,
+        params,
+        fold.train_params,
+        device,
+        amp,
+    )
+    return out
 
 
 # --- one report per video ----------------------------------------------------------------
@@ -323,8 +366,7 @@ def report(
         out = measure(
             video,
             span,
-            band=params.rate_band_hz,
-            jump=params.rate_jump,
+            ceiling_hz=params.breathing_ceiling_hz,
             ambiguous_floor=params.ambiguous_floor,
             reference=reference,
         )
@@ -352,6 +394,23 @@ def report(
             **meta,
             "summary": scores(whole_span, whole=True),
             "windows": windows,
+        }
+    )
+
+
+def traces(video: Video, onset: np.ndarray) -> pd.DataFrame:
+    """One row per output sample: time, trace, onset probability, the draws' spread
+    (NaN without draws) and whether an inhale was found there."""
+    inhale = np.zeros(len(video.times), bool)
+    inhale[video.events.inhale] = True
+    drawn = spread(video)
+    return pd.DataFrame(
+        {
+            "time": video.times,
+            "signal": video.signal,
+            "onset": onset,
+            "spread": drawn if len(drawn) else np.full(len(video.times), np.nan),
+            "inhale": inhale,
         }
     )
 
@@ -424,13 +483,8 @@ def run(config: QualityControl, device: str, amp: str) -> list[Path]:
         video, onset = _video(models, entry, config, torch_device, amp, reference, head)
         result = report(clip, entry, video, config.params, reference, head, meta)
         if config.params.save_traces:
-            np.savez_compressed(
-                config.output_dir / f"{clip.source.stem}{TRACES}",
-                times=video.times,
-                signal=video.signal,
-                onset=onset,
-                spread=spread(video),
-                inhale=video.times[video.events.inhale],
+            traces(video, onset).to_parquet(
+                config.output_dir / f"{clip.source.stem}{TRACES}", index=False
             )
         part = out.with_name(out.name + ".part")
         part.write_text(json.dumps(result, indent=1))

@@ -2,7 +2,7 @@
 
 Which runs, under which labels, is a quality manifest of ``zephyr-benchmarks``
 (``configs/results/``, :data:`MANIFEST`; ``ZEPHYR_QUALITY`` names another). A run's
-reports (``*.qc.json``, ``*.qc.npz``) and its reference are copied once into
+reports (``*.qc.json``, ``*.qc.parquet``) and its reference are copied once into
 ``cache/quality-control/`` (credentials from ``AWS_PROFILE`` for ``s3://`` roots).
 """
 
@@ -11,7 +11,6 @@ import json
 import os
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 
 from zephyr.benchmarks.config import QualityManifest, QualityReport
@@ -79,10 +78,9 @@ def reference(label: str) -> dict | None:
     return json.loads(path.read_text()) if path else None
 
 
-def traces(label: str, stem: str) -> dict[str, np.ndarray]:
+def traces(label: str, stem: str) -> pd.DataFrame:
     """A video's saved trace, onset probability, draws' spread and inhales."""
-    with np.load(folder(label) / f"{stem}.qc.npz") as data:
-        return dict(data)
+    return pd.read_parquet(folder(label) / f"{stem}.qc.parquet")
 
 
 def report(label: str, stem: str) -> dict:

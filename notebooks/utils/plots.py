@@ -857,7 +857,11 @@ def retention_figure(
 
 
 def quality_video_figure(
-    traces: dict, windows: pd.DataFrame, measures: Sequence[str], t0: float, t1: float
+    traces: pd.DataFrame,
+    windows: pd.DataFrame,
+    measures: Sequence[str],
+    t0: float,
+    t1: float,
 ) -> Figure:
     """One video: an excerpt of its trace with the draws' spread and its onset head,
     then the chosen measures and the true inhale F1 per window over the whole clip."""
@@ -866,27 +870,28 @@ def quality_video_figure(
         aspect=0.75,
         height_ratios=[1.2, 0.6, 1.4],
     )
-    times = traces["times"] - traces["times"][0]
+    origin = float(traces["time"].iloc[0])
+    times = traces["time"].to_numpy() - origin
     inside = _inside(times, t0, t1)
     ax = axes["trace"]
-    signal = traces["signal"]
-    if len(traces["spread"]):
+    signal, spread = traces["signal"].to_numpy(), traces["spread"].to_numpy()
+    if np.isfinite(spread).any():
         ax.fill_between(
             times[inside],
-            (signal - traces["spread"])[inside],
-            (signal + traces["spread"])[inside],
+            (signal - spread)[inside],
+            (signal + spread)[inside],
             color=style.METHODS["Zephyr"],
             alpha=0.25,
             lw=0,
         )
     ax.plot(times[inside], signal[inside], color=style.METHODS["Zephyr"])
-    inhale = traces["inhale"] - traces["times"][0]
+    inhale = times[traces["inhale"].to_numpy()]
     mark_events(ax, inhale[_inside(inhale, t0, t1)], ax.get_ylim()[1], style.ONSET)
     ax.set_ylabel("Trace (z)")
-    onset_head(axes["onset"], times[inside], traces["onset"][inside])
+    onset_head(axes["onset"], times[inside], traces["onset"].to_numpy()[inside])
     axes["onset"].set_xlabel("Time (s)")
     ax = axes["windows"]
-    middle = (windows["start"] + windows["end"]) / 2 - traces["times"][0]
+    middle = (windows["start"] + windows["end"]) / 2 - origin
     for name in measures:
         ax.plot(
             middle,

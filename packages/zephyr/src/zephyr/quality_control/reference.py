@@ -1,8 +1,8 @@
 """What a checkpoint's quality control compares new videos with, measured once.
 
 A :class:`Reference` holds the training clips' embedding distribution, the embedding
-distances of unseen labelled animals, image-statistic quantiles, the population's breath
-intervals, and a calibration of the onset head's peaks. It is a JSON file shipped beside
+distances of unseen labelled animals, image-statistic quantiles and a calibration of
+the onset head's peaks. It is a JSON file shipped beside
 the checkpoint (``zephyr quality-control reference``), tied to it by its SHA-256.
 """
 
@@ -17,8 +17,6 @@ from scipy.optimize import minimize
 
 QUANTILES = np.arange(101)
 """Percentiles every distribution is stored at."""
-INTERVAL_EDGES = np.geomspace(1 / 30, 4.0, 41)
-"""Breath-interval bins (s): 30 Hz to one breath in 4 s, log-spaced."""
 RELIABILITY_BINS = 10
 EPS = 1e-6
 
@@ -47,8 +45,6 @@ class Reference:
     embedding_precision: np.ndarray
     distance_quantiles: np.ndarray
     image_quantiles: dict[str, np.ndarray] | None
-    interval_edges: np.ndarray
-    interval_density: np.ndarray | None
     onset_calibration: dict | None
     record: dict
     """Everything else written (clips, settings, reliability): kept as read."""
@@ -72,7 +68,7 @@ class Reference:
     @classmethod
     def load(cls, path: Path) -> "Reference":
         data = json.loads(Path(path).read_text())
-        embedding, intervals = data["embedding"], data["intervals"]
+        embedding = data["embedding"]
         image = data["image"]
         return cls(
             checkpoint_sha256=data["checkpoint_sha256"],
@@ -81,10 +77,6 @@ class Reference:
             distance_quantiles=np.asarray(embedding["distance_quantiles"]),
             image_quantiles=(
                 {k: np.asarray(v) for k, v in image.items()} if image else None
-            ),
-            interval_edges=np.asarray(intervals["edges"]),
-            interval_density=(
-                np.asarray(intervals["density"]) if intervals["density"] else None
             ),
             onset_calibration=data["onset_calibration"],
             record=data,
@@ -101,18 +93,6 @@ def embedding_statistics(
     target = np.trace(cov) / len(cov) * np.eye(len(cov))
     shrunk = (1 - shrinkage) * cov + shrinkage * target
     return mean, np.linalg.inv(shrunk)
-
-
-def interval_density(intervals: np.ndarray) -> np.ndarray | None:
-    """The population's breath intervals over :data:`INTERVAL_EDGES`, smoothed so no
-    bin is empty."""
-    intervals = np.asarray(intervals, float)
-    if not len(intervals):
-        return None
-    edges = INTERVAL_EDGES
-    clipped = np.clip(intervals, edges[0], np.nextafter(edges[-1], 0))
-    counts = np.histogram(clipped, bins=edges)[0] + 0.5
-    return counts / counts.sum()
 
 
 def fit_calibration(peaks: np.ndarray, real: np.ndarray) -> dict | None:

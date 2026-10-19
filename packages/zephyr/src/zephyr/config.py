@@ -35,7 +35,7 @@ from pydantic import (
 
 from . import events
 from .channels import FLOW_CLIP_PX, FLOW_SCALE_PX, MOTION_TAU_S, ChannelSet
-from .rates import DEFAULT_RATE_BINS_HZ, RATE_BAND_HZ
+from .rates import DEFAULT_RATE_BINS_HZ
 from .signal import CANONICAL_BREATHING_SAMPLING_RATE
 
 OUTPUT_FS = CANONICAL_BREATHING_SAMPLING_RATE
@@ -624,6 +624,27 @@ class TrainSource(Selection):
     """Relative to the other sources: weights 0.5 / 0.5 and 1 / 1 are the same."""
 
 
+class ReferenceSampling(_Model):
+    """How much of its clips a quality-control reference measures."""
+
+    max_clips: PositiveInt | None = None
+    """Clips measured of each side (training, calibration), spread evenly over its
+    list; None: all."""
+    frames_per_clip: PositiveInt = 2000
+    """Frames sampled evenly from each clip for the embedding and image statistics."""
+    shrinkage: float = Field(0.1, ge=0, le=1)
+    """Weight of the scaled identity in the embedding covariance."""
+
+
+class FoldReference(ReferenceSampling):
+    """The quality-control reference ``zephyr run`` writes beside each checkpoint
+    (``qc-reference.json``): from the fold's training clips, calibrated on its
+    ``[fold.val]`` clips (no calibration without them)."""
+
+    enabled: bool = True
+    max_clips: PositiveInt | None = 30
+
+
 FOLD_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 
@@ -647,6 +668,8 @@ class Fold(_Model):
     of the time-tail of the training clips (``val_fraction``). They never train and
     must share no recording with the training or test clips."""
     train_params: TrainParams = TrainParams()
+    quality_reference: FoldReference = FoldReference()
+    """Measured after training; never changes what is trained or scored."""
 
     @field_validator("name")
     @classmethod
@@ -872,25 +895,21 @@ class _QualityMachine(_Model):
     frame_chunk: PositiveInt = 256
 
 
-class QualityReference(_QualityMachine):
+class QualityReference(_QualityMachine, ReferenceSampling):
     """What ``zephyr quality-control reference`` measures once per checkpoint, so that
-    quality control on new videos needs only the checkpoint and the file it writes."""
+    quality control on new videos needs only the checkpoint and the file it writes.
+    ``zephyr run`` also measures it after training (:class:`FoldReference`)."""
 
     checkpoint: RelPath
     features_dir: RelPath
     out: RelPath
     """The reference file (JSON) to write; ship it beside the checkpoint."""
     clips: list[QualitySelection] = Field(min_length=1)
-    """What the network knows (its training clips): embeddings and image statistics,
-    and the breath intervals of the labelled ones."""
+    """What the network knows (its training clips): embeddings and image statistics."""
     calibration: list[QualitySelection] = []
     """Labelled clips the checkpoint never trained on (e.g. its validation animals):
     the embedding distances of an unseen animal, and the onset head's calibration.
     Empty: distances are taken from *clips*, and there is no calibration."""
-    frames_per_clip: PositiveInt = 2000
-    """Frames sampled evenly from each clip for the embedding and image statistics."""
-    shrinkage: float = Field(0.1, ge=0, le=1)
-    """Weight of the scaled identity in the embedding covariance."""
 
     @model_validator(mode="after")
     def _one_recipe(self) -> "QualityReference":
@@ -913,20 +932,14 @@ class QualityParams(_Model):
     dropout_passes: PositiveInt = 16
     seed: int = 0
     """Seeds the dropout draws, per video, so a report is reproducible."""
-    rate_band_hz: tuple[float, float] = RATE_BAND_HZ
-    rate_jump: float = Field(2.0, gt=1)
-    """Ratio of consecutive breaths' rates above which the rate counts as jumping."""
+    breathing_ceiling_hz: float = Field(15.0, gt=0)
+    """Faster than any mouse breathes: breaths above it, and trace power above it, are
+    the network's errors. Only a ceiling: usual rates change with running, odours and
+    task, so no slower rate is judged."""
     ambiguous_floor: float = Field(0.2, gt=0, lt=1)
     """Onset-probability peaks from here up to the head's threshold are ambiguous."""
     save_traces: bool = True
-    """Also write each video's trace, onset probability and dropout spread (npz)."""
-
-    @field_validator("rate_band_hz")
-    @classmethod
-    def _ordered(cls, value: tuple[float, float]) -> tuple[float, float]:
-        if not 0 < value[0] < value[1]:
-            raise ValueError(f"rate_band_hz must be 0 < low < high, got {value}")
-        return value
+    """Also write each video's trace, onset probability and dropout spread (parquet)."""
 
 
 class QualityControl(_QualityMachine):
