@@ -341,8 +341,13 @@ def thumbnail(stem: str) -> np.ndarray | None:
     return np.asarray(Image.open(path).convert("L")) if path.is_file() else None
 
 
-def box(stem: str) -> tuple[int, int, int, int]:
-    return tuple(clips()[stem][0].box)
+def box(stem: str) -> tuple[float, float, float, float]:
+    """The clip's crop box in the pixels of its :func:`thumbnail` (the clip list's box
+    is in the frame the recipe resizes to, ``target_size``)."""
+    clip, recipe = clips()[stem]
+    image = thumbnail(stem)
+    scale = 1.0 if image is None else image.shape[1] / recipe.target_size[0]
+    return tuple(v * scale for v in clip.box)
 
 
 # --- wall time ------------------------------------------------------------------------

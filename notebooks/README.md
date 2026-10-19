@@ -12,7 +12,7 @@ uv run marimo export html notebooks/walkthrough.py -o walkthrough.html --no-incl
 - `walkthrough.py`: the benchmark on the corpus's test sets A, B and C. One test clip
   from crop to breathing trace, every method on it (with how each works), then every
   method on every test clip: scores with bootstrap intervals over animals, by animal,
-  by frequency band and by breathing rate; breathing-rate agreement (MAE, Bland-Altman);
+  by breathing rate and how alike their per-clip scores are; breathing-rate agreement (MAE, Bland-Altman);
   inhale timing; inference wall time on the GPU; the augmentation variant against
   Zephyr; examples; and Zephyr's worst sessions with every missed and false inhale and
   what was happening there. Which runs, under which labels, is the results manifest
@@ -23,8 +23,10 @@ uv run marimo export html notebooks/walkthrough.py -o walkthrough.html --no-incl
   from a local copy of the dataset and its feature cache (`ZEPHYR_TEST_ROOT`, as for
   `test_sets.py`, train and validation clips included for the rate distribution).
   Scores are the runs' own `evaluation.json`; traces are predicted here (GPU, inference
-  only) and cached in `cache/walkthrough/`. Predicting every method on every test clip
-  and timing them are behind buttons: hours the first time, seconds after.
+  only) and cached in `cache/walkthrough/`. The clip-by-clip sections and the wall
+  times read only that cache: the notebook never predicts a whole test set or times a
+  method, so a method missing from the cache is left out of them (the traces on the
+  shown clip are still predicted, one clip each).
 - `corpus.py`: reruns the default `zephyr-dataset` pipeline
   (`packages/zephyr-dataset/configs/vr-foraging-sniff.toml`) up to `select` into a new
   folder, from the corpus's saved DocDB return, and compares the selection with the

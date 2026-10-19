@@ -11,20 +11,16 @@ COLUMN_IN: dict[str, float] = {"single": 3.5, "double": 7.2}
 
 METHODS: dict[str, str] = {
     "Zephyr": "#0072b2",
-    "PhysNet + head": "#009e73",
-    "PhysNet": "#56b4e9",
+    "PhysNet": "#009e73",
     "TS-CAN": "#e69f00",
-    "PhysFormer + head": "#d55e00",
-    "PhysFormer": "#f4a582",
-    "RhythmFormer + head": "#882255",
-    "RhythmFormer": "#cc6677",
+    "PhysFormer": "#d55e00",
+    "RhythmFormer": "#882255",
     "Facemap": "#cc79a7",
     "Pixel (motion)": "#5f5f5f",
     "Pixel (PCA)": "#8c8c8c",
     "Pixel (SNR)": "#b3b3b3",
 }
-"""Compared methods (the keys of ``utils/runs.METHODS``). Zephyr is always the same blue;
-a network and its onset-head version share a hue."""
+"""Compared methods (the keys of ``utils/runs.METHODS``). Zephyr is always the same blue."""
 
 VARIANTS: dict[str, str] = {
     "Zephyr, more augmentation": "#7b3294",

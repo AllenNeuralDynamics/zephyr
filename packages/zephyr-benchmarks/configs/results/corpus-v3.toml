@@ -2,17 +2,14 @@
 # full-gray-sched-v3 (zephyr-compute-sandbox matrices full-gray-sched-v3, benchmarks-v3,
 # transformers-v3, full-gray-sched-v3-geo-blur), seed 17 so far. Read by
 # notebooks/walkthrough.py; a run that has not finished is left out until it has.
+# Only Zephyr has an onset head: the comparison networks are reported as their papers
+# built them (the *-event-v3 runs with a head were tests, not reported).
 root = "s3://aind-scratch-data/vr-foraging/zephyr-runs"
 fold = "dev"
 
 [[method]]
 label = "Zephyr"
 run = "full-gray-sched-v3"
-head = true
-
-[[method]]
-label = "PhysNet + head"
-run = "physnet-event-v3"
 head = true
 
 [[method]]
@@ -24,18 +21,8 @@ label = "TS-CAN"
 run = "tscan-v3"
 
 [[method]]
-label = "PhysFormer + head"
-run = "physformer-event-v3"
-head = true
-
-[[method]]
 label = "PhysFormer"
 run = "physformer-v3"
-
-[[method]]
-label = "RhythmFormer + head"
-run = "rhythmformer-event-v3"
-head = true
 
 [[method]]
 label = "RhythmFormer"

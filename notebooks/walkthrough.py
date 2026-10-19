@@ -96,9 +96,9 @@ def _(sets):
 
 @app.cell
 def _(test_set):
-    # Test A's median clip (78th of 156) by its correlation averaged over the ten
-    # methods finished on 2026-10-18: typical by construction, and favouring none.
-    _median_a = "behavior_806527_2025-10-30_17-20-31_span2_FaceCamera"
+    # A typical test A clip on which Zephyr and PhysNet score alike: Zephyr's correlation
+    # (0.881) is test A's median, PhysNet's 0.887 (seed 17, 2026-10-19).
+    _median_a = "behavior_828421_2025-11-21_17-41-34_span2_FaceCamera"
     _stems = [s for s, k in runs.clip_sets().items() if k == test_set.value]
     clip = mo.ui.dropdown(
         _stems, value=_median_a if _median_a in _stems else _stems[0], label="Clip"
@@ -235,14 +235,14 @@ def _():
     mo.md(r"""
     ## 3. Every method on the same clip
 
-    Twelve ways of turning the same crops into a breathing trace. Five published video
-    networks (TS-CAN, PhysNet, PhysFormer, RhythmFormer; PhysNet, PhysFormer and
-    RhythmFormer also with an onset head) are refitted to mouse breathing, each on its
-    own paper's loss; Facemap's ridge regression is the field's standard readout; the
-    pixel methods are a non-learned floor. All train on the same sessions, stop early
-    on the same validation animals, and are scored the same way. The clip shown by
-    default is test A's median one by correlation averaged over the methods, so it is
-    neither a showcase nor a failure for any of them.
+    Nine ways of turning the same crops into a breathing trace. Four published video
+    networks (TS-CAN, PhysNet, PhysFormer, RhythmFormer) are refitted to mouse
+    breathing as their papers built them, each on its own paper's loss and without an
+    onset head (DSP finds their events); Facemap's ridge regression is the field's
+    standard readout; the pixel methods are a non-learned floor. All train on the same
+    sessions, stop early on the same validation animals, and are scored the same way.
+    The clip shown by default is a typical one of test A (Zephyr's median correlation)
+    on which Zephyr and PhysNet score alike.
     """)
     return
 
@@ -339,8 +339,7 @@ def _():
     $T \times 96 \times 96$ gray volume: 3-D convolutions mix space and time, pooling
     halves space (and twice time), two transposed convolutions restore the frame count,
     and a mean over space gives the trace. Negative Pearson loss (the paper's).
-    **PhysNet + head** adds a second $1 \times 1$ output trained with Zephyr's onset loss,
-    so the comparison with Zephyr's head is like for like.
+    No onset head: DSP finds its events.
     """)
     return
 
@@ -355,7 +354,6 @@ def _():
         F --> G["2 x ConvTranspose3d<br/>time x 4"]
         G --> H["Mean over space"]
         H --> I(["Breathing trace"])
-        H -.-> J(["P(inhale onset)<br/>+ head only"])
     """)
     return
 
@@ -381,7 +379,7 @@ def _():
       Loss $0.2 \cdot \text{Pearson} + \text{CE}$. Trained at batch 2, where the others
       use 4: at batch 4 its stem does not fit in the 16 GB GPU.
 
-    Each also comes with an onset head (**+ head**), trained like PhysNet's.
+    Neither has an onset head: DSP finds their events.
     """)
     return
 
@@ -397,7 +395,6 @@ def _():
         T1 --> U["Upsample time,<br/>mean over space"]
         T2 --> U
         U --> O(["Breathing trace"])
-        U -.-> J(["P(inhale onset)<br/>+ head only"])
     """)
     return
 
@@ -555,14 +552,14 @@ def _():
     Each square is the Spearman correlation, over test clips, of two methods' clip
     scores: high when they find the same clips hard and easy, whatever their means.
     Two methods that agree closely are reading the same thing in the video; a low
-    square between two good methods means they fail on different clips. Drag a box
-    over a square to plot every clip's pair of scores.
+    square between two good methods means they fail on different clips. Choose two
+    methods to plot every clip's pair of scores.
     """)
     return
 
 
 @app.cell
-def _(sets):
+def _(names, sets):
     agree_metric = mo.ui.dropdown(
         {plots.METRIC_LABELS[m]: m for m in ("correlation", "inhale")},
         value=plots.METRIC_LABELS["correlation"],
@@ -571,111 +568,52 @@ def _(sets):
     agree_set = mo.ui.dropdown(
         ["All test sets", *sets], value="All test sets", label="Clips"
     )
-    mo.hstack([agree_metric, agree_set], justify="start")
-    return agree_metric, agree_set
+    agree_x = mo.ui.dropdown(names, value="Zephyr", label="Compare")
+    agree_y = mo.ui.dropdown(
+        names, value="PhysNet" if "PhysNet" in names else names[1], label="with"
+    )
+    mo.hstack([agree_metric, agree_set, agree_x, agree_y], justify="start")
+    return agree_metric, agree_set, agree_x, agree_y
 
 
 @app.cell
-def _(agree_metric, agree_set, clip_scores, names):
+def _(agree_metric, agree_set, agree_x, agree_y, clip_scores, names):
     _rows = clip_scores[clip_scores["method"].isin(names)]
     if agree_set.value != "All test sets":
         _rows = _rows[_rows["set"] == agree_set.value]
-    agree_wide = analysis.clip_scores_wide(_rows, agree_metric.value)[names]
-    agree_names = list(names)
-    _b = "PhysNet" if "PhysNet" in names else names[1]
-    agree_default = ("Zephyr", _b)
-    _i, _j = names.index("Zephyr"), names.index(_b)
+    _label = plots.METRIC_LABELS[agree_metric.value]
     _agreement = analysis.score_agreement(_rows, agree_metric.value)
-    _fig, _ax = plots.agreement_figure(
-        _agreement.loc[names, names], plots.METRIC_LABELS[agree_metric.value]
-    )
-    agree_matrix = mo.ui.matplotlib(
-        _ax,
-        value={"x": (_j - 0.4, _j + 0.4), "y": (_i - 0.4, _i + 0.4)},
-        debounce=True,
-    )
-    agree_matrix
-    return agree_default, agree_matrix, agree_names, agree_wide
-
-
-@app.cell
-def _(agree_default, agree_matrix, agree_metric, agree_names, agree_wide):
-    _a, _b = plots.picked_pair(agree_matrix.value, agree_names, agree_default)
-    plots.pair_scatter_figure(
-        agree_wide, _a, _b, plots.METRIC_LABELS[agree_metric.value]
+    mo.hstack(
+        [
+            plots.agreement_figure(_agreement.loc[names, names], _label),
+            plots.pair_scatter_figure(
+                analysis.clip_scores_wide(_rows, agree_metric.value),
+                agree_x.value,
+                agree_y.value,
+                _label,
+            ),
+        ],
+        widths="equal",
     )
     return
 
 
 @app.cell
 def _(names):
-    _counts = ", ".join(
-        f"{n} {sum(runs.cached(n, s) for s in runs.clips())}" for n in names
-    )
-    mo.md(f"""
-    ## 5. Whole test sets, clip by clip
-
-    The rest of the notebook needs every method's trace on every test clip
-    ({len(runs.clips())} clips, about five minutes each), predicted here on the GPU and
-    cached. The first time that takes hours (the transformers dominate); after that,
-    seconds. Clips already predicted: {_counts}.
-    """)
-    return
-
-
-@app.cell
-def _(names):
-    included = mo.ui.multiselect(names, value=names, label="Methods")
-    go = mo.ui.run_button(label="Predict and tabulate the missing ones")
-    mo.hstack([included, go], justify="start")
-    return go, included
-
-
-@app.cell
-def _(go, included):
-    _todo = [n for n in included.value if not runs.done(n)]
-    mo.stop(
-        bool(_todo) and not go.value,
-        mo.callout(
-            mo.md(f"Not computed yet: {', '.join(_todo)}. Press the button."),
-            kind="info",
-        ),
-    )
-    _parts = [
-        runs.tables(
-            n, lambda it, n=n: mo.status.progress_bar(it, title=n, remove_on_exit=True)
-        )
-        for n in included.value
-    ]
+    # The clip-by-clip tables of every method whose test-set predictions are cached
+    # (cache/walkthrough/analysis-*); predicting the rest is not done here.
+    shown = [n for n in names if runs.done(n)]
+    _parts = [runs.tables(n) for n in shown]
     whole = {
         k: pd.concat([p[k] for p in _parts], ignore_index=True) for k in analysis.TABLES
     }
-    shown = list(included.value)
     return shown, whole
 
 
 @app.cell
 def _():
     mo.md("""
-    ### Correlation by frequency band
-
-    The trace and the target are both band-passed to each band and correlated, clip by
-    clip. Slow breathing (1-3 Hz) and sniffing (above 6 Hz) are different motions of the
-    nose; a method can follow one and not the other.
-    """)
-    return
-
-
-@app.cell
-def _(sets, shown, whole):
-    plots.bands_figure(whole["bands"], shown, sets)
-    return
-
-
-@app.cell
-def _():
-    mo.md("""
-    ## 6. Inference time
+    ## 5. Inference time
 
     Seconds from the preprocessed crops on disk to the finished 60 Hz trace, per clip
     (`zephyr.benchmarks.timing`: the same 8 clips for every method, an untimed warm-up
@@ -688,27 +626,22 @@ def _():
 
 
 @app.cell
-def _(names):
-    time_go = mo.ui.run_button(label="Time the methods not timed yet")
-    time_go
-    return (time_go,)
-
-
-@app.cell
-def _(names, recording_scores, time_go):
-    _todo = [n for n in names if n not in runs.timed()]
-    mo.stop(
-        bool(_todo) and not time_go.value,
-        mo.callout(mo.md(f"Not timed yet: {', '.join(_todo)}."), kind="info"),
-    )
-    timing_table = runs.wall_time(names)
+def _(names, recording_scores):
+    timed = [n for n in names if n in runs.timed()]
+    timing_table = runs.wall_time(timed)
     _a = recording_scores[recording_scores["set"] == runs.SETS["test_a"]]
+    _missing = [n for n in names if n not in timed]
     mo.vstack(
         [
             plots.timing_figure(
-                timing_table, _a.groupby("method")["correlation"].mean()
+                timing_table,
+                {
+                    "Correlation, test A": _a.groupby("method")["correlation"].mean(),
+                    "Inhale F1, test A": _a.groupby("method")["inhale"].mean(),
+                },
             ),
             mo.ui.table(timing_table.round(3), selection=None),
+            mo.md(f"Not timed yet: {', '.join(_missing)}.") if _missing else mo.md(""),
         ]
     )
     return
@@ -717,7 +650,7 @@ def _(names, recording_scores, time_go):
 @app.cell
 def _():
     mo.md(f"""
-    ## 7. Breathing rate
+    ## 6. Breathing rate
 
     The rate rPPG papers report for heart rate: inhales counted in each
     {analysis.RATE_WINDOW_S:g} s window (outside excluded spans), predicted against
@@ -733,7 +666,7 @@ def _(shown, whole):
     _agree = analysis.rate_agreement(whole["windows"]).reset_index()
     _show = [
         n
-        for n in ("Zephyr", "PhysNet + head", "PhysFormer + head", "TS-CAN", "Facemap")
+        for n in ("Zephyr", "PhysNet", "PhysFormer", "TS-CAN", "Facemap")
         if n in shown
     ]
     mo.vstack(
@@ -753,7 +686,7 @@ def _(shown, whole):
 @app.cell
 def _():
     mo.md("""
-    ## 8. Inhale timing
+    ## 7. Inhale timing
 
     For every true inhale with a predicted one within 100 ms, how early or late the
     prediction is. The scorer counts a match within 25 ms (dotted), so a method whose
@@ -767,7 +700,7 @@ def _():
 def _(shown, whole):
     plots.lag_figure(
         whole["lags"],
-        [n for n in shown if runs.ALL[n].head] + [n for n in ("TS-CAN",) if n in shown],
+        [n for n in ("Zephyr", "PhysNet", "TS-CAN") if n in shown],
     )
     return
 
@@ -775,7 +708,7 @@ def _(shown, whole):
 @app.cell
 def _():
     mo.md(r"""
-    ## 9. By breathing rate
+    ## 8. By breathing rate
 
     Every true breath is binned by its own rate ($1 / \Delta t$ to the next inhale);
     misses count in their breath's bin, false events in the bin of the true rate at
@@ -802,7 +735,7 @@ def _(sets, shown, whole):
 @app.cell
 def _():
     mo.md("""
-    ## 10. Augmentation
+    ## 9. Augmentation
 
     Zephyr trained with stronger geometric augmentation and blur (shift $\\pm 8$ px
     instead of 4, zoom $\\pm 15\\%$ instead of 10, rotation $\\pm 10°$, Gaussian blur up to
@@ -850,7 +783,7 @@ def _(recording_scores, sets):
 @app.cell
 def _():
     mo.md("""
-    ## 11. Examples
+    ## 10. Examples
 
     The best, median and worst clip of each test set by Zephyr's correlation, six
     seconds from 30 s in: target (black) and Zephyr (blue).
@@ -887,7 +820,7 @@ def _(clip_scores, sets):
 @app.cell
 def _():
     mo.md("""
-    ## 12. Failure modes
+    ## 11. Failure modes
 
     Zephyr's worst sessions over all three test sets, and what goes wrong in them.
     Every missed true inhale (FN) and every predicted inhale with no true one (FP) is

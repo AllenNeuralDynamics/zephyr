@@ -9,6 +9,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from matplotlib import ticker
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 from matplotlib.patches import Rectangle
@@ -279,9 +280,8 @@ def per_animal_figure(
     return fig
 
 
-def agreement_figure(agreement: pd.DataFrame, label: str) -> tuple[Figure, Axes]:
-    """:func:`.analysis.score_agreement` as a matrix, method ``i`` at row and column
-    ``i`` (cell centres on integer coordinates, so a selection maps to a pair)."""
+def agreement_figure(agreement: pd.DataFrame, label: str) -> Figure:
+    """:func:`.analysis.score_agreement` as a matrix, each square annotated."""
     names = list(agreement.columns)
     fig, ax = style.figure("single", 0.85)
     image = ax.imshow(agreement.to_numpy(), cmap=style.EMBEDDING_CMAP, vmin=-1, vmax=1)
@@ -300,28 +300,7 @@ def agreement_figure(agreement: pd.DataFrame, label: str) -> tuple[Figure, Axes]
     ax.set_yticks(range(len(names)), names, fontsize=5.5)
     ax.grid(False)
     fig.colorbar(image, ax=ax, label=f"Spearman r of clip {label}", shrink=0.7)
-    return fig, ax
-
-
-def picked_pair(
-    selection, names: Sequence[str], default: tuple[str, str]
-) -> tuple[str, str]:
-    """The pair of the matrix cell a box or lasso *selection* on
-    :func:`agreement_figure` covers (the off-diagonal one nearest its middle), or
-    *default* when it covers none."""
-    n = len(names)
-    cols, rows = np.meshgrid(np.arange(n), np.arange(n))
-    cols, rows = cols.ravel(), rows.ravel()
-    mask = selection.get_mask(cols, rows) if selection else np.zeros(n * n, bool)
-    if (mask & (cols != rows)).any():
-        mask &= cols != rows
-    if not mask.any():
-        return default
-    centre = np.array([cols[mask].mean(), rows[mask].mean()])
-    k = np.flatnonzero(mask)[
-        np.argmin(np.hypot(cols[mask] - centre[0], rows[mask] - centre[1]))
-    ]
-    return names[rows[k]], names[cols[k]]
+    return fig
 
 
 def pair_scatter_figure(wide: pd.DataFrame, a: str, b: str, label: str) -> Figure:
@@ -379,12 +358,16 @@ def bands_figure(
     return fig
 
 
-def timing_figure(timing: pd.DataFrame, accuracy: pd.Series) -> Figure:
-    """(a) Inference seconds per minute of video, log scale, and (b) test-A correlation
-    against it: the cost and the benefit of each method."""
+def timing_figure(timing: pd.DataFrame, accuracy: dict[str, pd.Series]) -> Figure:
+    """(a) Inference seconds per minute of video, log scale, then each score of
+    *accuracy* (label -> score per method) against it, one panel each: the cost and the
+    benefit of each method."""
     t = timing.set_index("method")
     order = t["s per min of video"].sort_values().index
-    fig, (a, b) = style.figure("double", 0.34, ncols=2, width_ratios=[1, 1.2])
+    fig, axes = style.figure(
+        "double", 0.3, ncols=1 + len(accuracy), width_ratios=[1] + [1] * len(accuracy)
+    )
+    a = axes[0]
     a.barh(
         range(len(order)),
         t.loc[order, "s per min of video"],
@@ -400,26 +383,22 @@ def timing_figure(timing: pd.DataFrame, accuracy: pd.Series) -> Figure:
     a.axvline(60, color="0.5", linewidth=0.6, linestyle=":")
     a.text(60, len(order) - 0.4, " real time", fontsize=6, color="0.4")
     a.grid(axis="x")
-    for name in order:
-        if name in accuracy:
-            b.scatter(
-                t.loc[name, "s per min of video"],
-                accuracy[name],
-                s=18,
-                color=style.color(name),
-                zorder=3,
+    for ax, (label, score) in zip(axes[1:], accuracy.items(), strict=True):
+        for name in order:
+            if name not in score:
+                continue
+            x, y = t.loc[name, "s per min of video"], score[name]
+            ax.scatter(x, y, s=18, color=style.color(name), zorder=3)
+            ax.annotate(
+                name, (x, y), fontsize=5.5, xytext=(3, 2), textcoords="offset points"
             )
-            b.annotate(
-                name,
-                (t.loc[name, "s per min of video"], accuracy[name]),
-                fontsize=5.5,
-                xytext=(3, 2),
-                textcoords="offset points",
-            )
-    b.set_xscale("log")
-    b.set_xlabel("Inference s per min of video")
-    b.set_ylabel("Correlation, test A")
-    panel_letters([a, b])
+        ax.set_xscale("log")
+        ax.xaxis.set_major_locator(ticker.LogLocator(subs=(1.0, 2.0, 5.0)))
+        ax.xaxis.set_major_formatter(ticker.FormatStrFormatter("%g"))
+        ax.xaxis.set_minor_formatter(ticker.NullFormatter())
+        ax.set_xlabel("Inference s per min of video")
+        ax.set_ylabel(label)
+    panel_letters(axes)
     return fig
 
 
