@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 
 from zephyr.benchmarks import analysis
-from zephyr.benchmarks.config import QualityManifest, ReportedRun, ResultsManifest
+from zephyr.benchmarks.config import ReportedRun, ResultsManifest
 from zephyr.config import load
 
 CONFIGS = Path(__file__).resolve().parents[1] / "configs"
@@ -190,10 +190,7 @@ class ManifestTests(unittest.TestCase):
         self.assertTrue(paths)
         for path in paths:
             with self.subTest(path=path.name):
-                if "[[report]]" in path.read_text(encoding="utf-8"):
-                    self.assertTrue(load(QualityManifest, path).report)
-                else:
-                    self.assertTrue(load(ResultsManifest, path).method)
+                self.assertTrue(load(ResultsManifest, path).method)
 
     def test_a_variant_is_only_for_a_baseline_and_a_head_only_for_a_network(self):
         with self.assertRaises(ValueError):

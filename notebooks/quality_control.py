@@ -14,29 +14,27 @@ with app.setup:
 
 @app.cell
 def _():
-    mo.md(f"""
+    mo.md("""
     # Quality control without a thermistor
 
     `zephyr quality-control` judges a prediction from the network's output alone: is
-    the rhythm plausible, does the onset head agree with the trace, and do a few
-    frames of the video look like what the network trained on. This notebook
+    the rhythm plausible, and does the onset head agree with the trace. This notebook
     checks those measures where the truth is known: on held-out animals, each
     measure against the clip's real inhale F1, per video and per window.
 
-    The runs and labels come from the quality manifest `{quality.MANIFEST.name}`
-    (`ZEPHYR_QUALITY` names another), read from `{quality.RESULTS.root}` and copied
-    once into `notebooks/cache/quality-control/`.
+    Give a folder of reports (local or `s3://`, copied once into
+    `notebooks/cache/quality-control/`) and, optionally, the reference it used;
+    `ZEPHYR_QC_REPORTS` and `ZEPHYR_QC_REFERENCE` fill them in.
     """)
     return
 
 
 @app.cell
 def _():
-    run = mo.ui.dropdown(
-        list(quality.REPORTS), value=next(iter(quality.REPORTS)), label="Run"
-    )
-    run
-    return (run,)
+    run = mo.ui.text(value=quality.REPORTS, label="Reports folder", full_width=True)
+    ref = mo.ui.text(value=quality.REFERENCE, label="Reference file", full_width=True)
+    mo.vstack([run, ref])
+    return ref, run
 
 
 @app.cell
@@ -46,8 +44,9 @@ def _(run):
         videos.empty,
         mo.callout(
             mo.md(
-                f"No reports for **{run.value}** under `{quality.RESULTS.root}/"
-                f"{quality.REPORTS[run.value].folder}`."
+                f"No reports in `{run.value}`."
+                if run.value
+                else "Give a reports folder."
             ),
             kind="danger",
         ),
@@ -192,9 +191,9 @@ def _():
 
 
 @app.cell
-def _(run):
-    _reference = quality.reference(run.value)
-    mo.stop(_reference is None, mo.md("This run used no reference."))
+def _(ref):
+    _reference = quality.reference(ref.value)
+    mo.stop(_reference is None, mo.md("No reference given."))
     plots.calibration_figure(_reference)
     return
 

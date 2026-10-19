@@ -51,10 +51,10 @@ uv run marimo export html notebooks/walkthrough.py -o walkthrough.html --no-incl
   Every measure of each video's report against its real inhale F1 (per video), how well
   each ranks videos and windows, how much keeping the best-judged videos raises the
   mean F1, one video's trace and onset head and its measures over time, and
-  the reference's onset calibration. Which runs is the quality manifest
-  `packages/zephyr-benchmarks/configs/results/quality-control-v3.toml`
-  (`ZEPHYR_QUALITY` names another); reports are copied once into
-  `cache/quality-control/` (`utils/quality.py`).
+  the reference's onset calibration. It reads one folder of reports and, optionally,
+  its reference (local or `s3://`, given in the notebook or by `ZEPHYR_QC_REPORTS` and
+  `ZEPHYR_QC_REFERENCE`); `s3://` ones are copied once into `cache/quality-control/`
+  (`utils/quality.py`).
 - `utils/style.py`: figure sizes, fonts and one fixed colour per method, channel
   and objective. Every figure calls `style.use_style()` and takes its colours
   from here.
