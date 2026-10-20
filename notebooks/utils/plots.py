@@ -352,6 +352,88 @@ def rate_distribution_panel(
     return fig
 
 
+def corpus_rate_panel(
+    width_mm: float,
+    height_mm: float,
+    rates: dict[str, NDArray],
+    low: float = 2.0,
+    high: float = 15.0,
+    step: float = 0.25,
+) -> Figure:
+    """The distribution of breathing rate over the whole corpus (black) and of each
+    animal (grey), as a share of breaths per Hz, binned as in
+    :func:`rate_distribution_panel`."""
+    fig, ax = style.panel(width_mm, height_mm, [["rates"]])
+    a = ax["rates"]
+    every = np.concatenate(list(rates.values()))
+    sample = float(np.min(np.diff(np.unique(np.round(1.0 / every, 6)))))
+    samples = np.round(1.0 / (np.arange(low, high + step / 2, step) * sample) - 0.5)
+    bins = np.unique(1.0 / ((samples + 0.5) * sample))
+
+    def density(values: NDArray) -> NDArray:
+        counts, _ = np.histogram(values, bins)
+        return 100 * counts / len(values) / np.diff(bins)
+
+    for values in rates.values():
+        a.stairs(density(values), bins, color="0.8", linewidth=0.4)
+    a.stairs(density(every), bins, color=style.TRUTH, linewidth=1.0)
+    a.plot([], [], color="0.8", lw=0.6, label=f"Each animal ({len(rates)})")
+    a.plot([], [], color=style.TRUTH, lw=1.0, label="All")
+    a.set_xlim(low, high)
+    a.set_ylim(bottom=0)
+    a.set_xlabel("Breathing rate (Hz)")
+    a.set_ylabel("Breaths (% per Hz)")
+    a.legend(loc="upper right", fontsize=6, handlelength=1)
+    return fig
+
+
+def corpus_animals_panel(
+    width_mm: float, height_mm: float, sessions: pd.DataFrame
+) -> Figure:
+    """Sessions per animal, stacked by how many rigs the animal was recorded on; the
+    corpus' totals written in the corner. *sessions* has a row per session with
+    ``subject_id``, ``rig`` and ``date``."""
+    fig, ax = style.panel(width_mm, height_mm, [["animals"]])
+    a = ax["animals"]
+    per = sessions.groupby("subject_id").agg(
+        n=("rig", "size"),
+        rigs=("rig", "nunique"),
+        first=("date", "min"),
+        last=("date", "max"),
+    )
+    groups = {
+        "1 rig": per["rigs"] == 1,
+        "2 rigs": per["rigs"] == 2,
+        "3+ rigs": per["rigs"] >= 3,
+    }
+    bins = np.arange(0, per["n"].max() + 4, 3)
+    shades = ["#c6dbef", "#6baed6", "#2171b5"]
+    a.hist(
+        [per.loc[k, "n"] for k in groups.values()],
+        bins,
+        stacked=True,
+        color=shades,
+        label=list(groups),
+        edgecolor="white",
+        linewidth=0.3,
+    )
+    span = (pd.to_datetime(per["last"]) - pd.to_datetime(per["first"])).dt.days
+    a.text(
+        0.97,
+        0.6,
+        f"{len(sessions)} sessions\n{len(per)} animals\n{sessions['rig'].nunique()} rigs\n"
+        f"median {per['n'].median():g} sessions\nand {span.median():.0f} days per animal",
+        transform=a.transAxes,
+        ha="right",
+        va="top",
+        fontsize=5.5,
+    )
+    a.set_xlabel("Sessions per animal")
+    a.set_ylabel("Animals")
+    a.legend(loc="upper right", fontsize=5.5, handlelength=0.8)
+    return fig
+
+
 def split_panel(width_mm: float, height_mm: float, folds: pd.DataFrame) -> Figure:
     """One row per animal, one dot per assigned session at its date, coloured by its
     set; animals grouped by their role in the split."""
@@ -553,6 +635,120 @@ def benchmark_panel(
     return fig
 
 
+def accuracy_time_panel(
+    width_mm: float,
+    height_mm: float,
+    recordings: pd.DataFrame,
+    ci: pd.DataFrame,
+    seconds: pd.Series,
+    names: Sequence[str],
+    set_name: str,
+    metric: str = "inhale",
+    on_cpu: Sequence[str] = (),
+    label_offsets: dict[str, tuple[float, float]] | None = None,
+    unit: str = "subject",
+) -> Figure:
+    """*metric* against inference time per clip, per method: each unit (dots, the mean
+    of its recordings; a unit is the value of the *unit* column) and the mean over
+    units with its 95% bootstrap interval (*ci*, :func:`.analysis.bootstrap`'s table);
+    open markers for the *on_cpu* methods."""
+    fig, ax = style.panel(width_mm, height_mm, [["acc"]])
+    a = ax["acc"]
+    rows = recordings[recordings["set"] == set_name]
+    per_animal = rows.groupby(["method", unit])[metric].mean()
+    rng = np.random.default_rng(0)
+    for method in names:
+        if method not in seconds or method not in per_animal.index:
+            continue
+        x = float(seconds[method])
+        values = per_animal.loc[method].to_numpy()
+        colour = style.color(method)
+        a.scatter(
+            x * np.exp(rng.uniform(-0.06, 0.06, len(values))),
+            values,
+            s=2,
+            color=colour,
+            alpha=0.35,
+            lw=0,
+        )
+        row = ci[(ci["set"] == set_name) & (ci["method"] == method)].iloc[0]
+        a.errorbar(
+            x,
+            row["mean"],
+            yerr=[[row["mean"] - row["low"]], [row["high"] - row["mean"]]],
+            fmt="o",
+            ms=3.2,
+            color=colour,
+            mfc="white" if method in on_cpu else colour,
+            mew=0.9,
+            elinewidth=0.9,
+            capsize=0,
+            zorder=4,
+        )
+        a.annotate(
+            _shown(method),
+            (x, row["mean"]),
+            xytext=(label_offsets or {}).get(method, (4, 0)),
+            textcoords="offset points",
+            va="center",
+            fontsize=5.5,
+            color=colour,
+        )
+    a.set_xscale("log")
+    a.xaxis.set_major_formatter(ticker.FormatStrFormatter("%g"))
+    a.xaxis.set_minor_formatter(ticker.NullFormatter())
+    a.set_xticks([0.5, 1, 2, 5, 10])
+    a.set_xlim(0.6, 14)
+    a.set_ylim(0, 1.02)
+    a.set_xlabel("Inference (s per 5-min clip)")
+    a.set_ylabel(f"{METRIC_LABELS[metric]} (test A)")
+    return fig
+
+
+def lag_rate_panel(
+    width_mm: float,
+    height_mm: float,
+    lags: pd.DataFrame,
+    low: float = 2.0,
+    high: float = 12.0,
+    step_hz: float = 1.0,
+    widest_ms: float = 50.0,
+) -> Figure:
+    """Onset lag (predicted minus true inhale) against the breath's rate: the share of
+    each rate bin's lags at each lag (each column sums to 1), with the median (line)
+    and interquartile range (dashed) per bin; dotted, the scorer's tolerance."""
+    fig, ax = style.panel(width_mm, height_mm, [["heat"]])
+    a = ax["heat"]
+    lag = lags["lag_s"].to_numpy() * 1000
+    rate = lags["rate_hz"].to_numpy()
+    keep = (
+        np.isfinite(rate) & (rate >= low) & (rate < high) & (np.abs(lag) <= widest_ms)
+    )
+    lag, rate = lag[keep], rate[keep]
+    x_bins = np.arange(low, high + step_hz / 2, step_hz)
+    y_bins = np.arange(-widest_ms, widest_ms + 0.1, 2.5)
+    counts, _, _ = np.histogram2d(rate, lag, [x_bins, y_bins])
+    share = counts / counts.sum(axis=1, keepdims=True)
+    image = a.pcolormesh(x_bins, y_bins, share.T, cmap="Blues", rasterized=True)
+    centres = (x_bins[:-1] + x_bins[1:]) / 2
+    which = np.digitize(rate, x_bins) - 1
+    stats = np.array(
+        [np.percentile(lag[which == i], [25, 50, 75]) for i in range(len(centres))]
+    )
+    a.plot(centres, stats[:, 1], color=style.TRUTH, lw=0.9)
+    for k in (0, 2):
+        a.plot(centres, stats[:, k], color=style.TRUTH, lw=0.6, ls="--")
+    for y in (-TOLERANCE_MS, TOLERANCE_MS):
+        a.axhline(y, color="0.4", linewidth=0.6, linestyle=":")
+    a.set_xlabel("Breathing rate (Hz)")
+    a.set_ylabel("Onset lag (ms)")
+    a.grid(False)
+    bar = fig.colorbar(image, ax=a, fraction=0.06, pad=0.03, aspect=25)
+    bar.set_label("Share of the rate bin")
+    bar.outline.set_visible(False)
+    return fig
+
+
 def lag_panel(
     width_mm: float, height_mm: float, lags: pd.DataFrame, names: Sequence[str]
 ) -> Figure:
@@ -635,11 +831,12 @@ def sets_panel(
     names: Sequence[str],
     metrics: Sequence[str],
     sets: Sequence[str],
+    unit: str = "subject",
 ) -> Figure:
-    """Per metric (side by side), each method's mean over animals on each set, joined
-    by a line, the method named at the last set."""
+    """Per metric (side by side), each method's mean over units (values of the *unit*
+    column) on each set, joined by a line, the method named at the last set."""
     fig, ax = style.panel(width_mm, height_mm, [list(metrics)], sharey=True)
-    per_animal = recordings.groupby(["set", "method", "subject"])[list(metrics)].mean()
+    per_animal = recordings.groupby(["set", "method", unit])[list(metrics)].mean()
     means = per_animal.groupby(["set", "method"]).mean()
     for metric in metrics:
         a = ax[metric]
@@ -666,7 +863,7 @@ def sets_panel(
         a.set_xlim(-0.25, len(sets) - 1 + 0.9)
         a.set_xlabel("Test set")
         a.set_title(METRIC_LABELS[metric], fontsize=7)
-    ax[metrics[0]].set_ylabel("Mean over animals")
+    ax[metrics[0]].set_ylabel("Mean over units")
     return fig
 
 
@@ -677,12 +874,15 @@ def animals_panel(
     names: Sequence[str],
     metric: str,
     set_name: str,
+    unit: str = "subject",
+    unit_label: str = "Animal",
 ) -> Figure:
-    """Each animal of one set (ranked by the first method), one marker per method."""
+    """Each unit (value of the *unit* column) of one set, ranked by the first method,
+    one marker per method."""
     fig, ax = style.panel(width_mm, height_mm, [["animals"]])
     a = ax["animals"]
     rows = recordings[recordings["set"] == set_name]
-    table = rows.groupby(["subject", "method"])[metric].mean().unstack("method")
+    table = rows.groupby([unit, "method"])[metric].mean().unstack("method")
     table = table.sort_values(names[0])
     x = np.arange(len(table))
     for method in names:
@@ -697,14 +897,18 @@ def animals_panel(
             label=_shown(method),
         )
     a.set_xticks(x, [])
-    a.set_xlabel("Animal (ranked)")
+    a.set_xlabel(f"{unit_label} (ranked)")
     a.set_ylabel(f"{METRIC_LABELS[metric]} (test A)")
     a.legend(loc="lower right", fontsize=6, handletextpad=0.2)
     return fig
 
 
 def rate_band_panel(
-    width_mm: float, height_mm: float, f1: pd.DataFrame, names: Sequence[str]
+    width_mm: float,
+    height_mm: float,
+    f1: pd.DataFrame,
+    names: Sequence[str],
+    legend: bool = True,
 ) -> Figure:
     """Inhale F1 per breathing-rate bin, one line per method, over the share of breaths
     in each bin (bars)."""
@@ -733,7 +937,9 @@ def rate_band_panel(
     ax["share"].set_xticks(x, [b.split("-")[0] for b in bins])
     ax["share"].set_xlabel("Breathing rate (Hz)")
     ax["f1"].set_ylabel("Inhale F1 (test A)")
-    ax["f1"].legend(loc="lower right", fontsize=6, handlelength=1)
+    ax["f1"].set_ylim(0.4, 1.02)
+    if legend:
+        ax["f1"].legend(loc="lower center", fontsize=6, handlelength=1, ncol=3)
     return fig
 
 

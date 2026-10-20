@@ -559,6 +559,22 @@ def breath_rates() -> dict[str, np.ndarray]:
     }
 
 
+def animal_breath_rates() -> dict[str, np.ndarray]:
+    """Every thermistor breath's rate (Hz) per animal, over the clips of every session
+    the corpus assigns to a set, from each clip's cached events."""
+    folds = pd.read_parquet(root() / "dataset" / "folds.parquet")
+    used = folds[folds["set"].notna()]
+    subject = dict(zip(used["session_id"], used["subject_id"].astype(str), strict=True))
+    out: dict[str, list[np.ndarray]] = {}
+    for stem, e in _all_entries().items():
+        animal = subject.get(stem.rsplit("_span", 1)[0])
+        if animal is not None:
+            out.setdefault(animal, []).append(
+                1.0 / np.diff(np.load(e.events)["onset_times"])
+            )
+    return {k: np.concatenate(v) for k, v in out.items()}
+
+
 def frame_embeddings(stem: str, seconds: float = 60.0) -> tuple[np.ndarray, np.ndarray]:
     """The reference network's frame embeddings over the first *seconds* of a clip
     (:func:`zephyr.benchmarks.analysis.frame_embeddings`); cached."""

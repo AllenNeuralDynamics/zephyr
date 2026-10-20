@@ -10,7 +10,7 @@ A prediction is ``{"times", "signal", "onset", "head"?}``; a truth is :func:`tru
 """
 
 import itertools
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 
 import numpy as np
 import pandas as pd
@@ -137,7 +137,8 @@ def _rate_windows(ev: dict, t: dict) -> pd.DataFrame:
 def clip_tables(p: dict, t: dict, head: bool) -> dict[str, pd.DataFrame]:
     """One clip's :data:`TABLES`: every true breath (rate, detected), every false event
     (true rate there), the lag of every true inhale with a prediction within
-    :data:`LAG_WINDOW_S`, the counted rates per window, and the band correlations."""
+    :data:`LAG_WINDOW_S` (and that breath's rate), the counted rates per window, and the
+    band correlations."""
     ev = clip_events(p, t, head)
     fp_t = ev["pred"][~ev["used"]]
     wide = match_events(ev["true"], ev["pred"], LAG_WINDOW_S)
@@ -151,7 +152,11 @@ def clip_tables(p: dict, t: dict, head: bool) -> dict[str, pd.DataFrame]:
             {"time": fp_t, "rate_hz": _local_rate(fp_t, ev["true"], ev["rate"])}
         ),
         "lags": pd.DataFrame(
-            {"lag_s": [ev["pred"][j] - ev["true"][i] for i, j in wide]}, dtype=float
+            {
+                "lag_s": [ev["pred"][j] - ev["true"][i] for i, j in wide],
+                "rate_hz": [ev["rate"][i] for i, _ in wide],
+            },
+            dtype=float,
         ),
         "windows": _rate_windows(ev, t),
         "bands": pd.DataFrame(
@@ -163,16 +168,21 @@ def clip_tables(p: dict, t: dict, head: bool) -> dict[str, pd.DataFrame]:
 # --- summaries over clips --------------------------------------------------------------
 
 
-def rate_agreement(windows: pd.DataFrame) -> pd.DataFrame:
-    """Per method and set: MAE, RMSE and Pearson r of the windowed breathing rate, and
-    the Bland-Altman bias and 95% limits (predicted minus true, in Hz)."""
+def rate_agreement(
+    windows: pd.DataFrame, by: Sequence[str] = ("method", "set")
+) -> pd.DataFrame:
+    """Per group of *by* (method and set by default): MAE, RMSE, MAPE (over windows
+    with a true rate) and Pearson r of the windowed breathing rate, and the
+    Bland-Altman bias and 95% limits (predicted minus true, in Hz)."""
 
     def one(g: pd.DataFrame) -> pd.Series:
         d = g["pred_hz"] - g["true_hz"]
+        rated = g["true_hz"] > 0
         return pd.Series(
             {
                 "MAE (Hz)": d.abs().mean(),
                 "RMSE (Hz)": np.sqrt((d**2).mean()),
+                "MAPE (%)": 100 * (d[rated].abs() / g.loc[rated, "true_hz"]).mean(),
                 "r": np.corrcoef(g["pred_hz"], g["true_hz"])[0, 1],
                 "bias (Hz)": d.mean(),
                 "limits (Hz)": 1.96 * d.std(),
@@ -180,9 +190,7 @@ def rate_agreement(windows: pd.DataFrame) -> pd.DataFrame:
             }
         )
 
-    return windows.groupby(["method", "set"], sort=False).apply(
-        one, include_groups=False
-    )
+    return windows.groupby(list(by), sort=False).apply(one, include_groups=False)
 
 
 def rate_bins(bins=RATE_BINS_HZ) -> list[str]:
@@ -231,15 +239,15 @@ def bootstrap(
     reference: str = "Zephyr",
     n: int = 2000,
     seed: int = 0,
+    unit: str = "subject",
 ) -> pd.DataFrame:
-    """Mean of *metric* over animals with a 95% bootstrap interval, resampling animals
+    """Mean of *metric* over units with a 95% bootstrap interval, resampling units
     (each the mean of its rows: recordings, seeds), per ``set`` and ``method``; and the
-    paired difference to *reference* on the same resamples. Needs a ``subject``."""
+    paired difference to *reference* on the same resamples. A unit is the value of the
+    *unit* column: the animal by default, or e.g. an animal on one rig."""
     rng = np.random.default_rng(seed)
     per_animal = (
-        recordings.groupby(["set", "method", "subject"])[metric]
-        .mean()
-        .unstack("method")
+        recordings.groupby(["set", "method", unit])[metric].mean().unstack("method")
     )
     rows = []
     for name, table in per_animal.groupby(level="set"):
@@ -256,7 +264,7 @@ def bootstrap(
                 "mean": np.nanmean(values[:, k]),
                 "low": np.nanpercentile(means[:, k], 2.5),
                 "high": np.nanpercentile(means[:, k], 97.5),
-                "animals": int(np.isfinite(values[:, k]).sum()),
+                "units": int(np.isfinite(values[:, k]).sum()),
             }
             if ref is not None and k != ref:
                 diff = means[:, ref] - means[:, k]
