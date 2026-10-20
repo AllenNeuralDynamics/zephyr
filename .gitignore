@@ -47,3 +47,4 @@ scratch/
 
 # The documentation site, built by zensical
 /site/
+*.pdf
