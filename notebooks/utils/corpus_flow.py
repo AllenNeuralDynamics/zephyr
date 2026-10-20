@@ -256,9 +256,10 @@ def flow_figure(steps: list[dict]):
 
 
 def flow_panel(width_mm: float, height_mm: float, steps: list[dict], size: float = 7):
-    """:func:`flow_figure` as a manuscript panel of its printed size, text at `size`."""
+    """:func:`flow_figure` as a manuscript panel of its printed size, text at `size`;
+    the inputs are labelled vertically along the left edge, to save width."""
     fig, ax = style.panel(width_mm, height_mm, [["flow"]])
-    draw_flow(ax["flow"], steps, size, size)
+    draw_flow(ax["flow"], steps, size, size, vertical_inputs=True)
     return fig
 
 
@@ -281,9 +282,10 @@ SHORT = {
 """Brief names for the losses, for a printed panel (:func:`shorten`)."""
 
 
-def shorten(steps: list[dict]) -> list[dict]:
+def shorten(steps: list[dict], sets: bool = True) -> list[dict]:
     """The steps with each loss under a brief name (:data:`SHORT`), losses that share
-    one merged; the full reasons and rules stay in :func:`table`."""
+    one merged; the full reasons and rules stay in :func:`table`. Without *sets*, the
+    last step is the corpus as a whole, not split into the sets of one draw."""
     out = []
     for s in steps:
         lost: dict[str, int] = {}
@@ -294,7 +296,10 @@ def shorten(steps: list[dict]) -> list[dict]:
             name = name or label
             lost[name] = lost.get(name, 0) + k
         brief = {**s, "lost": [(name, "", k) for name, k in lost.items()]}
-        if "sets" in s:
+        if "sets" in s and not sets:
+            brief.pop("sets")
+            brief["name"] = "corpus"
+        elif "sets" in s:
             brief["sets"] = [
                 (f"{SET_COLOURS[key]}: {k}", k, a)
                 for key, (_name, k, a) in zip(SETS, s["sets"], strict=True)
@@ -304,7 +309,11 @@ def shorten(steps: list[dict]) -> list[dict]:
 
 
 def draw_flow(
-    ax, steps: list[dict], head_size: float = 6.5, label_size: float = 5.5
+    ax,
+    steps: list[dict],
+    head_size: float = 6.5,
+    label_size: float = 5.5,
+    vertical_inputs: bool = False,
 ) -> None:
     """Draw the flow of :func:`flow_figure` into *ax*; if the first step has a
     ``joined`` list, its parts flow into it from the left."""
@@ -318,18 +327,29 @@ def draw_flow(
         y, source = 0.0, 0.0
         for label, k in steps[0]["joined"]:
             _band(ax, -0.55 * width, source, source - k, -0.04, y, y - k, KEPT)
-            ax.text(
-                -0.58 * width,
-                source - k / 2,
-                f"{label}: {k:,}",
-                ha="right",
-                va="center",
-                fontsize=label_size,
-            )
+            if vertical_inputs:  # along the left edge, reading upwards
+                ax.text(
+                    -0.6 * width,
+                    source - k / 2,
+                    f"{label.removesuffix(' sessions')}: {k:,}",
+                    ha="right",
+                    va="center",
+                    rotation=90,
+                    fontsize=label_size,
+                )
+            else:
+                ax.text(
+                    -0.58 * width,
+                    source - k / 2,
+                    f"{label}: {k:,}",
+                    ha="right",
+                    va="center",
+                    fontsize=label_size,
+                )
             y -= k
             source -= max(k, row) + gap
         y_low = min(y_low, source)
-        left = -1.25 * width
+        left = (-0.72 if vertical_inputs else -1.25) * width
     for i, s in enumerate(steps):
         x = i * width
         n = s["sessions"]
@@ -357,7 +377,7 @@ def draw_flow(
         )
         y = -nxt["sessions"]
         sink = -nxt["sessions"] - 3 * gap  # beside the bar, under the kept band
-        if i + 2 == len(steps):  # clear the list of sets drawn beside the last step
+        if i + 2 == len(steps) and nxt.get("sets"):  # clear the sets beside the last
             depth = sum(max(k, row) + 0.5 * gap for _, k, _ in nxt["sets"])
             sink = min(sink, -depth - 2 * gap)
         for label, _rule, k in nxt["lost"]:
@@ -381,7 +401,7 @@ def draw_flow(
     x = (len(steps) - 1) * width
     y, sink = 0.0, 0.0
     colours = [style.color(SET_COLOURS[k]) for k in SETS]
-    for (name, k, a), colour in zip(last["sets"], colours, strict=True):
+    for (name, k, a), colour in zip(last.get("sets", []), colours, strict=False):
         _band(ax, x + 0.04, y, y - k, x + 0.55 * width, sink, sink - k, colour, 0.8)
         ax.add_patch(
             mpatches.Rectangle(
@@ -397,6 +417,6 @@ def draw_flow(
         )
         y -= k
         sink -= max(k, row) + 0.5 * gap
-    ax.set_xlim(left, len(steps) - 1 + 1.25)
+    ax.set_xlim(left, len(steps) - 1 + (1.25 if last.get("sets") else 0.95))
     ax.set_ylim(y_low - gap, 0.16 * total)
     ax.set_axis_off()

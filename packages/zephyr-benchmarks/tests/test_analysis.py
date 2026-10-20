@@ -56,6 +56,14 @@ class EventTests(unittest.TestCase):
         self.assertTrue(err["near_miss"].all())
         self.assertTrue(err["causes"].str.contains("near miss").all())
 
+    def test_each_lag_carries_its_breaths_rate(self):
+        true_on = np.arange(1, 50, 1 / 3)
+        pred = true_on + 0.01
+        p, t = _clip(true_on, pred)
+        lags = analysis.clip_tables(p, t, head=True)["lags"]
+        np.testing.assert_allclose(lags["lag_s"], 0.01, atol=1e-9)
+        np.testing.assert_allclose(lags["rate_hz"].dropna(), 3.0)
+
     def test_excluded_spans_are_not_scored(self):
         true_on = np.arange(1, 50, 1 / 3)
         p, t = _clip(true_on, [])
@@ -85,6 +93,19 @@ class SummaryTests(unittest.TestCase):
         self.assertEqual(row["MAE (Hz)"], 0)
         self.assertEqual(row["bias (Hz)"], 0)
         self.assertAlmostEqual(row["r"], 1.0)
+
+    def test_rate_agreement_gives_percentage_error_per_group(self):
+        w = pd.DataFrame(
+            {
+                "true_hz": [2.0, 4.0, 5.0, 5.0],
+                "pred_hz": [2.2, 4.4, 5.0, 5.0],
+                "method": "m",
+                "subject": ["a", "a", "b", "b"],
+            }
+        )
+        rows = analysis.rate_agreement(w, by=["method", "subject"])
+        self.assertAlmostEqual(rows.loc[("m", "a"), "MAPE (%)"], 10.0)
+        self.assertEqual(rows.loc[("m", "b"), "MAPE (%)"], 0.0)
 
     def test_f1_by_rate_bins_misses_and_false_events_by_rate(self):
         breaths = pd.DataFrame(
@@ -116,6 +137,15 @@ class SummaryTests(unittest.TestCase):
         # every animal is 0.1 better, so every resample's difference is exactly 0.1
         self.assertAlmostEqual(ci.loc["Other", "diff low"], 0.1)
         self.assertAlmostEqual(ci.loc["Other", "diff high"], 0.1)
+
+    def test_bootstrap_takes_any_column_as_the_unit(self):
+        rows = [
+            {"set": "A", "unit": u, "method": "Zephyr", "correlation": v}
+            for u, v in (("a@1", 0.2), ("a@2", 0.4), ("b@1", 0.9))
+        ]
+        ci = analysis.bootstrap(pd.DataFrame(rows), "correlation", n=50, unit="unit")
+        self.assertEqual(int(ci["units"].iloc[0]), 3)
+        self.assertAlmostEqual(ci["mean"].iloc[0], 0.5)
 
     def test_score_agreement_ranks_clips_across_methods_and_averages_seeds(self):
         scores = [0.2, 0.5, 0.9, 0.4]
