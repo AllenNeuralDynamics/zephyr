@@ -8,6 +8,7 @@ from matplotlib.figure import Figure
 
 COLUMN_IN: dict[str, float] = {"single": 3.5, "double": 7.2}
 """Figure widths in inches: one journal column, or the full page width."""
+MM_PER_IN: float = 25.4
 
 METHODS: dict[str, str] = {
     "Zephyr": "#0072b2",
@@ -123,6 +124,21 @@ def mosaic(
     """Like :func:`figure`, for a named layout; returns the axes by name."""
     w = COLUMN_IN[width]
     fig = plt.figure(figsize=(w, w * aspect), layout="constrained")
+    return fig, fig.subplot_mosaic(layout, **kwargs)
+
+
+def panel(
+    width_mm: float, height_mm: float, layout: list[list[str]], **kwargs: Any
+) -> tuple[Figure, dict[str, Any]]:
+    """One panel of a manuscript figure at its printed size, axes by name.
+
+    Saved with :func:`utils.plots.save_panel`, which keeps this size exactly, so a
+    figure assembled from panels lines up as laid out.
+    """
+    fig = plt.figure(
+        figsize=(width_mm / MM_PER_IN, height_mm / MM_PER_IN), layout="constrained"
+    )
+    fig.get_layout_engine().set(w_pad=1 / MM_PER_IN, h_pad=1 / MM_PER_IN)
     return fig, fig.subplot_mosaic(layout, **kwargs)
 
 

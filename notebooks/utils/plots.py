@@ -7,8 +7,10 @@ import string
 from collections.abc import Sequence
 from pathlib import Path
 
+import matplotlib as mpl
 import numpy as np
 import pandas as pd
+from matplotlib import dates as mdates
 from matplotlib import ticker
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
@@ -41,6 +43,15 @@ def save(fig: Figure, name: str) -> None:
     FIGURES.mkdir(exist_ok=True)
     for ext in ("png", "svg"):
         fig.savefig(FIGURES / f"{name}.{ext}")
+
+
+def save_panel(fig: Figure, path: Path) -> None:
+    """Write a figure panel as SVG (text kept as text) at exactly the size it was made
+    (:func:`utils.style.panel`): never cropped to fit."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # bbox_inches=None would fall back to the style's "tight", which crops
+    with mpl.rc_context({"savefig.bbox": "standard"}):
+        fig.savefig(path.with_suffix(".svg"))
 
 
 def mark_events(
@@ -156,6 +167,690 @@ def network_figure(
     bottom.set_xlim(t0, t1)
     bottom.set_xlabel("Time (s)")
     panel_letters([top, bottom])
+    return fig
+
+
+# --- manuscript panels ------------------------------------------------------------------
+# Drawn at their printed size by utils.style.panel; panel letters are added where the
+# figure is assembled, never here.
+
+
+def breath_phases_panel(
+    width_mm: float,
+    height_mm: float,
+    thumbnail: NDArray | None,
+    box: tuple[float, float, float, float],
+    frames: Sequence[NDArray],
+    labels: Sequence[str],
+    truth: dict,
+    origin: float,
+    t0: float,
+    duration: float,
+    marks: Sequence[float],
+) -> Figure:
+    """The whole face frame with the crop (left), the crop at a few moments of one
+    breath (top), and the raw thermistor at its own rate (z-scored over the clip) with
+    its inhales and exhales below them, the moments marked."""
+    n = len(frames)
+    fig, ax = style.panel(
+        width_mm,
+        height_mm,
+        [["frame", *[f"f{i}" for i in range(n)]], ["frame", *["trace"] * n]],
+        width_ratios=[1.5, *[1] * n],
+        height_ratios=[1, 1.1],
+    )
+    if thumbnail is not None:
+        _crop_image(ax["frame"], thumbnail, "")
+        ax["frame"].add_patch(
+            Rectangle(
+                box[:2], box[2], box[3], fill=False, edgecolor=CROP_EDGE, linewidth=0.8
+            )
+        )
+    else:
+        ax["frame"].set_axis_off()
+    for i, (image, label) in enumerate(zip(frames, labels, strict=True)):
+        _crop_image(ax[f"f{i}"], image, label)
+    tr = ax["trace"]
+    tt = truth["raw_t"] - origin
+    raw = (truth["raw"] - truth["raw"].mean()) / (truth["raw"].std() or 1.0)
+    keep = _inside(tt, t0, t0 + duration)
+    tr.plot(tt[keep], raw[keep], color=style.TRUTH)
+    for kind, marker, y in (("inhale", "v", 1.08), ("exhale", "^", -0.08)):
+        events = truth[kind] - origin
+        events = events[_inside(events, t0, t0 + duration)]
+        tr.plot(
+            events,
+            np.full(len(events), y),
+            marker,
+            color=style.TRUTH if kind == "inhale" else "0.55",
+            markersize=3,
+            lw=0,
+            clip_on=False,
+            transform=tr.get_xaxis_transform(),
+            label=kind.capitalize(),
+        )
+    for t in marks:
+        tr.axvline(t, color=CROP_EDGE, linewidth=0.6)
+    tr.set_xlim(t0, t0 + duration)
+    tr.set_ylabel("Thermistor (z)")
+    tr.set_xlabel("Time (s)")
+    tr.legend(loc="upper right", bbox_to_anchor=(1, -0.35), ncol=2)
+    return fig
+
+
+def prediction_panel(
+    width_mm: float,
+    height_mm: float,
+    truth: dict,
+    prediction: dict,
+    origin: float,
+    t0: float,
+    duration: float,
+) -> Figure:
+    """Zephyr's breathing trace over the thermistor (top) and its onset probability
+    (bottom), with the thermistor's inhales and the head's."""
+    fig, ax = style.panel(
+        width_mm, height_mm, [["trace"], ["onset"]], height_ratios=[2, 1], sharex=True
+    )
+    top, bottom = ax["trace"], ax["onset"]
+    t1 = t0 + duration
+    tt, tp = truth["times"] - origin, prediction["times"] - origin
+    kt, kp = _inside(tt, t0, t1), _inside(tp, t0, t1)
+    true_on, head = truth["inhale"] - origin, prediction["head"] - origin
+    true_on, head = true_on[_inside(true_on, t0, t1)], head[_inside(head, t0, t1)]
+    top.plot(tt[kt], truth["signal"][kt], color=style.TRUTH, label="Thermistor")
+    top.plot(
+        tp[kp], prediction["signal"][kp], color=style.color("Zephyr"), label="Zephyr"
+    )
+    for events, color, marker, y in (
+        (true_on, style.TRUTH, "v", 1.12),
+        (head, style.color("Zephyr"), "^", 1.02),
+    ):
+        top.plot(
+            events,
+            np.full(len(events), y),
+            marker,
+            color=color,
+            markersize=2.5,
+            lw=0,
+            clip_on=False,
+            transform=top.get_xaxis_transform(),
+        )
+    top.set_ylabel("Sniffing (z)")
+    top.legend(loc="lower right", bbox_to_anchor=(1, 1.08), ncol=2)
+    bottom.plot(tp[kp], prediction["onset"][kp], color=style.ONSET)
+    bottom.set_ylim(0, 1.05)
+    bottom.set_yticks([0, 1])
+    bottom.set_ylabel("Onset (p)")
+    bottom.set_xlim(t0, t1)
+    bottom.set_xlabel("Time (s)")
+    return fig
+
+
+FOLD_SETS: dict[str, str] = {
+    "train": "Train",
+    "val": "Validation",
+    "test_a": "A: new animals",
+    "test_b": "B: new sessions",
+    "test_c": "C: 359 Hz",
+}
+"""The split's set names (``folds.parquet``) and their labels in :data:`style.SETS`."""
+RATE_BANDS: dict[str, str] = {"t_1-4": "1–4 Hz", "t_4-8": "4–8 Hz", "t_8-15": "8–15 Hz"}
+"""The split's columns of time per breathing-rate band, and their labels."""
+
+
+def sync_panel(
+    width_mm: float, height_mm: float, offsets_s: NDArray, limit_s: float
+) -> Figure:
+    """Per session, the thermistor board's start minus the task controller's, on a
+    log axis of its magnitude, with the exclusion limit."""
+    fig, ax = style.panel(width_mm, height_mm, [["sync"]])
+    a = ax["sync"]
+    ms = np.abs(np.asarray(offsets_s, float)) * 1e3
+    ms = ms[np.isfinite(ms) & (ms > 0)]
+    bins = np.logspace(np.log10(max(ms.min(), 0.1)), np.log10(ms.max() * 1.2), 40)
+    keep = ms <= limit_s * 1e3
+    a.hist(ms[keep], bins, color=style.color("A: new animals"), label="kept")
+    a.hist(ms[~keep], bins, color=CROP_EDGE, label=f"removed ({(~keep).sum()})")
+    a.axvline(limit_s * 1e3, color="0.4", linewidth=0.6, linestyle="--")
+    a.set_xscale("log")
+    a.set_yscale("log")
+    a.set_xlabel("|Thermistor − task clock| (ms)")
+    a.set_ylabel("Sessions")
+    a.legend(loc="upper right")
+    return fig
+
+
+def rate_distribution_panel(
+    width_mm: float,
+    height_mm: float,
+    rates: dict[str, NDArray],
+    low: float = 2.0,
+    high: float = 15.0,
+    step: float = 0.25,
+) -> Figure:
+    """The distribution of breathing rate in each set (share of its breaths per Hz),
+    overlaid, from *low* to *high* Hz; sets named as in :data:`style.SETS`. Breath
+    intervals are whole samples of the thermistor, so rates take discrete values; bin
+    edges sit halfway between them, about *step* Hz apart, so no bin is empty by
+    construction."""
+    fig, ax = style.panel(width_mm, height_mm, [["rates"]])
+    a = ax["rates"]
+    every = np.concatenate(list(rates.values()))
+    sample = float(np.min(np.diff(np.unique(np.round(1.0 / every, 6)))))
+    samples = np.round(1.0 / (np.arange(low, high + step / 2, step) * sample) - 0.5)
+    bins = np.unique(1.0 / ((samples + 0.5) * sample))
+    for name, values in rates.items():
+        counts, _ = np.histogram(values, bins)
+        density = 100 * counts / len(values) / np.diff(bins)
+        a.stairs(density, bins, color=style.color(name), linewidth=0.9, label=name)
+    a.set_xlim(low, high)
+    a.set_ylim(bottom=0)
+    a.set_xlabel("Breathing rate (Hz)")
+    a.set_ylabel("Breaths (% per Hz)")
+    a.legend(loc="upper right", fontsize=6, handlelength=1)
+    return fig
+
+
+def split_panel(width_mm: float, height_mm: float, folds: pd.DataFrame) -> Figure:
+    """One row per animal, one dot per assigned session at its date, coloured by its
+    set; animals grouped by their role in the split."""
+    fig, ax = style.panel(width_mm, height_mm, [["split"]])
+    a = ax["split"]
+    used = folds[folds["set"].notna()].copy()
+    used["date"] = pd.to_datetime(used["date"])
+    order = {"test_a": 0, "val": 1, "train": 2, "group_c": 3}
+    first = used.groupby("subject_id")["date"].min()
+    role = used.groupby("subject_id")["role"].first()
+    animals = sorted(first.index, key=lambda s: (order.get(role[s], 9), first[s]))
+    row = {s: i for i, s in enumerate(animals)}
+    for key, label in FOLD_SETS.items():
+        part = used[used["set"] == key]
+        a.scatter(
+            part["date"],
+            part["subject_id"].map(row),
+            s=2.5,
+            color=style.color(label),
+            label=label,
+            linewidths=0,
+        )
+    a.set_ylim(len(animals) - 0.5, -0.5)
+    a.set_yticks([])
+    a.set_ylabel(f"Animals ({len(animals)})")
+    a.grid(False)
+    a.xaxis.set_major_locator(mdates.MonthLocator(bymonth=(1, 4, 7, 10)))
+    a.xaxis.set_major_formatter(mdates.DateFormatter("%b %Y"))
+    a.legend(
+        loc="lower center",
+        bbox_to_anchor=(0.5, 1.0),
+        ncol=3,
+        markerscale=2.5,
+        handletextpad=0.2,
+        columnspacing=0.8,
+    )
+    return fig
+
+
+def gallery_panel(
+    width_mm: float,
+    height_mm: float,
+    images: Sequence[NDArray],
+    labels: Sequence[str] | None = None,
+    rows: int = 2,
+) -> Figure:
+    """Whole face frames in a grid of `rows` rows, each labelled (e.g. by rig) if
+    `labels` are given."""
+    n = len(images)
+    cols = int(np.ceil(n / rows))
+    layout = [[f"g{r * cols + c}" for c in range(cols)] for r in range(rows)]
+    fig, ax = style.panel(width_mm, height_mm, layout)
+    for i in range(rows * cols):
+        a = ax[f"g{i}"]
+        if i < n:
+            a.imshow(images[i], cmap="gray", vmin=0, vmax=255)
+            if labels is not None:
+                a.set_title(labels[i], fontsize=6, weight="normal", pad=1.5)
+        a.set_axis_off()
+    return fig
+
+
+DISPLAY: dict[str, str] = {
+    "Pixel (motion)": "Motion energy",
+    "Pixel (PCA)": "Pixel PCA",
+    "Pixel (SNR)": "Pixel SNR",
+}
+"""Method names as printed in the manuscript, where they differ from the run's."""
+
+
+def _shown(name: str) -> str:
+    return DISPLAY.get(name, name)
+
+
+def trace_stack_panel(
+    width_mm: float,
+    height_mm: float,
+    predictions: dict[str, dict],
+    truth: dict,
+    scores: dict[str, float],
+    origin: float,
+    t0: float,
+    duration: float,
+) -> Figure:
+    """Every method's trace (one row each, in the given order) over the thermistor,
+    labelled with its correlation on the whole clip; the thermistor's inhales on top."""
+    fig, ax = style.panel(width_mm, height_mm, [["stack"]])
+    a = ax["stack"]
+    t1 = t0 + duration
+    tt = truth["times"] - origin
+    kt = _inside(tt, t0, t1)
+    step = 3.4
+    a.plot(tt[kt], truth["signal"][kt], color=style.TRUTH, linewidth=0.8)
+    a.text(t0 - 0.02 * duration, 0, "Thermistor", ha="right", va="center")
+    for row, name in enumerate(predictions, start=1):
+        y = -step * row
+        p = predictions[name]
+        tp = p["times"] - origin
+        kp = _inside(tp, t0, t1)
+        a.plot(tt[kt], truth["signal"][kt] + y, color="0.85", linewidth=0.6)
+        a.plot(tp[kp], p["signal"][kp] + y, color=style.color(name), linewidth=0.8)
+        a.text(t0 - 0.02 * duration, y, _shown(name), ha="right", va="center")
+        r = scores.get(name, np.nan)
+        r = 0.0 if abs(r) < 0.005 else r  # no "-0.00"
+        a.text(t1 + 0.01 * duration, y, f"r = {r:.2f}", ha="left", va="center")
+    onsets = truth["inhale"] - origin
+    onsets = onsets[_inside(onsets, t0, t1)]
+    for x in onsets:
+        a.axvline(x, color="0.9", linewidth=0.5, zorder=0)
+    a.set_xlim(t0, t1)
+    # Room for a z-scored trace's full swing above the first row and below the last.
+    a.set_ylim(-step * len(predictions) - 3.5, 3.5)
+    a.set_yticks([])
+    a.spines["left"].set_visible(False)
+    a.set_xticks([t0, t0 + 1])
+    a.set_xticklabels(["", "1 s"])
+    a.tick_params(axis="x", length=0)
+    a.spines["bottom"].set_bounds(t0, t0 + 1)
+    a.grid(False)
+    return fig
+
+
+def benchmark_panel(
+    width_mm: float,
+    height_mm: float,
+    recordings: pd.DataFrame,
+    ci: dict[str, pd.DataFrame],
+    names: Sequence[str],
+    set_name: str,
+    seconds: pd.Series | None = None,
+    on_cpu: Sequence[str] = (),
+) -> Figure:
+    """One row per method (the last on top), one column per metric: each animal (dots,
+    the mean of its recordings and seeds) and their mean with its 95% bootstrap
+    interval, on one set. *ci* maps a metric to :func:`.analysis.bootstrap`'s table.
+    With *seconds* (per method), a last column of inference time per clip, hatched for
+    the *on_cpu* methods."""
+    metrics = list(ci)
+    layout = [metrics + (["time"] if seconds is not None else [])]
+    fig, ax = style.panel(width_mm, height_mm, layout, sharey=True)
+    rows = recordings[recordings["set"] == set_name]
+    per_animal = rows.groupby(["method", "subject"])[metrics].mean()
+    rng = np.random.default_rng(0)
+    y_of = {m: i for i, m in enumerate(names)}
+    for metric in metrics:
+        a = ax[metric]
+        table = ci[metric]
+        for method, y in y_of.items():
+            if method not in per_animal.index.get_level_values("method"):
+                continue
+            values = per_animal.loc[method, metric].to_numpy()
+            jitter = rng.uniform(-0.2, 0.2, len(values))
+            a.scatter(
+                values, y + jitter, s=2, color=style.color(method), alpha=0.4, lw=0
+            )
+            row = table[(table["set"] == set_name) & (table["method"] == method)]
+            if row.empty:
+                continue
+            row = row.iloc[0]
+            a.errorbar(
+                row["mean"],
+                y,
+                xerr=[[row["mean"] - row["low"]], [row["high"] - row["mean"]]],
+                fmt="o",
+                ms=2.8,
+                color=style.color(method),
+                elinewidth=0.9,
+                capsize=0,
+            )
+        a.set_xlim(-0.05, 1.0)
+        a.set_xticks([0, 0.5, 1])
+        a.set_xlabel(METRIC_LABELS[metric])
+        a.grid(axis="y", visible=False)
+    first = ax[metrics[0]]
+    first.set_yticks(range(len(names)), [_shown(n) for n in names])
+    first.set_ylim(-0.6, len(names) - 0.4)
+    if seconds is not None:
+        a = ax["time"]
+        for method, y in y_of.items():
+            if method not in seconds:
+                continue
+            cpu = method in on_cpu
+            a.barh(
+                y,
+                seconds[method],
+                height=0.65,
+                color="white" if cpu else style.color(method),
+                edgecolor=style.color(method),
+                hatch="//////" if cpu else None,
+                linewidth=0.6,
+            )
+        a.set_xscale("log")
+        a.xaxis.set_major_formatter(ticker.FormatStrFormatter("%g"))
+        a.xaxis.set_minor_formatter(ticker.NullFormatter())
+        a.set_xticks([0.5, 1, 2, 5])
+        a.set_xlim(0.5, 8)
+        a.set_xlabel("Inference (s per 5 min)")
+        a.grid(axis="y", visible=False)
+    return fig
+
+
+def lag_panel(
+    width_mm: float, height_mm: float, lags: pd.DataFrame, names: Sequence[str]
+) -> Figure:
+    """Predicted minus true inhale time for matched inhales, one line per method; the
+    dotted lines are the scorer's tolerance."""
+    fig, ax = style.panel(width_mm, height_mm, [["lag"]])
+    a = ax["lag"]
+    bins = np.arange(-50, 51, 2.5)
+    for name in names:
+        values = lags.loc[lags["method"] == name, "lag_s"].to_numpy() * 1000
+        if len(values) == 0:
+            continue
+        a.hist(
+            values,
+            bins,
+            histtype="step",
+            density=True,
+            color=style.color(name),
+            label=_shown(name),
+            linewidth=0.8,
+        )
+    for x in (-TOLERANCE_MS, TOLERANCE_MS):
+        a.axvline(x, color="0.5", linewidth=0.6, linestyle=":")
+    for lo, hi in ((-50, -TOLERANCE_MS), (TOLERANCE_MS, 50)):
+        a.axvspan(lo, hi, color="0.93", lw=0, zorder=0)
+    a.set_xlim(-50, 50)
+    a.set_xlabel("Onset lag (ms)")
+    a.set_ylabel("Density")
+    a.set_yticks([])
+    a.legend(loc="upper left", fontsize=6, handlelength=1)
+    return fig
+
+
+def bland_altman_panel(
+    width_mm: float,
+    height_mm: float,
+    windows: pd.DataFrame,
+    name: str,
+    min_hz: float = 2.0,
+) -> Figure:
+    """Breathing rate per window, predicted minus true against their mean, with the
+    bias (solid) and 95% limits of agreement (dotted)."""
+    fig, ax = style.panel(width_mm, height_mm, [["ba"]])
+    a = ax["ba"]
+    w = windows[(windows["method"] == name) & (windows["true_hz"] >= min_hz)]
+    mean = (w["true_hz"] + w["pred_hz"]) / 2
+    diff = w["pred_hz"] - w["true_hz"]
+    bias, limit = float(diff.mean()), 1.96 * float(diff.std())
+    lim = max(1.0, 1.5 * limit)
+    # Counted rates come in steps of 1 / window, so bin the differences by that step.
+    step = (
+        float(np.min(np.diff(np.unique(np.round(diff, 6))))) if len(diff) > 1 else 0.1
+    )
+    y_bins = np.arange(-lim - step / 2, lim + step, step)
+    x_bins = np.arange(np.floor(mean.min()), np.ceil(mean.max()) + 0.25, 0.25)
+    *_, image = a.hist2d(
+        mean,
+        diff,
+        [x_bins, y_bins],
+        cmap="Blues",
+        norm=mpl.colors.LogNorm(),
+        rasterized=True,
+    )
+    for y, ls in ((bias, "-"), (bias - limit, ":"), (bias + limit, ":")):
+        a.axhline(y, color="0.3", linewidth=0.6, linestyle=ls)
+    a.set_ylim(-lim, lim)
+    a.grid(False)
+    bar = fig.colorbar(image, ax=a, fraction=0.08, pad=0.03, aspect=25)
+    bar.set_label("Windows")
+    bar.outline.set_visible(False)
+    a.set_xlabel("Mean rate (Hz)")
+    a.set_ylabel("Video − thermistor (Hz)")
+    return fig
+
+
+def sets_panel(
+    width_mm: float,
+    height_mm: float,
+    recordings: pd.DataFrame,
+    names: Sequence[str],
+    metrics: Sequence[str],
+    sets: Sequence[str],
+) -> Figure:
+    """Per metric (side by side), each method's mean over animals on each set, joined
+    by a line, the method named at the last set."""
+    fig, ax = style.panel(width_mm, height_mm, [list(metrics)], sharey=True)
+    per_animal = recordings.groupby(["set", "method", "subject"])[list(metrics)].mean()
+    means = per_animal.groupby(["set", "method"]).mean()
+    for metric in metrics:
+        a = ax[metric]
+        ends = []
+        for method in names:
+            y = [means[metric].get((s, method), np.nan) for s in sets]
+            a.plot(range(len(sets)), y, "-o", color=style.color(method), ms=2.5, lw=0.8)
+            ends.append((y[-1], method))
+        # Names at the last set, nudged apart so they do not overlap.
+        ends.sort()
+        placed: list[float] = []
+        for y, method in ends:
+            y_text = max(y, placed[-1] + 0.045) if placed else y
+            placed.append(y_text)
+            a.text(
+                len(sets) - 1 + 0.12,
+                y_text,
+                _shown(method),
+                va="center",
+                fontsize=6,
+                color=style.color(method),
+            )
+        a.set_xticks(range(len(sets)), [s.split(":")[0] for s in sets])
+        a.set_xlim(-0.25, len(sets) - 1 + 0.9)
+        a.set_xlabel("Test set")
+        a.set_title(METRIC_LABELS[metric], fontsize=7)
+    ax[metrics[0]].set_ylabel("Mean over animals")
+    return fig
+
+
+def animals_panel(
+    width_mm: float,
+    height_mm: float,
+    recordings: pd.DataFrame,
+    names: Sequence[str],
+    metric: str,
+    set_name: str,
+) -> Figure:
+    """Each animal of one set (ranked by the first method), one marker per method."""
+    fig, ax = style.panel(width_mm, height_mm, [["animals"]])
+    a = ax["animals"]
+    rows = recordings[recordings["set"] == set_name]
+    table = rows.groupby(["subject", "method"])[metric].mean().unstack("method")
+    table = table.sort_values(names[0])
+    x = np.arange(len(table))
+    for method in names:
+        a.plot(
+            x,
+            table[method],
+            "o",
+            color=style.color(method),
+            ms=3 if method == names[0] else 2.2,
+            mfc="none" if method != names[0] else style.color(method),
+            mew=0.7,
+            label=_shown(method),
+        )
+    a.set_xticks(x, [])
+    a.set_xlabel("Animal (ranked)")
+    a.set_ylabel(f"{METRIC_LABELS[metric]} (test A)")
+    a.legend(loc="lower right", fontsize=6, handletextpad=0.2)
+    return fig
+
+
+def rate_band_panel(
+    width_mm: float, height_mm: float, f1: pd.DataFrame, names: Sequence[str]
+) -> Figure:
+    """Inhale F1 per breathing-rate bin, one line per method, over the share of breaths
+    in each bin (bars)."""
+    fig, ax = style.panel(
+        width_mm, height_mm, [["f1"], ["share"]], sharex=True, height_ratios=[3, 1]
+    )
+    bins = list(dict.fromkeys(f1["bin"].astype(str)))
+    x = np.arange(len(bins))
+    for method in names:
+        g = f1[f1["method"] == method].set_index(
+            f1["bin"].astype(str)[f1["method"] == method]
+        )
+        ax["f1"].plot(
+            x,
+            g["f1"].reindex(bins),
+            "-o",
+            ms=2,
+            lw=0.8,
+            color=style.color(method),
+            label=_shown(method),
+        )
+    first = f1[f1["method"] == names[0]]
+    share = first.set_index(first["bin"].astype(str))["share"].reindex(bins)
+    ax["share"].bar(x, 100 * share, color="0.75", width=0.8)
+    ax["share"].set_ylabel("Breaths (%)")
+    ax["share"].set_xticks(x, [b.split("-")[0] for b in bins])
+    ax["share"].set_xlabel("Breathing rate (Hz)")
+    ax["f1"].set_ylabel("Inhale F1 (test A)")
+    ax["f1"].legend(loc="lower right", fontsize=6, handlelength=1)
+    return fig
+
+
+def tolerance_panel(
+    width_mm: float,
+    height_mm: float,
+    lags: pd.DataFrame,
+    breaths: pd.DataFrame,
+    false: pd.DataFrame,
+    names: Sequence[str],
+    widest_ms: float = 100.0,
+) -> Figure:
+    """Inhale F1 as the matching tolerance is relaxed, up to *widest_ms* (the timing
+    table's window): a true inhale counts as found when a prediction lies within the
+    tolerance (pairs from the timing table). The first method's F1 and errors left
+    (misses plus false inhales) are written at the scorer's tolerance and the widest."""
+    fig, ax = style.panel(width_mm, height_mm, [["tol"]])
+    a = ax["tol"]
+    tolerances = np.arange(0, widest_ms + 0.1, 2.5)
+    for k, method in enumerate(names):
+        lag = np.abs(lags.loc[lags["method"] == method, "lag_s"].to_numpy()) * 1000
+        b = breaths[breaths["method"] == method]
+        n_true = len(b)
+        n_pred = int(b["detected"].sum()) + int((false["method"] == method).sum())
+        hits = np.array([(lag <= t).sum() for t in tolerances])
+        f1 = 2 * hits / (n_true + n_pred)
+        a.plot(tolerances, f1, color=style.color(method), label=_shown(method), lw=0.9)
+        if k == 0:
+            # Marked on the curve; their values listed below the curves, clear of
+            # every line.
+            lines = []
+            for t in (TOLERANCE_MS, 2 * TOLERANCE_MS, widest_ms):
+                i = int(np.argmin(np.abs(tolerances - t)))
+                errors = n_true + n_pred - 2 * hits[i]
+                a.plot(t, f1[i], "o", ms=2.5, color=style.color(method), zorder=4)
+                lines.append(f"{t:g} ms: F1 {f1[i]:.2f}, {errors / n_true:.1%} errors")
+            a.text(
+                0.2,
+                0.04,
+                "\n".join([_shown(method), *lines]),
+                transform=a.transAxes,
+                va="bottom",
+                fontsize=5.5,
+                color=style.color(method),
+                bbox={"facecolor": "white", "edgecolor": "none", "pad": 1.0},
+                zorder=5,
+            )
+    for t in (TOLERANCE_MS, 2 * TOLERANCE_MS):
+        a.axvline(t, color="0.5", linewidth=0.6, linestyle=":")
+    a.set_xlabel("Tolerance (ms)")
+    a.set_ylabel("Inhale F1 (test A)")
+    a.set_xlim(10, widest_ms)
+    a.set_ylim(0.6, 1.02)
+    a.legend(loc="center right", fontsize=6, handlelength=1)
+    return fig
+
+
+def failure_panel(
+    width_mm: float,
+    height_mm: float,
+    truth: dict,
+    prediction: dict,
+    errors: pd.DataFrame,
+    origin: float,
+    at: float,
+    frames: Sequence[tuple[float, NDArray]],
+    half: float = 1.5,
+) -> Figure:
+    """A window around one error: the crops around it (top), the thermistor and
+    Zephyr's trace with true inhales, head events and errors marked, and the onset
+    probability."""
+    n = len(frames)
+    layout = [[f"f{i}" for i in range(n)], ["trace"] * n, ["onset"] * n]
+    fig, ax = style.panel(width_mm, height_mm, layout, height_ratios=[1.1, 1.6, 0.8])
+    t0, t1 = at - half, at + half
+    tt, tp = truth["times"] - origin, prediction["times"] - origin
+    kt, kp = _inside(tt, t0, t1), _inside(tp, t0, t1)
+    tr = ax["trace"]
+    tr.plot(tt[kt], truth["signal"][kt], color=style.TRUTH, label="Thermistor")
+    tr.plot(
+        tp[kp], prediction["signal"][kp], color=style.color("Zephyr"), label="Zephyr"
+    )
+    true_on = truth["inhale"] - origin
+    head = prediction["head"] - origin
+    mark_events(tr, true_on[_inside(true_on, t0, t1)], 3.6, style.TRUTH, size=2.5)
+    mark_events(tr, head[_inside(head, t0, t1)], 3.0, style.color("Zephyr"), "^", 2.5)
+    shown = errors[_inside(errors["time"].to_numpy() - origin, t0, t1)]
+    for kind, g in shown.groupby("kind"):
+        for xi in g["time"].to_numpy() - origin:
+            for a in (tr, ax["onset"]):
+                a.axvline(xi, color=style.ERRORS[kind], linewidth=0.6, alpha=0.8)
+        tr.plot([], [], color=style.ERRORS[kind], lw=0.8, label=kind)
+    tr.set_xlim(t0, t1)
+    tr.set_ylim(-5.2, 3.9)
+    tr.set_ylabel("Sniffing (z)")
+    tr.set_xticklabels([])
+    tr.legend(
+        loc="lower left",
+        ncol=4,
+        fontsize=5.5,
+        handlelength=1,
+        bbox_to_anchor=(0, -0.08),
+        frameon=False,
+    )
+    o = ax["onset"]
+    o.plot(tp[kp], prediction["onset"][kp], color=style.ONSET)
+    o.axhline(0.5, color="0.6", linewidth=0.5, linestyle=":")
+    o.set_ylim(0, 1.05)
+    o.set_yticks([0, 1])
+    o.set_ylabel("Onset (p)")
+    o.set_xlim(t0, t1)
+    o.set_xlabel("Time (s)")
+    for i, (ft, image) in enumerate(frames):
+        f = ax[f"f{i}"]
+        f.imshow(image, cmap="gray", vmin=0, vmax=255)
+        f.set_title(f"{ft - at:+.2f} s", fontsize=6, weight="normal", pad=1.5)
+        f.set_axis_off()
     return fig
 
 
@@ -923,4 +1618,181 @@ def calibration_figure(reference: dict) -> Figure:
         ax.set_title(f"ECE {cal['ece_raw']:.3f} raw, {cal['ece']:.3f} calibrated")
     ax.set_xlabel("Calibrated P(inhale is real)")
     ax.set_ylabel("Share matched to a true inhale")
+    return fig
+
+
+# --- manuscript panels: quality control -------------------------------------------------
+
+
+def qc_video_panel(
+    width_mm: float,
+    height_mm: float,
+    traces: pd.DataFrame,
+    windows: pd.DataFrame,
+    measures: Sequence[str],
+    t0: float,
+    t1: float,
+) -> Figure:
+    """One video: an excerpt of the trace and onset probability (left), and over the
+    whole clip each chosen measure and the true inhale F1 per window, failing windows
+    shaded (right)."""
+    fig, ax = style.panel(
+        width_mm,
+        height_mm,
+        [["trace", "windows"], ["onset", "windows"]],
+        width_ratios=[1, 1.6],
+        height_ratios=[1.6, 1],
+    )
+    origin = float(traces["time"].iloc[0])
+    times = traces["time"].to_numpy() - origin
+    inside = _inside(times, t0, t1)
+    tr = ax["trace"]
+    tr.plot(
+        times[inside], traces["signal"].to_numpy()[inside], color=style.color("Zephyr")
+    )
+    inhale = times[traces["inhale"].to_numpy()]
+    mark_events(
+        tr, inhale[_inside(inhale, t0, t1)], 3.2, style.color("Zephyr"), "^", 2.5
+    )
+    tr.set_ylim(-3.5, 3.6)
+    tr.set_xlim(t0, t1)
+    tr.set_xticklabels([])
+    tr.set_ylabel("Sniffing (z)")
+    o = ax["onset"]
+    o.plot(times[inside], traces["onset"].to_numpy()[inside], color=style.ONSET)
+    o.set_ylim(0, 1.05)
+    o.set_yticks([0, 1])
+    o.set_xlim(t0, t1)
+    o.set_ylabel("Onset (p)")
+    o.set_xlabel("Time (s)")
+    w = ax["windows"]
+    start = windows["start"].to_numpy() - origin
+    end = windows["end"].to_numpy() - origin
+    middle = (start + end) / 2
+    checks = [c for c in windows if c.startswith("ok_")]
+    failed = ~windows[checks].fillna(True).astype(bool).all(axis=1).to_numpy()
+    for a, b in zip(start[failed], end[failed], strict=True):
+        w.axvspan(a, b, color=CROP_EDGE, alpha=0.15, lw=0)
+    w.axvspan(t0, t1, color="0.9", zorder=0, lw=0)
+    for name in measures:
+        values = windows[name].to_numpy(float)
+        lo, hi = np.nanmin(values), np.nanmax(values)
+        w.plot(
+            middle,
+            (values - lo) / ((hi - lo) or 1.0),
+            lw=0.8,
+            color=style.QUALITY[_family(name)],
+            label=_measure_label(name),
+        )
+    if "truth_inhale_f1" in windows:
+        w.plot(
+            middle,
+            windows["truth_inhale_f1"],
+            color=style.TRUTH,
+            lw=1.0,
+            label="True inhale F1",
+        )
+    w.set_ylim(-0.05, 1.05)
+    w.set_xlim(start.min(), end.max())
+    w.set_xlabel("Time in video (s)")
+    w.set_ylabel("Per window (scaled)")
+    w.legend(fontsize=5.5, ncols=2, loc="lower left", handlelength=1)
+    return fig
+
+
+def qc_agreement_panel(
+    width_mm: float, height_mm: float, by_level: dict[str, pd.DataFrame]
+) -> Figure:
+    """Oriented Spearman correlation of each measure with the true inhale F1, per level
+    (videos, windows): above zero, the measure ranks predictions as it should."""
+    fig, ax = style.panel(width_mm, height_mm, [["rho"]])
+    a = ax["rho"]
+    first = next(iter(by_level.values()))
+    names = list(first.sort_values("oriented")["measure"])
+    height = 0.8 / len(by_level)
+    for k, (level, df) in enumerate(by_level.items()):
+        values = df.set_index("measure").reindex(names)["oriented"]
+        y = np.arange(len(names)) + (k - (len(by_level) - 1) / 2) * height
+        a.barh(
+            y,
+            values,
+            height=height,
+            color=[style.QUALITY[_family(n)] for n in names],
+            alpha=1.0 if k == 0 else 0.45,
+            label=level,
+        )
+    a.axvline(0, color="0.3", linewidth=0.6)
+    a.set_yticks(range(len(names)), [_measure_label(n) for n in names], fontsize=6)
+    a.set_xlabel("Spearman ρ with true F1")
+    a.grid(axis="x")
+    a.grid(axis="y", visible=False)
+    a.legend(loc="lower right", fontsize=6)
+    return fig
+
+
+def qc_retention_panel(
+    width_mm: float,
+    height_mm: float,
+    curves: dict[str, pd.DataFrame],
+    oracle: pd.DataFrame,
+    passing: tuple[float, float],
+) -> Figure:
+    """Mean true inhale F1 of the windows a measure keeps (best first) against the
+    share kept, the oracle (keeping by the truth), and the windows that pass every
+    check (star)."""
+    fig, ax = style.panel(width_mm, height_mm, [["keep"]])
+    a = ax["keep"]
+    a.plot(
+        oracle["kept"],
+        oracle["mean"],
+        color=style.TRUTH,
+        ls="--",
+        lw=0.8,
+        label="Oracle",
+    )
+    for name, df in curves.items():
+        a.plot(
+            df["kept"],
+            df["mean"],
+            lw=0.9,
+            color=style.QUALITY[_family(name)],
+            label=_measure_label(name),
+        )
+    a.axhline(oracle["mean"].iloc[-1], color="0.6", linewidth=0.5, linestyle=":")
+    a.plot(*passing, "*", color=CROP_EDGE, ms=6, label="All checks pass", zorder=5)
+    a.set_xlim(0, 1.02)
+    a.set_xlabel("Share of windows kept")
+    a.set_ylabel("Mean true inhale F1")
+    a.legend(fontsize=5.5, loc="lower left", handlelength=1)
+    return fig
+
+
+def calibration_panel(width_mm: float, height_mm: float, reference: dict) -> Figure:
+    """Reliability of the calibrated onset output on the calibration clips: predicted
+    probability that an inhale is real against the share matched to a true inhale."""
+    fig, ax = style.panel(width_mm, height_mm, [["cal"]])
+    a = ax["cal"]
+    cal = reference["onset_calibration"]
+    table = pd.DataFrame(cal["reliability"])
+    a.plot([0, 1], [0, 1], color="0.6", linestyle=":", lw=0.8)
+    a.plot(table["predicted"], table["observed"], "-", color=style.ONSET, lw=0.7)
+    a.scatter(
+        table["predicted"],
+        table["observed"],
+        s=3 + 25 * table["n"] / table["n"].max(),
+        color=style.ONSET,
+        zorder=3,
+    )
+    a.set_xlim(0, 1)
+    a.set_ylim(0, 1.02)
+    a.set_xlabel("Predicted P(inhale is real)")
+    a.set_ylabel("Observed precision")
+    a.text(
+        0.97,
+        0.05,
+        f"ECE {cal['ece']:.3f}",
+        ha="right",
+        transform=a.transAxes,
+        fontsize=6,
+    )
     return fig
