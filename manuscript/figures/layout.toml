@@ -44,101 +44,101 @@ what = "Predicted and measured sniffing on a test-A animal, onset probability"
 width_mm = 183
 gap_mm = 4
 # A list inside a row is a column of panels stacked top to bottom.
-rows = [["a"], ["b", "c"]]
+rows = [["a", ["b", "c"]]]
 
 [fig2.panels.a]
 kind = "data"
-width_mm = 183
-height_mm = 70
-what = "Selection: every packaged session to the sets, each loss with its reason"
+width_mm = 120
+height_mm = 92
+what = "Selection: every recorded session to the sets, each loss with its reason"
 
 [fig2.panels.b]
 kind = "data"
-width_mm = 72
-height_mm = 48
-what = "Share of time per breathing-rate band, per set"
+width_mm = 59
+height_mm = 44
+what = "Distribution of breathing rate per set"
 
 [fig2.panels.c]
 kind = "data"
-width_mm = 107
-height_mm = 48
+width_mm = 59
+height_mm = 44
 what = "The split: animals by date, sessions coloured by set"
 
 [fig3]
 width_mm = 183
 gap_mm = 4
-rows = [["a"], ["b", "c", "d"]]
+rows = [["a", "b"], ["c", "d", "e"]]
 
 [fig3.panels.a]
 kind = "data"
-width_mm = 183
-height_mm = 62
+width_mm = 120
+height_mm = 50
 what = "One test-A clip: the thermistor and every method's trace, with its correlation"
 
 [fig3.panels.b]
 kind = "data"
-width_mm = 98
+width_mm = 59
 height_mm = 50
-what = "Correlation and inhale F1 on test A: animals, mean and 95% interval"
+what = "Inhale F1 against inference time per method: animals, mean and 95% interval"
 
 [fig3.panels.c]
 kind = "data"
-width_mm = 34
-height_mm = 50
-what = "Onset lag of matched inhales, networks, test A"
+width_mm = 62
+height_mm = 46
+what = "Inhale F1 by breathing rate for every network, with the share of breaths per rate"
 
 [fig3.panels.d]
 kind = "data"
-width_mm = 43
-height_mm = 50
+width_mm = 62
+height_mm = 46
+what = "Zephyr's onset lag by breathing rate, test A"
+
+[fig3.panels.e]
+kind = "data"
+width_mm = 51
+height_mm = 46
 what = "Bland-Altman of breathing rate in 10 s windows, Zephyr, test A"
 
 [fig4]
 width_mm = 183
 gap_mm = 4
-rows = [["a", "b", "c"], ["d", "e"], ["f", "g"]]
+rows = [["a", "b"], ["c", "d"], ["e", "f"]]
 
 [fig4.panels.a]
 kind = "data"
-width_mm = 72
+width_mm = 100
 height_mm = 48
 what = "Test A against test B per method: correlation and inhale F1"
 
 [fig4.panels.b]
 kind = "data"
-width_mm = 55
+width_mm = 79
 height_mm = 48
 what = "Per-animal inhale F1 on test A, ranked"
 
 [fig4.panels.c]
 kind = "data"
-width_mm = 48
-height_mm = 48
-what = "Inhale F1 by breathing rate, with the share of breaths per rate"
-
-[fig4.panels.d]
-kind = "data"
 width_mm = 54
 height_mm = 48
 what = "Inhale F1 and errors left as the onset tolerance is relaxed (25 to 100 ms)"
 
-[fig4.panels.e]
+[fig4.panels.d]
 kind = "data"
 width_mm = 125
 height_mm = 48
-what = "Near misses: the test-A clip with the most predictions 25-100 ms off"
+what = "Near misses: a well-correlated test-A clip with many predictions 25-100 ms off"
 
-[fig4.panels.f]
+[fig4.panels.e]
 kind = "data"
 width_mm = 54
 height_mm = 48
 what = "Test-A correlation and inhale F1 against the number of training animals (4, 8, 16, 32)"
 
-[fig4.panels.g]
+[fig4.panels.f]
 kind = "data"
 width_mm = 125
 height_mm = 48
-what = "Errors in the test-A clip with the lowest F1"
+what = "Errors in the test-A clip at the 10th percentile of F1"
 
 [fig5]
 width_mm = 183
