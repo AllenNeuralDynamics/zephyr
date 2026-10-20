@@ -546,6 +546,19 @@ def rate_distribution() -> pd.DataFrame:
     )
 
 
+def breath_rates() -> dict[str, np.ndarray]:
+    """Every thermistor breath's rate (1 / interval to the next inhale, Hz) in the
+    training and validation sets and in each test set, from each clip's cached events."""
+    entries = _all_entries()
+    return {
+        label: np.concatenate(
+            [1.0 / np.diff(np.load(entries[s].events)["onset_times"]) for s in stems]
+        )
+        for label, stems in split_stems().items()
+        if stems
+    }
+
+
 def frame_embeddings(stem: str, seconds: float = 60.0) -> tuple[np.ndarray, np.ndarray]:
     """The reference network's frame embeddings over the first *seconds* of a clip
     (:func:`zephyr.benchmarks.analysis.frame_embeddings`); cached."""

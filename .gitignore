@@ -56,3 +56,4 @@ web/public/models/
 web/testdata/
 web/test-results/
 web/playwright-report/
+*.pdf

@@ -1,0 +1,170 @@
+# Printed size of every panel, read by the figure notebook (to draw each panel at this
+# size) and by the figure's .typ file (to place it). Change a size here, re-run the
+# notebook, re-compile the figure.
+#
+# kind = "data": drawn by notebooks/manuscript_figures.py into <figure>/<panel>.svg
+# kind = "schematic": drawn by hand (Inkscape) at this size, saved as <figure>/<panel>.svg
+
+[fig1]
+width_mm = 183
+gap_mm = 4
+rows = [["a", "b"], ["c"], ["d"], ["e"]]
+
+[fig1.panels.a]
+kind = "schematic"
+width_mm = 100
+height_mm = 55
+what = "Rig: head-fixed mouse, face and side cameras, thermistor, Harp devices"
+
+[fig1.panels.b]
+kind = "data"
+width_mm = 79
+height_mm = 55
+what = "Task schematic; speed, sniff rate and licks aligned to site entry"
+
+[fig1.panels.c]
+kind = "data"
+width_mm = 183
+height_mm = 42
+what = "Face frame with crop; crops through one breath; thermistor with events"
+
+[fig1.panels.d]
+kind = "data"
+width_mm = 183
+height_mm = 36
+what = "Network, read off the checkpoint: crops, frame encoder, resampling, TCN, heads"
+
+[fig1.panels.e]
+kind = "data"
+width_mm = 183
+height_mm = 38
+what = "Predicted and measured sniffing on a test-A animal, onset probability"
+
+[fig2]
+width_mm = 183
+gap_mm = 4
+# A list inside a row is a column of panels stacked top to bottom.
+rows = [["a"], ["b", "c"]]
+
+[fig2.panels.a]
+kind = "data"
+width_mm = 183
+height_mm = 70
+what = "Selection: every packaged session to the sets, each loss with its reason"
+
+[fig2.panels.b]
+kind = "data"
+width_mm = 72
+height_mm = 48
+what = "Share of time per breathing-rate band, per set"
+
+[fig2.panels.c]
+kind = "data"
+width_mm = 107
+height_mm = 48
+what = "The split: animals by date, sessions coloured by set"
+
+[fig3]
+width_mm = 183
+gap_mm = 4
+rows = [["a"], ["b", "c", "d"]]
+
+[fig3.panels.a]
+kind = "data"
+width_mm = 183
+height_mm = 62
+what = "One test-A clip: the thermistor and every method's trace, with its correlation"
+
+[fig3.panels.b]
+kind = "data"
+width_mm = 98
+height_mm = 50
+what = "Correlation and inhale F1 on test A: animals, mean and 95% interval"
+
+[fig3.panels.c]
+kind = "data"
+width_mm = 34
+height_mm = 50
+what = "Onset lag of matched inhales, networks, test A"
+
+[fig3.panels.d]
+kind = "data"
+width_mm = 43
+height_mm = 50
+what = "Bland-Altman of breathing rate in 10 s windows, Zephyr, test A"
+
+[fig4]
+width_mm = 183
+gap_mm = 4
+rows = [["a", "b", "c"], ["d", "e"], ["f", "g"]]
+
+[fig4.panels.a]
+kind = "data"
+width_mm = 72
+height_mm = 48
+what = "Test A against test B per method: correlation and inhale F1"
+
+[fig4.panels.b]
+kind = "data"
+width_mm = 55
+height_mm = 48
+what = "Per-animal inhale F1 on test A, ranked"
+
+[fig4.panels.c]
+kind = "data"
+width_mm = 48
+height_mm = 48
+what = "Inhale F1 by breathing rate, with the share of breaths per rate"
+
+[fig4.panels.d]
+kind = "data"
+width_mm = 54
+height_mm = 48
+what = "Inhale F1 and errors left as the onset tolerance is relaxed (25 to 100 ms)"
+
+[fig4.panels.e]
+kind = "data"
+width_mm = 125
+height_mm = 48
+what = "Near misses: the test-A clip with the most predictions 25-100 ms off"
+
+[fig4.panels.f]
+kind = "data"
+width_mm = 54
+height_mm = 48
+what = "Test-A correlation and inhale F1 against the number of training animals (4, 8, 16, 32)"
+
+[fig4.panels.g]
+kind = "data"
+width_mm = 125
+height_mm = 48
+what = "Errors in the test-A clip with the lowest F1"
+
+[fig5]
+width_mm = 183
+gap_mm = 4
+rows = [["a"], ["b", "c", "d"]]
+
+[fig5.panels.a]
+kind = "data"
+width_mm = 183
+height_mm = 50
+what = "One test-A video: excerpt of trace and onset; measures and true F1 per window, failing windows shaded"
+
+[fig5.panels.b]
+kind = "data"
+width_mm = 70
+height_mm = 55
+what = "Each measure's oriented Spearman correlation with true inhale F1, videos and windows"
+
+[fig5.panels.c]
+kind = "data"
+width_mm = 57
+height_mm = 55
+what = "Mean true F1 against the share of windows kept; oracle; windows passing every check"
+
+[fig5.panels.d]
+kind = "data"
+width_mm = 48
+height_mm = 55
+what = "Calibration of the onset output on validation animals"
