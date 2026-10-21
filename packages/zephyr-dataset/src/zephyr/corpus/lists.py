@@ -25,12 +25,6 @@ HEADER = [
 ]
 
 
-SMALL_HEADER = [
-    "The sessions of clips.toml marked `small` in folds.parquet, for small experiments:",
-    "written by `zephyr-dataset folds`, `clips` and `boxes publish` (never edit by hand).",
-]
-
-
 def header(spec: DatasetSpec) -> dict:
     events = {"method": spec.events.method}
     if spec.events.params:
@@ -61,32 +55,6 @@ def validate(doc, layout: Layout) -> list[Clip]:
     EventsSource.model_validate(data.get("events", {}))
     context = {"base": Path.cwd()}  # names only: never opened
     return [Clip.model_validate(c, context=context) for c in data["clip"]]
-
-
-def write_small(layout: Layout) -> int:
-    """``clips-small.toml``: the entries of ``clips.toml`` (boxes, marks and all) of the
-    sessions ``folds.parquet`` marks ``small``; removed when there are none."""
-    folds = storage.read_parquet(layout.folds)
-    keep = set(folds.loc[folds["small"].fillna(False), "session_id"])
-    doc = tomlkit.parse(layout.clip_list.read_text(encoding="utf-8"))
-    entries = [e for e in doc["clip"] if str(e["group"]) in keep]
-    if not entries:
-        if layout.clip_list_small.exists():
-            storage.delete([layout.clip_list_small])
-        return 0
-    out = tomlkit.document()
-    for line in SMALL_HEADER:
-        out.add(tomlkit.comment(line))
-    out.add(tomlkit.nl())
-    for key in ("preprocess", "events"):
-        if key in doc:
-            out.add(key, doc[key])
-    out.add("clip", tomlkit.aot())
-    for entry in entries:
-        out["clip"].append(entry)
-    validate(out, layout)
-    storage.write_text(layout.clip_list_small, tomlkit.dumps(out))
-    return len(entries)
 
 
 def run(spec: DatasetSpec) -> int:

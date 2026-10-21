@@ -22,7 +22,7 @@ import tomlkit
 
 from . import storage
 from .config import DatasetSpec, Layout
-from .lists import header, validate, write_small
+from .lists import header, validate
 from .remote import thread_map
 from .videos import https
 
@@ -348,8 +348,8 @@ def write_list(spec: DatasetSpec, layout: Layout, table: pd.DataFrame) -> int:
     unit zephyr judges leakage on: test B holds out sessions of training animals)."""
     ok = table if table.empty else table[table["error"].isna()]
     if ok.empty:
-        stale = [p for p in (layout.clip_list, layout.clip_list_small) if p.exists()]
-        storage.delete(stale)  # every clip pruned: no list naming them
+        if layout.clip_list.exists():  # every clip pruned: no list naming them
+            storage.delete([layout.clip_list])
         return 0
     boxes = existing_boxes(layout)
     doc = tomlkit.document()
@@ -373,8 +373,6 @@ def write_list(spec: DatasetSpec, layout: Layout, table: pd.DataFrame) -> int:
     doc.add("clip", entries)
     validate(doc, layout)
     storage.write_text(layout.clip_list, tomlkit.dumps(doc))
-    if spec.small is not None and layout.folds.exists():
-        write_small(layout)
     return len(ok)
 
 

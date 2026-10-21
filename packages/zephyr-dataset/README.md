@@ -92,25 +92,6 @@ network (full network: median r 0.86 against 0.89). Clipping does not lower the 
 measurably; it is left out because a clipped breath is a distorted target. `qc` scores
 whole sessions, whatever marks the list holds, so re-running it never changes a metric.
 
-## The small dataset
-
-For small experiments, `[small]` in the spec picks 72 of the 560 sessions and keeps the
-structure of the split: `small` in `folds.parquet` marks them and `clips-small.toml` lists
-their clips (boxes and marks as in `clips.toml`). `folds` draws it and `clips` and
-`boxes publish` keep the list current. Preprocess and run from `clips-small.toml` (and select
-sessions with `groups`, as for the full list); its cache entries are the full list's, so
-the two share a cache.
-
-- **Test A:** 4 of its 10 whole animals, 1 session per animal and rig (14 sessions).
-- **Validation:** 3 of its 8 whole animals, 1 per animal and rig, plus 1 group C session (8).
-- **Train:** 10 of the 32 animals, up to 2 per animal and rig, plus 3 group C sessions (37).
-- **Test B:** 1 session per animal and rig of those 10 training animals (11).
-- **Test C:** 2 of the 5 359 Hz sessions (2). 72 sessions, 144 face clips, about 73 GB (the
-  full set is 560 sessions, 1,120 face clips, about 565 GB), 13 rigs and 13 months.
-
-The animals of each role are the best balanced of 2,000 seeded draws, as for the full split;
-every set but test C is within about 6 points of the corpus' rate mix.
-
 ## Cross-validation
 
 One split scores 10 test animals, so a few hard animals move test A. `zephyr-dataset
@@ -188,7 +169,6 @@ It holds only what later stages need:
 | `clips/<session_id>_<span>_thermistor.parquet` | the thermistor over the required cameras' clips ± `[clips] thermistor_pad_s` (Harp seconds); an optional camera's clip lies inside it and never changes it |
 | `thumbnails/<session_id>_<camera>.png` | the camera at full resolution, losslessly: the first frame of the session's first clip |
 | `clips.parquet` | every clip: frames, first frame, span, start and end, rate, bytes, or the error that stopped it |
-| `clips-small.toml` | the sessions `folds.parquet` marks `small`, as a clip list (see [The small dataset](#the-small-dataset)) |
 | `cross_validation.parquet` | per assigned session its animal's test A fold, its test B fold and its set in each fold (see [Cross-validation](#cross-validation)) |
 | `clips.toml` | the clips as a zephyr clip list (`group` = session, zephyr's leakage unit, so test B and C can hold out sessions of training animals; face clips carry their `box`; `[clips] exclude_cameras` lists the side and front cameras as `selection = "exclude"`, so zephyr uses the face camera only and their files stay in the folder) |
 
