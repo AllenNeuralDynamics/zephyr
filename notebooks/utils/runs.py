@@ -122,7 +122,7 @@ def evaluation(name: str, seed: str | None = None) -> dict | None:
             return None
         key = f"{m.run}/{RESULTS.fold}/{seed or found[0]}/evaluation.json"
     else:
-        key = f"{m.run}/{m.kind}/{m.variant}/evaluation.json"
+        key = f"{m.run}/{RESULTS.fold}/{m.kind}/{m.variant}/evaluation.json"
     path = _fetch(key)
     return json.loads(path.read_text()) if path else None
 
@@ -266,11 +266,13 @@ def _saved(
         return s["signal"].to_numpy(), (s["onset"].to_numpy() if "onset" in s else None)
     if m.kind == "facemap":
         path = _fetch(
-            f"{m.run}/facemap/{m.variant}/traces/{baselines.trace_key(e)}.npy"
+            f"{m.run}/{RESULTS.fold}/facemap/{m.variant}/traces/{baselines.trace_key(e)}.npy"
         )
         return None if path is None else (np.load(path), None)
     method = m.variant.split("/")[0]
-    path = _fetch(f"{m.run}/pixel/{method}/traces/{baselines.trace_key(e)}.npy")
+    path = _fetch(
+        f"{m.run}/{RESULTS.fold}/pixel/{method}/traces/{baselines.trace_key(e)}.npy"
+    )
     return None if path is None else (_calibrated(name, np.load(path)), None)
 
 
@@ -421,7 +423,7 @@ def wall_time(names, n_clips: int = 8) -> pd.DataFrame:
             result["device"] = "cpu (numpy)"
         else:
             fitted = evaluation(name)
-            bases = _fetch(f"{m.run}/facemap/bases.npz")
+            bases = _fetch(f"{m.run}/{RESULTS.fold}/facemap/bases.npz")
             result = timing.time_method(
                 timing.facemap_method(
                     m.variant,

@@ -54,6 +54,9 @@ Clip lists and experiments:
   `[preprocess]` recipes, and `evaluate` refuses clips a checkpoint trained on. If one
   refuses, **fix the config, never the check**.
 - Comparison networks (`arch` other than `zephyr`) run only through `zephyr-benchmarks`.
+- Published results (reports, figures, papers) come from the cross-validation folds
+  (`cv_<k>`, from `cross_validation.parquet`) for every method, once those runs exist; the
+  published split's `dev` fold (`folds.parquet`) is for work in progress only.
 - **Always smoke-run** (`--smoke`) before a full run; use a new `output_dir` for a new
   experiment rather than deleting results.
 - Never compare scores made before and after a scoring rule changed (time alignment,

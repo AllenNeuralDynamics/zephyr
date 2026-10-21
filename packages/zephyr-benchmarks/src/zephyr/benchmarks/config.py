@@ -58,7 +58,8 @@ class ReportedRun(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     label: str
     run: str
-    """Folder under the manifest's ``root``: ``<run>/<fold>/seed-<n>/`` for a network."""
+    """Folder under the manifest's ``root``: ``<run>/<fold>/seed-<n>/`` for a network,
+    ``<run>/<fold>/{pixel,facemap}/`` for a baseline."""
     kind: Literal["network", "facemap", "pixel"] = "network"
     variant: str = ""
     """Facemap ``both``/``motion``/``movie``; pixel ``<method>/<blind|calibrated>``."""
