@@ -12,14 +12,14 @@ rows = [["a", "b"], ["c"], ["d"], ["e"]]
 
 [fig1.panels.a]
 kind = "schematic"
-width_mm = 100
-height_mm = 55
-what = "Rig: head-fixed mouse, face and side cameras, thermistor, Harp devices"
+width_mm = 112
+height_mm = 71.2
+what = "Rig rendering: head-fixed mouse on the wheel, front, face and side cameras, odor line (3d-vr-foraging FIG1_overview.svg)"
 
 [fig1.panels.b]
 kind = "data"
-width_mm = 79
-height_mm = 55
+width_mm = 67
+height_mm = 71.2
 what = "Task schematic; speed, sniff rate and licks aligned to site entry"
 
 [fig1.panels.c]
