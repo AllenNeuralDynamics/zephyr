@@ -943,6 +943,54 @@ def rate_band_panel(
     return fig
 
 
+def learning_curve_panel(
+    width_mm: float,
+    height_mm: float,
+    curve: pd.DataFrame,
+    colors: dict[str, str],
+    metrics: Sequence[str] = ("inhale", "correlation"),
+) -> Figure:
+    """Scores against the number of training animals (log axis), one row per metric:
+    *curve* has a row per run and ``group`` (e.g. new or known animals) with
+    ``animals``, ``metric``, ``mean``, ``low``, ``high`` and ``full`` (whether the run
+    used every session of its animals); runs with all sessions are joined by a line,
+    the others drawn open; each group in its colour from *colors*."""
+    fig, ax = style.panel(width_mm, height_mm, [[m] for m in metrics], sharex=True)
+    groups = list(dict.fromkeys(curve["group"]))
+    for metric in metrics:
+        a = ax[metric]
+        for group in groups:
+            d = curve[(curve["metric"] == metric) & (curve["group"] == group)]
+            for full, line in ((True, "-"), (False, "none")):
+                e = d[d["full"] == full].sort_values("animals")
+                a.errorbar(
+                    e["animals"] * (1 if full else 1.12),  # open marker beside
+                    e["mean"],
+                    yerr=[e["mean"] - e["low"], e["high"] - e["mean"]],
+                    color=colors[group],
+                    linestyle=line,
+                    marker="o",
+                    markersize=3,
+                    markerfacecolor=colors[group] if full else "white",
+                    linewidth=0.9,
+                    elinewidth=0.6,
+                    capsize=0,
+                    label=group if full else None,
+                )
+        a.set_ylabel(METRIC_LABELS[metric])
+    bottom = ax[metrics[-1]]
+    bottom.set_xscale("log", base=2)
+    ticks = sorted(curve["animals"].unique())
+    bottom.set_xticks(ticks, [f"{t:g}" for t in ticks])
+    bottom.minorticks_off()
+    bottom.set_xlabel("Training animals")
+    if len(groups) > 1:
+        ax[metrics[-1]].legend(
+            loc="center left", fontsize=5.5, handlelength=1, bbox_to_anchor=(0, 0.6)
+        )
+    return fig
+
+
 def tolerance_panel(
     width_mm: float,
     height_mm: float,
@@ -1007,10 +1055,11 @@ def failure_panel(
     at: float,
     frames: Sequence[tuple[float, NDArray]],
     half: float = 1.5,
+    legend: bool = True,
 ) -> Figure:
     """A window around one error: the crops around it (top), the thermistor and
     Zephyr's trace with true inhales, head events and errors marked, and the onset
-    probability."""
+    probability; *half* seconds either side, the legend under the trace if *legend*."""
     n = len(frames)
     layout = [[f"f{i}" for i in range(n)], ["trace"] * n, ["onset"] * n]
     fig, ax = style.panel(width_mm, height_mm, layout, height_ratios=[1.1, 1.6, 0.8])
@@ -1031,19 +1080,21 @@ def failure_panel(
         for xi in g["time"].to_numpy() - origin:
             for a in (tr, ax["onset"]):
                 a.axvline(xi, color=style.ERRORS[kind], linewidth=0.6, alpha=0.8)
-        tr.plot([], [], color=style.ERRORS[kind], lw=0.8, label=kind)
+        tr.plot([], [], color=style.ERRORS[kind], lw=0.8, label=kind.split()[-1][1:-1])
     tr.set_xlim(t0, t1)
     tr.set_ylim(-5.2, 3.9)
     tr.set_ylabel("Sniffing (z)")
     tr.set_xticklabels([])
-    tr.legend(
-        loc="lower left",
-        ncol=4,
-        fontsize=5.5,
-        handlelength=1,
-        bbox_to_anchor=(0, -0.08),
-        frameon=False,
-    )
+    if legend:
+        tr.legend(
+            loc="lower left",
+            ncol=4,
+            fontsize=5,
+            handlelength=0.8,
+            columnspacing=0.8,
+            bbox_to_anchor=(0, -0.08),
+            frameon=False,
+        )
     o = ax["onset"]
     o.plot(tp[kp], prediction["onset"][kp], color=style.ONSET)
     o.axhline(0.5, color="0.6", linewidth=0.5, linestyle=":")

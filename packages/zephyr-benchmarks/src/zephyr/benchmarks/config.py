@@ -58,6 +58,8 @@ class ReportedRun(BaseModel):
     head: bool = False
     """Whether it is a zephyr network trained with its onset head (its inhale events come
     from the head, not DSP); no other network has one."""
+    fold: str = ""
+    """The run's fold folder, when it is not the manifest's ``fold``."""
 
     @model_validator(mode="after")
     def _variant_names_a_baseline(self) -> "ReportedRun":
@@ -79,10 +81,12 @@ class ResultsManifest(BaseModel):
     """The compared methods, in the order tables list them."""
     variant: list[ReportedRun] = []
     """The first method trained differently, compared with it alone."""
+    learning_curve: list[ReportedRun] = []
+    """The first method trained on parts of its training set, scored on the same tests."""
 
     @model_validator(mode="after")
     def _labels_are_distinct(self) -> "ResultsManifest":
-        labels = [r.label for r in (*self.method, *self.variant)]
+        labels = [r.label for r in (*self.method, *self.variant, *self.learning_curve)]
         if len(set(labels)) != len(labels):
             raise ValueError(f"repeated labels in {labels}")
         return self

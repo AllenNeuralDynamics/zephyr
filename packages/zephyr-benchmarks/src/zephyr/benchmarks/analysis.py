@@ -277,6 +277,32 @@ def bootstrap(
     return pd.DataFrame(rows)
 
 
+def familiarity(
+    recordings: pd.DataFrame, trained: dict[str, pd.DataFrame]
+) -> pd.DataFrame:
+    """Per row of *recordings* (a ``method``, ``subject`` and ``rig`` each), what that
+    method trained on, from *trained* (method -> its training sessions, with ``subject``
+    and ``rig``): ``animal`` (``"same rig"``, ``"other rig"`` or ``"new"``) and
+    ``rig_trained`` (whether any training session came from the rig)."""
+    animal, rig_trained = [], []
+    for m, s, r in zip(
+        recordings["method"], recordings["subject"], recordings["rig"], strict=True
+    ):
+        t = trained[m]
+        mine = t[t["subject"].astype(str) == str(s)]
+        animal.append(
+            "new"
+            if mine.empty
+            else "same rig"
+            if r in set(mine["rig"])
+            else "other rig"
+        )
+        rig_trained.append(r in set(t["rig"]))
+    return pd.DataFrame(
+        {"animal": animal, "rig_trained": rig_trained}, index=recordings.index
+    )
+
+
 def clip_scores_wide(clips: pd.DataFrame, metric: str) -> pd.DataFrame:
     """*metric* of every clip (rows, indexed by ``set`` and ``clip_id``; seeds averaged)
     for every method (columns)."""
