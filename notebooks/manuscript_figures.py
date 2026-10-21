@@ -544,8 +544,9 @@ def _(methods, test_a):
     # Two test-A clips, neither an outlier: among clips whose correlation is at least
     # the median, the one with most near misses (predictions 25-100 ms off; d), around
     # its densest near misses; and, among the lowest tenth of clips by correlation, the
-    # one at the upper quartile of inhale F1 (f), around a 2-s stretch whose own
-    # correlation is closest to the clip's.
+    # one with the highest inhale F1 (f), around the 2-s stretch in which every
+    # inhalation is found and the trace is furthest from the thermistor (RMSE, both
+    # z-scored over the clip).
     _clips = (
         runs.scores(methods)
         .query("method == 'Zephyr' and set == @test_a")
@@ -561,7 +562,7 @@ def _(methods, test_a):
     _low = _clips[_clips["correlation"] <= _clips["correlation"].quantile(0.1)].drop(
         _near, errors="ignore"
     )
-    _upper = _low.index[int(0.75 * (len(_low) - 1))]  # sorted by inhale F1
+    _upper = _low.index[-1]  # sorted by inhale F1
     _cases = {"d": _clips.loc[_near], "f": _clips.loc[_upper]}
     low_r = {
         "clips": len(_low),
@@ -583,19 +584,27 @@ def _(methods, test_a):
             _t = _errors.loc[_errors["near_miss"], "time"].to_numpy()
             _at = float(_t[np.argmax([np.sum(np.abs(_t - x) < 1.5) for x in _t])])
         else:
+            # The 2-s stretch where the waveform is worst while every inhalation in
+            # it is found: no error, no excluded span, at least 4 true inhalations.
             _pt = _p["times"]
             _target = np.interp(_pt, _truth["times"], _truth["signal"])
-            _centres = np.arange(_pt[0] + 1.0, _pt[-1] - 1.0, 0.5)
-            _local = np.array(
-                [
-                    np.corrcoef(
-                        _p["signal"][(_pt >= c - 1) & (_pt < c + 1)],
-                        _target[(_pt >= c - 1) & (_pt < c + 1)],
-                    )[0, 1]
-                    for c in _centres
-                ]
-            )
-            _at = float(_centres[np.nanargmin(np.abs(_local - _row["correlation"]))])
+            _target = (_target - _target.mean()) / _target.std()
+            _err = _errors["time"].to_numpy()
+            _ex = np.asarray(_truth["excluded"]).reshape(-1, 2)
+            _best, _at = -np.inf, None
+            for _c in np.arange(_pt[0] + 1.0, _pt[-1] - 1.0, 0.25):
+                _in = (_pt >= _c - 1) & (_pt < _c + 1)
+                _clean = (
+                    not np.any(np.abs(_err - _c) < 1.0)
+                    and not np.any((_ex[:, 0] < _c + 1) & (_ex[:, 1] > _c - 1))
+                    and np.sum(np.abs(_truth["inhale"] - _c) < 1.0) >= 4
+                )
+                if _clean:
+                    _rmse = np.sqrt(np.mean((_p["signal"][_in] - _target[_in]) ** 2))
+                    if _rmse > _best:
+                        _best, _at = _rmse, float(_c)
+                        _r = np.corrcoef(_p["signal"][_in], _target[_in])[0, 1]
+            local_r, local_rmse = _r, _best
         _frame_t, _frames = runs.gray(_stem)
         _picked = dict.fromkeys(
             min(int(np.searchsorted(_frame_t, _at + dt)), len(_frames) - 1)
@@ -620,7 +629,14 @@ def _(methods, test_a):
             ),
             _fig,
         ]
-    mo.vstack([mo.md(f"Lowest tenth by correlation: {low_r}"), *_shown])
+    mo.vstack(
+        [
+            mo.md(
+                f"Lowest tenth by correlation: {low_r}; f's stretch r {local_r:.2f}, RMSE {local_rmse:.2f}"
+            ),
+            *_shown,
+        ]
+    )
     return
 
 

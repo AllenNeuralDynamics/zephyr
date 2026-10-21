@@ -72,7 +72,7 @@ surroundings. Each inhalation draws odor into the nose, so sniffing sets when an
 olfactory information is sampled @kepecs2006 @verhagen2007 @wachowiak2011, and rodents
 adjust it constantly. Mice breathe at about 2–4 Hz at rest and sniff at up to about 12 Hz
 when they explore or anticipate an odor, switching between the two within a fraction of
-a second @welker1964 @wesson2008. Human breathing, by contrast, stays near 0.2–0.3 Hz, so
+a second @wesson2008. Human breathing, by contrast, stays near 0.2–0.3 Hz, so
 a rodent's breathing rate varies over a range several times wider and changes far faster.
 Responses of olfactory bulb neurons are locked to precise phases of the sniff cycle
 @shusterman2011. The respiratory rhythm
@@ -173,7 +173,8 @@ A holds #tbd[21] such units from #tbd[10] animals, and test set B #tbd[44] from
 
 #figure(
   fit(fig1),
-  caption: [*Measuring breathing from face video.* *a*, Acquisition. *b*, Task and
+  caption: [*Measuring breathing from face video.* *a*, The rig: a head-fixed mouse on a wheel facing the virtual-reality screens, the
+    cameras with example frames, and the odor delivery line. *b*, Task and
     behaviour aligned to reward-site entry. *c*, Ground truth: the face frame with the crop
     the network sees (orange), the crop at three moments of one breath, and the thermistor
     with its inhalations and exhalations (one breath of one clip). *d*, Network. *e*, Eight
@@ -332,8 +333,10 @@ A low waveform correlation did not mean that the breaths were lost. Across test-
 correlation and inhalation F1 were only loosely related (Spearman $rho = #tbd[0.41]$):
 in the #tbd[16] clips with the lowest tenth of correlations ($r < #tbd[0.61]$), median F1
 was still #tbd[0.76], and a quarter reached #tbd[0.9] or more. In the clip shown,
-the predicted trace differs from the thermistor in shape, rounding its sharp drops, while
-the inhalation onsets still fall on the thermistor's
+the waveform correlation was #tbd[0.48] yet every inhalation was found (F1
+#tbd[1.00]); over the 2 s shown, through fast sniffing and a pause, the predicted trace
+departs from the thermistor in shape and level ($r = #tbd[0.36]$, RMSE #tbd[1.7]
+s.d.), while each predicted onset falls on a thermistor inhalation
 (#fig(<fig:general>, "f")). Onset times can thus be used even where the waveform is
 poor.
 
@@ -354,9 +357,11 @@ poor.
     and errors left (misses and false inhalations, as a share of breaths) at 25 ms (the
     tolerance used throughout), 50 ms (dotted lines) and 100 ms; n = #tbd[223,588]
     thermistor breaths per network. *f*, A clip with low correlation whose inhalations are
-    still found: among the #tbd[16] test-A clips in the lowest tenth of correlation, the
-    one at the upper quartile of inhalation F1 (r = #tbd[0.57], F1 #tbd[0.88]), around a
-    2-s stretch whose correlation is closest to the clip's. In *d* and *f* (one clip each):
+    all found: among the #tbd[16] test-A clips in the lowest tenth of correlation, the
+    one with the highest inhalation F1 (r = #tbd[0.48], F1 #tbd[1.00]), around the 2-s
+    stretch with the largest difference between trace and thermistor (RMSE, both z-scored
+    over the clip) among stretches with no error or excluded span and at least 4
+    inhalations (r = #tbd[0.36], RMSE #tbd[1.7]). In *d* and *f* (one clip each):
     crops (top), the thermistor and our trace with the thermistor's (black) and the
     network's (blue) inhalations, misses (FN) and false inhalations (FP) marked, and the
     onset probability.],
