@@ -219,7 +219,9 @@ def _(dataset, spec):
 @app.cell
 def _(folds):
     # Every thermistor breath's rate over the corpus, and per animal.
-    fig2b = plots.corpus_rate_panel(*size("fig2", "b"), runs.animal_breath_rates())
+    fig2b = plots.corpus_rate_panel(
+        *size("fig2", "b"), runs.animal_breath_rates(), step=0.5
+    )
     plots.save_panel(fig2b, FIGURES / "fig2" / "b.svg")
     fig2b
     return
@@ -264,10 +266,10 @@ def _():
     _rig = dict(zip(_folds["session_id"], _folds["rig"], strict=True))
 
     def with_unit(table: pd.DataFrame) -> pd.DataFrame:
-        """*table* (a ``session`` and ``subject`` per row) with its ``unit``."""
-        return table.assign(
-            unit=table["subject"].astype(str) + "@" + table["session"].map(_rig)
-        )
+        """*table* (a ``session`` and ``subject`` per row) with its ``rig`` and
+        ``unit``."""
+        rig = table["session"].map(_rig)
+        return table.assign(rig=rig, unit=table["subject"].astype(str) + "@" + rig)
 
     recordings = with_unit(runs.scores(methods, "per_recording"))
     test_a = runs.SETS["test_a"]
@@ -395,11 +397,6 @@ def _(methods, on_cpu, recordings, test_a, timing, with_unit):
         _g = _per_animal.loc[_m]
         _row = {
             "method": plots.DISPLAY.get(_m, _m),
-            "params_m": (
-                f"{timing.loc[_m, 'parameters (M)']:.2f}"
-                if pd.notna(timing.loc[_m, "parameters (M)"])
-                else "—"
-            ),
             "seconds": f"{timing.loc[_m, 's per clip (median)']:.2f}"
             + ("*" if _m in on_cpu else ""),
         }
@@ -461,24 +458,94 @@ def _(recordings, test_a):
 def _(whole):
     _nets = ["Zephyr", "PhysNet", "TS-CAN"]
     _mine = {k: v[v["method"].isin(_nets)] for k, v in whole.items()}
-    fig4c = plots.tolerance_panel(
-        *size("fig4", "c"),
+    fig4e = plots.tolerance_panel(
+        *size("fig4", "e"),
         _mine["lags"],
         _mine["breaths"],
         _mine["false_positives"],
         _nets,
     )
+    plots.save_panel(fig4e, FIGURES / "fig4" / "e.svg")
+    fig4e
+    return
+
+
+@app.cell
+def _(test_a, with_unit):
+    # Fig. 4c: Zephyr trained on fewer animals (all their sessions), and on fewer
+    # sessions of all its animals (open), scored per unit on new animals (test A), the
+    # same units for every run.
+    _names = [runs.REFERENCE, *runs.available(runs.LEARNING_CURVE)]
+    _trained = {n: runs.training(n) for n in _names}
+    _every = _trained[runs.REFERENCE]
+    _recs = with_unit(runs.scores(_names, "per_recording"))
+    _groups = {"New animals": _recs["set"] == test_a}
+    _rows = []
+    for _group, _keep in _groups.items():
+        for _metric in ["inhale", "correlation"]:
+            # One run at a time: each has its own known units.
+            _ci = pd.concat(
+                analysis.bootstrap(
+                    _recs[_keep & (_recs["method"] == _n)].assign(set=_group),
+                    _metric,
+                    reference=_n,
+                    unit="unit",
+                )
+                for _n in _names
+            )
+            for _, _r in _ci.iterrows():
+                _t = _trained[_r["method"]]
+                _all = _every["subject"].isin(set(_t["subject"])).sum()
+                _rows.append(
+                    {
+                        "group": _group,
+                        "metric": _metric,
+                        "method": _r["method"],
+                        "animals": _t["subject"].nunique(),
+                        "sessions": len(_t),
+                        "full": len(_t) == _all,
+                        "units": _r["units"],
+                        **{k: _r[k] for k in ("mean", "low", "high")},
+                    }
+                )
+    learning = pd.DataFrame(_rows)
+    # Rig coverage (Methods): new animals (test A) by whether the run trained on their
+    # rig. Unpaired: the units in each group differ.
+    _tested = _recs[_recs["set"] == test_a]
+    _per_unit = (
+        _tested.join(analysis.familiarity(_tested, _trained))
+        .groupby(["method", "set", "rig_trained", "unit"], as_index=False)[
+            ["inhale", "correlation"]
+        ]
+        .mean()
+    )
+    rig_coverage = _per_unit.groupby(["method", "rig_trained"], as_index=False).agg(
+        units=("unit", "size"), inhale=("inhale", "mean"), r=("correlation", "mean")
+    )
+    fig4c = plots.learning_curve_panel(
+        *size("fig4", "c"),
+        learning,
+        {"New animals": style.color(test_a)},
+    )
     plots.save_panel(fig4c, FIGURES / "fig4" / "c.svg")
-    fig4c
+    mo.vstack(
+        [
+            fig4c,
+            mo.ui.table(learning.round(3), selection=None),
+            mo.md("New animals (test A), by whether the rig was in training"),
+            mo.ui.table(rig_coverage.round(3), selection=None),
+        ]
+    )
     return
 
 
 @app.cell
 def _(methods, test_a):
     # Two test-A clips, neither an outlier: among clips whose correlation is at least
-    # the median, the one with most near misses (predictions 25-100 ms off; d), and the
-    # clip at the 10th percentile of Zephyr's inhale F1 (f); each around its densest
-    # near misses (d) or errors (f).
+    # the median, the one with most near misses (predictions 25-100 ms off; d), around
+    # its densest near misses; and, among the lowest tenth of clips by correlation, the
+    # one at the upper quartile of inhale F1 (f), around a 2-s stretch whose own
+    # correlation is closest to the clip's.
     _clips = (
         runs.scores(methods)
         .query("method == 'Zephyr' and set == @test_a")
@@ -491,41 +558,69 @@ def _(methods, test_a):
     )
     _good = _clips.index[_clips["correlation"] >= _clips["correlation"].median()]
     _near = _far.reindex(_good).idxmax()
-    _others = _clips.drop(_near)
-    _tenth = _others.index[int(0.1 * len(_others))]
-    _cases = {"d": _clips.loc[_near], "f": _clips.loc[_tenth]}
+    _low = _clips[_clips["correlation"] <= _clips["correlation"].quantile(0.1)].drop(
+        _near, errors="ignore"
+    )
+    _upper = _low.index[int(0.75 * (len(_low) - 1))]  # sorted by inhale F1
+    _cases = {"d": _clips.loc[_near], "f": _clips.loc[_upper]}
+    low_r = {
+        "clips": len(_low),
+        "below r": float(_clips["correlation"].quantile(0.1)),
+        "median F1": float(_low["inhale"].median()),
+        "share F1 >= 0.9": float((_low["inhale"] >= 0.9).mean()),
+        "spearman r, F1": float(
+            _clips[["correlation", "inhale"]].corr("spearman").iloc[0, 1]
+        ),
+    }
     _shown = []
     for _panel, _row in _cases.items():
         _stem = _row.name
         _errors = runs.errors("Zephyr", _stem)
         _p = runs.prediction("Zephyr", _stem)
         _origin = float(_p["times"][0])
-        _t = (
-            _errors.loc[_errors["near_miss"], "time"]
-            if _panel == "d"
-            else _errors["time"]
-        ).to_numpy()
-        _at = float(_t[np.argmax([np.sum(np.abs(_t - x) < 1.5) for x in _t])])
+        _truth = runs.truth(_stem)
+        if _panel == "d":
+            _t = _errors.loc[_errors["near_miss"], "time"].to_numpy()
+            _at = float(_t[np.argmax([np.sum(np.abs(_t - x) < 1.5) for x in _t])])
+        else:
+            _pt = _p["times"]
+            _target = np.interp(_pt, _truth["times"], _truth["signal"])
+            _centres = np.arange(_pt[0] + 1.0, _pt[-1] - 1.0, 0.5)
+            _local = np.array(
+                [
+                    np.corrcoef(
+                        _p["signal"][(_pt >= c - 1) & (_pt < c + 1)],
+                        _target[(_pt >= c - 1) & (_pt < c + 1)],
+                    )[0, 1]
+                    for c in _centres
+                ]
+            )
+            _at = float(_centres[np.nanargmin(np.abs(_local - _row["correlation"]))])
         _frame_t, _frames = runs.gray(_stem)
         _picked = dict.fromkeys(
             min(int(np.searchsorted(_frame_t, _at + dt)), len(_frames) - 1)
-            for dt in np.linspace(-0.6, 0.6, 7)
+            for dt in np.linspace(-0.4, 0.4, 5)
         )
         _fig = plots.failure_panel(
             *size("fig4", _panel),
-            runs.truth(_stem),
+            _truth,
             _p,
             _errors,
             _origin,
             _at - _origin,
             [(_frame_t[i] - _origin, np.asarray(_frames[i, 0])) for i in _picked],
+            half=1.0,
+            legend=_panel == "d",
         )
         plots.save_panel(_fig, FIGURES / "fig4" / f"{_panel}.svg")
         _shown += [
-            mo.md(f"**{_panel}**: {_stem}, inhale F1 {_row['inhale']:.3f}"),
+            mo.md(
+                f"**{_panel}**: {_stem}, inhale F1 {_row['inhale']:.3f}, "
+                f"r {_row['correlation']:.3f}"
+            ),
             _fig,
         ]
-    mo.vstack(_shown)
+    mo.vstack([mo.md(f"Lowest tenth by correlation: {low_r}"), *_shown])
     return
 
 

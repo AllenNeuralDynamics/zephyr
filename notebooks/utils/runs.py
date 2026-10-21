@@ -51,7 +51,9 @@ METHODS: dict[str, ReportedRun] = {r.label: r for r in RESULTS.method}
 """Every compared method, in the order tables list them."""
 VARIANTS: dict[str, ReportedRun] = {r.label: r for r in RESULTS.variant}
 """The first method trained differently, compared with it alone."""
-ALL = METHODS | VARIANTS
+LEARNING_CURVE: dict[str, ReportedRun] = {r.label: r for r in RESULTS.learning_curve}
+"""The first method trained on parts of its training set."""
+ALL = METHODS | VARIANTS | LEARNING_CURVE
 REFERENCE = RESULTS.method[0].label
 """The method every other is compared with (Zephyr)."""
 
@@ -96,16 +98,21 @@ def _fetch(key: str) -> Path | None:
     return local
 
 
+def folder(m: ReportedRun) -> str:
+    """A network run's folder under the root: ``<run>/<fold>``."""
+    return f"{m.run}/{m.fold or RESULTS.fold}"
+
+
 @functools.cache
-def seeds(run: str) -> tuple[str, ...]:
-    """The seed folders a network run has finished (a ``best.pt`` and its scores)."""
+def seeds(folder: str) -> tuple[str, ...]:
+    """The seed folders a network run has finished (a ``best.pt`` and its scores), in
+    its *folder* (``<run>/<fold>``, :func:`folder`)."""
     local = sorted(
-        p.parent.name
-        for p in LOCAL_RUNS.glob(f"{run}/{RESULTS.fold}/*/evaluation.json")
+        p.parent.name for p in LOCAL_RUNS.glob(f"{folder}/*/evaluation.json")
     )
     try:
         found = _s3().glob(
-            f"{S3_RUNS.removeprefix('s3://')}/{run}/{RESULTS.fold}/seed-*/evaluation.json"
+            f"{S3_RUNS.removeprefix('s3://')}/{folder}/seed-*/evaluation.json"
         )
     except Exception:  # noqa: BLE001 -- offline: whatever was downloaded before
         return tuple(local)
@@ -117,14 +124,33 @@ def evaluation(name: str, seed: str | None = None) -> dict | None:
     run has not finished."""
     m = ALL[name]
     if m.kind == "network":
-        found = seeds(m.run)
+        found = seeds(folder(m))
         if not found:
             return None
-        key = f"{m.run}/{RESULTS.fold}/{seed or found[0]}/evaluation.json"
+        key = f"{folder(m)}/{seed or found[0]}/evaluation.json"
     else:
         key = f"{m.run}/{RESULTS.fold}/{m.kind}/{m.variant}/evaluation.json"
     path = _fetch(key)
     return json.loads(path.read_text()) if path else None
+
+
+def training(name: str) -> pd.DataFrame:
+    """The sessions a network run trained on (its first seed's ``train_videos.json``),
+    with their ``subject`` and ``rig`` from the split."""
+    m = ALL[name]
+    path = _fetch(f"{folder(m)}/{seeds(folder(m))[0]}/train_videos.json")
+    stems = [Path(v).stem for v in json.loads(path.read_text())]
+    sessions = sorted({stem.rsplit("_span", 1)[0] for stem in stems})
+    folds = pd.read_parquet(root() / "dataset" / "folds.parquet").set_index(
+        "session_id"
+    )
+    return pd.DataFrame(
+        {
+            "session": sessions,
+            "subject": folds.loc[sessions, "subject_id"].astype(str).to_numpy(),
+            "rig": folds.loc[sessions, "rig"].to_numpy(),
+        }
+    )
 
 
 def available(names) -> list[str]:
@@ -138,7 +164,11 @@ def runs_table(names=ALL) -> pd.DataFrame:
     for name in names:
         m = ALL[name]
         done = (
-            seeds(m.run) if m.kind == "network" else ("—",) if evaluation(name) else ()
+            seeds(folder(m))
+            if m.kind == "network"
+            else ("—",)
+            if evaluation(name)
+            else ()
         )
         rows.append(
             {
@@ -168,7 +198,7 @@ def scores(names=ALL, level: str = "clips") -> pd.DataFrame:
     frames = []
     for name in names:
         m = ALL[name]
-        for seed in seeds(m.run) if m.kind == "network" else (None,):
+        for seed in seeds(folder(m)) if m.kind == "network" else (None,):
             result = evaluation(name, seed)
             if result is None:
                 continue
@@ -238,7 +268,7 @@ def _amp(dev: torch.device) -> torch.dtype | None:
 def network(name: str) -> tuple:
     """``(model, mean, std, window, frame_chunk)`` of a network's first seed."""
     m = ALL[name]
-    path = _fetch(f"{m.run}/{RESULTS.fold}/{seeds(m.run)[0]}/best.pt")
+    path = _fetch(f"{folder(m)}/{seeds(folder(m))[0]}/best.pt")
     model, mean, std, state = load_checkpoint(path, device())
     params = state.get("params") or {}
     return (
@@ -258,7 +288,7 @@ def _saved(
     m = ALL[name]
     if m.kind == "network":
         path = _fetch(
-            f"{m.run}/{RESULTS.fold}/{seeds(m.run)[0]}/{TRACES}/{trace_name(e)}"
+            f"{folder(m)}/{seeds(folder(m))[0]}/{TRACES}/{trace_name(e)}"
         )
         if path is None:
             return None

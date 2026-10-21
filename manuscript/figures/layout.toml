@@ -102,43 +102,43 @@ what = "Bland-Altman of breathing rate in 10 s windows, Zephyr, test A"
 [fig4]
 width_mm = 183
 gap_mm = 4
-rows = [["a", "b"], ["c", "d"], ["e", "f"]]
+rows = [["a", "b", "c"], ["d", "e", "f"]]
 
 [fig4.panels.a]
 kind = "data"
-width_mm = 100
-height_mm = 48
+width_mm = 82
+height_mm = 44
 what = "Test A against test B per method: correlation and inhale F1"
 
 [fig4.panels.b]
 kind = "data"
-width_mm = 79
-height_mm = 48
+width_mm = 48
+height_mm = 44
 what = "Per-animal inhale F1 on test A, ranked"
 
 [fig4.panels.c]
 kind = "data"
-width_mm = 54
-height_mm = 48
-what = "Inhale F1 and errors left as the onset tolerance is relaxed (25 to 100 ms)"
+width_mm = 45
+height_mm = 46
+what = "Test-A correlation and inhale F1 against the number of training animals (4, 8, 16, 32)"
 
 [fig4.panels.d]
 kind = "data"
-width_mm = 125
-height_mm = 48
+width_mm = 66
+height_mm = 46
 what = "Near misses: a well-correlated test-A clip with many predictions 25-100 ms off"
 
 [fig4.panels.e]
 kind = "data"
-width_mm = 54
-height_mm = 48
-what = "Test-A correlation and inhale F1 against the number of training animals (4, 8, 16, 32)"
+width_mm = 43
+height_mm = 44
+what = "Inhale F1 and errors left as the onset tolerance is relaxed (25 to 100 ms)"
 
 [fig4.panels.f]
 kind = "data"
-width_mm = 125
-height_mm = 48
-what = "Errors in the test-A clip at the 10th percentile of F1"
+width_mm = 66
+height_mm = 46
+what = "A low-correlation test-A clip whose inhalations are still found"
 
 [fig5]
 width_mm = 183
