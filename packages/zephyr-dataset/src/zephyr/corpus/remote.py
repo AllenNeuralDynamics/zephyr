@@ -28,6 +28,16 @@ def find(fs, bucket: str, source: str, subfolder: str) -> str | None:
     return None
 
 
+def camera_folder(fs, videos: str, name: str) -> str | None:
+    """``s3://<videos>/<name>/`` if that camera folder holds a ``video.mp4`` and its
+    ``metadata.csv`` (*videos* is a session's ``behavior-videos`` folder), else None."""
+    path = f"{videos.removeprefix('s3://').strip('/')}/{name}"
+    if not fs.exists(path):
+        return None
+    names = {n.rsplit("/", 1)[-1] for n in fs.ls(path, detail=False)}
+    return f"s3://{path}/" if {"video.mp4", "metadata.csv"} <= names else None
+
+
 def thread_map(fn, items, workers: int) -> list:
     with ThreadPoolExecutor(max(1, workers)) as pool:
         return list(pool.map(fn, items))

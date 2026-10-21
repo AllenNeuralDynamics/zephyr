@@ -23,7 +23,7 @@ from .config import DatasetSpec, Layout, session_of
 from .lists import validate
 from .qc import METRICS
 from .qc import metadata as qc_metadata
-from .remote import filesystem, find, thread_map
+from .remote import camera_folder, filesystem, find, thread_map
 
 SCHEMA = 1
 TRIES = 200
@@ -94,21 +94,20 @@ def camera_folders(fs, spec: DatasetSpec, source: str) -> dict[str, str]:
         return {}
     found = {}
     for name in spec.source.cameras:
-        path = f"{root}/{name}"
-        if not fs.exists(path):
-            continue
-        names = {n.rsplit("/", 1)[-1] for n in fs.ls(path, detail=False)}
-        if {"video.mp4", "metadata.csv"} <= names:
-            found[name] = f"s3://{path.lstrip('/')}/"
+        folder = camera_folder(fs, root, name)
+        if folder is not None:
+            found[name] = folder
     return found
 
 
-def camera_problems(layout: Layout) -> dict[str, list[str]]:
-    """Sessions with a camera whose timestamps are not clean after the repair, and
-    why ("<camera>: <problem>"); none before ``videos`` has run."""
+def camera_problems(layout: Layout, cameras: list[str]) -> dict[str, list[str]]:
+    """Sessions with one of *cameras* whose timestamps are not clean after the repair,
+    and why ("<camera>: <problem>"); none before ``videos`` has run. An optional camera
+    is never a reason to drop a session."""
     if not layout.cameras.exists():
         return {}
     table = storage.read_parquet(layout.cameras)
+    table = table[table["camera"].isin(cameras)]
     out: dict[str, list[str]] = {}
     for _, row in table.iterrows():
         if row["error"] is not None and not pd.isna(row["error"]):
@@ -192,7 +191,7 @@ def run(spec: DatasetSpec, workers: int = 32, fs=None) -> dict:
         selected = [s for s in fits if wanted <= set(s["cameras"])]
     else:
         selected = fits
-    dropped = camera_problems(layout)  # from `videos`, once it has run
+    dropped = camera_problems(layout, spec.source.cameras)  # from `videos`, once run
     for s in selected:
         if s["session_id"] in dropped:
             s["dropped"] = dropped[s["session_id"]]

@@ -12,6 +12,7 @@ process = "primary-nwb-packaging-vr-foraging"
 device = "SniffDetector"
 signal = "RawVoltage"
 cameras = ["FaceCamera", "SideCamera"]
+optional_cameras = ["FrontCamera"]   # cut where present and clean; not every session has one
 
 [query]
 until = 2026-10-11T20:09:34Z  # the time of the saved DocDB query (docdb.json.gz)
@@ -71,7 +72,7 @@ require_cameras = true
 
 [clips]
 thermistor_pad_s = 10.0
-exclude_cameras = ["SideCamera"]   # cut and kept, but zephyr uses the face camera only
+exclude_cameras = ["SideCamera", "FrontCamera"]   # cut and kept, but zephyr uses the face camera only
 
 # The SniffDetector's clock against the Behavior board's: their read dumps are normally
 # 1-10 ms apart; a session further apart is taken out by `folds` after the draw.

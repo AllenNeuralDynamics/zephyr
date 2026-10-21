@@ -51,6 +51,10 @@ class Source(_Model):
     cameras: list[str] = ["FaceCamera", "SideCamera"]
     """Camera folders (``behavior-videos/<camera>``, each with ``video.mp4`` and
     ``metadata.csv``) a selected session needs."""
+    optional_cameras: list[str] = []
+    """Camera folders cut too where a session ``folds`` assigns has them and they are
+    clean; never a reason to select or drop a session, and never part of a clip
+    thermistor's time range."""
 
 
 class Query(_Model):

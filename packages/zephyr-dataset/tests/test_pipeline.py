@@ -7,6 +7,7 @@ import shutil
 import tempfile
 import unittest
 import uuid
+from contextlib import redirect_stdout
 from pathlib import Path
 
 import fsspec
@@ -74,9 +75,10 @@ SESSIONS = {  # session_id: (raw folder name, signal, cameras)
     "103_2026-01-04_10-00-00": (
         "103_2026-01-04_10-00-00",
         breathing,
-        {  # cameras need not share a rate
+        {  # cameras need not share a rate; FrontCamera is optional (OPTIONAL)
             "FaceCamera": camera_frame(),
             "SideCamera": camera_frame(n=600, rollback=200, hz=60.0),
+            "FrontCamera": camera_frame(),
         },
     ),
 }
@@ -137,6 +139,10 @@ def fake_bucket():
     raw = last["data_description"]["source_data"]
     records.append(record("later", bucket, "2.0", "2026-03-01", raw[0]))
     return fs, bucket, records
+
+
+OPTIONAL = {"source": {"optional_cameras": ["FrontCamera"]}}
+"""What a spec adds for an optional front camera (only session 103 has one)."""
 
 
 def video_frames(url) -> int:
@@ -426,6 +432,102 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(list(self.layout.clip_dir.iterdir()), [])
         self.assertEqual(list(self.layout.thumbnail_dir.iterdir()), [])
         self.assertFalse(self.layout.clip_list.exists())
+
+    def with_front(self) -> DatasetSpec:
+        data = self.spec.model_dump()
+        data["source"] |= OPTIONAL["source"]
+        data["clips"]["exclude_cameras"] = ["SideCamera", "FrontCamera"]
+        return DatasetSpec.model_validate(data)
+
+    def test_an_optional_camera_never_selects_or_drops_a_session(self):
+        before = self.build()
+        spec = self.with_front()
+        out = io.StringIO()
+        with redirect_stdout(out):
+            table = videos.run(spec, workers=2, fs=self.fs, frames=video_frames)
+        self.assertIn("1 session(s) have no FrontCamera", out.getvalue())  # 100
+        front = table[table["camera"] == "FrontCamera"]
+        self.assertEqual(list(front["session_id"]), ["103_2026-01-04_10-00-00"])
+        self.assertTrue(front["clean"].all())
+        self.assertTrue(front["folder"].iloc[0].endswith("/FrontCamera/"))
+        # a front camera that is not clean is not cut, and drops nothing
+        folder = (
+            f"{spec.source.bucket}/103_2026-01-04_10-00-00/behavior-videos/FrontCamera"
+        )
+        dirty = camera_frame(drop=100).to_csv(index=False).encode()
+        self.fs.pipe(f"{folder}/metadata.csv", dirty)
+        self.layout.cameras.unlink()
+        shutil.rmtree(self.layout.root / "camera_metadata")
+        table = videos.run(spec, workers=2, fs=self.fs, frames=video_frames)
+        row = table.set_index(["session_id", "camera"])
+        self.assertFalse(row.loc[("103_2026-01-04_10-00-00", "FrontCamera"), "clean"])
+        results = select.run(spec, workers=2, fs=self.fs)
+        self.assertIn("103_2026-01-04_10-00-00", results["selected"])
+        self.assertEqual(
+            results["selected"],
+            [s for s in before["selected"] if s != "100_2026-01-01_10-00-00"],
+        )  # only 100's own face camera drops it
+        self.assertEqual(clips.optional_folders(spec, self.layout), {})
+
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "ffmpeg")
+    def test_an_optional_camera_is_cut_inside_the_clips_it_joins(self):
+        self.build()
+        videos.run(self.spec, workers=2, fs=self.fs, frames=video_frames)
+        select.run(self.spec, workers=2, fs=self.fs)  # only 103 keeps clean cameras
+        sid = "103_2026-01-04_10-00-00"
+        results = json.loads(self.layout.results.read_text())
+        for s in results["sessions"]:
+            if s["session_id"] == sid:
+                s["clips"] = {
+                    "span1": {"start": 5001.3, "end": 5003.3},
+                    "span2": {"start": 5005.0, "end": 5009.9},
+                }
+        self.layout.results.write_text(json.dumps(results))
+        sources = {}
+        for name, frames, hz in (
+            ("FaceCamera", 2400, 240),
+            ("SideCamera", 600, 60),
+            ("FrontCamera", 2400, 240),
+        ):
+            sources[name] = Path(self.tmp.name) / f"{name}.mp4"
+            make_video(sources[name], frames, hz)
+
+        def url_of(folder):
+            return str(sources[folder.rstrip("/").rsplit("/", 1)[-1]])
+
+        first = clips.run(self.spec, workers=2, url_of=url_of)  # face and side only
+        therm = {
+            p.name: p.read_bytes() for p in self.layout.clip_dir.glob("*thermistor*")
+        }
+        spec = self.with_front()
+        videos.run(spec, workers=2, fs=self.fs, frames=video_frames)
+        table = clips.run(spec, workers=2, url_of=url_of)
+        self.assertTrue(table["error"].isna().all(), table["error"].tolist())
+        old = table[table["camera"] != "FrontCamera"].reset_index(drop=True)
+        pd.testing.assert_frame_equal(old, first)  # nothing else redone
+        self.assertEqual(  # the thermistor files are untouched
+            {p.name: p.read_bytes() for p in self.layout.clip_dir.glob("*thermistor*")},
+            therm,
+        )
+        front = table[table["camera"] == "FrontCamera"]
+        self.assertEqual(list(front["span"]), ["span1", "span2"])
+        for clip in front.itertuples():
+            cut = self.layout.root / clip.video
+            self.assertEqual(packet_count(cut.read_bytes()), clip.frames)
+            self.assertEqual(
+                frame_digest(cut, 0),
+                frame_digest(sources["FrontCamera"], clip.first_frame),
+            )
+            stamps = pd.read_parquet(self.layout.root / clip.thermistor)["Time"]
+            self.assertLessEqual(stamps.min(), clip.start)
+            self.assertGreaterEqual(stamps.max(), clip.end)
+        self.assertTrue(self.layout.thumbnail(sid, "FrontCamera").exists())
+        listed = load(ClipList, self.layout.clip_list)
+        self.assertEqual(len(listed.clip), 6)
+        self.assertEqual(  # listed, but left out of everything like the side camera
+            [c.video.name for c in listed.resolve()],
+            [f"{sid}_span1_FaceCamera.mp4", f"{sid}_span2_FaceCamera.mp4"],
+        )
 
     def test_the_list_groups_by_subject(self):
         self.build()

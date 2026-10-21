@@ -1,6 +1,7 @@
 """``videos``: each selected session's camera timestamps, checked and repaired.
 
-For every camera of the spec, caches the session's ``metadata.csv`` unmodified in
+For every camera of the spec (an optional one where a session ``folds`` assigns has it,
+beside its other cameras), caches ``metadata.csv`` unmodified in
 ``camera_metadata/<session_id>_<camera>.parquet`` (with the video's frame count from
 ffprobe), measures it (:func:`camera.measure`), repairs ``ReferenceTime`` rollbacks
 (:func:`camera.fix_rollbacks`), measures again and writes the repaired timestamps to
@@ -16,7 +17,7 @@ import pyarrow as pa
 
 from . import camera, storage
 from .config import DatasetSpec, Layout
-from .remote import filesystem, thread_map
+from .remote import camera_folder, filesystem, thread_map
 
 COLUMNS = ["ReferenceTime", "CameraFrameNumber", "CameraFrameTime"]
 BATCH = 200
@@ -113,6 +114,9 @@ def run(
         for name in spec.source.cameras
         if (sid, name) not in finished and name in by_id[sid]["cameras"]
     ]
+    todo += optional_cameras(
+        spec, layout, fs, by_id, results["selected"], finished, limit, workers
+    )
     table = done if done is not None else pd.DataFrame()
     for start in range(0, len(todo), BATCH):  # saved per batch: a stop loses little
         batch = todo[start : start + BATCH]
@@ -124,6 +128,37 @@ def run(
         print(f"videos: {start + len(batch)}/{len(todo)}", flush=True)
     report(table)
     return table
+
+
+def optional_cameras(spec, layout, fs, by_id, selected, finished, limit, workers):
+    """``(session, camera, folder)`` of the optional cameras still to check: in the
+    sessions ``folds`` assigns (all selected before it has run), where the folder is
+    beside the session's other cameras; the sessions without one are counted."""
+    if not spec.source.optional_cameras:
+        return []
+    sessions = selected
+    if layout.folds.exists():
+        folds = storage.read_parquet(layout.folds, columns=["session_id", "set"])
+        assigned = set(folds.loc[folds["set"].notna(), "session_id"])
+        sessions = [sid for sid in selected if sid in assigned]
+    wanted = [
+        (sid, name)
+        for sid in sessions[:limit]
+        for name in spec.source.optional_cameras
+        if (sid, name) not in finished and by_id[sid]["cameras"]
+    ]
+
+    def folder(item):
+        sid, name = item
+        known = next(iter(by_id[sid]["cameras"].values()))
+        return camera_folder(fs, known.rstrip("/").rsplit("/", 1)[0], name)
+
+    found = thread_map(folder, wanted, workers)
+    for name in spec.source.optional_cameras:
+        absent = sum(f is None for (_, n), f in zip(wanted, found) if n == name)
+        if absent:
+            print(f"videos: {absent} session(s) have no {name}", flush=True)
+    return [(sid, name, f) for (sid, name), f in zip(wanted, found) if f is not None]
 
 
 def merge(table: pd.DataFrame, rows: pd.DataFrame) -> pd.DataFrame:

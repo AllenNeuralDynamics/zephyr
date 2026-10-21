@@ -12,7 +12,10 @@ uv run zephyr-dataset <step> packages/zephyr-dataset/configs/vr-foraging-sniff.t
 Steps, in order: `inventory`, `fetch`, `lists`, `qc`, `select`, `videos`, `select` (again:
 it drops sessions whose camera timestamps are not clean, see
 [Known data issues](#known-data-issues)), `sync`, `folds`, `clips`; `status` reports
-progress and `build` runs them all.
+progress and `build` runs them all. The required cameras (`[source] cameras`, face and
+side) decide the selection; an optional one (`[source] optional_cameras`, the front
+camera) is checked by `videos` and cut by `clips` where a session the folds assign has it
+clean, and never selects or drops a session.
 
 ## Why these sessions
 
@@ -174,20 +177,20 @@ It holds only what later stages need:
 | `thermistor/<session_id>.parquet` | the whole session's raw `RawVoltage` (`Time`, `Signal`) |
 | `sessions.toml` | the clip list, one thermistor-only entry per session: detector, marks, spans, reviewed flags (source of truth); `group` is the subject from the metadata |
 | `qc.parquet` | each session's QC metrics and suggestion |
-| `camera_metadata/<session_id>_<camera>.parquet` | each selected camera's `metadata.csv`, unmodified (a cache; the video's frame count in its metadata) |
+| `camera_metadata/<session_id>_<camera>.parquet` | each selected camera's `metadata.csv`, unmodified (a cache; the video's frame count in its metadata); an optional camera's only for the sessions the folds assign |
 | `videos/<session_id>_<camera>.parquet` | the repaired camera timestamps (`ReferenceTime`, `CameraFrameNumber`, `CameraFrameTime`) |
-| `cameras.parquet` | each camera's checks before and after the repair, and whether it is clean |
+| `cameras.parquet` | each camera's checks before and after the repair, whether it is clean, and its source `folder` |
 | `sync.parquet` | each selected session's read-dump times (the WRITE to `OperationControl`) of the SniffDetector and of `[sync] reference`, and their difference (`offset_s`), or the error that stopped the check |
 | `results.json` | the selection: per session metadata, metrics, marks, spans, clips, camera folders, and `dropped` (why) for sessions left out for their cameras |
 | `folds.parquet` | the split: per selected session its subject, rig, date, camera rate, rate bands, the animal's `role` and the session's `set` (`train`, `val`, `test_a`, `test_b`, `test_c`, or none); see [Why these sessions](#why-these-sessions) |
 | `clips/<session_id>_<span>_<camera>.mp4` | the span cut from the camera's video: whole GOPs, stream-copied (never re-encoded) as fragmented MP4, at the camera's native rate |
 | `clips/<session_id>_<span>_<camera>.parquet` | that clip's frame times, one `Time` column (repaired `ReferenceTime`, Harp seconds), one row per frame |
-| `clips/<session_id>_<span>_thermistor.parquet` | the thermistor over both cameras' clips ± `[clips] thermistor_pad_s` (Harp seconds) |
+| `clips/<session_id>_<span>_thermistor.parquet` | the thermistor over the required cameras' clips ± `[clips] thermistor_pad_s` (Harp seconds); an optional camera's clip lies inside it and never changes it |
 | `thumbnails/<session_id>_<camera>.png` | the camera at full resolution, losslessly: the first frame of the session's first clip |
 | `clips.parquet` | every clip: frames, first frame, span, start and end, rate, bytes, or the error that stopped it |
 | `clips-small.toml` | the sessions `folds.parquet` marks `small`, as a clip list (see [The small dataset](#the-small-dataset)) |
 | `cross_validation.parquet` | per assigned session its animal's test A fold, its test B fold and its set in each fold (see [Cross-validation](#cross-validation)) |
-| `clips.toml` | the clips as a zephyr clip list (`group` = session, zephyr's leakage unit, so test B and C can hold out sessions of training animals; face clips carry their `box`; `[clips] exclude_cameras` lists the side camera as `selection = "exclude"`, so zephyr uses the face camera only and the side files stay in the folder) |
+| `clips.toml` | the clips as a zephyr clip list (`group` = session, zephyr's leakage unit, so test B and C can hold out sessions of training animals; face clips carry their `box`; `[clips] exclude_cameras` lists the side and front cameras as `selection = "exclude"`, so zephyr uses the face camera only and their files stay in the folder) |
 
 `clips` cuts only the sessions `folds.parquet` assigns, once it exists.
 
@@ -252,8 +255,14 @@ whole video (thumbnail mean luminance 4 to 38 of 255; every other session is abo
 the cut thumbnails were checked, so sessions the folds do not use are not screened. They are
 `[folds] exclude` and their clips and thumbnails are removed by `clips --prune`.
 
-Dropping is done by `select` from `cameras.parquet` (a camera's `clean`), so a repaired
-camera comes back in automatically on the next `videos` + `select`.
+Dropping is done by `select` from `cameras.parquet` (a required camera's `clean`), so a
+repaired camera comes back in automatically on the next `videos` + `select`.
+
+**Front camera** (optional): 546 of the 560 sessions the folds assign have a
+`FrontCamera` folder (same 720x540 at 240 Hz as the others). The 14 without one are all of
+animals 841301 (12) and 828415 (2), 2026-02 and 03: six of test C's sessions and eight of
+their training and validation sessions. A front camera that is not clean is not cut, and
+the session keeps its face and side clips.
 
 **Harp clocks** (`sync`): every Harp device answers the read dump that starts a session
 (its WRITE to `OperationControl`, register 10), and devices on one clock do so within a few
