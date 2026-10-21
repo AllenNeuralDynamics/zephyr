@@ -653,7 +653,7 @@ def _():
 
 
 @app.cell
-def _(test_a):
+def _():
     qc_videos, qc_windows = quality.tables(str(QC / "test"))
     mo.stop(qc_videos.empty, mo.md("No quality-control reports yet."))
     _sets = runs.clip_sets()
@@ -661,39 +661,52 @@ def _(test_a):
     qc_windows = qc_windows.assign(set=qc_windows["stem"].map(_sets))
     judged = {m: b for m, b in quality.JUDGED.items() if m in qc_videos}
     truth_f1 = "truth_inhale_f1"
-    _a = qc_videos[qc_videos["set"] == test_a]
-    # A test-A video of middling accuracy, so both passing and failing windows show.
-    qc_stem = _a.sort_values(truth_f1)["stem"].iloc[len(_a) // 4]
-    return judged, qc_stem, qc_videos, qc_windows, truth_f1
+    return judged, qc_videos, qc_windows, truth_f1
 
 
 @app.cell
-def _(qc_stem, qc_windows):
-    _traces = quality.traces(str(QC / "test"), qc_stem)
-    _w = qc_windows[qc_windows["stem"] == qc_stem]
-    _shown = [
-        m
-        for m in ("expected_precision", "head_trace_f1", "flat_breath_frac")
-        if m in _w
-    ]
-    fig5a = plots.qc_video_panel(*size("fig5", "a"), _traces, _w, _shown, 30, 40)
+def _(test_a):
+    # Fig. 5a: what our network's errors on test set A are. The share that are near
+    # misses, then, among the rest, the share in fast breathing, face motion and on
+    # shallow breaths, against the share of all true breaths with each (motion and
+    # size are quantiles of each clip's own breaths, so those baselines are fixed).
+    _errors = runs.set_errors(runs.REFERENCE, test_a)
+    _breaths = runs.tables(runs.REFERENCE)["breaths"].query("set == @test_a")
+    error_profile = analysis.error_profile(_errors)
+    _baseline = {
+        "fast breathing (> 8 Hz)": float((_breaths["rate_hz"] > 8).mean()),
+        "face motion (top 10%)": 0.10,
+        "shallow breath (bottom 25%)": 0.25,
+    }
+    fig5a = plots.error_profile_panel(*size("fig5", "a"), error_profile, _baseline)
     plots.save_panel(fig5a, FIGURES / "fig5" / "a.svg")
-    fig5a
+    mo.vstack(
+        [
+            fig5a,
+            mo.ui.table(error_profile.round(3), selection=None),
+            mo.md(f"Baselines: {_baseline}"),
+        ]
+    )
     return
 
 
 @app.cell
-def _(judged, qc_videos, qc_windows, truth_f1):
-    _ranks = {
-        "Videos": analysis.quality_agreement(qc_videos, judged, truth_f1),
-        "Windows": analysis.quality_agreement(qc_windows, judged, truth_f1),
+def _(judged, qc_videos, qc_windows, test_a, truth_f1):
+    # Fig. 5b-c on new animals (test set A) only: the five measures that rank its
+    # videos best, and the windows the three best at ranking windows keep.
+    _videos = qc_videos[qc_videos["set"] == test_a]
+    _windows = qc_windows[qc_windows["set"] == test_a]
+    qc_ranks = {
+        "Videos": analysis.quality_agreement(_videos, judged, truth_f1),
+        "Windows": analysis.quality_agreement(_windows, judged, truth_f1),
     }
-    fig5b = plots.qc_agreement_panel(*size("fig5", "b"), _ranks)
+    _top = qc_ranks["Videos"].nlargest(5, "oriented")
+    fig5b = plots.qc_agreement_panel(*size("fig5", "b"), {"Videos": _top})
     plots.save_panel(fig5b, FIGURES / "fig5" / "b.svg")
-    _best = _ranks["Windows"].sort_values("oriented", ascending=False)["measure"]
+    _best = qc_ranks["Windows"].sort_values("oriented", ascending=False)["measure"]
     _fractions = tuple(np.linspace(0.05, 1, 20))
-    _checks = [c for c in qc_windows if c.startswith("ok_")]
-    _w = qc_windows.dropna(subset=[truth_f1])
+    _checks = [c for c in _windows if c.startswith("ok_")]
+    _w = _windows.dropna(subset=[truth_f1])
     _pass = _w[_w[_checks].fillna(True).astype(bool).all(axis=1)]
     fig5c = plots.qc_retention_panel(
         *size("fig5", "c"),
@@ -705,7 +718,39 @@ def _(judged, qc_videos, qc_windows, truth_f1):
         (len(_pass) / len(_w), float(_pass[truth_f1].mean())),
     )
     plots.save_panel(fig5c, FIGURES / "fig5" / "c.svg")
-    mo.hstack([fig5b, fig5c])
+    qc_kept = {
+        "windows": len(_w),
+        "pass every check": len(_pass) / len(_w),
+        "F1 all": float(_w[truth_f1].mean()),
+        "F1 passing": float(_pass[truth_f1].mean()),
+        "F1 failing": float(_w.drop(_pass.index)[truth_f1].mean()),
+    }
+    mo.vstack(
+        [
+            mo.hstack([fig5b, fig5c]),
+            mo.md(f"{qc_kept}"),
+            mo.ui.table(qc_ranks["Videos"].round(3), selection=None),
+            mo.ui.table(qc_ranks["Windows"].round(3), selection=None),
+        ]
+    )
+    return
+
+
+@app.cell
+def _(test_a, with_unit):
+    # Fig. 5e: Zephyr trained differently, minus Zephyr, on new animals (test set A):
+    # paired bootstrap over animal x rig units.
+    _names = [runs.REFERENCE, *runs.available(runs.VARIANTS)]
+    _recs = with_unit(runs.scores(_names, "per_recording"))
+    _recs = _recs[_recs["set"] == test_a]
+    variants = {
+        m: analysis.bootstrap(_recs, m, unit="unit") for m in ("inhale", "correlation")
+    }
+    fig5e = plots.variants_panel(*size("fig5", "e"), variants)
+    plots.save_panel(fig5e, FIGURES / "fig5" / "e.svg")
+    mo.vstack(
+        [fig5e, *(mo.ui.table(v.round(3), selection=None) for v in variants.values())]
+    )
     return
 
 

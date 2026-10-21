@@ -436,6 +436,33 @@ def cause_counts(err: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def error_profile(err: pd.DataFrame, fast_hz: float = 8.0) -> pd.DataFrame:
+    """Per error kind: the share of errors that are near misses, then, among the rest
+    (gross errors), the share in fast breathing (above *fast_hz*), in face motion (top
+    10% of the clip) and on shallow breaths (bottom 25%), with ``n`` errors behind each
+    share."""
+    rows = []
+    for kind, g in err.groupby("kind", sort=False):
+        rows.append(
+            {
+                "kind": kind,
+                "row": "near miss",
+                "share": g["near_miss"].mean(),
+                "n": len(g),
+            }
+        )
+        gross = g[~g["near_miss"]]
+        for row, flag in (
+            (f"fast breathing (> {fast_hz:g} Hz)", gross["rate_hz"] > fast_hz),
+            ("face motion (top 10%)", gross["motion"] > 0.9),
+            ("shallow breath (bottom 25%)", gross["amplitude"] < 0.25),
+        ):
+            rows.append(
+                {"kind": kind, "row": row, "share": flag.mean(), "n": len(gross)}
+            )
+    return pd.DataFrame(rows)
+
+
 # --- quality control against the truth ---------------------------------------------------
 
 
