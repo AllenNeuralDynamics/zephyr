@@ -324,8 +324,7 @@ other seeds, and with the cross-validation folds (full-gray-data-size-cv4-v3)].
 
 To see where the
 network fails, we examined every missed (false negative, FN) and every false inhalation (false positive, FP) on test set A
-(#fig(<fig:general>, "d")) #note[causes and their shares: grooming, licking, fast motion,
-dark or blurred video]. Most of the failures, about three quarters, were small differences between the predicted and true inhalation times rather than gross misdetections (#fig(<fig:general>, "d")). Relaxing the tolerance from 25 to 100 ms raised inhalation F1 on
+(#fig(<fig:general>, "d")\; their causes are in #fig(<fig:qc>, "a")). Most of the failures, about three quarters, were small differences between the predicted and true inhalation times rather than gross misdetections (#fig(<fig:general>, "d")). Relaxing the tolerance from 25 to 100 ms raised inhalation F1 on
 test set A from #tbd[0.95] to #tbd[0.99] and cut the errors left from #tbd[9.3%] to
 #tbd[2.4%] of breaths (#fig(<fig:general>, "e")).
 
@@ -369,40 +368,73 @@ poor.
 
 == Known failure modes and limitations
 
-A method that replaces a sensor will be used where there is no sensor to check it and thus cannot be manually validated. We
-therefore developed measures computed only from the network's output, which judge a
-prediction window by window (#fig(<fig:qc>, "a")\; Methods). We show that using these metrics, and training them on validation animals, allows us to fine tune the bounds for reliable prediction without access to the thermistor. Indeed, on test-set animals, which played no part in setting the bounds, the measures tracked the
-true accuracy #note[result: rank correlation of each measure with true F1 per video; AUC
-for windows with F1 < 0.8] (#fig(<fig:qc>, "b")). Keeping only windows that passed every
-check raised the mean inhalation F1 from #tbd[X] to #tbd[X] while keeping #tbd[X]% of the
-recording (#fig(<fig:qc>, "c")). A calibration of the onset output on validation animals
-turns each predicted inhalation's peak into the probability that it is real
-(#fig(<fig:qc>, "d")).
+We first asked what our network's remaining errors are. Of the #tbd[9,432] missed and
+#tbd[11,304] false inhalations on test set A, #tbd[82]% and #tbd[69]% were near misses: a
+prediction and a thermistor inhalation within 100 ms of each other that the 25-ms
+tolerance did not pair (#fig(<fig:qc>, "a")). The other, gross errors did not gather
+where one might expect. Fast breathing, above 8 Hz, accounted for #tbd[5]% of gross misses
+and no gross false inhalations, against #tbd[19]% of all breaths; face motion was no more
+common around errors than around breaths in general (#tbd[11–12]% against #tbd[10]%).
+Only shallow breaths were over-represented, at #tbd[32–37]% of gross errors against
+#tbd[25]% of breaths (Methods).
+
+A method that replaces a sensor will be used where there is no sensor to check it. We
+therefore computed measures from the network's output alone, which judge each 30-s
+window of a prediction without the thermistor; their bounds were set on validation
+animals (Methods). On new animals (test set A), which played no part in setting them,
+the best measures ranked the #tbd[156] videos by their true inhalation F1 with Spearman
+correlations of #tbd[0.63–0.80] (#fig(<fig:qc>, "b")). The #tbd[88]% of windows that
+passed every check had a mean inhalation F1 of #tbd[0.96], against #tbd[0.81] for the
+windows that failed and #tbd[0.95] for all (#fig(<fig:qc>, "c")). The onset output is
+also calibrated: on validation animals, the probability the network gives a predicted
+inhalation matched the share that were real (expected calibration error #tbd[0.002];
+#fig(<fig:qc>, "d")), so each inhalation can carry its own confidence.
+
+Finally, the network's accuracy did not hinge on its training recipe
+(#fig(<fig:qc>, "e")). Training with more augmentation, or with every breathing-rate bin
+weighted equally, changed inhalation F1 on test set A by less than #tbd[0.01] (paired
+intervals including zero), and doubling the crop to 192 × 192 pixels lowered it slightly
+(#tbd[−0.013], 95% interval #tbd[−0.021 to −0.006]); no variant changed the waveform
+correlation #note[one seed per variant].
 
 #note[Application, if one is added: run on sessions or animals with no usable thermistor
 and show one analysis that needs inhalation times.]
 
 #figure(
   fit(fig5),
-  caption: [*Judging predictions without a thermistor.* *a*, One test-A video: ten
-    seconds of the predicted trace with its inhalations and the onset probability
-    (left), and over the whole video three of the measures (each scaled to its range)
-    and the true inhalation F1, per window; shaded, windows that fail a check; grey,
-    the excerpt. *b*, Spearman correlation of each measure with the true inhalation F1
-    on test sets A and B, per video and per window, signed so that a positive value
-    means the measure ranks predictions correctly. *c*, Mean true inhalation F1 of the
-    windows kept, best-judged first, for the three best measures and for the truth
-    itself (oracle); star, the windows that pass every check; dotted, all windows.
-    *d*, Calibration of the onset output on the validation animals: the predicted
-    probability that an inhalation is real against the share matched to a thermistor
-    inhalation.],
+  caption: [*When to trust a prediction.* *a*, Our network's errors on test set A
+    (#tbd[9,432] misses, FN; #tbd[11,304] false inhalations, FP): the share that are near
+    misses (a prediction and a thermistor inhalation within 100 ms), and, among the other
+    errors (#tbd[1,748] FN, #tbd[3,508] FP), the share in fast breathing (> 8 Hz), in face
+    motion (top 10% of the clip) and on shallow breaths (bottom 25% of the clip); grey
+    ticks, the share of all #tbd[223,588] thermistor breaths with each property. *b*,
+    Spearman correlation with the true inhalation F1 of the five measures that rank the
+    #tbd[156] test-A videos best, signed so that a positive value means the measure ranks
+    predictions correctly; colours, families of measures. *c*, Mean true inhalation F1 of
+    the test-A windows kept (#tbd[1,560] 30-s windows), best-judged first, for the three
+    measures that rank windows best and for the truth itself (oracle); star, the windows
+    that pass every check; dotted, all windows. *d*, Calibration of the onset output on the
+    validation animals: the predicted probability that an inhalation is real against the
+    share matched to a thermistor inhalation. *e*, Our network trained differently, minus
+    our network, on test set A: inhalation F1 and correlation, mean over the #tbd[21]
+    units with a paired 95% bootstrap interval; one seed each.],
 ) <fig:qc>
 
 = Methods
 
 == Data collection
 
-_Surgery_
+_Surgery._ All procedures were approved by the Allen Institute Institutional Animal Care
+and Use Committee #note[protocol number; mice: strain, sex, age at surgery, housing and
+light cycle; analgesia and post-operative care]. Thermistors were implanted over the
+nasal epithelium as described @mcafee2016. Briefly, under isoflurane anaesthesia (1–5%)
+in a stereotaxic frame, the skin over the skull and the snout was removed and the
+periosteum cleared. A 0.5-mm burr hole was thinned through the nasal bone #tbd[3.1] mm
+anterior to the frontonasal suture and #tbd[0.5] mm right of the midline, exposing the
+epithelium, and the thermistor tip was lowered until it touched the epithelium without
+pressing on it. The hole was sealed with silicone (Kwik-Cast) and the probe fixed with
+dental cement (Metabond), which was also used to attach a head bar, with the
+thermistor's connector fixed on top of it. Mice recovered on a 37 °C heat plate.
 
 _Data acquisition_
 
@@ -700,6 +732,23 @@ exhalation matched a thermistor event within #tbd[1.5] frames of the 60-Hz outpu
 (25 ms), each event matching at most once, and F1 was computed per clip. Breathing rate
 was counted in 10-s windows, and its error (MAE, RMSE, MAPE) and correlation computed over
 the windows of each unit (see Statistics).
+
+_Error analysis._ Every missed thermistor inhalation and every unmatched predicted
+inhalation of test set A was examined (#fig(<fig:qc>, "a")). An error was a near miss when an
+error of the other kind lay within 100 ms of it. For the other errors we recorded the true
+breathing rate there (the rate of the thermistor breath it falls in), the face motion
+around it (mean absolute difference between successive crops within 0.25 s) and the size
+of the breath (peak-to-peak thermistor signal within 0.25 s), the last two as quantiles
+over the true breaths of the same clip. Face motion in the top 10% and breath size in the
+bottom 25% of a clip are thus, by construction, the shares of all breaths with those
+properties.
+
+_Training variants._ To test how much the results depend on the training recipe
+(#fig(<fig:qc>, "e")), we retrained our network with the settings of @tab:train except for one
+change each: more augmentation (shifts of up to 8 instead of 4 pixels, zoom 0.15 instead
+of 0.1, rotation up to 10°, and blur), every breathing-rate bin weighted equally in each
+batch, or 192 × 192-pixel crops from frames downsampled to 720 × 540 (batch 4, 400 steps
+per epoch, learning rate 3 × 10#super[−4]).
 
 == Statistics
 

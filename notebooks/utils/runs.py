@@ -536,6 +536,21 @@ def errors(name: str, stem: str) -> pd.DataFrame:
     return found.assign(stem=stem, method=name)
 
 
+def set_errors(name: str, set_name: str) -> pd.DataFrame:
+    """:func:`errors` of every clip of one test set (``SETS`` value), cached in
+    ``cache/walkthrough``; delete the file to recompute."""
+    m = ALL[name]
+    tag = f"{m.run}-{m.fold or RESULTS.fold}-{m.variant.replace('/', '-') or 'net'}"
+    path = PREDICTIONS / f"errors-{tag}-{set_name.split(':')[0]}.parquet"
+    if path.is_file():
+        return pd.read_parquet(path)
+    stems = sorted(s for s, v in clip_sets().items() if v == set_name)
+    found = pd.concat([errors(name, s) for s in stems], ignore_index=True)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    found.to_parquet(path)
+    return found
+
+
 @functools.cache
 def _all_entries() -> dict[str, features.ClipEntry]:
     """Every clip of the dataset copy with a cache entry, train and validation too."""

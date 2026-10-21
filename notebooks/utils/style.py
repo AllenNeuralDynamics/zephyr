@@ -25,6 +25,8 @@ METHODS: dict[str, str] = {
 
 VARIANTS: dict[str, str] = {
     "Zephyr, more augmentation": "#7b3294",
+    "Zephyr, rate-balanced": "#c2a5cf",
+    "Zephyr, 192-px crops": "#a6611a",
 }
 """Zephyr trained differently, compared with Zephyr directly."""
 

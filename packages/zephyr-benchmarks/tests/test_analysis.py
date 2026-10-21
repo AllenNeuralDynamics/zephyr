@@ -165,6 +165,22 @@ class SummaryTests(unittest.TestCase):
         )
         self.assertEqual(seen["rig_trained"].tolist(), [True, False, False, True])
 
+    def test_error_profile_splits_near_misses_from_gross_errors(self):
+        err = pd.DataFrame(
+            {
+                "kind": ["missed (FN)"] * 4,
+                "near_miss": [True, True, False, False],
+                "rate_hz": [10.0, 3.0, 9.0, 3.0],
+                "motion": [0.5, 0.5, 0.95, 0.2],
+                "amplitude": [0.5, 0.5, 0.1, 0.9],
+            }
+        )
+        prof = analysis.error_profile(err).set_index("row")
+        self.assertAlmostEqual(prof.loc["near miss", "share"], 0.5)
+        self.assertEqual(int(prof.loc["near miss", "n"]), 4)
+        self.assertAlmostEqual(prof.loc["fast breathing (> 8 Hz)", "share"], 0.5)
+        self.assertEqual(int(prof.loc["face motion (top 10%)", "n"]), 2)
+
     def test_score_agreement_ranks_clips_across_methods_and_averages_seeds(self):
         scores = [0.2, 0.5, 0.9, 0.4]
         rows = [
