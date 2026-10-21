@@ -10,21 +10,10 @@ from zephyr import features
 from zephyr.benchmarks.occlusion import (
     Occluded,
     head_entry,
-    occlusion_maps,
+    occlusion_map,
     patch_origins,
 )
 from zephyr.features import ClipEntry
-
-
-def _save_channels(stem: Path, stack: np.ndarray) -> Path:
-    """Store a (T, 4, h, w) stack as the entry *stem*'s channel group files."""
-    for group, part in (
-        ("gray", stack[:, :1]),
-        ("diff", stack[:, 1:2]),
-        ("flow", stack[:, 2:]),
-    ):
-        np.save(stem.with_name(f"{group}-{stem.name}.npy"), part)
-    return stem
 
 
 class PatchGridTests(unittest.TestCase):
@@ -36,7 +25,6 @@ class PatchGridTests(unittest.TestCase):
 
 
 class Echo(nn.Module):
-    channels = ("a", "b", "c")
     receptive_field = 1
 
     def forward(self, features, *args, **kwargs):
@@ -44,48 +32,43 @@ class Echo(nn.Module):
 
 
 class OccludedTests(unittest.TestCase):
-    def test_hides_one_patch_of_one_channel_only(self):
+    def test_hides_one_patch_only(self):
         model = Occluded(Echo(), patch=3)
-        features = torch.ones(1, 2, 3, 8, 8)
+        features = torch.ones(1, 2, 1, 8, 8)
         self.assertTrue((model(features)[0] == 1).all())
-        model.hidden = (1, 2, 4)
+        model.hidden = (2, 4)
         out = model(features)[0]
         changed = out != 1
-        self.assertTrue((out[:, :, 1, 2:5, 4:7] == 0).all())
+        self.assertTrue((out[:, :, 0, 2:5, 4:7] == 0).all())
         self.assertEqual(changed.sum().item(), 2 * 3 * 3)
-        self.assertFalse(changed[:, :, [0, 2]].any())
         self.assertTrue((features == 1).all())  # the input is not modified
 
 
 class MapTests(unittest.TestCase):
     def test_overlapping_patches_are_averaged(self):
-        # Hiding a patch costs 1 only when it contains pixel (0, 0) of channel 0.
+        # Hiding a patch costs 1 only when it is the patch at (0, 0).
         def score(hidden):
-            if hidden is None:
-                return 1.0
-            channel, y, x = hidden
-            return 1.0 - float(channel == 0 and y == 0 and x == 0)
+            return 1.0 if hidden is None else 1.0 - float(hidden == (0, 0))
 
-        base, maps = occlusion_maps(score, ["a", "b"], patch=4, stride=2, size=8)
+        base, drop = occlusion_map(score, patch=4, stride=2, size=8)
         self.assertEqual(base, 1.0)
-        self.assertEqual(maps["b"].sum(), 0)
         # Only the patch at (0, 0) covers pixel (0, 0); it is 1 of the 4 patches
         # (origins 0, 2, 4 per axis -> 9 in all) covering pixel (3, 3).
-        self.assertEqual(maps["a"][0, 0], 1.0)
-        self.assertAlmostEqual(maps["a"][3, 3], 1 / 4)
-        self.assertEqual(maps["a"][7, 7], 0.0)
-        self.assertEqual(maps["a"].shape, (8, 8))
+        self.assertEqual(drop[0, 0], 1.0)
+        self.assertAlmostEqual(drop[3, 3], 1 / 4)
+        self.assertEqual(drop[7, 7], 0.0)
+        self.assertEqual(drop.shape, (8, 8))
 
 
 class HeadEntryTests(unittest.TestCase):
     def test_keeps_the_first_seconds(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
-            _save_channels(tmp / "f", np.zeros((600, 4, 6, 6), np.uint8))
+            np.save(tmp / "gray-f.npy", np.zeros((600, 1, 6, 6), np.uint8))
             np.save(tmp / "ft.npy", np.arange(600) / 60.0)
             np.save(tmp / "t.npy", np.arange(600) / 60.0)
             entry = ClipEntry(
-                "c", "r", 600, 600, tmp / "f", tmp / "ft.npy", tmp / "dt.npy",
+                "c", "r", 600, 600, tmp / "f", tmp / "gray-f.npy", tmp / "ft.npy",
                 tmp / "t.npy", None, None,
             )  # fmt: skip
             out = tmp / "out"
@@ -96,9 +79,8 @@ class HeadEntryTests(unittest.TestCase):
             self.assertGreaterEqual(len(np.load(head.frame_times)), 120)
             self.assertEqual(
                 features.reader(head).read(slice(None)).shape,
-                (len(np.load(head.frame_times)), 4, 6, 6),
+                (len(np.load(head.frame_times)), 1, 6, 6),
             )
-            self.assertEqual(np.load(head.group_file("flow")).shape[1:], (2, 6, 6))
 
 
 if __name__ == "__main__":

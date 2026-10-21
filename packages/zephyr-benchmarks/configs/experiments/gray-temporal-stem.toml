@@ -1,8 +1,7 @@
-# Gray-only networks with and without a 3D first layer (temporal_kernel), on the
-# benchmark fold and recipe (benchmark-gray-diff-flow-multitask.toml, channels = gray,
-# and no time stretching, which zephyr no longer has):
-# can a first layer that spans neighbouring frames stand in for the diff and flow
-# channels?  The two folds differ only in temporal_kernel.  A full run needs a GPU:
+# Zephyr with and without a 3D first layer (temporal_kernel) on the benchmark fold,
+# signal + onset objective, a fixed budget and no validation: does a first layer
+# that spans neighbouring frames help?  The two folds differ only in
+# temporal_kernel.  A full run needs a GPU:
 #   zephyr run packages/zephyr-benchmarks/configs/experiments/gray-temporal-stem.toml
 seeds = [17, 42, 101, 202, 314]
 output_dir = "../../../../runs/gray-temporal-stem"
@@ -20,7 +19,6 @@ new_animals = "../clips/face_test_new_animals.toml"
 known_animals_new_date = "../clips/face_test_known_animals_new_date.toml"
 
 [fold.train_params]
-channels = "gray"
 epochs = 200
 steps_per_epoch = 200
 val_fraction = 0
@@ -37,7 +35,6 @@ new_animals = "../clips/face_test_new_animals.toml"
 known_animals_new_date = "../clips/face_test_known_animals_new_date.toml"
 
 [fold.train_params]
-channels = "gray"
 temporal_kernel = 3
 epochs = 200
 steps_per_epoch = 200

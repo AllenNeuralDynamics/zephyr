@@ -5,9 +5,9 @@ Deviations forced by the data: one gray channel, the mouse breathing band, PhysN
 the 96 px crop.
 
 Both are wrapped to :class:`~zephyr.model.BreathingNet`'s interface (``forward(features,
-t_in, t_out, chunk=None) -> (signal, onset_logits)``, ``channels``, ``receptive_field``)
-so training and scoring are shared, as are the transformers of :mod:`.transformer_nets`.
-:func:`build_model` builds any of them by ``arch``.
+t_in, t_out, chunk=None) -> (signal, onset_logits)``, ``receptive_field``) so training and
+scoring are shared, as are the transformers of :mod:`.transformer_nets`; having no onset
+head (only zephyr has one), they return zero onset logits. :func:`build_model` builds any.
 """
 
 import numpy as np
@@ -18,13 +18,10 @@ from scipy.signal import butter, filtfilt
 from scipy.sparse.linalg import spsolve
 from torch import nn
 
-from zephyr.channels import CHANNEL_NAMES, ChannelSet
 from zephyr.model import BreathingNet, pearson_loss, resample_embeddings
 
 from . import transformer_nets
 from .common import BREATH_BAND_HZ
-
-GRAY = ChannelSet.parse("gray")
 
 
 def temporal_shift(x: torch.Tensor, n_segment: int, fold_div: int = 3) -> torch.Tensor:
@@ -153,13 +150,12 @@ class DerivativeMSELoss(nn.Module):
 
 
 class TSCANBreathing(nn.Module):
-    """TS-CAN on the gray channel, predicting the trace's forward difference."""
+    """TS-CAN on the gray frames, predicting the trace's forward difference."""
 
     arch = "tscan"
 
     def __init__(
         self,
-        channels: ChannelSet = GRAY,
         *,
         frame_depth: int = 10,
         img_size: int = 36,
@@ -168,9 +164,6 @@ class TSCANBreathing(nn.Module):
         band: tuple[float, float] = BREATH_BAND_HZ,
     ) -> None:
         super().__init__()
-        if channels.names != ("gray",):
-            raise ValueError(f"TS-CAN takes only the gray channel, got {channels}")
-        self.channels = channels
         self.frame_depth = frame_depth
         self.img_size = img_size
         self.band = band
@@ -229,11 +222,11 @@ def _up() -> nn.Sequential:
 
 
 class PhysNet(nn.Module):
-    """3-D CNN encoder-decoder: ``(B, C, T, H, W)`` -> ``(B, T)``, T divisible by 4."""
+    """3-D CNN encoder-decoder: ``(B, 1, T, H, W)`` -> ``(B, T)``, T divisible by 4."""
 
-    def __init__(self, in_channels: int = 1) -> None:
+    def __init__(self) -> None:
         super().__init__()
-        self.b1 = _block(in_channels, 16, (1, 5, 5), (0, 2, 2))
+        self.b1 = _block(1, 16, (1, 5, 5), (0, 2, 2))
         self.b2 = _block(16, 32, 3, 1)
         self.b3 = _block(32, 64, 3, 1)
         self.b4, self.b5, self.b6, self.b7, self.b8, self.b9 = (
@@ -256,16 +249,13 @@ class PhysNet(nn.Module):
 
 
 class PhysNetBreathing(nn.Module):
-    """PhysNet on the gray channel, predicting the trace directly."""
+    """PhysNet on the gray frames, predicting the trace directly."""
 
     arch = "physnet"
 
-    def __init__(self, channels: ChannelSet = GRAY) -> None:
+    def __init__(self) -> None:
         super().__init__()
-        if channels.names != ("gray",):
-            raise ValueError(f"PhysNet takes only the gray channel, got {channels}")
-        self.channels = channels
-        self.net = PhysNet(in_channels=1)
+        self.net = PhysNet()
 
     @property
     def receptive_field(self) -> int:
@@ -282,83 +272,11 @@ class PhysNetBreathing(nn.Module):
         return signal, torch.zeros_like(signal)
 
 
-class PhysNetDualHead(nn.Module):
-    """PhysNet backbone with separate signal and onset heads.
-
-    Same encoder-decoder as :class:`PhysNet` but the single output head is
-    replaced by two parallel ``Conv3d(64, 1, 1)`` heads that read from the same
-    spatially-pooled trunk features, returning ``(signal, onset_logits)`` each
-    of shape ``(B, T)``.
-    """
-
-    def __init__(self, in_channels: int = 1) -> None:
-        super().__init__()
-        self.b1 = _block(in_channels, 16, (1, 5, 5), (0, 2, 2))
-        self.b2 = _block(16, 32, 3, 1)
-        self.b3 = _block(32, 64, 3, 1)
-        self.b4, self.b5, self.b6, self.b7, self.b8, self.b9 = (
-            _block(64, 64, 3, 1) for _ in range(6)
-        )
-        self.up1, self.up2 = _up(), _up()
-        self.pool_s = nn.MaxPool3d((1, 2, 2), stride=(1, 2, 2))
-        self.pool_st = nn.MaxPool3d(2, stride=2)
-        self.spatial = nn.AdaptiveAvgPool3d((None, 1, 1))
-        self.signal_head = nn.Conv3d(64, 1, 1)
-        self.onset_head = nn.Conv3d(64, 1, 1)
-
-    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        b, _, t = x.shape[:3]
-        x = self.pool_s(self.b1(x))
-        x = self.pool_st(self.b3(self.b2(x)))
-        x = self.pool_st(self.b5(self.b4(x)))
-        x = self.pool_s(self.b7(self.b6(x)))
-        x = self.spatial(self.up2(self.up1(self.b9(self.b8(x)))))
-        return self.signal_head(x).view(b, t), self.onset_head(x).view(b, t)
-
-
-class PhysNetBreathingEvent(nn.Module):
-    """PhysNet on the gray channel with an added onset-detection head.
-
-    Identical to :class:`PhysNetBreathing` except that the second return value
-    is a real onset-logit sequence (trained with onset BCE loss) rather than
-    zeros.  Use ``arch = "physnet_event"`` in a benchmark fold to select it.
-    """
-
-    arch = "physnet_event"
-
-    def __init__(self, channels: ChannelSet = GRAY) -> None:
-        super().__init__()
-        if channels.names != ("gray",):
-            raise ValueError(f"PhysNet takes only the gray channel, got {channels}")
-        self.channels = channels
-        self.net = PhysNetDualHead(in_channels=1)
-
-    @property
-    def receptive_field(self) -> int:
-        return 64
-
-    def forward(self, features, t_in, t_out, chunk=None):
-        t = features.shape[1]
-        x = features.permute(0, 2, 1, 3, 4)  # (B, 1, T, H, W)
-        pad = (-t) % 4
-        if pad:
-            x = torch.cat([x, x[:, :, -1:].expand(-1, -1, pad, -1, -1)], dim=2)
-        signal_raw, onset_raw = self.net(x)
-        signal = resample_embeddings(
-            signal_raw[:, :t].unsqueeze(-1), t_in, t_out
-        ).squeeze(-1)
-        onset = resample_embeddings(
-            onset_raw[:, :t].unsqueeze(-1), t_in, t_out
-        ).squeeze(-1)
-        return signal, onset
-
-
-ARCHS = ("zephyr", "tscan", "physnet", "physnet_event", *transformer_nets.CORES)
+ARCHS = ("zephyr", "tscan", "physnet", *transformer_nets.CORES)
 ARCH_OPTIONS = {
     "zephyr": {"signal_pool", "onset_input", "temporal_kernel"},
     "tscan": {"img_size"},
     "physnet": set(),
-    "physnet_event": set(),
     **{arch: set() for arch in transformer_nets.CORES},
 }
 """Architecture options a checkpoint may record and :func:`build_model` accepts."""
@@ -366,14 +284,13 @@ ARCH_OPTIONS = {
 
 def build_model(
     arch: str,
-    channels: ChannelSet,
     *,
     dropout: float = 0.1,
-    mean: np.ndarray | None = None,
-    std: np.ndarray | None = None,
+    mean: float = 0.0,
+    std: float = 1.0,
     **arch_kwargs,
 ) -> nn.Module:
-    """Construct any supported network.  *mean*/*std* are full-width channel stats.
+    """Construct any supported network.  *mean*/*std* are the gray statistics.
 
     *arch_kwargs* are architecture options (TS-CAN: ``img_size``, zephyr:
     ``signal_pool``, ``onset_input``) that a checkpoint records so it can be rebuilt; the other
@@ -385,17 +302,9 @@ def build_model(
     if unsupported:
         raise ValueError(f"--arch {arch} does not take {sorted(unsupported)}")
     if arch == "zephyr":
-        return BreathingNet(channels=channels, dropout=dropout, **arch_kwargs)
+        return BreathingNet(dropout=dropout, **arch_kwargs)
     if arch == "tscan":
-        gray = CHANNEL_NAMES.index("gray")
-        return TSCANBreathing(
-            channels,
-            gray_mean=float(mean[gray]) if mean is not None else 0.0,
-            gray_std=float(std[gray]) if std is not None else 1.0,
-            **arch_kwargs,
-        )
-    if arch == "physnet_event":
-        return PhysNetBreathingEvent(channels)
+        return TSCANBreathing(gray_mean=mean, gray_std=std, **arch_kwargs)
     if arch in transformer_nets.CORES:
-        return transformer_nets.build(arch, channels)
-    return PhysNetBreathing(channels, **arch_kwargs)
+        return transformer_nets.build(arch)
+    return PhysNetBreathing(**arch_kwargs)

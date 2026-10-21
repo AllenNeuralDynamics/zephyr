@@ -28,6 +28,8 @@ the annotation windows):
   notebook reads one reports folder, given in the notebook), and what it
   measures beyond `evaluation.json` lives in `zephyr.benchmarks.analysis`; a notebook
   only caches, downloads and draws.
+- Gray frames are the only input, and only zephyr has an onset head: never add a channel
+  selection, or an onset head to a comparison network.
 - Inhale events of a network with an onset head come from the head
   (`head_events`), never from DSP on its trace. DSP is for the thermistor, headless
   methods (labelled "DSP") and exhale F1, or an explicitly labelled comparison.
@@ -85,11 +87,9 @@ scores thermistor sessions). Both steps take flags, like `zephyr evaluate`.
 
 ## Reference configs
 
-`configs/experiments/benchmark-gray-diff-flow-multitask.toml` and `baselines-nets.toml`
-(zephyr-benchmarks) hold the settings of the runs in `benchmarks/`, pinned by
-`tests/test_reproduction.py`. Copy them; never edit them. Time stretching has been removed
-from zephyr, and the benchmark fold's runs were trained with it (`time_stretch = 3`), so
-that config no longer reproduces them exactly; `baselines-nets.toml` does.
+`configs/experiments/baselines-nets.toml` (zephyr-benchmarks) holds the settings of the
+runs in `benchmarks/baselines-v1/`, pinned by `tests/test_reproduction.py`. Copy it; never
+edit it.
 
 ## The corpus (zephyr-dataset)
 
@@ -135,8 +135,7 @@ resumable steps; what each does and the folder layout are in its README.
   through `config.canonical`, never `str()` or a raw comparison; a local copy of a
   dataset is named as the original with `ZEPHYR_PATH_MAP` (zephyr README), never by
   moving or renaming cache entries.
-- Feature caches store one file per channel group; core reads channels only through
-  `features.reader`.
+- Feature caches store the gray frames; core reads them only through `features.reader`.
 
 ## When code must change
 

@@ -12,7 +12,6 @@ from scipy.signal import butter, sosfiltfilt
 from scipy.stats import skew
 
 from zephyr import features
-from zephyr.channels import ChannelSet, decode_flow
 
 BREATH_BAND_HZ = (1.0, 15.0)
 """Pass band for every baseline filter: resting breathing through fast sniffing."""
@@ -36,27 +35,16 @@ def bandpass(
     return sosfiltfilt(sos, x, axis=axis)
 
 
-def load_channel(
-    entry, name: str, *, bin_factor: int = 1, chunk: int = 2048
-) -> np.ndarray:
-    """One stored channel as float32 ``(T, H // bin, W // bin)`` in physical units.
-
-    ``gray`` in counts, ``diff`` in counts per tau, flow in pixels per tau.  Read
-    in chunks from the memmap so a whole 4-channel clip never sits in memory.
-    """
-    array, only = features.reader(entry), ChannelSet.parse([name])
+def load_gray(entry, *, bin_factor: int = 1, chunk: int = 2048) -> np.ndarray:
+    """The stored gray frames as float32 ``(T, H // bin, W // bin)`` counts, read in
+    chunks from the memmap."""
+    array = features.reader(entry)
     t = len(array)
-    _, _, h, w = array.read(slice(0, 1), only).shape
+    _, _, h, w = array.read(slice(0, 1)).shape
     hb, wb = h // bin_factor, w // bin_factor
     out = np.empty((t, hb, wb), np.float32)
     for start in range(0, t, chunk):
-        block = array.read(slice(start, start + chunk), only)[:, 0]
-        if name in ("flow_x", "flow_y"):
-            block = decode_flow(block)
-        elif name == "diff":
-            block = block.astype(np.float32) - 128.0
-        else:
-            block = block.astype(np.float32)
+        block = array.read(slice(start, start + chunk))[:, 0].astype(np.float32)
         if bin_factor > 1:
             block = (
                 block[:, : hb * bin_factor, : wb * bin_factor]

@@ -1,8 +1,55 @@
+import json
+import tempfile
 import unittest
+from pathlib import Path
 
 import numpy as np
 
-from zephyr.dataset import mixture_weights
+from zephyr.dataset import frame_stats, mixture_weights
+from zephyr.features import ClipEntry
+
+
+def _entry(folder: Path, name: str, value: int, t: int = 50) -> ClipEntry:
+    """An entry whose gray frames are all *value*."""
+    frames = folder / f"gray-{name}.npy"
+    np.save(frames, np.full((t, 1, 6, 8), value, np.uint8))
+    return ClipEntry(
+        clip_id=name,
+        recording=name,
+        n_frames=t,
+        n_output=t,
+        stem=folder / name,
+        frames=frames,
+        frame_times=folder / f"ftime-{name}.npy",
+        times=folder / f"time-{name}.npy",
+        target=None,
+        events=None,
+    )
+
+
+class FrameStatsTests(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+
+    def test_stats_are_scalars_over_every_clip(self):
+        entries = [_entry(self.root, "a", 10), _entry(self.root, "b", 30)]
+        mean, std = frame_stats(entries, self.root / "s.json", frames_per_clip=10)
+        self.assertIsInstance(mean, float)
+        self.assertAlmostEqual(mean, 20.0)
+        self.assertAlmostEqual(std, 10.0)
+
+    def test_the_cache_is_reused_only_for_the_same_clips(self):
+        cache = self.root / "s.json"
+        a = _entry(self.root, "a", 10)
+        self.assertEqual(frame_stats([a], cache, frames_per_clip=10)[0], 10.0)
+        self.assertEqual(json.loads(cache.read_text())["clips"], ["a"])
+        _entry(self.root, "a", 90)  # the cached value wins for the same clips
+        self.assertEqual(frame_stats([a], cache, frames_per_clip=10)[0], 10.0)
+        b = _entry(self.root, "b", 50)
+        mean, _ = frame_stats([a, b], cache, frames_per_clip=10)
+        self.assertAlmostEqual(mean, 70.0)
 
 
 class MixtureWeightsTests(unittest.TestCase):

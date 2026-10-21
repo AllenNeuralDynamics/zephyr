@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -122,7 +123,7 @@ class FeatureKeyTests(_Tmp):
         self.assertEqual(base, features.prefix(clip, cl.preprocess))
         moved = clip.model_copy(update={"box": (11, 10, 32, 32)})
         self.assertNotEqual(base, features.prefix(moved, cl.preprocess))
-        other = cl.preprocess.model_copy(update={"motion_tau_s": 0.02})
+        other = cl.preprocess.model_copy(update={"select_fs": 30.0})
         self.assertNotEqual(base, features.prefix(clip, other))
         self.assertTrue(base.startswith(video.stem + "-"))
 
@@ -136,7 +137,7 @@ class FeatureKeyTests(_Tmp):
         self.assertNotIn("output_fs", key)
         recipe = dump(cl.preprocess)
         del recipe["output_fs"]
-        self.assertEqual(key, recipe)
+        self.assertEqual(key, cl.preprocess.KEY_RETIRED | recipe)
         faster = cl.preprocess.model_copy(update={"output_fs": 120.0})
         self.assertEqual(
             features.cache_key(clip, faster)["preprocess"]["output_fs"], 120.0
@@ -158,3 +159,59 @@ class FeatureKeyTests(_Tmp):
         cl = load(ClipList, write_list(self.root / "l.toml", [video]))
         with self.assertRaisesRegex(SystemExit, "zephyr preprocess"):
             features.require(cl.resolve(), cl.preprocess, self.root / "cache")
+
+
+class FeatureCacheTests(_Tmp):
+    T, H, W = 50, 6, 8
+
+    def _cached(self, *, frames: bool = True):
+        video = touch_clip(self.root / "d", 1, 1)
+        cl = load(ClipList, write_list(self.root / "l.toml", [video]))
+        (clip,) = cl.resolve()
+        cache = self.root / "cache"
+        cache.mkdir(exist_ok=True)
+        files = features.paths(cache, features.prefix(clip, cl.preprocess))
+        files["sidecar"].write_text(
+            json.dumps(
+                {
+                    "key": features.cache_key(clip, cl.preprocess),
+                    "thermistor": clip.thermistor.as_posix(),
+                    "events": features.events_identity(clip),
+                    "n_frames": self.T,
+                    "n_output": self.T,
+                    "stats": {},
+                }
+            )
+        )
+        if frames:
+            rows = np.arange(self.T, dtype=np.uint8)[:, None, None, None]
+            np.save(files["frames"], np.broadcast_to(rows, (self.T, 1, self.H, self.W)))
+        return clip, cl.preprocess, cache
+
+    def test_an_entry_reads_its_gray_frames_by_row(self):
+        clip, params, cache = self._cached()
+        (entry,) = features.require([clip], params, cache)
+        self.assertEqual(entry.frames, features.paths(cache, entry.stem.name)["frames"])
+        reader = features.reader(entry)
+        self.assertEqual(len(reader), self.T)
+        for rows in (slice(2, 5), np.array([1, 4, 9])):
+            block = reader.read(rows)
+            self.assertEqual(block.dtype, np.uint8)
+            self.assertEqual(block.shape[1:], (1, self.H, self.W))
+            np.testing.assert_array_equal(block[:, 0, 0, 0], np.arange(self.T)[rows])
+
+    def test_an_entry_without_its_frames_is_not_cached(self):
+        clip, params, cache = self._cached(frames=False)
+        self.assertIsNone(features.lookup(clip, params, cache))
+        with self.assertRaisesRegex(SystemExit, "zephyr preprocess"):
+            features.require([clip], params, cache)
+
+    def test_the_key_keeps_retired_fields_at_their_old_values(self):
+        clip, params, _ = self._cached()
+        key = features.cache_key(clip, params)["preprocess"]
+        for name, value in params.KEY_RETIRED.items():
+            self.assertEqual(key[name], value)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -27,14 +27,6 @@ VARIANTS: dict[str, str] = {
 }
 """Zephyr trained differently, compared with Zephyr directly."""
 
-CHANNELS: dict[str, str] = {
-    "gray": "#4d4d4d",
-    "diff": "#117733",
-    "flow_x": "#b8860b",
-    "flow_y": "#aa4499",
-}
-"""The input channels."""
-
 SETS: dict[str, str] = {
     "Train": "#7f7f7f",
     "Validation": "#bbbbbb",
@@ -121,8 +113,8 @@ def figure(
 
 
 def color(name: str) -> str:
-    """The colour of a method, a variant, a channel, a set of clips, or ``"Truth"``."""
-    return {**METHODS, **VARIANTS, **CHANNELS, **SETS, "Truth": TRUTH}[name]
+    """The colour of a method, a variant, a set of clips, or ``"Truth"``."""
+    return {**METHODS, **VARIANTS, **SETS, "Truth": TRUTH}[name]
 
 
 def mosaic(

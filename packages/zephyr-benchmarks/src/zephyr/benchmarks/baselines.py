@@ -2,7 +2,7 @@
 
 Layout under ``out_root``::
 
-    pixel/{flow,pca,snr}/traces/{clip}.npy   raw output-grid traces (cache)
+    pixel/{pca,snr,motion}/traces/{clip}.npy   raw output-grid traces (cache)
     pixel/{method}/{blind,calibrated}/evaluation.json
     facemap/bases.npz
     facemap/{motion,movie,both}/evaluation.json
@@ -21,7 +21,7 @@ from zephyr.signal import BREATHING_SIGNAL_COLUMN, TIME_COLUMN
 
 from . import common, facemap_ridge, pixel
 
-PIXEL_METHODS = ("flow", "pca", "snr", "motion")
+PIXEL_METHODS = ("pca", "snr", "motion")
 FACEMAP_VARIANTS = ("motion", "movie", "both")
 
 
@@ -66,13 +66,7 @@ def score_traces(traces, groups) -> dict:
 
 def pixel_trace(method: str, entry, fs: float, bin_factor: int) -> np.ndarray:
     """Selection-grid trace for one clip."""
-    if method == "flow":
-        return pixel.flow_projection(
-            common.load_channel(entry, "flow_x", bin_factor=4),
-            common.load_channel(entry, "flow_y", bin_factor=4),
-            fs,
-        )
-    frames = common.load_channel(entry, "gray", bin_factor=bin_factor)
+    frames = common.load_gray(entry, bin_factor=bin_factor)
     if method == "pca":
         return pixel.pixel_pca(frames, fs)
     if method == "snr":
@@ -156,7 +150,7 @@ def run_facemap(
     rng = np.random.default_rng(seed)
     samples = {"motion": [], "movie": []}
     for entry in train:
-        frames = common.load_channel(entry, "gray", bin_factor=bin_factor)
+        frames = common.load_gray(entry, bin_factor=bin_factor)
         idx = np.sort(
             rng.choice(len(frames), min(samples_per_clip, len(frames)), replace=False)
         )
@@ -177,7 +171,7 @@ def run_facemap(
     projections: dict[tuple[str, str], dict[str, np.ndarray]] = {}
     for split, entries in (("fit", train), ("score", test)):
         for entry in entries:
-            frames = common.load_channel(entry, "gray", bin_factor=bin_factor)
+            frames = common.load_gray(entry, bin_factor=bin_factor)
             matrices = {
                 "motion": facemap_ridge.motion_matrix(frames),
                 "movie": facemap_ridge.movie_matrix(frames),

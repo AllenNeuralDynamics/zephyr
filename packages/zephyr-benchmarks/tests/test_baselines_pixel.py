@@ -25,14 +25,6 @@ class PixelTests(unittest.TestCase):
         trace = pixel.snr_weighted(video(np.random.default_rng(1)), FS)
         self.assertGreater(abs(np.corrcoef(trace, BREATH)[0, 1]), 0.9)
 
-    def test_flow_projection_integrates_velocity(self):
-        rng = np.random.default_rng(2)
-        velocity = np.cos(2 * np.pi * 3.0 * T)  # displacement ~ sin
-        flow_x = 0.6 * velocity[:, None, None] + rng.normal(0, 0.05, (len(T), 8, 8))
-        flow_y = 0.8 * velocity[:, None, None] + rng.normal(0, 0.05, (len(T), 8, 8))
-        trace = pixel.flow_projection(flow_x, flow_y, FS)
-        self.assertGreater(abs(np.corrcoef(trace, BREATH)[0, 1]), 0.9)
-
     def test_motion_energy_follows_the_speed_of_movement(self):
         # rectified: a sinusoidal breath moves fastest twice a cycle, so the energy follows
         # |d breath / dt|, not the breath itself (quiet video: frame noise under the motion)

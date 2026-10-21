@@ -59,7 +59,7 @@ class LossTests(unittest.TestCase):
         self.assertGreaterEqual(float(label.min()), 1e-15)
 
     def test_physformer_frequency_weight_rises_from_one_to_five(self):
-        loss = tl.PhysFormerLoss(FS, epochs=200, w_onset=0.0)
+        loss = tl.PhysFormerLoss(FS, epochs=200)
         self.assertEqual((loss.a, loss.b), (0.1, 1.0))
         loss.set_epoch(100)
         self.assertAlmostEqual(loss.b, math.sqrt(5.0))
@@ -70,8 +70,8 @@ class LossTests(unittest.TestCase):
         truth = _sine(3.0)
         onset_true = torch.zeros_like(truth)
         for loss in (
-            tl.PhysFormerLoss(FS, epochs=10, w_onset=0.5),
-            tl.RhythmFormerLoss(FS, w_onset=0.5),
+            tl.PhysFormerLoss(FS, epochs=10),
+            tl.RhythmFormerLoss(FS),
         ):
             right = (truth + 0.1 * torch.randn_like(truth)).requires_grad_()
             wrong = _sine(8.0)

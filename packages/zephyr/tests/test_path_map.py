@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import numpy as np
 from _clipfiles import touch_clip, write_list
 
 from zephyr import evaluate, features
@@ -68,11 +69,12 @@ class CopyTests(unittest.TestCase):
             "n_frames": 5,
             "n_output": 5,
             "stats": {},
-            "groups": ["gray"],
         }
         self.cache.mkdir()
         name = features.prefix(clip, params)
-        features.paths(self.cache, name)["sidecar"].write_text(json.dumps(sidecar))
+        files = features.paths(self.cache, name)
+        files["sidecar"].write_text(json.dumps(sidecar))
+        np.save(files["frames"], np.zeros((5, 1, 2, 2), np.uint8))
         self.trained = {
             "train_videos": [canonical(clip.video)],
             "train_recordings": [clip.recording_id],

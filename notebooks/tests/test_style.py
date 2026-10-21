@@ -8,7 +8,7 @@ from utils import plots, runs, style
 
 
 def test_every_entity_has_a_colour() -> None:
-    names = [*style.METHODS, *style.VARIANTS, *style.CHANNELS, *style.SETS, "Truth"]
+    names = [*style.METHODS, *style.VARIANTS, *style.SETS, "Truth"]
     assert all(style.color(n).startswith("#") for n in names)
 
 

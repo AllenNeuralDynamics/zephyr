@@ -10,7 +10,6 @@ import torch
 from _clipfiles import write_list
 
 from zephyr import features
-from zephyr.channels import CHANNEL_NAMES, ChannelSet
 from zephyr.config import (
     ClipList,
     QualityControl,
@@ -227,7 +226,7 @@ class RunTests(unittest.TestCase):
         files = features.paths(cache, name)
         rng = np.random.default_rng(0)
         np.save(
-            files["gray"],
+            files["frames"],
             rng.integers(0, 255, (T_FRAMES, 1, SIZE, SIZE), dtype=np.uint8),
         )
         times = 1000 + np.arange(T_FRAMES) / FS
@@ -240,7 +239,6 @@ class RunTests(unittest.TestCase):
                     "thermistor": None,
                     "n_frames": T_FRAMES,
                     "n_output": T_FRAMES,
-                    "groups": ["gray"],
                 }
             )
         )
@@ -248,15 +246,14 @@ class RunTests(unittest.TestCase):
 
     def _save(self, name: str, w_onset: float) -> Path:
         torch.manual_seed(0)
-        model = BreathingNet(channels=ChannelSet.parse("gray"), **NET)
+        model = BreathingNet(**NET)
         path = self.root / name
         torch.save(
             {
                 "model": model.state_dict(),
-                "channels": ["gray"],
                 "arch_kwargs": NET,
-                "mean": np.full(len(CHANNEL_NAMES), 128.0),
-                "std": np.full(len(CHANNEL_NAMES), 64.0),
+                "mean": 128.0,
+                "std": 64.0,
                 "params": {"w_onset": w_onset},
                 "train_videos": [],
                 "epoch": 1,

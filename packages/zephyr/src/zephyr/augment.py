@@ -3,17 +3,6 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
-from .channels import ChannelSet
-
-MOTION_CHANNELS = ("diff", "flow_x", "flow_y")
-"""Channels that measure motion between frames rather than appearance."""
-
-# Every function here is handed the block a model actually sees, which holds
-# only the selected channels -- so a channel is addressed by
-# ``ChannelSet.position``, its index *within that selection*, and never by its
-# position in the stored array.  An augmentation whose channel is not selected
-# is simply skipped.
-
 
 @dataclass(frozen=True)
 class AugmentConfig:
@@ -24,47 +13,30 @@ class AugmentConfig:
     select_jitter:
         Maximum perturbation, in selection-grid units, applied independently to
         each input frame's position (its timestamp moves with it).
-    motion_noise:
-        Standard deviation of extra Gaussian noise on the motion channels only,
-        in uint8 code units, drawn per window from a log-uniform band around
-        this value. Covers the estimator noise that per-``TAU`` normalisation
-        amplifies when the achieved baseline is shorter than ``TAU``.
     shift_px:
         Maximum spatial translation in pixels, drawn uniformly per axis.  Guards
         against the model keying on the crop's absolute position.
     scale:
         Maximum fractional zoom (``0.1`` draws 0.9 to 1.1), drawn uniformly, one per
         window about the crop centre with the edge pixels repeated.  Covers camera
-        distance.  The flow channels are companded vectors, which a zoom would have
-        to decode, rescale and encode, so a model that reads them refuses it
-        (``TrainParams``).
+        distance.
     rotation:
         Maximum rotation in degrees, drawn uniformly per window and applied with the
-        zoom about the crop centre.  Covers head tilt and camera mounting.  Flow
-        vectors would have to rotate too, so a model that reads them refuses it.
+        zoom about the crop centre.  Covers head tilt and camera mounting.
     blur:
-        Maximum Gaussian blur sigma in pixels, drawn uniformly per window, on the
-        ``gray`` channel only.  Covers focus and optics that differ between rigs.
+        Maximum Gaussian blur sigma in pixels, drawn uniformly per window.  Covers
+        focus and optics that differ between rigs.
     brightness / contrast:
-        Applied to the ``gray`` channel only, as fractional deviations from 1.0.
-        The motion channels are differences and are already invariant to a
-        constant offset.  A no-op when ``gray`` is not selected.
+        Fractional deviations from 1.0.
     noise:
         Standard deviation of additive Gaussian noise, in uint8 code units,
-        applied to every channel before standardisation.
+        applied before standardisation.
     flip:
-        Horizontal mirror probability.  Mirroring must negate ``flow_x``,
-        otherwise the flow field contradicts the image -- skipped when
-        ``flow_x`` is not selected, since then there is nothing to contradict.
-        Off by default when a camera only ever views one side of the animal.
-
-    Note that these do not all apply to every channel, so two models trained on
-    different channel sets are not regularised quite equally: a ``gray``-only
-    model sees no motion scaling, a motion-only model no photometric jitter.
+        Horizontal mirror probability.  Off by default when a camera only ever
+        views one side of the animal.
     """
 
     select_jitter: float = 0.0
-    motion_noise: float = 0.0
     shift_px: int = 0
     scale: float = 0.0
     rotation: float = 0.0
@@ -78,7 +50,6 @@ class AugmentConfig:
     def enabled(self) -> bool:
         return (
             self.select_jitter > 0
-            or self.motion_noise > 0
             or self.shift_px > 0
             or self.scale > 0
             or self.rotation > 0
@@ -121,32 +92,6 @@ def jitter_positions(
     return np.sort(positions + rng.uniform(-amount, amount, size=positions.shape))
 
 
-MOTION_NOISE_SPREAD = 2.0
-"""Factor the noise level is drawn log-uniformly within, either side of
-``AugmentConfig.motion_noise``."""
-
-
-def noise_scales(
-    rng: np.random.Generator, config: AugmentConfig, channels: ChannelSet
-) -> np.ndarray | None:
-    """Per-channel noise standard deviation for one window, or ``None``.
-
-    Global and motion-only terms are independent Gaussians, combined in
-    quadrature into a single sd per channel -- one draw instead of two.
-    """
-    sd = np.full(len(channels), float(config.noise), np.float32)
-    if config.motion_noise > 0:
-        log_spread = np.log(MOTION_NOISE_SPREAD)
-        extra = config.motion_noise * float(
-            np.exp(rng.uniform(-log_spread, log_spread))
-        )
-        for name in MOTION_CHANNELS:
-            position = channels.position(name)
-            if position is not None:
-                sd[position] = np.hypot(sd[position], extra)
-    return sd if sd.any() else None
-
-
 def zoom(block: np.ndarray, factor: float, angle: float = 0.0) -> np.ndarray:
     """Zoom (and rotate by *angle* degrees) every frame of a ``(T, C, H, W)`` block
     about its centre."""
@@ -181,16 +126,10 @@ def blur(frames: np.ndarray, sigma: float) -> np.ndarray:
 
 
 def apply_spatial(
-    block: np.ndarray,
-    rng: np.random.Generator,
-    config: AugmentConfig,
-    channels: ChannelSet,
+    block: np.ndarray, rng: np.random.Generator, config: AugmentConfig
 ) -> np.ndarray:
-    """Zoom and rotate, shift, flip, blur, and photometrically jitter a ``(T, C, H, W)``
-    float block.
-
-    *block* holds only the channels in *channels*, in that order.
-    """
+    """Zoom and rotate, shift, flip, blur, and photometrically jitter a ``(T, 1, H, W)``
+    float block of gray frames."""
     # Each draw only when its knob is on, so a config without it draws the same
     # random sequence as before the knob existed.
     if config.scale > 0 or config.rotation > 0:
@@ -210,8 +149,7 @@ def apply_spatial(
         dy = int(rng.integers(-config.shift_px, config.shift_px + 1))
         dx = int(rng.integers(-config.shift_px, config.shift_px + 1))
         if dy or dx:
-            # Edge padding rather than zeros: a zero border is a hard artificial
-            # edge that the motion channels would read as a huge displacement.
+            # Edge padding rather than zeros: a zero border is a hard artificial edge.
             block = np.pad(
                 block,
                 (
@@ -229,29 +167,19 @@ def apply_spatial(
 
     if config.flip > 0 and rng.random() < config.flip:
         block = block[:, :, :, ::-1].copy()
-        # A mirrored frame reverses horizontal motion, so the encoded flow_x must
-        # be reflected about its 128 centre or it would disagree with the image.
-        flow_x = channels.position("flow_x")
-        if flow_x is not None:
-            block[:, flow_x] = 255.0 - block[:, flow_x]
 
-    gray_channel = channels.position("gray")
-    if config.blur > 0 and gray_channel is not None:
+    if config.blur > 0:
         sigma = float(rng.uniform(0.0, config.blur))
-        block[:, gray_channel] = blur(block[:, gray_channel], sigma)
+        block[:, 0] = blur(block[:, 0], sigma)
 
-    if (config.brightness > 0 or config.contrast > 0) and gray_channel is not None:
+    if config.brightness > 0 or config.contrast > 0:
         gain = 1.0 + rng.uniform(-config.contrast, config.contrast)
         offset = 255.0 * rng.uniform(-config.brightness, config.brightness)
-        gray = block[:, gray_channel]
-        block[:, gray_channel] = np.clip(
-            (gray - 128.0) * gain + 128.0 + offset, 0.0, 255.0
-        )
+        block[:] = np.clip((block - 128.0) * gain + 128.0 + offset, 0.0, 255.0)
 
-    sd = noise_scales(rng, config, channels)
-    if sd is not None:
-        block += rng.standard_normal(block.shape, dtype=np.float32) * sd.reshape(
-            1, -1, 1, 1
+    if config.noise > 0:
+        block += rng.standard_normal(block.shape, dtype=np.float32) * np.float32(
+            config.noise
         )
 
     return block

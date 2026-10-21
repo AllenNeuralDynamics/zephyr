@@ -24,7 +24,6 @@ from torch.optim.swa_utils import AveragedModel, get_ema_multi_avg_fn
 from torch.utils.data import DataLoader
 
 from zephyr.augment import AugmentConfig
-from zephyr.channels import CHANNEL_NAMES, ChannelSet
 from zephyr.model import BreathingLoss, BreathingNet
 
 from . import features
@@ -32,9 +31,10 @@ from .config import OUTPUT_FS, Fold, TrainParams, canonical, dump
 from .dataset import (
     EpochRangeSampler,
     WindowDataset,
-    channel_stats,
+    frame_stats,
     stats_path,
 )
+from .evaluate import checkpoint_stats
 from .evaluation import EVENT_TOLERANCE_FRAMES
 from .features import ClipEntry
 from .infer import predict_clip
@@ -66,7 +66,7 @@ class Architecture:
 
     name: str
     build: Callable[..., torch.nn.Module]
-    """``build(channels, params, mean, std, **kwargs)``; stats are full-width."""
+    """``build(params, mean, std, **kwargs)``, *mean*/*std* the gray statistics."""
     criterion: Callable[[TrainParams, float], torch.nn.Module]
     """``criterion(params, fs)``, *fs* the output rate in Hz. A loss that changes over
     training defines ``set_epoch(epoch)``, called before each epoch (0-based)."""
@@ -88,8 +88,8 @@ def _zephyr_kwargs(params: TrainParams) -> dict:
 
 ZEPHYR = Architecture(
     name="zephyr",
-    build=lambda channels, params, mean, std, **kwargs: BreathingNet(
-        channels=channels, dropout=params.dropout, **kwargs
+    build=lambda params, mean, std, **kwargs: BreathingNet(
+        dropout=params.dropout, **kwargs
     ),
     criterion=lambda params, fs: BreathingLoss(
         params.w_corr, params.w_onset, tuple(params.scales)
@@ -170,8 +170,8 @@ def validate_windows(
 def score_full_clips(
     model: BreathingNet,
     entries: list[ClipEntry],
-    mean: np.ndarray,
-    std: np.ndarray,
+    mean: float,
+    std: float,
     device: torch.device,
     *,
     window: int,
@@ -266,15 +266,9 @@ def train_fold(
     amp_dtype = machine.amp_dtype
     recipe = fold.preprocess
 
-    try:
-        channel_set = ChannelSet.parse(params.channels)
-    except ValueError as exc:
-        raise SystemExit(f"channels: {exc}") from exc
-
     train_lists = fold.train_lists()
     sources = [
-        features.require(clips, recipe, features_dir, channel_set)
-        for clips in fold.train_clips()
+        features.require(clips, recipe, features_dir) for clips in fold.train_clips()
     ]
     weights = [source.weight for source in fold.train]
     train_entries = [e for source in sources for e in source]
@@ -295,19 +289,15 @@ def train_fold(
     lineage_known = True
     if fold.init_from is not None:
         init = torch.load(fold.init_from, map_location=device, weights_only=False)
-        init_channels = tuple(
-            init.get("channels") or init["feature_config"]["channel_names"]
-        )
         init_arch = init.get("arch", "zephyr")
-        if init_channels != channel_set.names or init_arch != architecture.name:
+        if init_arch != architecture.name:
             raise SystemExit(
-                f"init_from {fold.init_from} is {init_arch} on "
-                f"{list(init_channels)}, this fold is {architecture.name} on "
-                f"{list(channel_set.names)}"
+                f"init_from {fold.init_from} is {init_arch}, "
+                f"this fold is {architecture.name}"
             )
         # The weights expect the statistics they were trained with, so a
         # fine-tune keeps them rather than re-measuring on its own clips.
-        mean, std = init["mean"], init["std"]
+        mean, std = checkpoint_stats(init)
         # A fine-tune has also seen everything its parent saw.  A parent with
         # no record leaves this run's lineage unknown, which evaluate warns on.
         if init.get("train_videos") is None:
@@ -321,18 +311,12 @@ def train_fold(
                 {*init["train_recordings"], *init.get("inherited_recordings", ())}
             )
     else:
-        mean, std = channel_stats(
-            train_entries,
-            stats_path(features_dir, train_entries),
-            channels=channel_set,
-        )
+        mean, std = frame_stats(train_entries, stats_path(features_dir, train_entries))
 
     # Every training clip trains.  Validation, if any, is the fold's val clips
     # whole, or else the time-tail of the training clips -- see val_fraction.
     if fold.val is not None:
-        val_entries = features.require(
-            fold.val_clips(), recipe, features_dir, channel_set
-        )
+        val_entries = features.require(fold.val_clips(), recipe, features_dir)
         train_span, val_span = (0.0, 1.0), (0.0, 1.0)
         n_val = len({e.recording for e in val_entries})
         tail = f"validating on {len(val_entries)} val clips / {n_val} recordings"
@@ -349,12 +333,7 @@ def train_fold(
         f"{len(sources)} list(s) (weights {weights})  |  {tail}",
         flush=True,
     )
-    selected_mean, selected_std = channel_set.take_stats(mean, std)
-    print(
-        f"channels {channel_set} ({len(channel_set)} of {len(CHANNEL_NAMES)} stored)  "
-        f"mean {np.round(selected_mean, 2)}  std {np.round(selected_std, 2)}",
-        flush=True,
-    )
+    print(f"gray mean {mean:.2f}  std {std:.2f}", flush=True)
 
     augment = augment_config(params)
     print(
@@ -366,7 +345,6 @@ def train_fold(
     grids = {
         "select_fs": recipe.select_fs,
         "output_fs": recipe.output_fs,
-        "motion_tau_s": recipe.motion_tau_s,
         "onset_sigma_s": recipe.onset_sigma_s,
     }
     train_set = WindowDataset(
@@ -378,7 +356,6 @@ def train_fold(
         seed=seed,
         augment=augment,
         span=train_span,
-        channels=channel_set,
         weights=weights,
         rate_balance=params.rate_balance,
         rate_bins_hz=params.rate_bins_hz,
@@ -395,7 +372,6 @@ def train_fold(
             std=std,
             stride=params.window,
             span=val_span,
-            channels=channel_set,
             **grids,
         )
         if scoring
@@ -420,7 +396,7 @@ def train_fold(
     )
 
     arch_kwargs = architecture.kwargs(params)
-    model = architecture.build(channel_set, params, mean, std, **arch_kwargs).to(device)
+    model = architecture.build(params, mean, std, **arch_kwargs).to(device)
     if init is not None:
         model.load_state_dict(init["model"])
         print(f"initialised from {fold.init_from} (epoch {init.get('epoch')})")
@@ -521,21 +497,14 @@ def train_fold(
             "lineage_known": lineage_known,
             "init_from": str(fold.init_from) if fold.init_from else None,
             "seed": seed,
-            # Not part of state_dict, but the weights are unusable without
-            # it: it fixes the first conv's input width and which planes of
-            # the stored array to feed it.
-            "channels": list(channel_set.names),
             "arch": architecture.name,
             "arch_kwargs": arch_kwargs,
-            # Full-width, over every stored channel, so checkpoints trained
-            # on different selections stay comparable.  Consumers slice with
-            # ChannelSet.take_stats.
+            # The gray statistics the network's input is standardised with.
             "mean": mean,
             "std": std,
             "params": dump(params),
             "config": resolved,
-            "feature_config": dump(recipe)
-            | {"channel_names": list(CHANNEL_NAMES), "output_fs_hz": recipe.output_fs},
+            "feature_config": dump(recipe) | {"output_fs_hz": recipe.output_fs},
             "metrics": metrics,
             "per_clip": per_clip,
         }
@@ -558,12 +527,10 @@ def train_fold(
                 f"{last_path} was trained on a different list of clips than "
                 "this fold names -- refusing to mix them."
             )
-        resumed_channels = tuple(state["channels"])
-        if resumed_channels != channel_set.names or state["arch"] != architecture.name:
+        if state["arch"] != architecture.name:
             raise SystemExit(
-                f"{last_path} was trained as {state['arch']} on "
-                f"{list(resumed_channels)} but this fold asks for {architecture.name} "
-                f"on {list(channel_set.names)} -- it cannot be resumed."
+                f"{last_path} was trained as {state['arch']} but this fold asks for "
+                f"{architecture.name} -- it cannot be resumed."
             )
         model.load_state_dict(state.get("model_live") or state["model"])
         if ema is not None and state.get("ema") is not None:

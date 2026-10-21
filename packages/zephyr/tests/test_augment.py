@@ -3,8 +3,6 @@ import unittest
 import numpy as np
 
 from zephyr.augment import AugmentConfig, apply_spatial, blur, zoom
-from zephyr.channels import ChannelSet
-from zephyr.config import Augmentation, TrainParams
 
 
 def _dot(size=21, at=(10, 14)) -> np.ndarray:
@@ -55,16 +53,14 @@ class BlurTests(unittest.TestCase):
         self.assertLess(float(out.max()), 255.0 / 4)
         np.testing.assert_array_equal(blur(frames, 0.0), frames)
 
-    def test_only_the_gray_channel_is_blurred(self):
-        channels = ChannelSet.parse("gray+diff")
+    def test_apply_spatial_blurs_the_gray_frames(self):
         block = (
-            np.random.default_rng(3).uniform(0, 255, (2, 2, 21, 21)).astype(np.float32)
+            np.random.default_rng(3).uniform(0, 255, (2, 1, 21, 21)).astype(np.float32)
         )
         out = apply_spatial(
-            block.copy(), np.random.default_rng(4), AugmentConfig(blur=2.0), channels
+            block.copy(), np.random.default_rng(4), AugmentConfig(blur=2.0)
         )
-        np.testing.assert_array_equal(out[:, 1], block[:, 1])
-        self.assertLess(float(out[:, 0].std()), float(block[:, 0].std()))
+        self.assertLess(float(out.std()), float(block.std()))
 
 
 class ApplySpatialTests(unittest.TestCase):
@@ -74,11 +70,10 @@ class ApplySpatialTests(unittest.TestCase):
         )
 
     def test_off_by_default_and_draws_nothing_extra(self):
-        channels = ChannelSet.parse("gray")
         base = AugmentConfig(shift_px=4, noise=2.0)
         again = AugmentConfig(shift_px=4, noise=2.0, scale=0.0, rotation=0.0, blur=0.0)
-        a = apply_spatial(self._block(), np.random.default_rng(5), base, channels)
-        b = apply_spatial(self._block(), np.random.default_rng(5), again, channels)
+        a = apply_spatial(self._block(), np.random.default_rng(5), base)
+        b = apply_spatial(self._block(), np.random.default_rng(5), again)
         np.testing.assert_array_equal(a, b)
 
     def test_enabled_by_scale_alone(self):
@@ -88,30 +83,11 @@ class ApplySpatialTests(unittest.TestCase):
         self.assertTrue(AugmentConfig(blur=0.5).enabled)
 
     def test_scale_changes_the_block_and_keeps_its_shape(self):
-        channels = ChannelSet.parse("gray")
         out = apply_spatial(
-            self._block(), np.random.default_rng(2), AugmentConfig(scale=0.2), channels
+            self._block(), np.random.default_rng(2), AugmentConfig(scale=0.2)
         )
         self.assertEqual(out.shape, (4, 1, 21, 21))
         self.assertFalse(np.allclose(out, self._block()))
-
-
-class ZoomConfigTests(unittest.TestCase):
-    def test_flow_channels_refuse_a_zoom(self):
-        with self.assertRaisesRegex(ValueError, "scale cannot warp the flow channels"):
-            TrainParams(channels="gray+diff+flow", augmentation=Augmentation(scale=0.1))
-        with self.assertRaisesRegex(ValueError, "cannot warp"):
-            TrainParams(channels="flow_x", augmentation=Augmentation(scale=0.1))
-
-    def test_flow_channels_refuse_a_rotation(self):
-        with self.assertRaisesRegex(ValueError, "rotation cannot warp"):
-            TrainParams(channels="gray+flow", augmentation=Augmentation(rotation=10))
-        TrainParams(channels="gray+diff", augmentation=Augmentation(rotation=10))
-
-    def test_gray_and_diff_accept_it_and_flow_accepts_none(self):
-        TrainParams(channels="gray", augmentation=Augmentation(scale=0.1))
-        TrainParams(channels="gray+diff", augmentation=Augmentation(scale=0.1))
-        TrainParams(channels="gray+diff+flow")
 
 
 if __name__ == "__main__":

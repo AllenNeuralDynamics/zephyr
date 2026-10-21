@@ -1,11 +1,10 @@
 """The on-disk feature cache: one entry per (video, preprocessing, box).
 
 Files share a prefix ``{video stem}-{hash}`` (video, timestamps, recipe, box; see
-:func:`cache_key`). Per entry: the uint8 channels, one file per group (``gray-``,
-``diff-``, ``flow-``; T x n x h x w), only the groups it was asked for, then
-``ftime-``, ``dt-``, ``time-``, ``target-`` and ``events-``, and a ``{prefix}.json`` sidecar (key, stats, thermistor, events, groups),
-written last so its presence means the arrays are complete. Read channels through
-:func:`reader`, which opens only the groups a model uses.
+:func:`cache_key`). Per entry: the uint8 gray frames (``gray-``, T x 1 x h x w),
+then ``ftime-``, ``time-``, ``target-`` and ``events-``, and a ``{prefix}.json`` sidecar
+(key, stats, thermistor, events), written last so its presence means the arrays are
+complete. Read frames through :func:`reader`.
 """
 
 import hashlib
@@ -15,23 +14,14 @@ from pathlib import Path
 
 import numpy as np
 
-from .channels import CHANNEL_GROUPS, ChannelSet
 from .config import PreprocessParams, ResolvedClip, canonical, dump
-
-GROUPS = ("gray", "diff", "flow")
-"""How channels are stored: one file per group, in stored channel order."""
-
-
-def groups_of(channels: ChannelSet) -> tuple[str, ...]:
-    """The stored groups holding *channels*."""
-    return tuple(g for g in GROUPS if set(CHANNEL_GROUPS[g]) & set(channels.names))
 
 
 @dataclass(frozen=True)
 class ClipEntry:
     """One preprocessed clip: where its arrays live and what it is.
 
-    *n_frames* is on the selection grid (channels/``frame_times``);
+    *n_frames* is on the selection grid (frames/``frame_times``);
     *n_output* on the output grid (``times``/``target``).  *clip_id* is a
     human label (folder and file stem); *recording* is the leakage identity,
     see :attr:`zephyr.config.ResolvedClip.recording_id`.  *thermistor* is the raw
@@ -43,29 +33,18 @@ class ClipEntry:
     n_frames: int
     n_output: int
     stem: Path
-    """Cache folder / prefix: the entry's identity (keys caches and statistics), and
-    what its channel files are named from (:meth:`group_file`)."""
+    """Cache folder / prefix: the entry's identity (keys caches and statistics)."""
+    frames: Path
     frame_times: Path
-    baselines: Path
     times: Path
     target: Path | None
     events: Path | None
     thermistor: Path | None = None
     video: Path | None = None
-    groups: tuple[str, ...] = GROUPS
-    """Channel groups stored."""
 
     @property
     def has_target(self) -> bool:
         return self.target is not None
-
-    @property
-    def stored(self) -> ChannelSet:
-        """The channels this entry holds."""
-        return ChannelSet.parse([n for g in self.groups for n in CHANNEL_GROUPS[g]])
-
-    def group_file(self, group: str) -> Path:
-        return self.stem.with_name(f"{group}-{self.stem.name}.npy")
 
 
 def cache_key(clip: ResolvedClip, params: PreprocessParams) -> dict:
@@ -74,7 +53,7 @@ def cache_key(clip: ResolvedClip, params: PreprocessParams) -> dict:
         raise ValueError(f"{clip.name} is thermistor only; features need its video")
     if clip.box is None:
         raise ValueError(f"{clip.name} has no box; place it with `zephyr annotate`")
-    recipe = {
+    recipe = params.KEY_RETIRED | {
         k: v
         for k, v in dump(params).items()
         if params.KEY_DEFAULTS.get(k, object()) != v
@@ -105,9 +84,8 @@ def prefix(clip: ResolvedClip, params: PreprocessParams) -> str:
 def paths(cache_dir: Path, name: str) -> dict[str, Path]:
     """The files of the entry with prefix *name*."""
     return {
-        **{group: cache_dir / f"{group}-{name}.npy" for group in GROUPS},
+        "frames": cache_dir / f"gray-{name}.npy",
         "frame_times": cache_dir / f"ftime-{name}.npy",
-        "baselines": cache_dir / f"dt-{name}.npy",
         "times": cache_dir / f"time-{name}.npy",
         "target": cache_dir / f"target-{name}.parquet",
         "events": cache_dir / f"events-{name}.npz",
@@ -127,7 +105,7 @@ def lookup(
     """
     name = prefix(clip, params)
     files = paths(cache_dir, name)
-    if not files["sidecar"].is_file():
+    if not files["sidecar"].is_file() or not files["frames"].is_file():
         return None
     sidecar = json.loads(files["sidecar"].read_text())
     if sidecar["key"] != cache_key(clip, params):
@@ -143,33 +121,25 @@ def lookup(
         n_frames=sidecar["n_frames"],
         n_output=sidecar["n_output"],
         stem=cache_dir / name,
+        frames=files["frames"],
         frame_times=files["frame_times"],
-        baselines=files["baselines"],
         times=files["times"],
         target=files["target"] if wanted else None,
         events=files["events"] if wanted else None,
         thermistor=clip.thermistor,
         video=clip.video,
-        groups=tuple(sidecar["groups"]),
     )
 
 
 def require(
-    clips: list[ResolvedClip],
-    params: PreprocessParams,
-    cache_dir: Path,
-    channels: ChannelSet | None = None,
+    clips: list[ResolvedClip], params: PreprocessParams, cache_dir: Path
 ) -> list[ClipEntry]:
-    """Entries for *clips*, in order; fail naming what is not preprocessed yet, or
-    (given *channels*) what lacks a channel group they need."""
-    entries, missing, lacking = [], [], []
-    need = set(groups_of(channels)) if channels is not None else set()
+    """Entries for *clips*, in order; fail naming what is not preprocessed yet."""
+    entries, missing = [], []
     for clip in clips:
         entry = lookup(clip, params, cache_dir)
         if entry is None:
             missing.append(clip.name)
-        elif need - set(entry.groups):
-            lacking.append(clip.name)
         else:
             entries.append(entry)
     if missing:
@@ -177,50 +147,28 @@ def require(
             f"{len(missing)} clip(s) are not in the feature cache {cache_dir}: "
             f"{missing}\nRun `zephyr preprocess <clip list> --cache {cache_dir}`."
         )
-    if lacking:
-        groups = "+".join(g for g in GROUPS if g in need)
-        raise SystemExit(
-            f"{len(lacking)} clip(s) in {cache_dir} lack channels {channels}: "
-            f"{lacking}\nRun `zephyr preprocess <clip list> --cache {cache_dir} "
-            f"--channels {groups}`."
-        )
     return entries
 
 
 class FeatureReader:
-    """An entry's channels, opened lazily: only the group files a read needs.
+    """An entry's frames, opened lazily.
 
-    ``read(rows, channels)`` returns ``(n, len(channels), h, w)`` uint8 for *rows* (a
-    slice or index array on the selection grid), channels in stored order.  Memmaps are
-    cached on the reader, so make one per process (DataLoader workers are spawned).
+    ``read(rows)`` returns ``(n, 1, h, w)`` uint8 for *rows* (a slice or index array on
+    the selection grid).  The memmap is cached on the reader, so make one per process
+    (DataLoader workers are spawned).
     """
 
     def __init__(self, entry: ClipEntry) -> None:
         self.entry = entry
-        self._maps: dict[str, np.ndarray] = {}
+        self._map: np.ndarray | None = None
 
     def __len__(self) -> int:
         return self.entry.n_frames
 
-    def _map(self, group: str) -> np.ndarray:
-        array = self._maps.get(group)
-        if array is None:
-            array = np.load(self.entry.group_file(group), mmap_mode="r")
-            self._maps[group] = array
-        return array
-
-    def read(self, rows, channels: ChannelSet | None = None) -> np.ndarray:
-        channels = channels or self.entry.stored
-        lacking = sorted(set(channels.names) - set(self.entry.stored.names))
-        if lacking:
-            raise ValueError(f"{self.entry.clip_id} does not store {lacking}")
-        parts = []
-        for group in groups_of(channels):
-            names = CHANNEL_GROUPS[group]
-            block = np.asarray(self._map(group)[rows])
-            keep = [i for i, n in enumerate(names) if n in channels.names]
-            parts.append(block if len(keep) == len(names) else block[:, keep])
-        return parts[0] if len(parts) == 1 else np.concatenate(parts, axis=1)
+    def read(self, rows) -> np.ndarray:
+        if self._map is None:
+            self._map = np.load(self.entry.frames, mmap_mode="r")
+        return np.asarray(self._map[rows])
 
 
 def reader(entry: ClipEntry) -> FeatureReader:

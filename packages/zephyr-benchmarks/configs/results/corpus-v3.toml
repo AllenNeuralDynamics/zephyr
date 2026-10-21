@@ -2,8 +2,7 @@
 # full-gray-sched-v3 (zephyr-compute-sandbox matrices full-gray-sched-v3, benchmarks-v3,
 # transformers-v3, full-gray-sched-v3-geo-blur), seed 17 so far. Read by
 # notebooks/walkthrough.py; a run that has not finished is left out until it has.
-# Only Zephyr has an onset head: the comparison networks are reported as their papers
-# built them (the *-event-v3 runs with a head were tests, not reported).
+# Only Zephyr has an onset head: the comparison networks are as their papers built them.
 root = "s3://aind-scratch-data/vr-foraging/zephyr-runs"
 fold = "dev"
 

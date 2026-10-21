@@ -301,12 +301,8 @@ def frame_embeddings(
     a clip, before they are resampled onto the output grid: ``(frame_times, (T, D))``."""
     times = np.load(entry.frame_times)
     n = int(np.searchsorted(times, times[0] + seconds))
-    mu, sd = (
-        np.asarray(v, np.float32).reshape(1, -1, 1, 1)
-        for v in model.channels.take_stats(mean, std)
-    )
-    stack = features.reader(entry).read(slice(0, n), model.channels).astype(np.float32)
-    frames = torch.from_numpy((stack - mu) / sd).unsqueeze(0).to(device)
+    stack = features.reader(entry).read(slice(0, n)).astype(np.float32)
+    frames = torch.from_numpy((stack - mean) / std).unsqueeze(0).to(device)
     return times[:n], model.encode(frames, chunk=chunk)[0].float().cpu().numpy()
 
 

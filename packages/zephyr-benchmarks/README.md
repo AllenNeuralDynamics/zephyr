@@ -8,17 +8,16 @@ and a Facemap-style ridge regression. Imported as `zephyr.benchmarks`; run as
 - `configs/` holds every clip list and experiment (with its folds inline) of the benchmark.
 - `zephyr-benchmarks run` and `evaluate` are zephyr's own `run` and `evaluate`,
   taking the same files plus `train_params.arch` (`zephyr`, `tscan`, `physnet`,
-  `physformer`, `rhythmformer`, or one of their `_event` variants), so every network
-  trains and scores under one protocol, each on its own paper's loss. zephyr folds run
-  with plain `zephyr run` too.
+  `physformer` or `rhythmformer`), so every network trains and scores under one
+  protocol, each on its own paper's loss. zephyr folds run with plain `zephyr run` too.
+  Only zephyr has an onset head; the others need `w_onset = 0`.
 
 Commands below run from the repository root, after
 `uv sync --locked --all-packages --extra gpu` (or `--extra cpu`).
 
 ## Dataset
 
-16 labelled training sessions and 12 test sessions of a face camera, plus 3
-labelled sessions from a different rig (`side_right`). Download into `data/`
+16 labelled training sessions and 12 test sessions of a face camera. Download into `data/`
 at the repository root (ignored by Git; no AWS credentials needed):
 
 ```bash
@@ -29,9 +28,6 @@ aws s3 sync --no-sign-request --exclude "*" --include "video_face_*" --include "
 aws s3 sync --no-sign-request --exclude "*" --include "video_face_*" s3://aind-scratch-data/vr-foraging/codabench-breathing-challenge/3fd049f3b2d5bb39409611187918ac41ce1f8b0a0d8d113a3526e5cf5a2ebc08/public/test/ data/test/
 aws s3 sync --no-sign-request --exclude "*" --include "thermistor_*" s3://aind-scratch-data/vr-foraging/codabench-breathing-challenge/3fd049f3b2d5bb39409611187918ac41ce1f8b0a0d8d113a3526e5cf5a2ebc08/private/test/ data/test/
 
-# other rig (side_right, sessions 13-15), ~2.6 GiB
-aws s3 sync --no-sign-request --exclude "*" --include "video_side_right_13_*" --include "video_side_right_14_*" --include "video_side_right_15_*" s3://aind-scratch-data/vr-foraging/codabench-breathing-challenge/3fd049f3b2d5bb39409611187918ac41ce1f8b0a0d8d113a3526e5cf5a2ebc08/public/test/ data/ood/
-aws s3 sync --no-sign-request --exclude "*" --include "thermistor_13_*" --include "thermistor_14_*" --include "thermistor_15_*" s3://aind-scratch-data/vr-foraging/codabench-breathing-challenge/3fd049f3b2d5bb39409611187918ac41ce1f8b0a0d8d113a3526e5cf5a2ebc08/private/test/ data/ood/
 ```
 
 Session numbers restart in every folder, which is why a recording is the pair
@@ -40,24 +36,22 @@ training) are `face_test_new_animals.toml` and 7-12 (known animals, new dates)
 are `face_test_known_animals_new_date.toml`, following the dataset's
 `split.json`.
 
-## How to reproduce the benchmark network
+## How to train the benchmark network
 
-The reference network is the CNN + TCN on `gray + diff + flow` input with two
-heads: the breathing trace (correlation loss, weight 1.0) and inhalation onsets
-(weight 0.5). It trains on all 16 labelled face sessions (32 clips) for a fixed
-budget of 200 epochs x 200 steps, with no validation split and no early
-stopping. It is then scored on the 12 test sessions, reported as two groups of
-6: animals not seen in training, and known animals recorded on new dates. The
-recipe is the fold of `configs/experiments/benchmark-gray-diff-flow-multitask.toml`,
-run with seeds 17, 42, 101, 202 and 314.
+The benchmark network is zephyr's CNN + TCN on the gray frames with two heads: the
+breathing trace (correlation loss, weight 1.0) and inhalation onsets (weight 0.5). It
+trains on all 16 labelled face sessions (32 clips) for a fixed budget of 200 epochs x
+200 steps, with no validation split and no early stopping. It is then scored on the 12
+test sessions, reported as two groups of 6: animals not seen in training, and known
+animals recorded on new dates. The recipe is the `gray-multitask` fold of
+`configs/experiments/gray-temporal-stem.toml`, run with seeds 17, 42, 101, 202 and 314.
 
 1. **Download the face data** into `data/train/` and `data/test/`: the first
-   three commands under [Dataset](#dataset). The `side_right` data is not
-   needed. Training needs a CUDA GPU.
+   commands under [Dataset](#dataset). Training needs a CUDA GPU.
 
-2. **Preprocess** the training clips and both test groups into the feature
-   cache the experiment reads (`data/features-v2`). The clip lists already
-   carry the crop boxes, so no annotation is needed:
+2. **Preprocess** the training clips and both test groups into a feature cache
+   (`data/features-v2`). The clip lists already carry the crop boxes, so no
+   annotation is needed:
 
    ```bash
    C=packages/zephyr-benchmarks/configs
@@ -67,22 +61,19 @@ run with seeds 17, 42, 101, 202 and 314.
 3. **Check the plumbing** with a 2-step run (it writes to `runs/smoke/`):
 
    ```bash
-   uv run zephyr run $C/experiments/benchmark-gray-diff-flow-multitask.toml --smoke --seeds 42 --output-dir runs/smoke
+   uv run zephyr run $C/experiments/gray-temporal-stem.toml --folds gray-multitask --cache data/features-v2 --smoke --seeds 42 --output-dir runs/smoke
    ```
 
-4. **Train and score.** Each seed took about 5 hours on the GPU the reference
-   runs used. A single seed, then all five one after another (a seed whose
+4. **Train and score.** A single seed, then all five one after another (a seed whose
    `best.pt` already exists is not retrained, only re-scored):
 
    ```bash
-   uv run zephyr run $C/experiments/benchmark-gray-diff-flow-multitask.toml --seeds 42
-   uv run zephyr run $C/experiments/benchmark-gray-diff-flow-multitask.toml
+   uv run zephyr run $C/experiments/gray-temporal-stem.toml --folds gray-multitask --cache data/features-v2 --seeds 42
+   uv run zephyr run $C/experiments/gray-temporal-stem.toml --folds gray-multitask --cache data/features-v2
    ```
 
-   Each seed writes
-   `runs/benchmark-gray-diff-flow-multitask/benchmark-gray-diff-flow-multitask/seed-<n>/`
-   with `best.pt`, the resolved config, the training video list and
-   `evaluation.json`.
+   Each seed writes `runs/gray-temporal-stem/gray-multitask/seed-<n>/` with `best.pt`,
+   the resolved config, the training video list and `evaluation.json`.
 
 5. **Summarise across seeds** by running this in `uv run python`:
 
@@ -90,7 +81,7 @@ run with seeds 17, 42, 101, 202 and 314.
    import glob, json, statistics
 
    runs = sorted(
-       glob.glob("runs/benchmark-gray-diff-flow-multitask/*/seed-*/evaluation.json")
+       glob.glob("runs/gray-temporal-stem/gray-multitask/seed-*/evaluation.json")
    )
    groups = [json.load(open(path))["groups"] for path in runs]
    metrics = ("correlation", "inhale_f1", "exhale_f1", "kl_ibi", "head_inhale_f1")
@@ -100,31 +91,28 @@ run with seeds 17, 42, 101, 202 and 314.
        print(f"{group:24s}", "  ".join(f"{m} {v:.3f}" for m, v in zip(metrics, means)))
    ```
 
-The configs reproduce the reference runs' inputs exactly: the same settings,
-the same 32 training clips in the same order, the same sequence of training
-windows per seed, and byte-identical preprocessed features
-(`tests/test_reproduction.py` checks this against local reference runs). GPU
-training is not bit-deterministic, so a retrained network lands within about
-the seed-to-seed spread rather than on the exact numbers. Scoring the
-original checkpoints with `zephyr evaluate --device cuda --amp bf16`
-reproduces their stored results exactly.
+`configs/experiments/baselines-nets.toml` reproduces the inputs of the reference
+baseline runs (`benchmarks/baselines-v1/`): the same settings and the same 32 training
+clips in the same order (`tests/test_reproduction.py` checks this against local
+reference runs). GPU training is not bit-deterministic, so a retrained network lands
+within about the seed-to-seed spread rather than on the exact numbers.
 
 ## Comparison methods
 
 - **TS-CAN and PhysNet** (the `baseline-tscan` and `baseline-physnet` folds of
-  `configs/experiments/baselines-nets.toml`) train through zephyr's own loop on
-  `channels = "gray"`; see `docs/baselines-report.md`:
+  `configs/experiments/baselines-nets.toml`) train through zephyr's own loop on the gray
+  frames:
 
   ```bash
   uv run zephyr-benchmarks run $C/experiments/baselines-nets.toml
   ```
 
-- **PhysFormer and RhythmFormer** (`arch = "physformer"`, `"rhythmformer"`, and
-  `"physformer_event"`, `"rhythmformer_event"` with an onset head; `transformer_nets.py`)
+- **PhysFormer and RhythmFormer** (`arch = "physformer"`, `"rhythmformer"`;
+  `transformer_nets.py`)
   are the transformers of the field, reimplemented from the authors' code with their
   published layers and settings: PhysFormer (Yu et al., CVPR 2022, 7.4 M parameters) and
   RhythmFormer (Zou, Guo et al., 2024, 3.2 M). They train like TS-CAN and PhysNet, on the
-  gray channel upsampled to the 128 px they were built for. Their attention spans a whole
+  gray frames upsampled to the 128 px they were built for. Their attention spans a whole
   window, so set `infer_window` to the training `window` (e.g. both 320, about 5 s at
   60 Hz): the stitching then keeps the middle half of each window. Their papers trained
   them at lr 1e-4 (PhysFormer) and 9e-3 with a one-cycle schedule (RhythmFormer), batch 4.
@@ -132,9 +120,8 @@ reproduces their stored results exactly.
   Pearson plus a cross-entropy over the window's spectrum (one bin per breath per minute
   across the 1-15 Hz band) against the thermistor's rate in that window. PhysFormer's is
   `0.1 Pearson + b (CE + KL)` with `b` rising from 1 to 5 over the run's `epochs`,
-  RhythmFormer's `0.2 Pearson + CE`; `w_corr` and `scales` are not used, and `w_onset`
-  adds zephyr's onset term (set it to 0 without an onset head). The optimiser and
-  schedule stay zephyr's, as for every network.
+  RhythmFormer's `0.2 Pearson + CE`; `w_corr` and `scales` are not used. The optimiser
+  and schedule stay zephyr's, as for every network.
 
 - **Pixel and Facemap-style baselines** take an experiment (and `--fold <name>`
   when it has several) so they see the same
@@ -142,19 +129,15 @@ reproduces their stored results exactly.
   them all with the runs:
 
   ```bash
-  uv run zephyr-benchmarks pixel $C/experiments/benchmark-gray-diff-flow-multitask.toml
-  uv run zephyr-benchmarks facemap $C/experiments/benchmark-gray-diff-flow-multitask.toml
+  uv run zephyr-benchmarks pixel $C/experiments/baselines-nets.toml --fold baseline-tscan
+  uv run zephyr-benchmarks facemap $C/experiments/baselines-nets.toml --fold baseline-tscan
   uv run zephyr-benchmarks collect --runs runs/baselines-nets
   ```
 
-  The pixel methods are `flow`, `pca` and `snr` (the default) and `motion`: motion
-  energy, the mean absolute frame difference over the crop, band-passed. It needs only the
-  gray channel, so it runs on a gray-only cache where `flow` cannot (`--methods pca snr
-  motion`). It is rectified, so it follows how fast the face moves rather than the breath
+  The pixel methods are `pca`, `snr` and `motion` (all three by default). `motion` is
+  motion energy, the mean absolute frame difference over the crop, band-passed. It is
+  rectified, so it follows how fast the face moves rather than the breath
   itself; its `calibrated` variant fits the sign and lag on the training clips.
-
-- `zephyr-benchmarks report --runs <dir> --out <dir>` builds the figures and
-  table for the full 4 inputs x 2 objectives x 5 seeds grid from run output.
 
 ## Reports beyond `evaluation.json`
 
@@ -174,14 +157,5 @@ Events are matched exactly as the scorer matches them; inhales of a network with
 onset head come from the head.
 
 `zephyr-benchmarks occlusion --checkpoint <best.pt> --clips <a>.toml ... --cache <dir> --out <file.npz>`
-is inference-only analysis, not an experiment: per-channel patch-occlusion maps of event
+is inference-only analysis, not an experiment: one patch-occlusion map per clip of event
 F1 on the first `--window-s` seconds of each clip (`--patch`, `--stride`).
-
-## Other camera view
-
-`configs/clips/ood_side_right.toml` lists the three `side_right` sessions;
-the `ood-hold{13,14,15}` folds of `configs/experiments/ood-finetune.toml` each select two of them with
-`groups = [...]` to fine-tune the benchmark network (`init_from`) on the face
-data (weight 0.5) plus those sessions (0.5), and score the held-out session and
-both face groups; the experiment runs all three (`--folds ood-hold15` runs one).
-Preprocess `configs/clips/ood_side_right.toml` first.

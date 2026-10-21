@@ -1,7 +1,6 @@
-"""The shipped benchmark configs match the reference runs' inputs.
+"""The shipped baseline config matches the reference runs' inputs.
 
-Every setting but time stretching, which zephyr no longer has: the benchmark
-fold's runs were trained with it, the baseline folds' were not.
+Every setting the config still has; the runs were trained on the gray channel.
 
 These read local data (``data/``, ``benchmarks/`` at the repository root), which
 is not in the repository, so each test skips when its inputs are absent.
@@ -18,8 +17,7 @@ from zephyr.config import load
 
 ROOT = Path(__file__).resolve().parents[3]
 CONFIGS = Path(__file__).resolve().parents[1] / "configs"
-EXPERIMENT = CONFIGS / "experiments/benchmark-gray-diff-flow-multitask.toml"
-RUNS = ROOT / "benchmarks/input-objective-v1/runs"
+EXPERIMENT = CONFIGS / "experiments/baselines-nets.toml"
 FIXTURE = Path(__file__).parent / "fixtures/window_draws_seed42.json"
 
 needs_data = unittest.skipUnless((ROOT / "data/train").is_dir(), "no local data")
@@ -38,10 +36,10 @@ def _assert_params_match_runs(case, fold, runs, seeds) -> None:
             continue
         args = json.loads(path.read_text())
         case.assertEqual(_arg(args, "seed"), seed)
+        case.assertEqual(args["channels"], "gray", run.name)  # the only input now
         p = fold.train_params
         expected = {
             "arch": args.get("arch", "zephyr"),
-            "channels": args["channels"],
             "window": _arg(args, "window"),
             "batch_size": _arg(args, "batch_size"),
             "epochs": _arg(args, "epochs"),
@@ -67,11 +65,8 @@ def _assert_params_match_runs(case, fold, runs, seeds) -> None:
             expected["tscan_img_size"] = _arg(args, "tscan_img_size")
         for key, value in expected.items():
             case.assertEqual(getattr(p, key), value, f"{run.name}: {key}")
-        # Time stretching (time_stretch, rate_range, scale_motion) is gone from zephyr;
-        # runs trained with it are matched on every other setting.
         aug = {
             "select_jitter": _arg(args, "select_jitter"),
-            "motion_noise": _arg(args, "motion_noise"),
             "shift_px": _arg(args, "shift_px"),
             "brightness": _arg(args, "brightness"),
             "contrast": _arg(args, "contrast"),
@@ -90,9 +85,7 @@ class BaselineFoldTests(unittest.TestCase):
     """The network baseline folds reproduce benchmarks/baselines-v1's runs."""
 
     def test_train_params_equal_the_reference_runs(self):
-        experiment = load(
-            BenchmarkExperiment, CONFIGS / "experiments/baselines-nets.toml"
-        )
+        experiment = load(BenchmarkExperiment, EXPERIMENT)
         self.assertEqual(experiment.seeds, [17, 42])
         for arch in ("tscan", "physnet"):
             with self.subTest(arch=arch):
@@ -103,26 +96,19 @@ class BaselineFoldTests(unittest.TestCase):
 
 
 @needs_data
-class BenchmarkFoldTests(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        (cls.fold,) = load(BenchmarkExperiment, EXPERIMENT).fold
-
-    def test_train_params_equal_every_reference_run(self):
-        seeds = load(BenchmarkExperiment, EXPERIMENT).seeds
-        self.assertEqual(seeds, [17, 42, 101, 202, 314])
-        runs = [RUNS / f"gray-diff-flow__multitask__seed-{seed}" for seed in seeds]
-        _assert_params_match_runs(self, self.fold, runs, seeds)
-
+class TrainingClipTests(unittest.TestCase):
     def test_training_clips_are_the_reference_manifest_in_order(self):
+        experiment = load(BenchmarkExperiment, EXPERIMENT)
         order = json.loads(FIXTURE.read_text())["train_clip_order"]
         train = (ROOT / "data/train").resolve()  # loaded paths are resolved too
         wanted = [
             train / ("video_face_" + m.group(1) + ".mp4")
             for m in (re.fullmatch(r"train_(\d+_part_\d+)", c) for c in order)
         ]
-        (clips,) = self.fold.train_clips()
-        self.assertEqual([c.video for c in clips], wanted)
+        for fold in experiment.fold:
+            with self.subTest(fold=fold.name):
+                (clips,) = fold.train_clips()
+                self.assertEqual([c.video for c in clips], wanted)
 
 
 if __name__ == "__main__":

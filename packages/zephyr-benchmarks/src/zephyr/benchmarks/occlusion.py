@@ -1,11 +1,10 @@
-"""Input occlusion importance: where in the crop does each channel matter?
+"""Input occlusion importance: where in the crop does the network look?
 
-One patch of one channel is hidden for the whole segment by replacing it with the
-training mean (zero after normalisation, i.e. "nothing here"), the network is re-run,
-and the drop in event F1 (mean of inhale and exhale) against the unoccluded baseline
-is recorded. A pixel's value is the mean drop over all patches covering it. Inference
-only, through a wrapper around the network: one ``(96, 96)`` map per channel per clip,
-written to one ``.npz``.
+One patch is hidden for the whole segment by replacing it with the training mean (zero
+after normalisation, i.e. "nothing here"), the network is re-run, and the drop in event
+F1 (mean of inhale and exhale) against the unoccluded baseline is recorded. A pixel's
+value is the mean drop over all patches covering it. Inference only, through a wrapper
+around the network: one ``(96, 96)`` map per clip, written to one ``.npz``.
 
 CLI
 ---
@@ -26,21 +25,20 @@ import torch
 from torch import nn
 
 from zephyr import features
-from zephyr.channels import CHANNEL_GROUPS, ChannelSet
 from zephyr.config import ClipList, load
 from zephyr.evaluate import load_checkpoint, refuse_leaked, score_entry
 from zephyr.features import ClipEntry
 from zephyr.infer import INPUT_MARGIN, predict_clip
 from zephyr.signal import BREATHING_SIGNAL_COLUMN, TIME_COLUMN
 
-Hidden = tuple[int, int, int]
-"""``(channel, y, x)`` of the patch to hide."""
+Hidden = tuple[int, int]
+"""``(y, x)`` of the patch to hide."""
 Score = Callable[[Hidden | None], float]
 """Event F1 of the network with a patch hidden (``None``: nothing hidden)."""
 
 
 class Occluded(nn.Module):
-    """A network that sees its input with one patch of one channel set to the mean.
+    """A network that sees its input with one patch set to the mean.
 
     The input is already normalised, so the training mean is zero.  Everything
     :func:`zephyr.infer.predict_clip` reads from a model is passed through.
@@ -51,15 +49,14 @@ class Occluded(nn.Module):
         self.model = model
         self.patch = patch
         self.hidden: Hidden | None = None
-        self.channels = model.channels
         self.receptive_field = model.receptive_field
 
     def forward(self, features: torch.Tensor, *args, **kwargs):
-        """*features* is ``(batch, time, channel, height, width)``."""
+        """*features* is ``(batch, time, 1, height, width)``."""
         if self.hidden is not None:
-            channel, y, x = self.hidden
+            y, x = self.hidden
             features = features.clone()
-            features[:, :, channel, y : y + self.patch, x : x + self.patch] = 0
+            features[:, :, :, y : y + self.patch, x : x + self.patch] = 0
         return self.model(features, *args, **kwargs)
 
 
@@ -71,23 +68,20 @@ def patch_origins(size: int, patch: int, stride: int) -> list[int]:
     return origins
 
 
-def occlusion_maps(
-    score: Score, channels: list[str], *, patch: int, stride: int, size: int = 96
-) -> tuple[float, dict[str, np.ndarray]]:
-    """Baseline score and, per channel, the mean score drop of patches covering a pixel."""
+def occlusion_map(
+    score: Score, *, patch: int, stride: int, size: int = 96
+) -> tuple[float, np.ndarray]:
+    """Baseline score and the mean score drop of the patches covering each pixel."""
     base = score(None)
     origins = patch_origins(size, patch, stride)
-    maps = {}
-    for channel, name in enumerate(channels):
-        total = np.zeros((size, size))
-        count = np.zeros((size, size))
-        for y in origins:
-            for x in origins:
-                drop = base - score((channel, y, x))
-                total[y : y + patch, x : x + patch] += drop
-                count[y : y + patch, x : x + patch] += 1
-        maps[name] = total / count
-    return base, maps
+    total = np.zeros((size, size))
+    count = np.zeros((size, size))
+    for y in origins:
+        for x in origins:
+            drop = base - score((y, x))
+            total[y : y + patch, x : x + patch] += drop
+            count[y : y + patch, x : x + patch] += 1
+    return base, total / count
 
 
 def head_entry(entry: ClipEntry, seconds: float, directory: Path) -> ClipEntry:
@@ -104,13 +98,11 @@ def head_entry(entry: ClipEntry, seconds: float, directory: Path) -> ClipEntry:
         n_frames=n_in,
         n_output=n_out,
         stem=directory / "head",
+        frames=directory / "frames.npy",
         frame_times=directory / "frame_times.npy",
         times=directory / "times.npy",
     )
-    array = features.reader(entry)
-    for group in entry.groups:
-        group_channels = ChannelSet.parse(CHANNEL_GROUPS[group])
-        np.save(head.group_file(group), array.read(slice(0, n_in), group_channels))
+    np.save(head.frames, features.reader(entry).read(slice(0, n_in)))
     np.save(head.frame_times, frame_times[:n_in])
     np.save(head.times, times[:n_out])
     return head
@@ -172,7 +164,6 @@ def main(argv: list[str] | None = None) -> None:
     amp_dtype = {"bf16": torch.bfloat16, "fp16": torch.float16, "off": None}[args.amp]
     network, mean, std, state = load_checkpoint(args.checkpoint, device)
     model = Occluded(network, args.patch)
-    channels = list(model.channels.names)
 
     lists = {path.stem: load(ClipList, path) for path in args.clips}
     recipes = {lst.preprocess for lst in lists.values()}
@@ -182,26 +173,21 @@ def main(argv: list[str] | None = None) -> None:
     clips = {n: [c for c in lst.resolve() if c.labelled] for n, lst in lists.items()}
     refuse_leaked([state], [c for group in clips.values() for c in group])
 
-    names, groups, bases = [], [], []
-    channel_maps: dict[str, list[np.ndarray]] = {name: [] for name in channels}
+    names, groups, bases, maps = [], [], [], []
     for group, group_clips in clips.items():
         for entry in features.require(group_clips, recipe, args.cache):
             started = time.time()
             with tempfile.TemporaryDirectory() as tmp:
                 head = head_entry(entry, args.window_s, Path(tmp))
                 score = clip_scorer(model, mean, std, head, device, amp_dtype)
-                base, maps = occlusion_maps(
-                    score, channels, patch=args.patch, stride=args.stride
-                )
+                base, map_ = occlusion_map(score, patch=args.patch, stride=args.stride)
             names.append(entry.clip_id)
             groups.append(group)
             bases.append(base)
-            for name, map_ in maps.items():
-                channel_maps[name].append(map_)
-            peaks = "; ".join(f"{k} max drop {v.max():.3f}" for k, v in maps.items())
+            maps.append(map_)
             print(
                 f"[{time.time() - started:.0f}s] {entry.clip_id}: baseline event-F1 "
-                f"{base:.3f}; {peaks}",
+                f"{base:.3f}; max drop {map_.max():.3f}",
                 flush=True,
             )
 
@@ -211,7 +197,7 @@ def main(argv: list[str] | None = None) -> None:
         bases=np.array(bases),
         clips=np.array(names),
         groups=np.array(groups),
-        **{name: np.stack(maps) for name, maps in channel_maps.items()},
+        maps=np.stack(maps),
     )
     print(f"wrote {args.out}")
 

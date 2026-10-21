@@ -56,8 +56,8 @@ uv run marimo export html notebooks/walkthrough.py -o walkthrough.html --no-incl
   its reference (local or `s3://`, given in the notebook or by `ZEPHYR_QC_REPORTS` and
   `ZEPHYR_QC_REFERENCE`); `s3://` ones are copied once into `cache/quality-control/`
   (`utils/quality.py`).
-- `utils/style.py`: figure sizes, fonts and one fixed colour per method, channel
-  and objective. Every figure calls `style.use_style()` and takes its colours
+- `utils/style.py`: figure sizes, fonts and one fixed colour per method, variant
+  and set of clips. Every figure calls `style.use_style()` and takes its colours
   from here.
 - `utils/plots.py`: reusable figure components. `utils/runs.py`: downloads the
   manifest's runs, predicts and caches their traces, and caches the

@@ -72,10 +72,8 @@ the download).
    uv run zephyr preprocess examples/clips.toml --cache data/features-example
    ```
 
-   Each channel group is its own file (`gray-`, `diff-`, `flow-`), so a network reads only
-   the channels it uses. `--channels gray` stores only gray (no optic flow: about 4x
-   faster, a quarter of the disk); a later run with more channels adds the missing
-   groups to the same entries. Training refuses a network whose channels an entry lacks.
+   Each entry stores the clip's gray frames (`gray-<prefix>.npy`, uint8), the only input
+   the network reads.
 
 5. **Run.** `zephyr run` trains each (fold, seed) into
    `<output_dir>/<fold name>/seed-<n>/` (`--folds <name>...` runs only some) -- with the resolved config, the list of
@@ -214,13 +212,11 @@ section explains the ones whose behaviour is not obvious.
   windows are never balanced.
 - `[fold.train_params.augmentation]` (defaults on): `shift_px` moves the crop, `scale`
   zooms it and `rotation` (degrees) turns it about its centre (both default 0), `blur`
-  (maximum Gaussian sigma in pixels, default 0) and `brightness`/`contrast` act on gray,
-  `motion_noise` on diff and flow. `scale` and `rotation` need channels without flow (gray,
-  gray+diff): a model that reads the flow channels refuses them.
+  (maximum Gaussian sigma in pixels, default 0), `brightness` and `contrast` act on the
+  gray frames.
 - `temporal_kernel` (odd, default 1) makes the encoder's first layer a 3D convolution over
-  that many neighbouring frames, so a gray-only network sees change between frames
-  itself rather than through the precomputed `diff`/flow channels; later layers stay per
-  frame. Stored in the checkpoint's `arch_kwargs`.
+  that many neighbouring frames, so the network sees change between frames in its first
+  layer; later layers stay per frame. Stored in the checkpoint's `arch_kwargs`.
 - `signal_pool` (default 1) makes the signal head read the TCN output average-pooled by
   that factor; `onset_input` (`full`, `pooled` or `both`) picks what the onset head reads
   (the last two need `signal_pool > 1`). Both are stored in the checkpoint's `arch_kwargs`.
@@ -228,9 +224,8 @@ section explains the ones whose behaviour is not obvious.
   `best.pt`; they are mid-schedule (learning rate not decayed), so they show how the
   score evolves, not what a shorter run gives. A seed whose `best.pt` exists is
   re-scored, not retrained.
-- Leave-one-out is one `[[fold]]` per held-out recording (see
-  `configs/experiments/ood-finetune.toml` in zephyr-benchmarks). `all` is a reserved
-  test group name.
+- Leave-one-out is one `[[fold]]` per held-out recording, each training on the others
+  with `groups`. `all` is a reserved test group name.
 - Without a GPU: `--device cpu --amp off --num-workers 0` (about 1.7 s per step).
 - To check a config before training, load it and print its folds' clip counts with
   `zephyr.config.load`.

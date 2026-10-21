@@ -8,10 +8,9 @@ own paper's loss.
 
 from pathlib import Path
 
-import numpy as np
 import torch
 
-from zephyr.evaluate import checkpoint_channels
+from zephyr.evaluate import checkpoint_stats
 from zephyr.model import BreathingLoss
 from zephyr.run import Runner
 from zephyr.train import ZEPHYR, Architecture
@@ -20,21 +19,22 @@ from . import nets, transformer_losses
 from .config import BenchmarkExperiment, BenchmarkFold, BenchmarkTrainParams
 
 
-def _build(channels, params: BenchmarkTrainParams, mean, std, **kwargs):
+def _build(params: BenchmarkTrainParams, mean: float, std: float, **kwargs):
     return nets.build_model(
-        params.arch, channels, dropout=params.dropout, mean=mean, std=std, **kwargs
+        params.arch, dropout=params.dropout, mean=mean, std=std, **kwargs
     )
 
 
 def _criterion(params: BenchmarkTrainParams, fs: float) -> torch.nn.Module:
     """Each network's own paper's loss; PhysNet's (negative Pearson) is zephyr's at
-    ``scales = [1]``, plus the onset term at ``w_onset``."""
+    ``scales = [1]``, without the onset term (``w_onset`` is 0 for every network but
+    zephyr)."""
     if params.arch == "tscan":
         return nets.DerivativeMSELoss()
-    if params.arch.startswith("physformer"):
-        return transformer_losses.PhysFormerLoss(fs, params.epochs, params.w_onset)
-    if params.arch.startswith("rhythmformer"):
-        return transformer_losses.RhythmFormerLoss(fs, params.w_onset)
+    if params.arch == "physformer":
+        return transformer_losses.PhysFormerLoss(fs, params.epochs)
+    if params.arch == "rhythmformer":
+        return transformer_losses.RhythmFormerLoss(fs)
     return BreathingLoss(params.w_corr, params.w_onset, tuple(params.scales))
 
 
@@ -53,19 +53,16 @@ def architecture(fold: BenchmarkFold) -> Architecture:
 
 def load_checkpoint(
     path: Path, device: torch.device
-) -> tuple[torch.nn.Module, np.ndarray, np.ndarray, dict]:
+) -> tuple[torch.nn.Module, float, float, dict]:
     """:func:`zephyr.evaluate.load_checkpoint` for any network in :data:`nets.ARCHS`."""
     state = torch.load(path, map_location=device, weights_only=False)
+    mean, std = checkpoint_stats(state)
     model = nets.build_model(
-        state.get("arch", "zephyr"),
-        checkpoint_channels(state),
-        mean=state["mean"],
-        std=state["std"],
-        **state.get("arch_kwargs", {}),
+        state.get("arch", "zephyr"), mean=mean, std=std, **state.get("arch_kwargs", {})
     ).to(device)
     model.load_state_dict(state["model"])
     model.eval()
-    return model, state["mean"], state["std"], state
+    return model, mean, std, state
 
 
 RUNNER = Runner(

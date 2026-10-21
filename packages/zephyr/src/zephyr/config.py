@@ -34,7 +34,6 @@ from pydantic import (
 )
 
 from . import events
-from .channels import FLOW_CLIP_PX, FLOW_SCALE_PX, MOTION_TAU_S, ChannelSet
 from .rates import DEFAULT_RATE_BINS_HZ
 from .signal import CANONICAL_BREATHING_SAMPLING_RATE
 
@@ -126,7 +125,7 @@ def dump(model: _Model) -> dict:
 
 
 class PreprocessParams(_Model):
-    """How raw video becomes channel arrays.  Part of every feature cache key."""
+    """How raw video becomes gray frame arrays.  Part of every feature cache key."""
 
     target_size: tuple[PositiveInt, PositiveInt]
     """Working frame size ``(width, height)``; the video is scaled to this
@@ -135,9 +134,6 @@ class PreprocessParams(_Model):
     select_fs: float = Field(OUTPUT_FS, gt=0)
     """Rate of the frames the CNN sees, in Hz. Below the output rate, the TCN's input
     is interpolated up to it (half the CNN work at 30 Hz)."""
-    motion_tau_s: float = Field(MOTION_TAU_S, gt=0)
-    flow_scale_px: float = Field(FLOW_SCALE_PX, gt=0)
-    flow_clip_px: float = Field(FLOW_CLIP_PX, gt=0)
     onset_sigma_s: float = Field(0.020, gt=0)
     output_fs: float = Field(OUTPUT_FS, gt=0)
     """Rate of the grid the network predicts on and trains against, in Hz. The TCN's
@@ -147,6 +143,13 @@ class PreprocessParams(_Model):
     KEY_DEFAULTS: ClassVar[dict[str, float]] = {"output_fs": OUTPUT_FS}
     """Fields added after caches existed: left out of the cache key at these values,
     so the caches made before them still match."""
+    KEY_RETIRED: ClassVar[dict[str, float]] = {
+        "motion_tau_s": 1.0 / 60.0,
+        "flow_scale_px": 0.1,
+        "flow_clip_px": 16.0,
+    }
+    """Fields removed after caches existed: kept in the cache key at the values they
+    always had, so the caches made before still match."""
 
 
 class Derive(_Model):
@@ -479,7 +482,6 @@ class Augmentation(_Model):
     """
 
     select_jitter: float = Field(0.25, ge=0)
-    motion_noise: float = Field(2.0, ge=0)
     shift_px: int = Field(4, ge=0)
     scale: float = Field(0.0, ge=0, lt=1)
     rotation: float = Field(0.0, ge=0, le=180)
@@ -493,9 +495,6 @@ class Augmentation(_Model):
 class TrainParams(_Model):
     """Every training knob; defaults are the ones ``zephyr train`` used to have."""
 
-    channels: str = "gray+diff+flow"
-    """Channels to train on (``gray``, ``diff``, ``flow``, ``flow_x``, ...);
-    preprocessing stores all of them, so this selects without reprocessing."""
     window: PositiveInt = 512
     batch_size: PositiveInt = 4
     epochs: PositiveInt = 200
@@ -540,12 +539,6 @@ class TrainParams(_Model):
     infer_window: PositiveInt = 1024
     frame_chunk: PositiveInt = 256
 
-    @field_validator("channels")
-    @classmethod
-    def _known_channels(cls, value: str) -> str:
-        ChannelSet.parse(value)
-        return value
-
     @field_validator("rate_bins_hz")
     @classmethod
     def _increasing_bins(cls, value: tuple[float, ...]) -> tuple[float, ...]:
@@ -565,17 +558,6 @@ class TrainParams(_Model):
         if value % 2 == 0:
             raise ValueError(f"temporal_kernel must be odd (centred), got {value}")
         return value
-
-    @model_validator(mode="after")
-    def _zoom_needs_no_flow(self) -> "TrainParams":
-        flow = {"flow_x", "flow_y"} & set(ChannelSet.parse(self.channels).names)
-        for knob in ("scale", "rotation"):
-            if getattr(self.augmentation, knob) > 0 and flow:
-                raise ValueError(
-                    f"augmentation {knob} cannot warp the flow channels {sorted(flow)}: "
-                    "train on channels without flow (gray, gray+diff) or leave it at 0"
-                )
-        return self
 
     @model_validator(mode="after")
     def _onset_input_needs_the_branch(self) -> "TrainParams":

@@ -68,17 +68,12 @@ class WarmupClipTests(unittest.TestCase):
 
 
 class WarmFileCacheTests(unittest.TestCase):
-    def test_reads_every_distinct_channel_file_once(self):
+    def test_reads_every_distinct_frame_file_once(self):
         with tempfile.TemporaryDirectory() as tmp:
             entries = []
             for name, size in (("a", 1000), ("b", 5000)):
                 (Path(tmp) / f"gray-{name}.npy").write_bytes(b"x" * size)
-                entries.append(
-                    SimpleNamespace(
-                        groups=("gray",),
-                        group_file=lambda g, n=name: Path(tmp) / f"{g}-{n}.npy",
-                    )
-                )
+                entries.append(SimpleNamespace(frames=Path(tmp) / f"gray-{name}.npy"))
             self.assertEqual(timing.warm_file_cache(entries + entries[:1]), 6000)
 
 

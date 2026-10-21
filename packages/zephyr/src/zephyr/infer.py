@@ -39,8 +39,8 @@ def window_starts(n_frames: int, window: int, hop: int) -> list[int]:
 def predict_clip(
     model: BreathingNet,
     entry: ClipEntry,
-    mean: np.ndarray,
-    std: np.ndarray,
+    mean: float,
+    std: float,
     *,
     window: int = 1024,
     margin: int | None = None,
@@ -48,10 +48,7 @@ def predict_clip(
     frame_chunk: int = 256,
     amp_dtype: torch.dtype | None = torch.bfloat16,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Predict the full trace for one clip.
-
-    *mean* and *std* cover every stored channel; both they and the stored array
-    are sliced to ``model.channels`` here.
+    """Predict the full trace for one clip, its frames standardised by *mean* and *std*.
 
     Returns
     -------
@@ -65,7 +62,6 @@ def predict_clip(
     if margin is None:
         margin = model.receptive_field // 2
 
-    channels = model.channels
     array = features.reader(entry)
     frame_times = np.load(entry.frame_times)
     grid = np.load(entry.times)
@@ -74,10 +70,6 @@ def predict_clip(
     # A margin at or past half the window would leave no interior to keep.
     margin = min(margin, (window - 1) // 2)
     hop = max(1, window - 2 * margin)
-
-    selected_mean, selected_std = channels.take_stats(mean, std)
-    mean_t = torch.from_numpy(np.asarray(selected_mean, np.float32)).view(1, -1, 1, 1)
-    std_t = torch.from_numpy(np.asarray(selected_std, np.float32)).view(1, -1, 1, 1)
 
     signal = np.zeros(n_out, np.float32)
     onset = np.zeros(n_out, np.float32)
@@ -95,10 +87,8 @@ def predict_clip(
 
         # Cast in numpy: the memmap slice is read-only, and torch.from_numpy
         # warns on non-writable storage.  The cast has to copy anyway.
-        block = torch.from_numpy(
-            array.read(slice(first, last), channels).astype(np.float32)
-        )
-        block = ((block - mean_t) / std_t).unsqueeze(0).to(device, non_blocking=True)
+        block = torch.from_numpy(array.read(slice(first, last)).astype(np.float32))
+        block = ((block - mean) / std).unsqueeze(0).to(device, non_blocking=True)
 
         origin = out_times[0]
         t_in = (

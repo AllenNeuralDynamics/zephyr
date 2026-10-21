@@ -1,4 +1,4 @@
-"""Decode, crop, and channelise every clip into a uint8 array on disk.
+"""Decode, crop and gray every clip into a uint8 array on disk.
 
 Done once up front because decoding in the training loop would cap speed at the codec.
 Three grids: *native* (camera timestamps), *selection* (``select_fs``, the frames the
@@ -11,7 +11,7 @@ per clip; see :mod:`.features`.
 
 CLI
 ---
-    zephyr preprocess examples/clips.toml --cache data/features-example [--channels gray]
+    zephyr preprocess examples/clips.toml --cache data/features-example
 """
 
 import argparse
@@ -26,7 +26,6 @@ import numpy as np
 import pandas as pd
 
 from . import features
-from .channels import CHANNEL_GROUPS, ChannelSet, encode_stack, make_flow_estimator
 from .config import (
     OUTPUT_FS,
     ClipList,
@@ -75,26 +74,6 @@ def select_anchor_indices(frame_times: np.ndarray, select_fs: float) -> np.ndarr
             "out-of-order) source frame"
         )
     return indices
-
-
-def motion_reference_indices(
-    frame_times: np.ndarray, anchor_indices: np.ndarray, tau: float
-) -> np.ndarray:
-    """For each anchor, the native frame nearest ``tau`` seconds before it.
-
-    Not "the previous anchor": above 60 Hz selection the previous anchor is
-    nearer than ``tau``. Anchor 0 resolves to itself (no motion yet).
-    """
-    wanted = frame_times[anchor_indices] - tau
-    references = _nearest_index(frame_times, wanted)
-    if np.any(references[1:] >= anchor_indices[1:]):
-        native_period = float(np.median(np.diff(frame_times)))
-        raise ValueError(
-            f"motion tau {tau * 1e3:.1f} ms is shorter than this clip's frame "
-            f"period {native_period * 1e3:.1f} ms, so some anchors have no "
-            "earlier frame to measure against.  Raise motion_tau_s."
-        )
-    return references
 
 
 def output_times(anchor_times: np.ndarray, output_fs: float = OUTPUT_FS) -> np.ndarray:
@@ -148,16 +127,12 @@ def _write_target(clip: ResolvedClip, files: dict[str, Path], out_times):
 
 
 def preprocess_clip(
-    clip: ResolvedClip,
-    params: PreprocessParams,
-    cache_dir: Path,
-    groups: tuple[str, ...] = features.GROUPS,
+    clip: ResolvedClip, params: PreprocessParams, cache_dir: Path
 ) -> features.ClipEntry:
-    """Preprocess the channel *groups* of one clip into *cache_dir*; return its entry.
+    """Preprocess one clip into *cache_dir*; return its entry.
 
-    Does nothing for a clip already cached with those groups; rebuilds only the target
-    when the arrays are cached but the clip's thermistor or event set changed; decodes
-    again for groups the entry lacks, writing only those.
+    Does nothing for a clip already cached; rebuilds only the target when the frames
+    are cached but the clip's thermistor or event set changed.
     """
     started = time_module.perf_counter()
     key = features.cache_key(clip, params)
@@ -165,14 +140,11 @@ def preprocess_clip(
     thermistor = canonical(clip.thermistor) if clip.thermistor else None
     labels = features.events_identity(clip) if thermistor else None
 
-    present: tuple[str, ...] = ()
-    previous: dict = {}
-    if files["sidecar"].is_file():
+    if files["sidecar"].is_file() and files["frames"].is_file():
         sidecar = json.loads(files["sidecar"].read_text())
-        stored = sidecar["groups"] if sidecar["key"] == key else ()
-        if sidecar["key"] == key and set(groups) <= set(stored):
+        if sidecar["key"] == key:
             if (sidecar["thermistor"], sidecar.get("events")) != (thermistor, labels):
-                # Arrays are reusable; only the thermistor-derived target is not.
+                # Frames are reusable; only the thermistor-derived target is not.
                 stats = {
                     k: v for k, v in sidecar["stats"].items() if k not in TARGET_STATS
                 }
@@ -181,78 +153,34 @@ def preprocess_clip(
                 sidecar |= {"stats": stats, "thermistor": thermistor, "events": labels}
                 files["sidecar"].write_text(json.dumps(sidecar, indent=2))
             return features.lookup(clip, params, cache_dir)
-        if sidecar["key"] == key:  # add groups to the entry
-            present, previous = tuple(stored), sidecar["stats"]
-    todo = tuple(g for g in features.GROUPS if g in groups and g not in present)
 
     frame_times = pd.read_parquet(clip.timestamps)["Time"].to_numpy()
     n_expected = len(frame_times)
     anchor_indices = select_anchor_indices(frame_times, params.select_fs)
-    reference_indices = motion_reference_indices(
-        frame_times, anchor_indices, params.motion_tau_s
-    )
     n_anchors = len(anchor_indices)
     anchor_times = frame_times[anchor_indices]
-    baselines = anchor_times - frame_times[reference_indices]
 
     box_w, box_h = clip.box[2], clip.box[3]
     cache_dir.mkdir(parents=True, exist_ok=True)
-    # Written under a temporary name and renamed once complete, group by group.
-    partial = {g: files[g].with_suffix(".tmp.npy") for g in todo}
-    out = {
-        g: np.lib.format.open_memmap(
-            partial[g],
-            mode="w+",
-            dtype=np.uint8,
-            shape=(n_anchors, len(CHANNEL_GROUPS[g]), box_h, box_w),
-        )
-        for g in todo
-    }
+    # Written under a temporary name and renamed once complete.
+    partial = files["frames"].with_suffix(".tmp.npy")
+    out = np.lib.format.open_memmap(
+        partial, mode="w+", dtype=np.uint8, shape=(n_anchors, 1, box_h, box_w)
+    )
 
-    flow_estimator = make_flow_estimator() if "flow" in todo else None
-    # Frames some anchor will want as its motion reference, held until used.
-    motion = bool({"diff", "flow"} & set(todo))
-    wanted_references = set(reference_indices.tolist()) if motion else set()
-    held: dict[int, np.ndarray] = {}
     n_decoded = 0
     n_written = 0
-    diff_saturated = 0
-    flow_saturated = 0
-
     for block in iter_frames(clip.video, scale_to=params.target_size, crop=clip.box):
         for frame in block:
             index = n_decoded
             n_decoded += 1
-            if index in wanted_references:
-                held[index] = frame.copy()
             if n_written >= n_anchors or index != anchor_indices[n_written]:
                 continue
-
-            reference_index = int(reference_indices[n_written])
-            planes, n_diff, n_flow = encode_stack(
-                frame,
-                held.get(reference_index) if reference_index != index else None,
-                flow_estimator,
-                dt=float(baselines[n_written]),
-                tau=params.motion_tau_s,
-                flow_scale_px=params.flow_scale_px,
-                flow_clip_px=params.flow_clip_px,
-                groups=todo,
-            )
-            for group, plane in planes.items():
-                out[group][n_written] = plane
-            diff_saturated += n_diff
-            flow_saturated += n_flow
+            out[n_written, 0] = frame
             n_written += 1
 
-            if n_written < n_anchors:
-                cutoff = int(reference_indices[n_written])
-                for stale in [i for i in held if i < cutoff]:
-                    del held[stale]
-
-    for group in todo:
-        out[group].flush()
-    del out  # closes the memmaps: Windows cannot rename an open file
+    out.flush()
+    del out  # closes the memmap: Windows cannot rename an open file
 
     if n_decoded != n_expected:
         # The timestamp parquet is the authoritative frame record, so a mismatch
@@ -267,27 +195,16 @@ def preprocess_clip(
             f"{n_written} were reached before decoding ended"
         )
 
-    for group in todo:
-        partial[group].replace(files[group])
+    partial.replace(files["frames"])
     out_times = output_times(anchor_times, params.output_fs)
     np.save(files["frame_times"], anchor_times)
-    np.save(files["baselines"], baselines.astype(np.float32))
     np.save(files["times"], out_times)
 
-    n_pixels = n_written * box_w * box_h
-    # Anchor 0 has no motion by construction; excluded from the achieved-dt stat.
-    achieved = baselines[1:] if n_anchors > 1 else baselines
-    stats = {k: v for k, v in previous.items() if k not in TARGET_STATS} | {
+    stats = {
         "native_fs_hz": float((n_expected - 1) / (frame_times[-1] - frame_times[0])),
         "select_fs_hz": float(1.0 / np.median(np.diff(anchor_times))),
-        "motion_dt_median_ms": float(np.median(achieved) * 1e3),
-        "motion_dt_spread_ms": float((achieved.max() - achieved.min()) * 1e3),
         "elapsed_s": round(time_module.perf_counter() - started, 1),
     }
-    if "diff" in todo:
-        stats["diff_saturated_frac"] = diff_saturated / n_pixels
-    if "flow" in todo:
-        stats["flow_saturated_frac"] = flow_saturated / (2 * n_pixels)
     if thermistor:
         stats |= _write_target(clip, files, out_times)
 
@@ -300,7 +217,6 @@ def preprocess_clip(
                 "n_frames": n_written,
                 "n_output": len(out_times),
                 "stats": stats,
-                "groups": [g for g in features.GROUPS if g in set(present) | set(todo)],
             },
             indent=2,
         )
@@ -319,15 +235,8 @@ def _describe(
     return (
         f"{clip.name:34s} T={entry.n_frames}->{entry.n_output}  "
         f"native {stats['native_fs_hz']:.1f} Hz  "
-        f"dt={stats['motion_dt_median_ms']:.2f}"
-        f"+-{stats['motion_dt_spread_ms'] / 2:.2f} ms  "
         f"rate={stats.get('breathing_rate_hz', float('nan')):.2f} Hz  "
         f"elapsed {stats['elapsed_s']:.0f} s"
-        + "".join(
-            f"  sat {name}={stats[f'{name}_saturated_frac']:.2e}"
-            for name in ("diff", "flow")
-            if f"{name}_saturated_frac" in stats
-        )
     )
 
 
@@ -337,31 +246,24 @@ def preprocess_clips(
     cache_dir: Path,
     *,
     workers: int = 8,
-    channels: ChannelSet | None = None,
 ) -> list[features.ClipEntry]:
-    """Preprocess *clips* (in parallel) and return their entries in order; *channels*
-    (default all) says which groups to store."""
-    groups = features.groups_of(channels) if channels else features.GROUPS
+    """Preprocess *clips* (in parallel) and return their entries in order."""
     unique: dict[str, ResolvedClip] = {}
     for clip in clips:
         unique.setdefault(features.prefix(clip, params), clip)
 
-    def done(clip: ResolvedClip) -> bool:
-        entry = features.lookup(clip, params, cache_dir)
-        return entry is not None and set(groups) <= set(entry.groups)
-
-    pending = [c for c in unique.values() if not done(c)]
+    pending = [
+        c for c in unique.values() if features.lookup(c, params, cache_dir) is None
+    ]
     print(
         f"{len(unique)} clip(s), {len(unique) - len(pending)} already cached | "
         f"target {params.target_size[0]}x{params.target_size[1]} | select "
-        f"{params.select_fs:.1f} Hz -> output {params.output_fs:g} Hz | tau "
-        f"{params.motion_tau_s * 1e3:.1f} ms | {'+'.join(groups)} | {workers} worker(s)",
+        f"{params.select_fs:.1f} Hz -> output {params.output_fs:g} Hz | "
+        f"{workers} worker(s)",
         flush=True,
     )
 
-    # Each worker's flow_estimator is created fresh inside preprocess_clip, so
-    # there is no shared OpenCV state across threads -- but cv2 also
-    # multithreads its own ops by default, which would oversubscribe cores on
+    # cv2 multithreads its own ops by default, which would oversubscribe cores on
     # top of our thread pool. Force it single-threaded per call so all the
     # parallelism comes from the worker count.
     cv2.setNumThreads(1)
@@ -370,7 +272,7 @@ def preprocess_clips(
     print_lock = threading.Lock()
     with ThreadPoolExecutor(max_workers=workers) as executor:
         futures = {
-            executor.submit(preprocess_clip, clip, params, cache_dir, groups): clip
+            executor.submit(preprocess_clip, clip, params, cache_dir): clip
             for clip in pending
         }
         try:
@@ -390,12 +292,12 @@ def preprocess_clips(
                 waiting.cancel()
             raise
 
-    return features.require(clips, params, cache_dir, channels)
+    return features.require(clips, params, cache_dir)
 
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
-        description="Decode and channelise clips into uint8 feature arrays."
+        description="Decode, crop and gray clips into uint8 feature arrays."
     )
     parser.add_argument("clips", type=Path, nargs="+", help="Clip list TOML file(s).")
     parser.add_argument(
@@ -412,22 +314,11 @@ def main(argv: list[str] | None = None) -> None:
         type=int,
         default=8,
         help="Clips to process concurrently. Each clip's decode already runs "
-        "in its own ffmpeg subprocess, and DIS flow releases the GIL while it "
-        "computes, so threads -- not just processes -- give real parallelism "
-        "here without Windows' expensive per-worker interpreter relaunch. "
+        "in its own ffmpeg subprocess, so threads -- not just processes -- give "
+        "real parallelism here without Windows' expensive per-worker interpreter relaunch. "
         "1 disables concurrency.",
     )
-    parser.add_argument(
-        "--channels",
-        default="gray+diff+flow",
-        help="Channel groups to store (gray, diff, flow); flow is most of the cost. "
-        "Groups an entry lacks are added by a later run, the rest kept.",
-    )
     args = parser.parse_args(argv)
-    try:
-        channels = ChannelSet.parse(args.channels)
-    except ValueError as exc:
-        raise SystemExit(f"--channels: {exc}") from None
 
     for path in args.clips:
         clip_list = load(ClipList, path)
@@ -451,6 +342,5 @@ def main(argv: list[str] | None = None) -> None:
             clip_list.preprocess,
             args.cache,
             workers=args.workers,
-            channels=channels,
         )
         print(f"{path.name}: done", flush=True)

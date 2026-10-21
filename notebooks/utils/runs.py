@@ -353,7 +353,7 @@ def truth(stem: str) -> dict:
 def gray(stem: str) -> tuple[np.ndarray, np.ndarray]:
     """``(frame_times, frames)``: the clip's gray crops, memory-mapped ``(T, 1, H, W)``."""
     e = entry(stem)
-    return np.load(e.frame_times), np.load(e.group_file("gray"), mmap_mode="r")
+    return np.load(e.frame_times), np.load(e.frames, mmap_mode="r")
 
 
 def thumbnail(stem: str) -> np.ndarray | None:

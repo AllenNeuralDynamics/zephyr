@@ -121,7 +121,7 @@ def clip_info(root: Path) -> pd.DataFrame:
             continue
         sidecar = features.paths(entry.stem.parent, entry.stem.name)["sidecar"]
         stats = json.loads(sidecar.read_text())["stats"]
-        gray = np.load(entry.group_file("gray"), mmap_mode="r")
+        gray = np.load(entry.frames, mmap_mode="r")
         rows.append(
             {
                 "stem": stem,
@@ -336,7 +336,7 @@ def clip_traces(root: Path, name: str, stem: str) -> dict:
         "inhales": events["onset_times"],
         "head": times[head_event_indices(p["onset"], times)],
         "frame_t": np.load(entry.frame_times),
-        "gray": np.load(entry.group_file("gray"), mmap_mode="r"),
+        "gray": np.load(entry.frames, mmap_mode="r"),
     }
 
 

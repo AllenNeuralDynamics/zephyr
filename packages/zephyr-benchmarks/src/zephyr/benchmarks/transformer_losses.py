@@ -4,7 +4,7 @@ Both add to the negative Pearson a cross-entropy over the window's power spectru
 per beat per minute, against the bin of the target's rate. Deviations forced by the data:
 the bins span the breathing band instead of heart rates, and the target rate is the
 thermistor's, estimated per window as RhythmFormer's code does (PhysFormer read it from the
-ECG). The ``_event`` variants add zephyr's onset loss at ``w_onset``.
+ECG).
 """
 
 import math
@@ -15,7 +15,7 @@ import torch.nn.functional as F
 from scipy.signal import butter, filtfilt, welch
 from torch import nn
 
-from zephyr.model import onset_bce, pearson_loss
+from zephyr.model import pearson_loss
 
 from .common import BREATH_BAND_HZ
 from .nets import tarvainen_detrend
@@ -61,13 +61,11 @@ def gaussian_label(target: torch.Tensor, n_bins: int, std: float) -> torch.Tenso
 
 
 class _SpectralLoss(nn.Module):
-    """What both losses share: the bins, each window's target bin and the onset term."""
+    """What both losses share: the bins and each window's target bin."""
 
-    def __init__(
-        self, fs: float, w_onset: float, band: tuple[float, float] = BREATH_BAND_HZ
-    ) -> None:
+    def __init__(self, fs: float, band: tuple[float, float] = BREATH_BAND_HZ) -> None:
         super().__init__()
-        self.fs, self.w_onset, self.band = fs, w_onset, band
+        self.fs, self.band = fs, band
         self.bins = rate_bins(band)
 
     def target_bins(self, signal_true: torch.Tensor) -> torch.Tensor:
@@ -78,14 +76,13 @@ class _SpectralLoss(nn.Module):
         index = np.clip(index, 0, len(self.bins) - 1)
         return torch.as_tensor(index, dtype=torch.long, device=signal_true.device)
 
-    def finish(self, terms, signal_pred, signal_true, onset_logits, onset_true):
-        onset = onset_bce(onset_logits, onset_true)
-        total = sum(terms.values()) + self.w_onset * onset
+    def finish(self, terms, signal_pred, signal_true):
+        total = sum(terms.values())
         stats = {k: float(v.detach()) for k, v in terms.items()}
         return total, stats | {
             "loss": float(total.detach()),
             "corr": float(1.0 - pearson_loss(signal_pred, signal_true).detach()),
-            "onset": float(onset.detach()),
+            "onset": 0.0,
         }
 
 
@@ -97,8 +94,8 @@ class PhysFormerLoss(_SpectralLoss):
     KL compares the softmax of the spectrum with :func:`gaussian_label` (std 1).
     """
 
-    def __init__(self, fs: float, epochs: int, w_onset: float, **kwargs) -> None:
-        super().__init__(fs, w_onset, **kwargs)
+    def __init__(self, fs: float, epochs: int, **kwargs) -> None:
+        super().__init__(fs, **kwargs)
         self.epochs = epochs
         self.set_epoch(0)
 
@@ -115,7 +112,7 @@ class PhysFormerLoss(_SpectralLoss):
             "pearson": self.a * pearson_loss(signal_pred, signal_true),
             "frequency": self.b * (ce + kl),
         }
-        return self.finish(terms, signal_pred, signal_true, onset_logits, onset_true)
+        return self.finish(terms, signal_pred, signal_true)
 
 
 class RhythmFormerLoss(_SpectralLoss):
@@ -132,4 +129,4 @@ class RhythmFormerLoss(_SpectralLoss):
             "pearson": 0.2 * pearson_loss(signal_pred, signal_true),
             "frequency": F.cross_entropy(power, self.target_bins(signal_true)),
         }
-        return self.finish(terms, signal_pred, signal_true, onset_logits, onset_true)
+        return self.finish(terms, signal_pred, signal_true)

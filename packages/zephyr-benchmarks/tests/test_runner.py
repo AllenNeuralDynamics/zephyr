@@ -5,7 +5,6 @@ import typing
 import unittest
 from pathlib import Path
 
-import numpy as np
 import torch
 
 from zephyr.benchmarks import nets, transformer_losses
@@ -15,7 +14,6 @@ from zephyr.benchmarks.config import (
     BenchmarkTrainParams,
 )
 from zephyr.benchmarks.runner import RUNNER, architecture, load_checkpoint
-from zephyr.channels import CHANNEL_NAMES, ChannelSet
 from zephyr.config import load
 from zephyr.model import BreathingLoss, BreathingNet
 from zephyr.train import ZEPHYR
@@ -37,14 +35,16 @@ class ConfigTests(unittest.TestCase):
     def test_arch_defaults_to_zephyr(self):
         self.assertEqual(BenchmarkTrainParams().arch, "zephyr")
 
-    def test_baseline_archs_read_gray(self):
-        with self.assertRaisesRegex(ValueError, "needs channels = 'gray'"):
-            BenchmarkTrainParams(arch="tscan", channels="gray+diff")
-        BenchmarkTrainParams(arch="physnet", channels="gray")
+    def test_only_zephyr_has_an_onset_head(self):
+        for arch in nets.ARCHS[1:]:
+            with self.assertRaisesRegex(ValueError, "only zephyr has an onset head"):
+                BenchmarkTrainParams(arch=arch, w_onset=0.5)
+            BenchmarkTrainParams(arch=arch, w_onset=0.0)
+        BenchmarkTrainParams(arch="zephyr", w_onset=0.5)
 
     def test_signal_pool_is_zephyr_only(self):
         with self.assertRaisesRegex(ValueError, "are zephyr options"):
-            BenchmarkTrainParams(arch="physnet", channels="gray", signal_pool=2)
+            BenchmarkTrainParams(arch="physnet", w_onset=0.0, signal_pool=2)
         BenchmarkTrainParams(signal_pool=2, onset_input="both")
 
     def test_experiment_loads_its_folds_as_benchmark_folds(self):
@@ -64,49 +64,40 @@ class ArchitectureTests(unittest.TestCase):
         self.assertIs(architecture(_fold()), ZEPHYR)
 
     def test_tscan_trains_on_the_derivative_at_its_input_size(self):
-        arch = architecture(_fold(arch="tscan", channels="gray", tscan_img_size=48))
-        params = BenchmarkTrainParams(arch="tscan", channels="gray", tscan_img_size=48)
+        arch = architecture(_fold(arch="tscan", w_onset=0.0, tscan_img_size=48))
+        params = BenchmarkTrainParams(arch="tscan", w_onset=0.0, tscan_img_size=48)
         self.assertEqual(arch.name, "tscan")
         self.assertEqual(arch.kwargs(params), {"img_size": 48})
         self.assertIsInstance(arch.criterion(params, 60.0), nets.DerivativeMSELoss)
-        model = arch.build(
-            ChannelSet.parse("gray"),
-            params,
-            np.full(len(CHANNEL_NAMES), 120.0),
-            np.ones(len(CHANNEL_NAMES)),
-            **arch.kwargs(params),
-        )
+        model = arch.build(params, 120.0, 1.0, **arch.kwargs(params))
         self.assertIsInstance(model, nets.TSCANBreathing)
         self.assertEqual(model.img_size, 48)
         self.assertAlmostEqual(float(model.gray_mean), 120.0)
 
     def test_physnet_trains_on_zephyrs_loss(self):
-        params = BenchmarkTrainParams(arch="physnet", channels="gray")
-        arch = architecture(_fold(arch="physnet", channels="gray"))
+        params = BenchmarkTrainParams(arch="physnet", w_onset=0.0)
+        arch = architecture(_fold(arch="physnet", w_onset=0.0))
         self.assertEqual(arch.kwargs(params), {})
         self.assertIsInstance(arch.criterion(params, 60.0), BreathingLoss)
 
     def test_transformers_train_on_their_papers_losses(self):
         for name, loss in (
             ("physformer", transformer_losses.PhysFormerLoss),
-            ("physformer_event", transformer_losses.PhysFormerLoss),
             ("rhythmformer", transformer_losses.RhythmFormerLoss),
-            ("rhythmformer_event", transformer_losses.RhythmFormerLoss),
         ):
-            params = BenchmarkTrainParams(arch=name, channels="gray")
-            arch = architecture(_fold(arch=name, channels="gray"))
+            params = BenchmarkTrainParams(arch=name, w_onset=0.0)
+            arch = architecture(_fold(arch=name, w_onset=0.0))
             self.assertIsInstance(arch.criterion(params, 60.0), loss, name)
 
 
 class LoadCheckpointTests(unittest.TestCase):
-    def _roundtrip(self, arch: str, channels: str, **kwargs):
-        model = nets.build_model(arch, ChannelSet.parse(channels), **kwargs)
+    def _roundtrip(self, arch: str, **kwargs):
+        model = nets.build_model(arch, **kwargs)
         state = {
             "model": model.state_dict(),
-            "channels": [channels],
-            "feature_config": {"channel_names": list(CHANNEL_NAMES)},
-            "mean": np.zeros(len(CHANNEL_NAMES)),
-            "std": np.ones(len(CHANNEL_NAMES)),
+            "feature_config": {},
+            "mean": 0.0,
+            "std": 1.0,
             "arch": arch,
             "arch_kwargs": kwargs,
         }
@@ -117,12 +108,12 @@ class LoadCheckpointTests(unittest.TestCase):
         return loaded
 
     def test_rebuilds_every_network(self):
-        self.assertIsInstance(self._roundtrip("zephyr", "gray"), BreathingNet)
-        pooled = self._roundtrip("zephyr", "gray", signal_pool=2, onset_input="both")
+        self.assertIsInstance(self._roundtrip("zephyr"), BreathingNet)
+        pooled = self._roundtrip("zephyr", signal_pool=2, onset_input="both")
         self.assertEqual(pooled.temporal.onset_input, "both")
-        tscan = self._roundtrip("tscan", "gray", img_size=24)
+        tscan = self._roundtrip("tscan", img_size=24)
         self.assertEqual(tscan.img_size, 24)
-        self.assertIsInstance(self._roundtrip("physnet", "gray"), nets.PhysNetBreathing)
+        self.assertIsInstance(self._roundtrip("physnet"), nets.PhysNetBreathing)
 
 
 class EntrypointTests(unittest.TestCase):

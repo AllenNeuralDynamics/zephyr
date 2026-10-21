@@ -13,8 +13,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from zephyr.channels import CHANNEL_NAMES, ChannelSet
-from zephyr.evaluate import load_checkpoint
+from zephyr.evaluate import checkpoint_stats, load_checkpoint
 from zephyr.model import BreathingNet
 
 SRC = Path(__file__).resolve().parents[1] / "src" / "zephyr"
@@ -76,13 +75,10 @@ class BoundaryTests(unittest.TestCase):
 
 class LoadCheckpointTests(unittest.TestCase):
     def _save(self, root: Path, **extra) -> Path:
-        channels = ChannelSet.parse("gray")
         state = {
-            "model": BreathingNet(channels=channels).state_dict(),
-            "channels": list(channels.names),
-            "feature_config": {"channel_names": list(CHANNEL_NAMES)},
-            "mean": np.zeros(len(CHANNEL_NAMES)),
-            "std": np.ones(len(CHANNEL_NAMES)),
+            "model": BreathingNet().state_dict(),
+            "mean": 0.0,
+            "std": 1.0,
         } | extra
         path = root / "best.pt"
         torch.save(state, path)
@@ -94,6 +90,15 @@ class LoadCheckpointTests(unittest.TestCase):
                 path = self._save(Path(tmp), **extra)
                 model, *_ = load_checkpoint(path, torch.device("cpu"))
                 self.assertIsInstance(model, BreathingNet)
+
+    def test_reads_the_gray_stats_of_a_per_channel_checkpoint(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old = {"mean": np.array([5.0, 128.0]), "std": np.array([2.0, 9.0])}
+            _, mean, std, _ = load_checkpoint(
+                self._save(Path(tmp), **old), torch.device("cpu")
+            )
+        self.assertEqual((mean, std), (5.0, 2.0))
+        self.assertEqual(checkpoint_stats({"mean": 3.0, "std": 4.0}), (3.0, 4.0))
 
     def test_refuses_any_other_network(self):
         with tempfile.TemporaryDirectory() as tmp:

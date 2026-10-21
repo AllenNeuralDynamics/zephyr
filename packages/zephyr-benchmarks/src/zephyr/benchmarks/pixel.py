@@ -1,11 +1,10 @@
 """Non-learned breathing traces from pixels alone -- the floor every method must clear.
 
-``flow``: mean optical flow over the crop on its dominant direction, integrated and
-band-passed. ``pca``: per-pixel band-passed intensity, keeping the PCA component most
-concentrated in one in-band peak (Poh et al., 2010). ``snr``: pixels weighted by in-band
-variance fraction, signed to agree, averaged. ``motion``: motion energy, the mean absolute
-frame difference over the crop, band-passed (gray only, rectified: it follows how fast the
-face moves, not which way). None sees the thermistor; polarity is fixed afterwards by
+``pca``: per-pixel band-passed intensity, keeping the PCA component most concentrated
+in one in-band peak (Poh et al., 2010). ``snr``: pixels weighted by in-band variance
+fraction, signed to agree, averaged. ``motion``: motion energy, the mean absolute frame
+difference over the crop, band-passed (rectified: it follows how fast the face moves, not
+which way). None sees the thermistor; polarity is fixed afterwards by
 :func:`.common.blind_polarity`.
 """
 
@@ -13,20 +12,6 @@ import numpy as np
 from scipy.signal import welch
 
 from .common import BREATH_BAND_HZ, FS, bandpass
-
-
-def flow_projection(
-    flow_x: np.ndarray, flow_y: np.ndarray, fs: float = FS
-) -> np.ndarray:
-    """``(T, H, W)`` flow in px/tau -> ``(T,)`` band-passed displacement."""
-    n = len(flow_x)
-    velocity = np.stack(
-        [flow_x.reshape(n, -1).mean(1), flow_y.reshape(n, -1).mean(1)], axis=1
-    ).astype(np.float64)
-    velocity = bandpass(velocity - velocity.mean(0), fs)
-    _, _, vt = np.linalg.svd(velocity, full_matrices=False)
-    displacement = np.cumsum(velocity @ vt[0]) / fs
-    return bandpass(displacement - displacement.mean(), fs)
 
 
 def spectral_concentration(x: np.ndarray, fs: float = FS) -> float:

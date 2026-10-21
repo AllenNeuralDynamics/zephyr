@@ -4,10 +4,10 @@ Truth is the raw thermistor trace and the clip's cached event set (the events it
 target was built from, see :mod:`.events`), scored by :func:`score_entry`. ``zephyr
 evaluate`` and the evaluation after :mod:`zephyr.run` share :func:`evaluate_groups`:
 named groups of clips in, one result out. Clips sharing a video or recording with a
-checkpoint's recorded training set are refused (older checkpoints only warn). Multitask
-checkpoints also report the onset head's inhale F1. Several checkpoints are z-scored
-then averaged; ``--plot`` (one checkpoint) writes :mod:`.plot_diagnosis` figures and
-*traces_dir* the traces scored. Other networks than zephyr bring their own loader.
+checkpoint's recorded training set are refused (older checkpoints only warn). Zephyr
+checkpoints trained with the onset head also report its inhale F1. Several checkpoints
+are z-scored then averaged; ``--plot`` (one checkpoint) writes :mod:`.plot_diagnosis`
+figures and *traces_dir* the traces scored. Other networks than zephyr bring their own loader.
 
 CLI
 ---
@@ -25,7 +25,6 @@ import pandas as pd
 import torch
 from scipy.signal import find_peaks
 
-from zephyr.channels import ChannelSet
 from zephyr.model import BreathingNet
 
 from . import features
@@ -47,20 +46,13 @@ threshold, at least this far apart.  Fixed a priori; never tuned on holdout data
 
 def load_checkpoint(
     path: Path, device: torch.device
-) -> tuple[BreathingNet, np.ndarray, np.ndarray, dict]:
+) -> tuple[BreathingNet, float, float, dict]:
     """Rebuild a model from a training checkpoint, with its own normalisation.
 
     ``model`` holds whichever weights the run selected -- the EMA copy when
     averaging was enabled -- so nothing here needs to know how it was trained.
-
-    The channel selection comes from the checkpoint, not from the current
-    config: it fixes the first convolution's shape, so reading it from
-    anywhere else would build a model the weights do not fit.  Checkpoints
-    written before channel selection existed have no such field and trained on
-    every stored channel, which their own feature config records.  Returned
-    ``mean``/``std`` stay full-width -- :func:`~.infer.predict_clip` slices
-    them to the model.  Checkpoints without an ``arch`` field are zephyr
-    CNN-TCNs; any other ``arch`` is refused.
+    Checkpoints without an ``arch`` field are zephyr CNN-TCNs; any other ``arch`` is
+    refused.
     """
     state = torch.load(path, map_location=device, weights_only=False)
     arch = state.get("arch", "zephyr")
@@ -69,24 +61,24 @@ def load_checkpoint(
             f"{path} is a {arch} checkpoint; this loads only zephyr checkpoints, "
             "so score it with the loader of the package that trained it"
         )
-    model = BreathingNet(
-        channels=checkpoint_channels(state), **state.get("arch_kwargs", {})
-    ).to(device)
+    model = BreathingNet(**state.get("arch_kwargs", {})).to(device)
     model.load_state_dict(state["model"])
     model.eval()
-    return model, state["mean"], state["std"], state
+    return model, *checkpoint_stats(state), state
 
 
-def checkpoint_channels(state: dict) -> ChannelSet:
-    """The channels a checkpoint's network reads; see :func:`load_checkpoint`."""
-    return ChannelSet.parse(
-        state.get("channels") or state["feature_config"]["channel_names"]
+def checkpoint_stats(state: dict) -> tuple[float, float]:
+    """The gray mean and standard deviation a checkpoint's network was trained with.
+
+    Checkpoints from before gray was the only input stored one per channel, gray first.
+    """
+    return (
+        float(np.ravel(state["mean"])[0]),
+        float(np.ravel(state["std"])[0]),
     )
 
 
-Loader = Callable[
-    [Path, torch.device], tuple[torch.nn.Module, np.ndarray, np.ndarray, dict]
-]
+Loader = Callable[[Path, torch.device], tuple[torch.nn.Module, float, float, dict]]
 """Same contract as :func:`load_checkpoint`."""
 
 
@@ -132,7 +124,7 @@ def zscore(x: np.ndarray) -> np.ndarray:
 
 
 def predict_entry(
-    models: list[tuple[BreathingNet, np.ndarray, np.ndarray]],
+    models: list[tuple[BreathingNet, float, float]],
     entry: ClipEntry,
     device: torch.device,
     *,
@@ -291,7 +283,7 @@ def build_result(groups: dict[str, list[dict]]) -> dict:
 
 
 def score_entries(
-    models: list[tuple[BreathingNet, np.ndarray, np.ndarray]],
+    models: list[tuple[BreathingNet, float, float]],
     entries: list[ClipEntry],
     device: torch.device,
     *,
@@ -384,23 +376,12 @@ def write_trace(
 
 
 def has_onset_head(states: list[dict]) -> bool:
-    """Whether the (single) checkpoint was trained with an onset objective."""
-    if len(states) != 1:
+    """Whether the (single) checkpoint is a zephyr network trained with its onset head
+    (no other network has one)."""
+    if len(states) != 1 or states[0].get("arch", "zephyr") != "zephyr":
         return False
     recorded = states[0].get("params") or states[0].get("args") or {}
     return float(recorded.get("w_onset", 0.0)) > 0
-
-
-def models_channels(models: list[tuple]) -> ChannelSet | None:
-    """Every channel some ``(model, mean, std)`` reads, which the cache must store;
-    ``None`` when no model has a :class:`ChannelSet` (comparison networks are checked
-    when they read)."""
-    sets = [
-        m.channels
-        for m, *_ in models
-        if isinstance(getattr(m, "channels", None), ChannelSet)
-    ]
-    return ChannelSet.parse([n for c in sets for n in c.names]) if sets else None
 
 
 def evaluate_groups(
@@ -445,11 +426,10 @@ def evaluate_groups(
     refuse_leaked(states, [c for clips in labelled.values() for c in clips])
 
     head = has_onset_head(states)
-    needed = models_channels(models)
     plot_data: list[ClipPrediction] | None = [] if plot_dir is not None else None
     rows_by_group: dict[str, list[dict]] = {}
     for name, clips in labelled.items():
-        entries = features.require(clips, recipe, features_dir, needed)
+        entries = features.require(clips, recipe, features_dir)
         print(
             f"\ngroup {name!r}: {len(entries)} clips / "
             f"{len({e.recording for e in entries})} recordings with "

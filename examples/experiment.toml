@@ -24,6 +24,5 @@ groups = ["1", "2"]               # optional: only these recordings
 held_out = { clips = "clips.toml", groups = ["3"] }
 
 [fold.train_params]
-channels = "gray+diff+flow"
 epochs = 20
 val_fraction = 0                  # no validation tail: train the full budget

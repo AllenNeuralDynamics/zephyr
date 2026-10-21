@@ -1,8 +1,7 @@
 """Inference time per clip, for every method in the benchmark.
 
 Timed: wall-clock seconds from the preprocessed crops on disk to the finished 60 Hz
-trace. Not timed: decoding, preprocessing (optical-flow cost is estimated by
-:func:`estimate_flow_preprocessing`) and scoring.
+trace. Not timed: decoding, preprocessing and scoring.
 
 Fair: the same clips for every method, one untimed warm-up clip outside them, every file
 read into the OS cache first. Networks run on GPU (bf16) and CPU (fp32); pixel and
@@ -47,10 +46,9 @@ def pick_clips(entries: list, n: int) -> list:
 
 
 def warm_file_cache(entries: list, block: int = 64 << 20) -> int:
-    """Read each distinct channel file once; returns the bytes read."""
+    """Read each distinct frame file once; returns the bytes read."""
     total = 0
-    files = [e.group_file(g) for e in entries for g in e.groups]
-    for path in dict.fromkeys(Path(f) for f in files):
+    for path in dict.fromkeys(Path(e.frames) for e in entries):
         with open(path, "rb") as handle:
             while chunk := handle.read(block):
                 total += len(chunk)
@@ -61,8 +59,8 @@ def pick_warmup(entries: list, timed: list):
     """A clip that is *not* in *timed*, for the warm-up call.
 
     Warming up on a timed clip would leave its file in the operating system's cache
-    and make that one clip look faster than the rest (3.4 s against 6.4 s for the
-    pixel flow method, whose cost is partly disk reads).
+    and make that one clip look faster than the rest (3.4 s against 6.4 s for a
+    pixel method whose cost was partly disk reads).
     """
     ordered = list(entries)
     return next((e for e in ordered if e not in timed), ordered[0])
@@ -106,7 +104,7 @@ def facemap_method(
     }
 
     def infer(entry):
-        frames = common.load_channel(entry, "gray", bin_factor=2)
+        frames = common.load_gray(entry, bin_factor=2)
         blocks = [
             facemap_ridge.zscore_columns(
                 common.to_output_grid(
@@ -144,35 +142,6 @@ def network_method(checkpoint: Path, device: torch.device) -> tuple[Callable, fl
 
     params = sum(p.numel() for p in model.parameters()) / 1e6
     return infer, params
-
-
-def estimate_flow_preprocessing(entry, n_frames: int = 300) -> dict:
-    """Seconds of DIS optical flow per clip, extrapolated from *n_frames* frames.
-
-    This is the preprocessing cost a ``flow`` channel adds, which the per-method
-    timings above do not include.
-    """
-    import cv2
-
-    from zephyr import features
-    from zephyr.channels import ChannelSet, make_flow_estimator
-
-    only = ChannelSet.parse("gray")
-    gray = np.ascontiguousarray(
-        features.reader(entry).read(slice(0, n_frames + 1), only)[:, 0]
-    )
-    estimator = make_flow_estimator()
-    estimator.calc(gray[0], gray[1], None)  # warm-up
-    started = time.perf_counter()
-    for i in range(1, len(gray)):
-        estimator.calc(gray[i - 1], gray[i], None)
-    per_frame = (time.perf_counter() - started) / (len(gray) - 1)
-    return {
-        "per_frame_ms": per_frame * 1000,
-        "frames_per_clip": entry.n_frames,
-        "seconds_per_clip": per_frame * entry.n_frames,
-        "opencv": cv2.__version__,
-    }
 
 
 def hardware() -> dict:

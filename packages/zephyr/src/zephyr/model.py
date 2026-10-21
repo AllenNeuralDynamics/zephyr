@@ -1,9 +1,8 @@
 """CNN frame encoder + dilated TCN sequence decoder.
 
-``FrameEncoder`` runs on each frame (a ``temporal_kernel > 1`` first layer spans that
-many neighbours; else motion channels are precomputed); ``TemporalNet`` sees only the
-vector sequence, with dilated convolutions for a wide receptive field in few layers.
-The encoder runs on the *selection* grid and the TCN on the 60 Hz *output* grid, joined
+``FrameEncoder`` runs on each gray frame (a ``temporal_kernel > 1`` first layer spans
+that many neighbours); ``TemporalNet`` sees only the vector sequence, with dilated
+convolutions for a wide receptive field in few layers. The encoder runs on the *selection* grid and the TCN on the 60 Hz *output* grid, joined
 by :func:`resample_embeddings` using real frame timestamps. Non-causal on purpose:
 inference is offline on complete clips, so padding is symmetric.
 """
@@ -12,11 +11,9 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from .channels import ALL_CHANNELS, ChannelSet
-
 
 class FrameEncoder(nn.Module):
-    """Encode one multi-channel crop to an *embed*-dimensional vector.
+    """Encode one gray crop to an *embed*-dimensional vector.
 
     Downsamples by 2 at every stage.  The final pooling keeps a small spatial
     grid rather than collapsing to a single vector: a global average would let
@@ -25,13 +22,12 @@ class FrameEncoder(nn.Module):
 
     With *temporal_kernel* > 1 (odd) the first stage is a 3D convolution over that
     many neighbouring frames (``stem``), so the encoder sees pixel-level change
-    between frames itself, as the ``diff`` and flow channels otherwise give it; the
-    later stages stay per frame.  Sequences go through :meth:`encode_sequence`.
+    between frames itself; the later stages stay per frame.  Sequences go through
+    :meth:`encode_sequence`.
     """
 
     def __init__(
         self,
-        in_channels: int,
         widths: tuple[int, ...] = (32, 64, 96, 128),
         embed: int = 128,
         pool: int = 2,
@@ -50,7 +46,7 @@ class FrameEncoder(nn.Module):
         if temporal_kernel > 1:
             self.stem = nn.Sequential(
                 nn.Conv3d(
-                    in_channels,
+                    1,
                     widths[0],
                     (temporal_kernel, 5, 5),
                     stride=(1, 2, 2),
@@ -61,7 +57,7 @@ class FrameEncoder(nn.Module):
                 nn.GELU(),
             )
         layers: list[nn.Module] = []
-        prev = in_channels if self.stem is None else widths[0]
+        prev = 1 if self.stem is None else widths[0]
         for i, width in enumerate(widths):
             if i == 0 and self.stem is not None:
                 continue
@@ -85,13 +81,13 @@ class FrameEncoder(nn.Module):
         self.embed = embed
 
     def forward(self, frames: torch.Tensor) -> torch.Tensor:
-        """(N, C, H, W) -> (N, embed): frames, or the stem's output for them."""
+        """(N, 1, H, W) -> (N, embed): frames, or the stem's output for them."""
         return self.head(self.pool(self.trunk(frames)))
 
     def encode_sequence(
         self, features: torch.Tensor, chunk: int | None = None
     ) -> torch.Tensor:
-        """(B, T, C, H, W) -> (B, T, embed).
+        """(B, T, 1, H, W) -> (B, T, embed).
 
         *chunk* bounds how many frames go through the network at once.  Chunks of
         the stem overlap by ``temporal_kernel // 2`` frames, so the result is the
@@ -287,17 +283,11 @@ class TemporalNet(nn.Module):
 
 
 class BreathingNet(nn.Module):
-    """The full model: per-frame CNN (optionally a 3D first layer), then TCN.
-
-    ``channels`` names the stored channels this model consumes, in order, and
-    sets the encoder's input width. Inference code reads it to
-    slice the stored array and its per-channel statistics; training records it
-    in the checkpoint.
-    """
+    """The full model: per-frame CNN on gray frames (optionally a 3D first layer), then
+    TCN."""
 
     def __init__(
         self,
-        channels: ChannelSet = ALL_CHANNELS,
         widths: tuple[int, ...] = (32, 64, 96, 128),
         embed: int = 128,
         tcn_channels: int = 128,
@@ -309,9 +299,7 @@ class BreathingNet(nn.Module):
         temporal_kernel: int = 1,
     ) -> None:
         super().__init__()
-        self.channels = channels
         self.encoder = FrameEncoder(
-            len(channels),
             widths,
             embed=embed,
             dropout=encoder_dropout,
@@ -332,7 +320,7 @@ class BreathingNet(nn.Module):
         return self.temporal.receptive_field
 
     def encode(self, features: torch.Tensor, chunk: int | None = None) -> torch.Tensor:
-        """(B, T, C, H, W) -> (B, T, embed).
+        """(B, T, 1, H, W) -> (B, T, embed).
 
         *chunk* bounds how many frames go through the CNN at once.  Under
         ``no_grad`` this caps activation memory without changing the result,
@@ -348,7 +336,7 @@ class BreathingNet(nn.Module):
         t_out: torch.Tensor,
         chunk: int | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """``(B, T_in, C, H, W)`` -> signal and onset logits, both ``(B, T_out)``.
+        """``(B, T_in, 1, H, W)`` -> signal and onset logits, both ``(B, T_out)``.
 
         *t_in*/*t_out* per :func:`resample_embeddings`.
         """

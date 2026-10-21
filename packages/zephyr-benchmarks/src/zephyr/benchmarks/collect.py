@@ -7,7 +7,7 @@ a fold whose ``train_params.arch`` names them.
 
 CLI
 ---
-    zephyr-benchmarks pixel   EXPERIMENT [--fold NAME] [--methods flow pca snr]
+    zephyr-benchmarks pixel   EXPERIMENT [--fold NAME] [--methods pca snr motion]
     zephyr-benchmarks facemap EXPERIMENT [--fold NAME] [--n-components 100]
     zephyr-benchmarks timing  EXPERIMENT [--fold NAME] --checkpoint NAME=best.pt ...
     zephyr-benchmarks collect --runs EXPERIMENT_OUTPUT_DIR
@@ -74,7 +74,7 @@ def run_timing(
         )
         print(f"  mean {result['summary']['mean_s']:.2f} s/clip", flush=True)
 
-    for method in ("flow", "pca", "snr"):
+    for method in ("pca", "snr", "motion"):
         add(f"pixel {method}", "cpu", timing.pixel_method(method, fs, 2))
     lags = np.arange(-15, 16, 3)
     for variant in ("motion", "movie", "both"):
@@ -103,7 +103,6 @@ def run_timing(
         "clip_seconds": float(np.mean([e.n_output / timing.CLIP_FS for e in clips])),
         "clip_ids": [e.clip_id for e in clips],
         "hardware": timing.hardware(),
-        "flow_preprocessing": timing.estimate_flow_preprocessing(clips[0]),
         "methods": methods,
     }
     timing.write(out_root / "timing.json", data)
@@ -134,17 +133,6 @@ def _timing_markdown(timing_path: Path) -> str:
             f"| {m['method']} | {m['device']} | {params} | "
             f"{s['mean_s']:.2f}{spread} | {seconds / s['mean_s']:.0f}x |"
         )
-    flow = data.get("flow_preprocessing")
-    if flow:
-        lines += [
-            "",
-            (
-                "Optical flow is computed in preprocessing, not above: about "
-                f"{flow['seconds_per_clip']:.0f} s per clip "
-                f"({flow['per_frame_ms']:.2f} ms per frame, CPU). Add it for any "
-                "method that reads the flow channel (pixel flow, zephyr with flow)."
-            ),
-        ]
     return "\n".join(lines) + "\n"
 
 
@@ -303,7 +291,9 @@ def main(argv: list[str] | None = None) -> None:
             "--cache", type=Path, help="Feature cache (default: the experiment's)."
         )
         if name == "pixel":
-            command.add_argument("--methods", nargs="+", default=["flow", "pca", "snr"])
+            command.add_argument(
+                "--methods", nargs="+", default=["pca", "snr", "motion"]
+            )
             command.add_argument("--bin", type=int, default=2)
         elif name == "facemap":
             command.add_argument("--n-components", type=int, default=100)

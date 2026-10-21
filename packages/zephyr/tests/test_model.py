@@ -8,13 +8,10 @@ import numpy as np
 import torch
 from torch import nn
 
-from zephyr.channels import CHANNEL_NAMES, ChannelSet
 from zephyr.config import TrainParams
 from zephyr.evaluate import load_checkpoint
 from zephyr.model import BreathingNet, PooledBranch, TemporalNet
 from zephyr.train import ZEPHYR
-
-GRAY = ChannelSet.parse("gray")
 
 
 class PooledBranchTests(unittest.TestCase):
@@ -107,16 +104,14 @@ class SignalPoolPlumbingTests(unittest.TestCase):
             TrainParams(signal_pool=2, onset_input="smoothed")
 
     def test_checkpoint_rebuilds_the_branch(self):
-        params = TrainParams(channels="gray", signal_pool=2, onset_input="both")
+        params = TrainParams(signal_pool=2, onset_input="both")
         kwargs = ZEPHYR.kwargs(params)
         self.assertEqual(kwargs, {"signal_pool": 2, "onset_input": "both"})
-        model = ZEPHYR.build(GRAY, params, None, None, **kwargs)
+        model = ZEPHYR.build(params, 0.0, 1.0, **kwargs)
         state = {
             "model": model.state_dict(),
-            "channels": ["gray"],
-            "feature_config": {"channel_names": list(CHANNEL_NAMES)},
-            "mean": np.zeros(len(CHANNEL_NAMES)),
-            "std": np.ones(len(CHANNEL_NAMES)),
+            "mean": 0.0,
+            "std": 1.0,
             "arch": "zephyr",
             "arch_kwargs": kwargs,
         }
@@ -137,7 +132,7 @@ def _frames(t=9, size=32, seed=0) -> torch.Tensor:
 
 class TemporalKernelTests(unittest.TestCase):
     def test_default_encoder_is_per_frame_with_its_old_keys(self):
-        model = BreathingNet(channels=GRAY)
+        model = BreathingNet()
         self.assertIsNone(model.encoder.stem)
         self.assertFalse(any("stem" in k for k in model.state_dict()))
         self.assertEqual(
@@ -147,7 +142,7 @@ class TemporalKernelTests(unittest.TestCase):
 
     def test_the_stem_sees_neighbouring_frames_and_only_them(self):
         for kernel, reach in ((1, 0), (3, 1), (5, 2)):
-            model = BreathingNet(channels=GRAY, temporal_kernel=kernel).eval()
+            model = BreathingNet(temporal_kernel=kernel).eval()
             x = _frames()
             changed = x.clone()
             changed[:, 4] += 1.0  # one frame changes
@@ -157,7 +152,7 @@ class TemporalKernelTests(unittest.TestCase):
             self.assertEqual(touched, list(range(4 - reach, 5 + reach)), kernel)
 
     def test_chunks_give_the_same_embeddings_as_one_pass(self):
-        model = BreathingNet(channels=GRAY, temporal_kernel=3).eval()
+        model = BreathingNet(temporal_kernel=3).eval()
         x = _frames(t=11)
         with torch.no_grad():
             whole = model.encode(x)
@@ -168,19 +163,17 @@ class TemporalKernelTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "odd"):
             TrainParams(temporal_kernel=2)
         with self.assertRaisesRegex(ValueError, "odd"):
-            BreathingNet(channels=GRAY, temporal_kernel=4)
+            BreathingNet(temporal_kernel=4)
 
     def test_checkpoint_rebuilds_the_stem(self):
-        params = TrainParams(channels="gray", temporal_kernel=3)
+        params = TrainParams(temporal_kernel=3)
         kwargs = ZEPHYR.kwargs(params)
         self.assertEqual(kwargs, {"temporal_kernel": 3})
-        model = ZEPHYR.build(GRAY, params, None, None, **kwargs)
+        model = ZEPHYR.build(params, 0.0, 1.0, **kwargs)
         state = {
             "model": model.state_dict(),
-            "channels": ["gray"],
-            "feature_config": {"channel_names": list(CHANNEL_NAMES)},
-            "mean": np.zeros(len(CHANNEL_NAMES)),
-            "std": np.ones(len(CHANNEL_NAMES)),
+            "mean": 0.0,
+            "std": 1.0,
             "arch": "zephyr",
             "arch_kwargs": kwargs,
         }

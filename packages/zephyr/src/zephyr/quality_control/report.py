@@ -116,7 +116,7 @@ def measure_reference(
     refuse_leaked([state], unseen)
 
     peaks, real = [], []
-    entries = features.require(unseen, recipe, features_dir, model.channels)
+    entries = features.require(unseen, recipe, features_dir)
     for k, entry in enumerate(entries):
         print(f"[calibration {k + 1}/{len(entries)}] {entry.clip_id}", flush=True)
         signal, onset = _predict(model, mean, std, entry, inference, torch_device, amp)
@@ -331,9 +331,7 @@ def run(config: QualityControl, device: str, amp: str) -> list[Path]:
             f"videos share a file name, so their reports would: {repeated}"
         )
     refuse_leaked([state], clips)
-    entries = features.require(
-        clips, config.preprocess, config.features_dir, model.channels
-    )
+    entries = features.require(clips, config.preprocess, config.features_dir)
     _write_settings(config, sha)
     meta = {
         "checkpoint": canonical(config.checkpoint),

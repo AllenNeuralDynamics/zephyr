@@ -10,7 +10,6 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, PositiveInt, model_validator
 
-from zephyr.channels import ChannelSet
 from zephyr.config import Experiment, Fold, TrainParams
 
 
@@ -19,27 +18,20 @@ class BenchmarkTrainParams(TrainParams):
 
     # The same names as nets.ARCHS (a test keeps them equal); not imported so
     # that this module loads without torch.
-    arch: Literal[
-        "zephyr",
-        "tscan",
-        "physnet",
-        "physnet_event",
-        "physformer",
-        "physformer_event",
-        "rhythmformer",
-        "rhythmformer_event",
-    ] = "zephyr"
+    arch: Literal["zephyr", "tscan", "physnet", "physformer", "rhythmformer"] = "zephyr"
     tscan_img_size: PositiveInt = 36
 
     @model_validator(mode="after")
-    def _baseline_archs_read_gray(self) -> "BenchmarkTrainParams":
-        if self.arch != "zephyr" and ChannelSet.parse(self.channels).names != ("gray",):
-            raise ValueError(f"arch {self.arch!r} needs channels = 'gray'")
+    def _zephyr_options(self) -> "BenchmarkTrainParams":
         if self.arch != "zephyr" and (
             self.signal_pool != 1 or self.onset_input != "full"
         ):
             raise ValueError(
                 f"signal_pool and onset_input are zephyr options; arch {self.arch!r}"
+            )
+        if self.arch != "zephyr" and self.w_onset != 0:
+            raise ValueError(
+                f"only zephyr has an onset head; arch {self.arch!r} needs w_onset = 0"
             )
         return self
 
@@ -64,7 +56,8 @@ class ReportedRun(BaseModel):
     variant: str = ""
     """Facemap ``both``/``motion``/``movie``; pixel ``<method>/<blind|calibrated>``."""
     head: bool = False
-    """Whether it has an onset head (its inhale events come from the head, not DSP)."""
+    """Whether it is a zephyr network trained with its onset head (its inhale events come
+    from the head, not DSP); no other network has one."""
 
     @model_validator(mode="after")
     def _variant_names_a_baseline(self) -> "ReportedRun":

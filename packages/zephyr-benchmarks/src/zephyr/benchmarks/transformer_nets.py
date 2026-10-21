@@ -5,8 +5,7 @@ et al., 2024 (github.com/zizheng-guo/RhythmFormer). Layers and settings are the 
 ones (PhysFormer: dim 96, 12 layers, theta 0.7, sharpness 2; RhythmFormer: 3 stages of 2
 blocks, t_patch 2/4/8, top-k 40). Deviations forced by the data: one gray channel, the 96 px
 crop upsampled to the 128 px both were built for (so their token grids are the published
-ones). Each trains on its paper's loss (:mod:`.transformer_losses`) and also comes with an
-onset head (the ``_event`` variants), as :class:`~.nets.PhysNetBreathingEvent` does.
+ones). Each trains on its paper's loss (:mod:`.transformer_losses`).
 """
 
 import math
@@ -15,7 +14,6 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from zephyr.channels import ChannelSet
 from zephyr.model import resample_embeddings
 
 SIZE = 128
@@ -129,14 +127,13 @@ def _upsample(cin: int, cout: int) -> nn.Sequential:
 
 class PhysFormer(nn.Module):
     """3-D CNN stem, 4x4x4 tube tokens, 12 temporal-difference transformer blocks, two
-    temporal upsamplings: ``(B, T, 128, 128)`` -> ``(B, T)`` (and onset logits), T a
-    multiple of 4. The published model (``ViT_ST_ST_Compact3_TDC_gra_sharp``)."""
+    temporal upsamplings: ``(B, T, 128, 128)`` -> ``(B, T)``, T a multiple of 4. The
+    published model (``ViT_ST_ST_Compact3_TDC_gra_sharp``)."""
 
     multiple = 4
 
     def __init__(
         self,
-        in_channels: int = 1,
         dim: int = 96,
         ff_dim: int = 144,
         heads: int = 4,
@@ -145,12 +142,11 @@ class PhysFormer(nn.Module):
         theta: float = 0.7,
         sharpness: float = 2.0,
         patch: int = 4,
-        onset_head: bool = False,
     ) -> None:
         super().__init__()
         self.sharpness = sharpness
         self.stem = nn.Sequential(
-            _stem(in_channels, dim // 4, (1, 5, 5), (0, 2, 2)),
+            _stem(1, dim // 4, (1, 5, 5), (0, 2, 2)),
             _stem(dim // 4, dim // 2, 3, 1),
             _stem(dim // 2, dim, 3, 1),
         )
@@ -160,7 +156,6 @@ class PhysFormer(nn.Module):
         )
         self.upsample = nn.Sequential(_upsample(dim, dim), _upsample(dim, dim // 2))
         self.head = nn.Conv1d(dim // 2, 1, 1)
-        self.onset_head = nn.Conv1d(dim // 2, 1, 1) if onset_head else None
         for m in self.modules():
             if isinstance(m, nn.Linear):
                 nn.init.xavier_uniform_(m.weight)
@@ -173,8 +168,7 @@ class PhysFormer(nn.Module):
         for block in self.blocks:
             tokens = block(tokens, tuple(grid), self.sharpness)
         x = self.upsample(tokens.transpose(1, 2).reshape(b, c, *grid)).mean((3, 4))
-        onset = self.onset_head(x).squeeze(1) if self.onset_head is not None else None
-        return self.head(x).squeeze(1), onset
+        return self.head(x).squeeze(1)
 
 
 # --- RhythmFormer -----------------------------------------------------------------------
@@ -344,14 +338,13 @@ class _TPTBlock(nn.Module):
 
 class RhythmFormer(nn.Module):
     """Fusion stem (frames and their differences), 4x4 patches, three temporal periodic
-    transformer stages: ``(B, T, 128, 128)`` -> ``(B, T)`` (and onset logits), T a multiple
-    of 8. The published model, without its unused ``qkv_linear``."""
+    transformer stages: ``(B, T, 128, 128)`` -> ``(B, T)``, T a multiple of 8. The
+    published model, without its unused ``qkv_linear``."""
 
     multiple = 8
 
     def __init__(
         self,
-        in_channels: int = 1,
         dim: int = 64,
         head_dim: int = 16,
         depth: tuple = (2, 2, 2),
@@ -359,10 +352,9 @@ class RhythmFormer(nn.Module):
         topk: int = 40,
         mlp_ratio: float = 1.5,
         side_dwconv: int = 3,
-        onset_head: bool = False,
     ) -> None:
         super().__init__()
-        self.stem = _FusionStem(in_channels)
+        self.stem = _FusionStem()
         self.patch_embedding = nn.Conv3d(64, dim, (1, 4, 4), stride=(1, 4, 4))
         self.stages = nn.Sequential(
             *(
@@ -371,7 +363,6 @@ class RhythmFormer(nn.Module):
             )
         )
         self.head = nn.Conv1d(dim, 1, 1)
-        self.onset_head = nn.Conv1d(dim, 1, 1) if onset_head else None
 
     def forward(self, x: torch.Tensor):
         n, d, h, w = x.shape
@@ -381,8 +372,7 @@ class RhythmFormer(nn.Module):
             .permute(0, 2, 1, 3, 4)
         )
         x = self.stages(self.patch_embedding(x)).mean((3, 4))  # (N, dim, D)
-        onset = self.onset_head(x).squeeze(1) if self.onset_head is not None else None
-        return self.head(x).squeeze(1), onset
+        return self.head(x).squeeze(1)
 
 
 # --- the wrapper zephyr trains ------------------------------------------------------------
@@ -391,13 +381,11 @@ class RhythmFormer(nn.Module):
 class GrayVideoTransformer(nn.Module):
     """A gray-only video network behind :class:`~zephyr.model.BreathingNet`'s interface: the
     crop upsampled to SIZE, time padded to the network's multiple, one output per frame
-    resampled to the output grid. Onset logits are zeros without an onset head."""
+    resampled to the output grid. No onset head: its onset logits are zeros."""
 
-    def __init__(self, arch: str, channels: ChannelSet, core: nn.Module) -> None:
+    def __init__(self, arch: str, core: nn.Module) -> None:
         super().__init__()
-        if channels.names != ("gray",):
-            raise ValueError(f"{arch} takes only the gray channel, got {channels}")
-        self.arch, self.channels, self.net = arch, channels, core
+        self.arch, self.net = arch, core
 
     @property
     def receptive_field(self) -> int:
@@ -414,23 +402,17 @@ class GrayVideoTransformer(nn.Module):
         pad = (-t) % self.net.multiple
         if pad:
             x = torch.cat([x, x[:, -1:].expand(-1, pad, -1, -1)], dim=1)
-        signal, onset = self.net(x)
-
-        def to_grid(y):
-            return resample_embeddings(y[:, :t].unsqueeze(-1), t_in, t_out).squeeze(-1)
-
-        signal = to_grid(signal)
-        return signal, to_grid(onset) if onset is not None else torch.zeros_like(signal)
+        out = self.net(x)[:, :t]
+        signal = resample_embeddings(out.unsqueeze(-1), t_in, t_out).squeeze(-1)
+        return signal, torch.zeros_like(signal)
 
 
 CORES = {
     "physformer": lambda: PhysFormer(),
-    "physformer_event": lambda: PhysFormer(onset_head=True),
     "rhythmformer": lambda: RhythmFormer(),
-    "rhythmformer_event": lambda: RhythmFormer(onset_head=True),
 }
 """Each transformer arch and the network it builds."""
 
 
-def build(arch: str, channels: ChannelSet) -> GrayVideoTransformer:
-    return GrayVideoTransformer(arch, channels, CORES[arch]())
+def build(arch: str) -> GrayVideoTransformer:
+    return GrayVideoTransformer(arch, CORES[arch]())

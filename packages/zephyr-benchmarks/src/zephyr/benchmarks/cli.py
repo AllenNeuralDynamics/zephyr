@@ -10,7 +10,6 @@ CLI
     zephyr-benchmarks evaluate --checkpoint <best.pt> --clips <list.toml>... --cache <dir>
     zephyr-benchmarks pixel|facemap|timing <experiment.toml> [--fold <name>] ...
     zephyr-benchmarks collect --runs <dir>
-    zephyr-benchmarks report --runs <dir> --out <dir>
     zephyr-benchmarks occlusion --checkpoint <best.pt> --clips <list.toml>... --cache <dir> --out <file.npz>
 """
 
@@ -48,12 +47,6 @@ def _occlusion(args: list[str]) -> None:
     occlusion.main(args)
 
 
-def _report(args: list[str]) -> None:
-    from . import report
-
-    report.main(args)
-
-
 COMMANDS = {
     "run": _run,
     "evaluate": _evaluate,
@@ -61,7 +54,6 @@ COMMANDS = {
     "facemap": _collect("facemap"),
     "timing": _collect("timing"),
     "collect": _collect("collect"),
-    "report": _report,
     "occlusion": _occlusion,
 }
 

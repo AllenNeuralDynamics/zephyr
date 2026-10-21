@@ -5,8 +5,8 @@ reachable; validation windows are gridded and non-overlapping so the number is s
 ``window`` counts 60 Hz output samples; input frames sit on the selection grid.
 The draw is keyed on the dataset index alone, never an epoch counter (spawned DataLoader
 workers hold a frozen copy); :class:`EpochRangeSampler` hands out a fresh slice of the
-index space each epoch. The companded uint8 codes are standardised per channel with
-statistics measured once over the training clips and cached.
+index space each epoch. The uint8 gray frames are standardised with statistics measured
+once over the training clips and cached.
 """
 
 import hashlib
@@ -25,7 +25,6 @@ from zephyr.augment import (
     gather_positions,
     jitter_positions,
 )
-from zephyr.channels import ALL_CHANNELS, CHANNEL_NAMES, N_CHANNELS, ChannelSet
 
 from . import features
 from .features import ClipEntry
@@ -48,68 +47,50 @@ def stats_path(cache_dir: Path, entries: Sequence[ClipEntry]) -> Path:
     """Where the statistics over exactly *entries* are cached: next to the
     features, named for the ordered clip set so another set never reuses them."""
     blob = json.dumps([e.stem.name for e in entries]).encode()
-    return cache_dir / f"channel_stats-{hashlib.sha256(blob).hexdigest()[:10]}.json"
+    return cache_dir / f"gray_stats-{hashlib.sha256(blob).hexdigest()[:10]}.json"
 
 
-def channel_stats(
+def frame_stats(
     entries: list[ClipEntry],
     cache_path: Path,
     *,
     frames_per_clip: int = 400,
     seed: int = 0,
-    channels: ChannelSet | None = None,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Per-channel mean and standard deviation of the stored uint8 codes.
+) -> tuple[float, float]:
+    """Mean and standard deviation of the stored uint8 gray frames.
 
     Sampled rather than exhaustive: *frames_per_clip* frames spread evenly over
     each clip is enough to pin the mean well under a count.  Cached to
     *cache_path* (see :func:`stats_path`) so repeated runs over the same clips
     cannot disagree.
-
-    Measured over every channel all *entries* store (only *channels*, if given: what
-    a run reads), on the same sampled frames whichever channels are measured -- so two
-    runs can never disagree about a channel's mean.  A channel not measured is NaN, and
-    a cached file is measured again once a run needs a channel it lacks.  Full width:
-    slice it with :meth:`~.channels.ChannelSet.take_stats`.
     """
     names = [entry.stem.name for entry in entries]
-    wanted = channels.names if channels is not None else CHANNEL_NAMES
-    have = ChannelSet.parse(
-        [n for n in wanted if all(n in e.stored.names for e in entries)]
-    )
-    index = list(have.indices)
     if cache_path.exists():
         cached = json.loads(cache_path.read_text())
-        mean = np.array(cached["mean"], np.float32)
-        # Reused unless a channel it lacked has been stored since.
-        if cached.get("clips") == names and np.isfinite(mean[index]).all():
-            return mean, np.array(cached["std"], np.float32)
+        if cached.get("clips") == names:
+            return float(cached["mean"]), float(cached["std"])
 
     rng = np.random.default_rng(seed)
-    total = np.zeros(N_CHANNELS, np.float64)
-    total_sq = np.zeros(N_CHANNELS, np.float64)
+    total = total_sq = 0.0
     count = 0
     for entry in entries:
         array = features.reader(entry)
         n = min(frames_per_clip, len(array) - 1)
-        # Skip frame 0: it has no predecessor, so its diff and flow channels are
-        # zero by construction and would drag the motion statistics down.
+        # Frame 0 is skipped, as it always has been, so the statistics match the
+        # draws earlier runs were measured on.
         indices = rng.choice(np.arange(1, len(array)), size=n, replace=False)
-        block = np.asarray(array.read(np.sort(indices), have), dtype=np.float64)
-        total[index] += block.sum(axis=(0, 2, 3))
-        total_sq[index] += (block**2).sum(axis=(0, 2, 3))
-        count += block.shape[0] * block.shape[2] * block.shape[3]
+        block = np.asarray(array.read(np.sort(indices)), dtype=np.float64)
+        total += float(block.sum())
+        total_sq += float((block**2).sum())
+        count += block.size
 
-    missing = [i for i in range(N_CHANNELS) if i not in index]
     mean = total / count
-    std = np.sqrt(np.maximum(total_sq / count - mean**2, 1e-12))
-    mean[missing] = std[missing] = np.nan
+    std = float(np.sqrt(max(total_sq / count - mean**2, 1e-12)))
     cache_path.write_text(
         json.dumps(
             {
-                "channels": list(CHANNEL_NAMES),
-                "mean": mean.tolist(),
-                "std": std.tolist(),
+                "mean": mean,
+                "std": std,
                 "n_clips": len(entries),
                 "clips": names,
                 "frames_per_clip": frames_per_clip,
@@ -118,7 +99,7 @@ def channel_stats(
             indent=2,
         )
     )
-    return mean.astype(np.float32), std.astype(np.float32)
+    return mean, std
 
 
 def mixture_weights(
@@ -173,16 +154,10 @@ class WindowDataset(Dataset):
     window:
         Window length in *output* samples. Input frame count follows from
         *select_fs*.
-    select_fs, output_fs, motion_tau_s, onset_sigma_s:
+    select_fs, output_fs, onset_sigma_s:
         From the clips' :class:`~zephyr.config.PreprocessParams`.
     mean, std:
-        Per-channel standardisation constants from :func:`channel_stats`, over
-        *all* stored channels.  Sliced here to match *channels*, so callers
-        pass the full-width arrays and cannot mismatch them.
-    channels:
-        Which stored channels this dataset yields, and in what order.  The
-        stored array always holds every channel; this selects the subset a
-        model is trained on.
+        Standardisation constants from :func:`frame_stats`.
     stride:
         When given, windows are laid out on a fixed grid with this hop and the
         dataset is deterministic -- the validation mode.  When ``None``, each
@@ -213,18 +188,16 @@ class WindowDataset(Dataset):
         sources: Sequence[Sequence[ClipEntry]],
         *,
         window: int,
-        mean: np.ndarray,
-        std: np.ndarray,
+        mean: float,
+        std: float,
         select_fs: float,
         output_fs: float,
-        motion_tau_s: float,
         onset_sigma_s: float = 0.020,
         stride: int | None = None,
         length: int | None = None,
         seed: int = 0,
         augment: AugmentConfig | None = None,
         span: tuple[float, float] = (0.0, 1.0),
-        channels: ChannelSet = ALL_CHANNELS,
         weights: Sequence[float] | None = None,
         rate_balance: float = 0.0,
         rate_bins_hz: Sequence[float] = DEFAULT_RATE_BINS_HZ,
@@ -246,7 +219,6 @@ class WindowDataset(Dataset):
         self.augment = augment or AugmentConfig()
         self.select_fs = select_fs
         self.output_fs = output_fs
-        self.motion_tau_s = motion_tau_s
         self.onset_sigma_s = onset_sigma_s
 
         self.step_base = select_fs / output_fs
@@ -261,15 +233,8 @@ class WindowDataset(Dataset):
         if rate_balance and stride is not None:
             raise ValueError("rate balancing applies to random windows only")
         self.rate_balance = rate_balance
-        self.channels = channels
-        selected_mean, selected_std = channels.take_stats(mean, std)
-        # (1, C, 1, 1) so broadcasting hits the channel axis of a (T, C, H, W) window.
-        self.mean = torch.from_numpy(np.asarray(selected_mean, np.float32)).view(
-            1, -1, 1, 1
-        )
-        self.std = torch.from_numpy(np.asarray(selected_std, np.float32)).view(
-            1, -1, 1, 1
-        )
+        self.mean = float(mean)
+        self.std = float(std)
 
         # Keyed by feature path: the clip label is for people and need not be unique.
         self._arrays: dict[Path, features.FeatureReader] = {}
@@ -491,7 +456,7 @@ class WindowDataset(Dataset):
 
         first = int(np.floor(positions[0]))
         last = int(np.ceil(positions[-1]))
-        slab = self._array(entry).read(slice(first, last + 1), self.channels)
+        slab = self._array(entry).read(slice(first, last + 1))
         block = gather_positions(slab, positions - first)
 
         in_times = gather_positions(frame_times, positions, dtype=np.float64)
@@ -502,13 +467,13 @@ class WindowDataset(Dataset):
         heatmap = onset_heatmap(out_times, onset_times, sigma_s=self.onset_sigma_s)
 
         if rng is not None and self.augment.enabled:
-            block = apply_spatial(block, rng, self.augment, self.channels)
+            block = apply_spatial(block, rng, self.augment)
 
         features = torch.from_numpy(np.ascontiguousarray(block, dtype=np.float32))
         features = (features - self.mean) / self.std
 
         return {
-            "features": features,  # (T_in, C, H, W) float32
+            "features": features,  # (T_in, 1, H, W) float32
             "t_in": torch.from_numpy(
                 (in_times - origin).astype(np.float32)
             ),  # window-relative
