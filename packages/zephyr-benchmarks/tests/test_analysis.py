@@ -147,6 +147,24 @@ class SummaryTests(unittest.TestCase):
         self.assertEqual(int(ci["units"].iloc[0]), 3)
         self.assertAlmostEqual(ci["mean"].iloc[0], 0.5)
 
+    def test_familiarity_tells_animal_and_rig_apart_per_method(self):
+        rows = pd.DataFrame(
+            {
+                "method": ["small", "small", "small", "full"],
+                "subject": [1, 1, 2, 2],
+                "rig": ["4A", "5B", "5B", "5B"],
+            }
+        )
+        trained = {
+            "small": pd.DataFrame({"subject": ["1"], "rig": ["4A"]}),
+            "full": pd.DataFrame({"subject": ["1", "2"], "rig": ["4A", "5B"]}),
+        }
+        seen = analysis.familiarity(rows, trained)
+        self.assertEqual(
+            seen["animal"].tolist(), ["same rig", "other rig", "new", "same rig"]
+        )
+        self.assertEqual(seen["rig_trained"].tolist(), [True, False, False, True])
+
     def test_score_agreement_ranks_clips_across_methods_and_averages_seeds(self):
         scores = [0.2, 0.5, 0.9, 0.4]
         rows = [
