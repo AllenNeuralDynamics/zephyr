@@ -57,6 +57,18 @@ label = "Zephyr, more augmentation"
 run = "full-gray-sched-v3-geo-blur"
 head = true
 
+# Zephyr trained with each breathing-rate bin weighted equally (rate_balance = 1)
+[[variant]]
+label = "Zephyr, rate-balanced"
+run = "full-gray-sched-v3-rate-balance"
+head = true
+
+# Zephyr on 192x192 crops (batch 4, 400 steps per epoch, lr 3e-4)
+[[variant]]
+label = "Zephyr, 192-px crops"
+run = "full-gray-192-v3"
+head = true
+
 # Zephyr trained on fewer animals (all of their training sessions), and on as many
 # sessions as 8 animals give but spread over all training animals; same validation and
 # test sets (zephyr-compute-sandbox matrix full-gray-data-size-v3).

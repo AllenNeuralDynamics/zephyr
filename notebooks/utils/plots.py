@@ -1613,6 +1613,95 @@ def failure_figure(
     return fig
 
 
+def error_profile_panel(
+    width_mm: float,
+    height_mm: float,
+    profile: pd.DataFrame,
+    baseline: dict[str, float],
+) -> Figure:
+    """:func:`zephyr.benchmarks.analysis.error_profile` as bars per error kind: the
+    share of errors that are near misses, then the share of the other (gross) errors
+    with each property, against *baseline* (row -> share of all true breaths with it;
+    grey ticks)."""
+    fig, ax = style.panel(width_mm, height_mm, [["bars"]])
+    a = ax["bars"]
+    rows = list(dict.fromkeys(profile["row"]))
+    kinds = list(dict.fromkeys(profile["kind"]))
+    height = 0.8 / len(kinds)
+    for k, kind in enumerate(kinds):
+        d = profile[profile["kind"] == kind].set_index("row").loc[rows]
+        a.barh(
+            np.arange(len(rows)) + (k - (len(kinds) - 1) / 2) * height,
+            100 * d["share"],
+            height,
+            color=style.ERRORS[kind],
+            label=kind.split()[-1][1:-1],
+        )
+    for i, row in enumerate(rows):
+        if row in baseline:
+            a.plot(
+                [100 * baseline[row]] * 2,
+                [i - 0.45, i + 0.45],
+                color="0.3",
+                lw=1.0,
+                label="All breaths" if i == 1 else None,
+            )
+    a.axhline(0.5, color="0.6", lw=0.5, ls=":")
+    a.text(
+        0.99,
+        0.5,
+        "of the other errors",
+        transform=a.get_yaxis_transform(),
+        ha="right",
+        va="top",
+        fontsize=5.5,
+        color="0.4",
+    )
+    a.set_yticks(range(len(rows)), [r[0].upper() + r[1:] for r in rows], fontsize=6)
+    a.invert_yaxis()
+    a.set_xlabel("Errors (%)")
+    a.grid(axis="y", visible=False)
+    a.legend(fontsize=5.5, loc="lower right", handlelength=1)
+    return fig
+
+
+def variants_panel(
+    width_mm: float,
+    height_mm: float,
+    by_metric: dict[str, pd.DataFrame],
+    reference: str = "Zephyr",
+) -> Figure:
+    """Each variant minus *reference* per metric (side by side), from
+    :func:`zephyr.benchmarks.analysis.bootstrap` (paired over units): the mean
+    difference and its 95% interval, one row per variant."""
+    fig, ax = style.panel(width_mm, height_mm, [list(by_metric)], sharey=True)
+    for metric, ci in by_metric.items():
+        a = ax[metric]
+        d = ci[ci["method"] != reference].reset_index(drop=True)
+        for i, r in d.iterrows():
+            mean = -r[f"{reference} minus"]
+            low, high = -r["diff high"], -r["diff low"]
+            color = style.color(r["method"])
+            a.plot([low, high], [i, i], color=color, lw=1.0)
+            a.plot(mean, i, "o", color=color, ms=3)
+        a.axvline(0, color="0.3", lw=0.6)
+        reach = np.ceil(100 * np.nanmax(np.abs(d[["diff low", "diff high"]]))) / 100
+        a.set_xlim(-1.15 * reach, 1.15 * reach)
+        a.set_xticks([-reach, 0, reach], [f"{-reach:g}", "0", f"{reach:g}"])
+        a.set_ylim(len(d) - 0.4, -0.6)
+        a.set_title(METRIC_LABELS[metric], fontsize=7)
+        a.set_xlabel(f"Minus {reference}")
+        a.grid(axis="y", visible=False)
+    first = ax[next(iter(by_metric))]
+    names = [
+        m.removeprefix(f"{reference}, ")
+        for m in next(iter(by_metric.values()))["method"]
+        if m != reference
+    ]
+    first.set_yticks(range(len(names)), [n[0].upper() + n[1:] for n in names])
+    return fig
+
+
 def causes_figure(counts: pd.DataFrame) -> Figure:
     """Share of misses and of false events that carry each cause."""
     fig, ax = style.figure("single", 0.6)
@@ -1983,7 +2072,8 @@ def qc_agreement_panel(
     a.set_xlabel("Spearman ρ with true F1")
     a.grid(axis="x")
     a.grid(axis="y", visible=False)
-    a.legend(loc="lower right", fontsize=6)
+    if len(by_level) > 1:
+        a.legend(loc="lower right", fontsize=6)
     return fig
 
 
@@ -2007,11 +2097,12 @@ def qc_retention_panel(
         lw=0.8,
         label="Oracle",
     )
-    for name, df in curves.items():
+    for (name, df), dash in zip(curves.items(), ("-", "-.", ":"), strict=False):
         a.plot(
             df["kept"],
             df["mean"],
             lw=0.9,
+            ls=dash,
             color=style.QUALITY[_family(name)],
             label=_measure_label(name),
         )
