@@ -165,6 +165,60 @@ class SummaryTests(unittest.TestCase):
         )
         self.assertEqual(seen["rig_trained"].tolist(), [True, False, False, True])
 
+    def test_cross_validation_runs_take_their_fold_from_folds(self):
+        from zephyr.benchmarks.config import CrossValidationRuns
+
+        run = ReportedRun(label="Zephyr", run="cv", head=True)
+        cv = CrossValidationRuns(folds=["cv_0", "cv_1"], method=[run])
+        self.assertEqual(cv.folds, ["cv_0", "cv_1"])
+        with self.assertRaises(ValueError):
+            CrossValidationRuns(
+                folds=["cv_0"], method=[run.model_copy(update={"fold": "x"})]
+            )
+        with self.assertRaises(ValueError):
+            CrossValidationRuns(folds=["cv_0"], method=[run, run])
+
+    def test_across_folds_gives_a_t_interval_and_none_for_one_fold(self):
+        rows = pd.DataFrame(
+            {
+                "method": ["a"] * 3 + ["b"],
+                "fold": [0, 1, 2, 0],
+                "v": [1.0, 2.0, 3.0, 5.0],
+            }
+        )
+        out = analysis.across_folds(rows, "v").set_index("method")
+        self.assertAlmostEqual(out.loc["a", "mean"], 2.0)
+        self.assertAlmostEqual(out.loc["a", "high"] - 2.0, 4.302653 / np.sqrt(3), 5)
+        self.assertEqual(int(out.loc["b", "folds"]), 1)
+        self.assertTrue(np.isnan(out.loc["b", "low"]))
+
+    def test_fold_scores_average_units_then_folds_and_pair_by_fold(self):
+        rows = pd.DataFrame(
+            {
+                "set": "A",
+                "method": ["Zephyr"] * 4 + ["Other"] * 4,
+                "fold": [0, 0, 1, 1] * 2,
+                "unit": ["u", "v", "w", "x"] * 2,
+                "f1": [0.9, 0.7, 1.0, 0.8, 0.8, 0.6, 0.8, 0.6],
+            }
+        )
+        out = analysis.fold_scores(rows, "f1").set_index("method")
+        self.assertAlmostEqual(out.loc["Zephyr", "mean"], 0.85)
+        self.assertAlmostEqual(out.loc["Other", "minus ref"], -0.15)
+        self.assertEqual(int(out.loc["Other", "folds"]), 2)
+
+    def test_tolerance_curve_counts_hits_within_each_tolerance(self):
+        breaths = pd.DataFrame({"method": "m", "detected": [True, True, False]})
+        lags = pd.DataFrame({"method": "m", "lag_s": [0.01, -0.04]})
+        false = pd.DataFrame({"method": ["m"]})
+        out = analysis.tolerance_curve(lags, breaths, false, [25, 50]).set_index(
+            "tolerance_ms"
+        )
+        # 3 true, 3 predicted (2 detected + 1 false): 1 hit at 25 ms, 2 at 50 ms
+        self.assertAlmostEqual(out.loc[25.0, "f1"], 2 / 6)
+        self.assertAlmostEqual(out.loc[50.0, "f1"], 4 / 6)
+        self.assertAlmostEqual(out.loc[50.0, "errors"], 2 / 3)
+
     def test_error_profile_splits_near_misses_from_gross_errors(self):
         err = pd.DataFrame(
             {
