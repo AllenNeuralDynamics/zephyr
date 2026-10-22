@@ -277,6 +277,36 @@ def _():
 
 
 @app.cell
+def _(methods, recordings, with_unit):
+    # Every summary is over folds (Methods, Statistics): the five cross-validation folds
+    # for the methods retrained on them, the published split ("published", one split,
+    # no interval) for the others.
+    cv_folds = runs.RESULTS.cross_validation.folds
+    _cv = with_unit(runs.cv_scores("per_recording"))
+    cv_methods = [m for m in methods if m in set(_cv["method"])]
+    by_fold = pd.concat(
+        [
+            _cv[_cv["method"].isin(cv_methods)],
+            recordings[~recordings["method"].isin(cv_methods)].assign(fold="published"),
+        ],
+        ignore_index=True,
+    )
+
+    def fold_tables(names, kinds=("breaths", "false_positives", "lags", "windows")):
+        """The analysis tables of each method on each of its folds, labelled by the
+        method and a ``fold`` column."""
+        out = {k: [] for k in kinds}
+        for n in names:
+            for f in cv_folds if n in cv_methods else [None]:
+                t = runs.tables(runs.cv_name(n, f) if f else n)
+                for k in kinds:
+                    out[k].append(t[k].assign(method=n, fold=f or "published"))
+        return {k: pd.concat(v, ignore_index=True) for k, v in out.items()}
+
+    return by_fold, cv_methods, fold_tables
+
+
+@app.cell
 def _(methods, origin, stem, truth):
     # The same clip as Fig. 1e, 10 s of it starting just before the rate change.
     _scores = (
@@ -302,20 +332,20 @@ def _(methods, origin, stem, truth):
 
 
 @app.cell
-def _(methods, recordings, test_a):
+def _(by_fold, methods, test_a):
     # Inference time per clip (walkthrough harness): networks on this machine's GPU,
-    # the pixel methods and Facemap in numpy on its CPU.
+    # the pixel methods and Facemap in numpy on its CPU. Inhale F1 on new animals per
+    # fold (dots) and its mean over folds with the 95% interval.
     timing = runs.wall_time(methods).set_index("method")
     on_cpu = [m for m in methods if not timing.loc[m, "device"].startswith("NVIDIA")]
+    _a = by_fold[by_fold["set"] == test_a]
     fig3b = plots.accuracy_time_panel(
         *size("fig3", "b"),
-        recordings,
-        analysis.bootstrap(recordings, "inhale", unit="unit"),
+        analysis.per_fold(_a, "inhale", by=["method"]),
+        analysis.fold_scores(_a, "inhale", by=["method"]),
         timing["s per clip (median)"],
         methods,
-        test_a,
         on_cpu=on_cpu,
-        unit="unit",
         label_offsets={
             "Zephyr": (-4, 6),
             "TS-CAN": (3, -7),
@@ -329,91 +359,109 @@ def _(methods, recordings, test_a):
 
 
 @app.cell
-def _(test_a):
-    # The networks' clip-by-clip tables on test set A (cached by the walkthrough).
+def _(fold_tables, test_a):
+    # The networks' clip-by-clip tables on new animals, per fold. c: F1 by rate, mean
+    # over folds with its interval; d, e: every fold's new-animal breaths and windows
+    # pooled (each animal is new in one fold only).
     nets = ["TS-CAN", "RhythmFormer", "PhysFormer", "PhysNet", "Zephyr"]
-    whole = {
-        k: pd.concat([runs.tables(n)[k] for n in nets], ignore_index=True).query(
-            "set == @test_a"
-        )
-        for k in ("breaths", "false_positives", "lags", "windows")
-    }
+    whole = {k: v.query("set == @test_a") for k, v in fold_tables(nets).items()}
+    _by_rate = analysis.f1_by_rate(
+        whole["breaths"], whole["false_positives"], analysis.RATE_BINS_HZ[1:]
+    )
+    _rate = analysis.across_folds(_by_rate, "f1", by=["method", "bin"]).merge(
+        _by_rate.groupby(["method", "bin"], observed=True)["share"]
+        .mean()
+        .reset_index(),
+        on=["method", "bin"],
+    )
     fig3c = plots.rate_band_panel(
         *size("fig3", "c"),
-        analysis.f1_by_rate(
-            whole["breaths"], whole["false_positives"], analysis.RATE_BINS_HZ[1:]
-        ),
+        _rate,
         nets[::-1],
         legend=False,  # colours as in b, where every method is named
     )
     plots.save_panel(fig3c, FIGURES / "fig3" / "c.svg")
-    _zephyr = whole["lags"][whole["lags"]["method"] == "Zephyr"]
+    _cv = {k: v[v["fold"] != "published"] for k, v in whole.items()}
+    _zephyr = _cv["lags"][_cv["lags"]["method"] == "Zephyr"]
     fig3d = plots.lag_rate_panel(*size("fig3", "d"), _zephyr)
     plots.save_panel(fig3d, FIGURES / "fig3" / "d.svg")
-    fig3e = plots.bland_altman_panel(*size("fig3", "e"), whole["windows"], "Zephyr")
+    fig3e = plots.bland_altman_panel(*size("fig3", "e"), _cv["windows"], "Zephyr")
     plots.save_panel(fig3e, FIGURES / "fig3" / "e.svg")
-    mo.vstack([fig3c, fig3d, fig3e])
+    mo.vstack([fig3c, fig3d, fig3e, mo.ui.table(_rate.round(3), selection=None)])
     return nets, whole
 
 
 @app.cell
-def _(methods, on_cpu, recordings, test_a, timing, with_unit):
-    # Table 1 (benchmark): per method on test set A, the mean over animals and its
-    # standard error of each score, rate metrics from 10-s windows; written as CSV for
-    # main.typ. Waits for every method's clip-by-clip tables.
-    mo.stop(
-        not all(runs.done(m) for m in methods),
-        mo.md("Run `runs.tables` for every method first."),
-    )
-    _windows = pd.concat([runs.tables(m)["windows"] for m in methods]).query(
-        "set == @test_a"
-    )
-    _unit = (
-        with_unit(runs.scores(methods))
-        .drop_duplicates("stem")
-        .set_index("stem")["unit"]
-    )
+def _(by_fold, cv_methods, fold_tables, methods, on_cpu, test_a, timing):
+    # Table 1 (benchmark): per method on new animals, each score averaged within each
+    # unit, then over the units of a fold, then over folds (mean and 95% interval;
+    # methods without cross-validation runs, the published split alone). Rate metrics
+    # from 10-s windows. Written as CSV for main.typ.
+    _a = by_fold[by_fold["set"] == test_a]
+    _windows = fold_tables(methods, ("windows",))["windows"].query("set == @test_a")
+    _unit = _a.drop_duplicates(["fold", "session"]).set_index(["fold", "session"])[
+        "unit"
+    ]
+    _windows["unit"] = [
+        _unit.get((f, st.rsplit("_span", 1)[0]))
+        for f, st in zip(_windows["fold"], _windows["stem"], strict=True)
+    ]
     _rates = analysis.rate_agreement(
-        _windows.assign(unit=_windows["stem"].map(_unit)), by=["method", "unit"]
-    )
+        _windows.dropna(subset=["unit"]), by=["method", "fold", "unit"]
+    ).reset_index()
     _rates[["MAE (Hz)", "RMSE (Hz)"]] *= 60  # breaths per minute
-    _scores = (
-        recordings[recordings["set"] == test_a]
-        .groupby(["method", "unit"])[["correlation", "inhale", "exhale_f1"]]
-        .mean()
-    )
-    _per_animal = _scores.join(_rates[["MAE (Hz)", "RMSE (Hz)", "MAPE (%)", "r"]])
     _columns = {
-        "MAE (Hz)": ("MAE", 1),
-        "RMSE (Hz)": ("RMSE", 1),
-        "MAPE (%)": ("MAPE", 1),
-        "r": ("rate_r", 2),
-        "correlation": ("trace_r", 2),
-        "inhale": ("inhale_f1", 2),
-        "exhale_f1": ("exhale_f1", 2),
+        "MAE (Hz)": ("MAE", 1, _rates),
+        "RMSE (Hz)": ("RMSE", 1, _rates),
+        "MAPE (%)": ("MAPE", 1, _rates),
+        "r": ("rate_r", 2, _rates),
+        "correlation": ("trace_r", 2, _a),
+        "inhale": ("inhale_f1", 2, _a),
+        "exhale_f1": ("exhale_f1", 2, _a),
     }
+    _summary = {
+        c: analysis.fold_scores(t, c, by=["method"]).set_index("method")
+        for c, (_, _, t) in _columns.items()
+    }
+
+    def _cell(row, digits):
+        mean = 0.0 if abs(row["mean"]) < 0.5 * 10**-digits else row["mean"]
+        if pd.isna(row["low"]):
+            return f"{mean:.{digits}f}"
+        return f"{mean:.{digits}f} ({row['low']:.{digits}f}–{row['high']:.{digits}f})"
+
     _rows = []
     for _m in methods:
-        _g = _per_animal.loc[_m]
         _row = {
             "method": plots.DISPLAY.get(_m, _m),
+            "splits": str(int(_summary["inhale"].loc[_m, "folds"])),
             "seconds": f"{timing.loc[_m, 's per clip (median)']:.2f}"
             + ("*" if _m in on_cpu else ""),
         }
-        for _c, (_name, _digits) in _columns.items():
-            _v = _g[_c].dropna()
-            _mean = (
-                0.0 if abs(_v.mean()) < 0.5 * 10**-_digits else _v.mean()
-            )  # no "-0.00"
-            _row[_name] = (
-                f"{_mean:.{_digits}f} ± {_v.std() / np.sqrt(len(_v)):.{_digits}f}"
-            )
+        for _c, (_name, _digits, _) in _columns.items():
+            _row[_name] = _cell(_summary[_c].loc[_m], _digits).replace("-0.", "−0.")
         _rows.append(_row)
     benchmark = pd.DataFrame(_rows)
     (FIGURES.parent / "tables").mkdir(exist_ok=True)
     benchmark.to_csv(FIGURES.parent / "tables" / "benchmark.csv", index=False)
-    mo.ui.table(benchmark, selection=None)
-    return
+    benchmark_diff = {
+        c: _summary[c][["mean", "low", "high", "minus ref", "diff low", "diff high"]]
+        for c in ("inhale", "correlation")
+    }
+    cv_counts = {
+        "folds": int(_a.loc[_a["method"] == runs.REFERENCE, "fold"].nunique()),
+        "animals": int(_a.loc[_a["method"] == runs.REFERENCE, "subject"].nunique()),
+        "units": int(_a.loc[_a["method"] == runs.REFERENCE, "unit"].nunique()),
+        "cv methods": cv_methods,
+    }
+    mo.vstack(
+        [
+            mo.md(f"{cv_counts}"),
+            mo.ui.table(benchmark, selection=None),
+            *(mo.ui.table(v.round(3).reset_index()) for v in benchmark_diff.values()),
+        ]
+    )
+    return benchmark_diff, cv_counts
 
 
 @app.cell
@@ -429,20 +477,26 @@ def _():
 
 
 @app.cell
-def _(recordings, test_a):
+def _(by_fold, test_a):
+    # a: new animals against new sessions, mean over folds with its interval.
+    # b: every new-animal unit of the five folds (each animal is new in one fold).
     _shown = ["Facemap", "TS-CAN", "RhythmFormer", "PhysFormer", "PhysNet", "Zephyr"]
+    _sets = [test_a, runs.SETS["test_b"]]
+    _ab = by_fold[by_fold["set"].isin(_sets)]
     fig4a = plots.sets_panel(
         *size("fig4", "a"),
-        recordings,
+        pd.concat(
+            analysis.fold_scores(_ab, m, by=["set", "method"]).assign(metric=m)
+            for m in ("correlation", "inhale")
+        ),
         _shown,
         ["correlation", "inhale"],
-        [test_a, runs.SETS["test_b"]],
-        unit="unit",
+        _sets,
     )
     plots.save_panel(fig4a, FIGURES / "fig4" / "a.svg")
     fig4b = plots.animals_panel(
         *size("fig4", "b"),
-        recordings,
+        by_fold[by_fold["fold"] != "published"],
         ["Zephyr", "PhysNet"],
         "inhale",
         test_a,
@@ -456,18 +510,25 @@ def _(recordings, test_a):
 
 @app.cell
 def _(whole):
+    # e: F1 and errors left as the tolerance is relaxed, per fold, then over folds.
     _nets = ["Zephyr", "PhysNet", "TS-CAN"]
     _mine = {k: v[v["method"].isin(_nets)] for k, v in whole.items()}
-    fig4e = plots.tolerance_panel(
-        *size("fig4", "e"),
+    _curve = analysis.tolerance_curve(
         _mine["lags"],
         _mine["breaths"],
         _mine["false_positives"],
-        _nets,
+        np.arange(0, 100.1, 2.5),
     )
+    tolerance = analysis.across_folds(
+        _curve, "f1", by=["method", "tolerance_ms"]
+    ).merge(
+        _curve.groupby(["method", "tolerance_ms"])["errors"].mean().reset_index(),
+        on=["method", "tolerance_ms"],
+    )
+    fig4e = plots.tolerance_panel(*size("fig4", "e"), tolerance, _nets)
     plots.save_panel(fig4e, FIGURES / "fig4" / "e.svg")
     fig4e
-    return
+    return (tolerance,)
 
 
 @app.cell
@@ -666,15 +727,27 @@ def _():
 
 @app.cell
 def _(test_a):
-    # Fig. 5a: what our network's errors on test set A are. The share that are near
-    # misses, then, among the rest, the share in fast breathing, face motion and on
-    # shallow breaths, against the share of all true breaths with each (motion and
-    # size are quantiles of each clip's own breaths, so those baselines are fixed).
-    _errors = runs.set_errors(runs.REFERENCE, test_a)
-    _breaths = runs.tables(runs.REFERENCE)["breaths"].query("set == @test_a")
-    error_profile = analysis.error_profile(_errors)
+    # Fig. 5a: what our network's errors on new animals are, per fold, then over folds.
+    # The share that are near misses, then, among the rest, the share in fast breathing,
+    # face motion and on shallow breaths, against the share of all true breaths with
+    # each (motion and size are quantiles of each clip's own breaths, so those
+    # baselines are fixed).
+    _folds = runs.RESULTS.cross_validation.folds
+    _names = {f: runs.cv_name(runs.REFERENCE, f) for f in _folds}
+    _errors = pd.concat(
+        runs.set_errors(n, test_a).assign(fold=f) for f, n in _names.items()
+    )
+    _breaths = pd.concat(
+        runs.tables(n)["breaths"].query("set == @test_a").assign(fold=f)
+        for f, n in _names.items()
+    )
+    _profile = analysis.error_profile(_errors)
+    error_profile = analysis.across_folds(_profile, "share", by=["kind", "row"]).merge(
+        _profile.groupby(["kind", "row"])["n"].sum().reset_index(), on=["kind", "row"]
+    )
+    _fast = _breaths.groupby("fold")["rate_hz"].apply(lambda r: (r > 8).mean())
     _baseline = {
-        "fast breathing (> 8 Hz)": float((_breaths["rate_hz"] > 8).mean()),
+        "fast breathing (> 8 Hz)": float(_fast.mean()),
         "face motion (top 10%)": 0.10,
         "shallow breath (bottom 25%)": 0.25,
     }
@@ -687,7 +760,7 @@ def _(test_a):
             mo.md(f"Baselines: {_baseline}"),
         ]
     )
-    return
+    return (error_profile,)
 
 
 @app.cell

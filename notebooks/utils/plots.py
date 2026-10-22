@@ -638,44 +638,41 @@ def benchmark_panel(
 def accuracy_time_panel(
     width_mm: float,
     height_mm: float,
-    recordings: pd.DataFrame,
-    ci: pd.DataFrame,
+    folds: pd.DataFrame,
+    summary: pd.DataFrame,
     seconds: pd.Series,
     names: Sequence[str],
-    set_name: str,
     metric: str = "inhale",
     on_cpu: Sequence[str] = (),
     label_offsets: dict[str, tuple[float, float]] | None = None,
-    unit: str = "subject",
 ) -> Figure:
-    """*metric* against inference time per clip, per method: each unit (dots, the mean
-    of its recordings; a unit is the value of the *unit* column) and the mean over
-    units with its 95% bootstrap interval (*ci*, :func:`.analysis.bootstrap`'s table);
+    """*metric* against inference time per clip, per method: each fold (dots, *folds*:
+    ``method`` and ``value``) and the mean over folds with its 95% interval (*summary*:
+    ``method``, ``mean``, ``low``, ``high``; no interval for a method with one split);
     open markers for the *on_cpu* methods."""
     fig, ax = style.panel(width_mm, height_mm, [["acc"]])
     a = ax["acc"]
-    rows = recordings[recordings["set"] == set_name]
-    per_animal = rows.groupby(["method", unit])[metric].mean()
     rng = np.random.default_rng(0)
     for method in names:
-        if method not in seconds or method not in per_animal.index:
+        if method not in seconds or method not in set(summary["method"]):
             continue
         x = float(seconds[method])
-        values = per_animal.loc[method].to_numpy()
+        values = folds.loc[folds["method"] == method, "value"].to_numpy()
         colour = style.color(method)
-        a.scatter(
-            x * np.exp(rng.uniform(-0.06, 0.06, len(values))),
-            values,
-            s=2,
-            color=colour,
-            alpha=0.35,
-            lw=0,
-        )
-        row = ci[(ci["set"] == set_name) & (ci["method"] == method)].iloc[0]
+        if len(values) > 1:
+            a.scatter(
+                x * np.exp(rng.uniform(-0.06, 0.06, len(values))),
+                values,
+                s=2.5,
+                color=colour,
+                alpha=0.45,
+                lw=0,
+            )
+        row = summary[summary["method"] == method].iloc[0]
         a.errorbar(
             x,
             row["mean"],
-            yerr=[[row["mean"] - row["low"]], [row["high"] - row["mean"]]],
+            yerr=_interval(row),
             fmt="o",
             ms=3.2,
             color=colour,
@@ -701,8 +698,15 @@ def accuracy_time_panel(
     a.set_xlim(0.6, 14)
     a.set_ylim(0, 1.02)
     a.set_xlabel("Inference (s per 5-min clip)")
-    a.set_ylabel(f"{METRIC_LABELS[metric]} (test A)")
+    a.set_ylabel(f"{METRIC_LABELS[metric]} (new animals)")
     return fig
+
+
+def _interval(row: pd.Series) -> list[list[float]]:
+    """``yerr`` of one summary row; none when it has no interval (one split)."""
+    if pd.isna(row["low"]):
+        return [[0.0], [0.0]]
+    return [[row["mean"] - row["low"]], [row["high"] - row["mean"]]]
 
 
 def lag_rate_panel(
@@ -827,23 +831,38 @@ def bland_altman_panel(
 def sets_panel(
     width_mm: float,
     height_mm: float,
-    recordings: pd.DataFrame,
+    summary: pd.DataFrame,
     names: Sequence[str],
     metrics: Sequence[str],
     sets: Sequence[str],
-    unit: str = "subject",
 ) -> Figure:
-    """Per metric (side by side), each method's mean over units (values of the *unit*
-    column) on each set, joined by a line, the method named at the last set."""
+    """Per metric (side by side), each method's mean over folds on each set with its
+    95% interval (*summary*: ``metric``, ``set``, ``method``, ``mean``, ``low``,
+    ``high``), joined by a line, the method named at the last set."""
     fig, ax = style.panel(width_mm, height_mm, [list(metrics)], sharey=True)
-    per_animal = recordings.groupby(["set", "method", unit])[list(metrics)].mean()
-    means = per_animal.groupby(["set", "method"]).mean()
     for metric in metrics:
         a = ax[metric]
+        d = summary[summary["metric"] == metric].set_index(["set", "method"])
         ends = []
         for method in names:
-            y = [means[metric].get((s, method), np.nan) for s in sets]
-            a.plot(range(len(sets)), y, "-o", color=style.color(method), ms=2.5, lw=0.8)
+            rows = [
+                d.loc[(s_, method)] if (s_, method) in d.index else None for s_ in sets
+            ]
+            y = [r["mean"] if r is not None else np.nan for r in rows]
+            colour = style.color(method)
+            a.plot(range(len(sets)), y, "-", color=colour, lw=0.8)
+            for i, r in enumerate(rows):
+                if r is not None:
+                    a.errorbar(
+                        i,
+                        r["mean"],
+                        yerr=_interval(r),
+                        fmt="o",
+                        ms=2.5,
+                        color=colour,
+                        elinewidth=0.7,
+                        capsize=0,
+                    )
             ends.append((y[-1], method))
         # Names at the last set, nudged apart so they do not overlap.
         ends.sort()
@@ -859,11 +878,11 @@ def sets_panel(
                 fontsize=6,
                 color=style.color(method),
             )
-        a.set_xticks(range(len(sets)), [s.split(":")[0] for s in sets])
+        a.set_xticks(range(len(sets)), [s_.split(":")[0] for s_ in sets])
         a.set_xlim(-0.25, len(sets) - 1 + 0.9)
         a.set_xlabel("Test set")
         a.set_title(METRIC_LABELS[metric], fontsize=7)
-    ax[metrics[0]].set_ylabel("Mean over units")
+    ax[metrics[0]].set_ylabel("Mean over folds")
     return fig
 
 
@@ -910,33 +929,32 @@ def rate_band_panel(
     names: Sequence[str],
     legend: bool = True,
 ) -> Figure:
-    """Inhale F1 per breathing-rate bin, one line per method, over the share of breaths
-    in each bin (bars)."""
+    """Inhale F1 per breathing-rate bin, one line per method (mean over folds, band its
+    95% interval; *f1*: ``method``, ``bin``, ``mean``, ``low``, ``high``, ``share``),
+    over the share of breaths in each bin (bars)."""
     fig, ax = style.panel(
         width_mm, height_mm, [["f1"], ["share"]], sharex=True, height_ratios=[3, 1]
     )
     bins = list(dict.fromkeys(f1["bin"].astype(str)))
     x = np.arange(len(bins))
     for method in names:
-        g = f1[f1["method"] == method].set_index(
-            f1["bin"].astype(str)[f1["method"] == method]
-        )
+        g = f1[f1["method"] == method]
+        g = g.set_index(g["bin"].astype(str)).reindex(bins)
+        colour = style.color(method)
         ax["f1"].plot(
-            x,
-            g["f1"].reindex(bins),
-            "-o",
-            ms=2,
-            lw=0.8,
-            color=style.color(method),
-            label=_shown(method),
+            x, g["mean"], "-o", ms=2, lw=0.8, color=colour, label=_shown(method)
         )
+        if g["low"].notna().any():
+            ax["f1"].fill_between(
+                x, g["low"], g["high"], color=colour, alpha=0.18, lw=0
+            )
     first = f1[f1["method"] == names[0]]
     share = first.set_index(first["bin"].astype(str))["share"].reindex(bins)
     ax["share"].bar(x, 100 * share, color="0.75", width=0.8)
     ax["share"].set_ylabel("Breaths (%)")
     ax["share"].set_xticks(x, [b.split("-")[0] for b in bins])
     ax["share"].set_xlabel("Breathing rate (Hz)")
-    ax["f1"].set_ylabel("Inhale F1 (test A)")
+    ax["f1"].set_ylabel("Inhale F1 (new animals)")
     ax["f1"].set_ylim(0.4, 1.02)
     if legend:
         ax["f1"].legend(loc="lower center", fontsize=6, handlelength=1, ncol=3)
@@ -954,28 +972,41 @@ def learning_curve_panel(
     *curve* has a row per run and ``group`` (e.g. new or known animals) with
     ``animals``, ``metric``, ``mean``, ``low``, ``high`` and ``full`` (whether the run
     used every session of its animals); runs with all sessions are joined by a line,
-    the others drawn open; each group in its colour from *colors*."""
+    the others drawn open; each group in its colour from *colors*. Where several runs
+    share a size (draws of different animals), each is a small dot without interval
+    and the line passes through their mean."""
     fig, ax = style.panel(width_mm, height_mm, [[m] for m in metrics], sharex=True)
     groups = list(dict.fromkeys(curve["group"]))
     for metric in metrics:
         a = ax[metric]
         for group in groups:
             d = curve[(curve["metric"] == metric) & (curve["group"] == group)]
-            for full, line in ((True, "-"), (False, "none")):
-                e = d[d["full"] == full].sort_values("animals")
+            color = colors[group]
+            repeated = d["full"] & (
+                d.groupby(["full", "animals"])["mean"].transform("size") > 1
+            )
+            draws = d[repeated]
+            a.plot(draws["animals"], draws["mean"], "o", color=color, ms=1.8)
+            line = pd.concat(
+                [
+                    d[d["full"] & ~repeated][["animals", "mean"]],
+                    draws.groupby("animals", as_index=False)["mean"].mean(),
+                ]
+            ).sort_values("animals")
+            a.plot(line["animals"], line["mean"], color=color, lw=0.9, label=group)
+            for full in (True, False):
+                e = d[(d["full"] == full) & ~repeated]
                 a.errorbar(
                     e["animals"] * (1 if full else 1.12),  # open marker beside
                     e["mean"],
                     yerr=[e["mean"] - e["low"], e["high"] - e["mean"]],
-                    color=colors[group],
-                    linestyle=line,
+                    color=color,
+                    linestyle="none",
                     marker="o",
                     markersize=3,
-                    markerfacecolor=colors[group] if full else "white",
-                    linewidth=0.9,
+                    markerfacecolor=color if full else "white",
                     elinewidth=0.6,
                     capsize=0,
-                    label=group if full else None,
                 )
         a.set_ylabel(METRIC_LABELS[metric])
     bottom = ax[metrics[-1]]
@@ -994,36 +1025,29 @@ def learning_curve_panel(
 def tolerance_panel(
     width_mm: float,
     height_mm: float,
-    lags: pd.DataFrame,
-    breaths: pd.DataFrame,
-    false: pd.DataFrame,
+    curve: pd.DataFrame,
     names: Sequence[str],
     widest_ms: float = 100.0,
 ) -> Figure:
-    """Inhale F1 as the matching tolerance is relaxed, up to *widest_ms* (the timing
-    table's window): a true inhale counts as found when a prediction lies within the
-    tolerance (pairs from the timing table). The first method's F1 and errors left
-    (misses plus false inhales) are written at the scorer's tolerance and the widest."""
+    """Inhale F1 as the matching tolerance is relaxed, mean over folds with its 95%
+    interval (*curve*: ``method``, ``tolerance_ms``, ``mean``, ``low``, ``high`` and
+    ``errors``, the mean share of errors left). The first method's F1 and errors left
+    are written at the scorer's tolerance, twice it and the widest."""
     fig, ax = style.panel(width_mm, height_mm, [["tol"]])
     a = ax["tol"]
-    tolerances = np.arange(0, widest_ms + 0.1, 2.5)
     for k, method in enumerate(names):
-        lag = np.abs(lags.loc[lags["method"] == method, "lag_s"].to_numpy()) * 1000
-        b = breaths[breaths["method"] == method]
-        n_true = len(b)
-        n_pred = int(b["detected"].sum()) + int((false["method"] == method).sum())
-        hits = np.array([(lag <= t).sum() for t in tolerances])
-        f1 = 2 * hits / (n_true + n_pred)
-        a.plot(tolerances, f1, color=style.color(method), label=_shown(method), lw=0.9)
+        c = curve[curve["method"] == method].sort_values("tolerance_ms")
+        colour = style.color(method)
+        t = c["tolerance_ms"].to_numpy()
+        a.plot(t, c["mean"], color=colour, label=_shown(method), lw=0.9)
+        if c["low"].notna().any():
+            a.fill_between(t, c["low"], c["high"], color=colour, alpha=0.18, lw=0)
         if k == 0:
-            # Marked on the curve; their values listed below the curves, clear of
-            # every line.
             lines = []
-            for t in (TOLERANCE_MS, 2 * TOLERANCE_MS, widest_ms):
-                i = int(np.argmin(np.abs(tolerances - t)))
-                errors = n_true + n_pred - 2 * hits[i]
-                a.plot(t, f1[i], "o", ms=2.5, color=style.color(method), zorder=4)
-                lines.append(f"{t:g} ms: F1 {f1[i]:.2f}, {errors / n_true:.1%} errors")
+            for at in (TOLERANCE_MS, 2 * TOLERANCE_MS, widest_ms):
+                r = c.iloc[int(np.argmin(np.abs(t - at)))]
+                a.plot(at, r["mean"], "o", ms=2.5, color=colour, zorder=4)
+                lines.append(f"{at:g} ms: F1 {r['mean']:.2f}, {r['errors']:.1%} errors")
             a.text(
                 0.2,
                 0.04,
@@ -1031,14 +1055,14 @@ def tolerance_panel(
                 transform=a.transAxes,
                 va="bottom",
                 fontsize=5.5,
-                color=style.color(method),
+                color=colour,
                 bbox={"facecolor": "white", "edgecolor": "none", "pad": 1.0},
                 zorder=5,
             )
-    for t in (TOLERANCE_MS, 2 * TOLERANCE_MS):
-        a.axvline(t, color="0.5", linewidth=0.6, linestyle=":")
+    for at in (TOLERANCE_MS, 2 * TOLERANCE_MS):
+        a.axvline(at, color="0.5", linewidth=0.6, linestyle=":")
     a.set_xlabel("Tolerance (ms)")
-    a.set_ylabel("Inhale F1 (test A)")
+    a.set_ylabel("Inhale F1 (new animals)")
     a.set_xlim(10, widest_ms)
     a.set_ylim(0.6, 1.02)
     a.legend(loc="center right", fontsize=6, handlelength=1)
@@ -1619,10 +1643,10 @@ def error_profile_panel(
     profile: pd.DataFrame,
     baseline: dict[str, float],
 ) -> Figure:
-    """:func:`zephyr.benchmarks.analysis.error_profile` as bars per error kind: the
-    share of errors that are near misses, then the share of the other (gross) errors
-    with each property, against *baseline* (row -> share of all true breaths with it;
-    grey ticks)."""
+    """The error profile as bars per error kind, mean over folds with its 95% interval
+    (*profile*: ``kind``, ``row``, ``mean``, ``low``, ``high``): the share of errors that
+    are near misses, then the share of the other (gross) errors with each property,
+    against *baseline* (row -> share of all true breaths with it; grey ticks)."""
     fig, ax = style.panel(width_mm, height_mm, [["bars"]])
     a = ax["bars"]
     rows = list(dict.fromkeys(profile["row"]))
@@ -1630,12 +1654,22 @@ def error_profile_panel(
     height = 0.8 / len(kinds)
     for k, kind in enumerate(kinds):
         d = profile[profile["kind"] == kind].set_index("row").loc[rows]
+        y = np.arange(len(rows)) + (k - (len(kinds) - 1) / 2) * height
         a.barh(
-            np.arange(len(rows)) + (k - (len(kinds) - 1) / 2) * height,
-            100 * d["share"],
+            y,
+            100 * d["mean"],
             height,
             color=style.ERRORS[kind],
             label=kind.split()[-1][1:-1],
+        )
+        a.errorbar(
+            100 * d["mean"],
+            y,
+            xerr=[100 * (d["mean"] - d["low"]), 100 * (d["high"] - d["mean"])],
+            fmt="none",
+            ecolor="0.2",
+            elinewidth=0.6,
+            capsize=0,
         )
     for i, row in enumerate(rows):
         if row in baseline:

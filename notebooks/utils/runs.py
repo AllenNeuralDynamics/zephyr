@@ -12,6 +12,7 @@ feature cache (:mod:`.test_sets`).
 import functools
 import json
 import os
+import re
 import time
 from collections.abc import Callable, Iterable
 from pathlib import Path
@@ -54,6 +55,25 @@ VARIANTS: dict[str, ReportedRun] = {r.label: r for r in RESULTS.variant}
 LEARNING_CURVE: dict[str, ReportedRun] = {r.label: r for r in RESULTS.learning_curve}
 """The first method trained on parts of its training set."""
 ALL = METHODS | VARIANTS | LEARNING_CURVE
+
+
+def cv_name(label: str, fold: str) -> str:
+    """The name of a cross-validation method's run on one fold."""
+    return f"{label} | {fold}"
+
+
+CV_RUNS: dict[str, ReportedRun] = (
+    {
+        cv_name(m.label, f): m.model_copy(update={"fold": f})
+        for f in RESULTS.cross_validation.folds
+        for m in RESULTS.cross_validation.method
+    }
+    if RESULTS.cross_validation is not None
+    else {}
+)
+"""Each cross-validation method on each fold (:func:`cv_name`)."""
+RUNS = ALL | CV_RUNS
+"""Every run by name: :data:`ALL` and :data:`CV_RUNS`."""
 REFERENCE = RESULTS.method[0].label
 """The method every other is compared with (Zephyr)."""
 
@@ -99,7 +119,7 @@ def _fetch(key: str) -> Path | None:
 
 
 def folder(m: ReportedRun) -> str:
-    """A network run's folder under the root: ``<run>/<fold>``."""
+    """A run's folder under the root: ``<run>/<fold>``."""
     return f"{m.run}/{m.fold or RESULTS.fold}"
 
 
@@ -122,14 +142,17 @@ def seeds(folder: str) -> tuple[str, ...]:
 def evaluation(name: str, seed: str | None = None) -> dict | None:
     """The run's own ``evaluation.json`` (scored on Code Ocean), or ``None`` if the
     run has not finished."""
-    m = ALL[name]
+    return _evaluation(RUNS[name], seed)
+
+
+def _evaluation(m: ReportedRun, seed: str | None = None) -> dict | None:
     if m.kind == "network":
         found = seeds(folder(m))
         if not found:
             return None
         key = f"{folder(m)}/{seed or found[0]}/evaluation.json"
     else:
-        key = f"{m.run}/{RESULTS.fold}/{m.kind}/{m.variant}/evaluation.json"
+        key = f"{folder(m)}/{m.kind}/{m.variant}/evaluation.json"
     path = _fetch(key)
     return json.loads(path.read_text()) if path else None
 
@@ -137,7 +160,7 @@ def evaluation(name: str, seed: str | None = None) -> dict | None:
 def training(name: str) -> pd.DataFrame:
     """The sessions a network run trained on (its first seed's ``train_videos.json``),
     with their ``subject`` and ``rig`` from the split."""
-    m = ALL[name]
+    m = RUNS[name]
     path = _fetch(f"{folder(m)}/{seeds(folder(m))[0]}/train_videos.json")
     stems = [Path(v).stem for v in json.loads(path.read_text())]
     sessions = sorted({stem.rsplit("_span", 1)[0] for stem in stems})
@@ -162,7 +185,7 @@ def runs_table(names=ALL) -> pd.DataFrame:
     """One row per method: its S3 folder, seeds finished, and whether it has a head."""
     rows = []
     for name in names:
-        m = ALL[name]
+        m = RUNS[name]
         done = (
             seeds(folder(m))
             if m.kind == "network"
@@ -194,15 +217,35 @@ def scores(names=ALL, level: str = "clips") -> pd.DataFrame:
     """Per-clip (``clips``) or per-recording (``per_recording``) scores of every seed of
     every finished method in *names*, from their own ``evaluation.json``; one ``inhale``
     column holds the F1 each method reports (the head's if it has one)."""
+    return _scores([(name, RUNS[name]) for name in names], level)
+
+
+def cv_scores(level: str = "per_recording") -> pd.DataFrame:
+    """:func:`scores` of every cross-validation method on every fold of the manifest's
+    ``[cross_validation]``, with a ``fold`` column; the ``set`` is the fold's own."""
+    cv = RESULTS.cross_validation
+    if cv is None:
+        return pd.DataFrame()
+    frames = [
+        _scores([(m.label, m.model_copy(update={"fold": f}))], level).assign(fold=f)
+        for f in cv.folds
+        for m in cv.method
+    ]
+    frames = [f for f in frames if not f.empty]
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+
+def _scores(named: list[tuple[str, ReportedRun]], level: str) -> pd.DataFrame:
     subjects = _subjects()
     frames = []
-    for name in names:
-        m = ALL[name]
+    for name, m in named:
         for seed in seeds(folder(m)) if m.kind == "network" else (None,):
-            result = evaluation(name, seed)
+            result = _evaluation(m, seed)
             if result is None:
                 continue
-            df = pd.DataFrame(result[level]).assign(method=name, seed=seed or "—")
+            df = pd.DataFrame(result[level]).assign(
+                method=name, seed=seed or "—", head=m.head
+            )
             frames.append(df)
     if not frames:
         return pd.DataFrame()
@@ -210,8 +253,9 @@ def scores(names=ALL, level: str = "clips") -> pd.DataFrame:
     df["session"] = df["recording"].str.split("#").str[-1]
     df["subject"] = df["session"].map(subjects)
     df["set"] = df["group"].map(SETS)
-    head = df["method"].map(lambda n: ALL[n].head)
-    df["inhale"] = np.where(head, df.get("head_inhale_f1"), df["inhale_f1"])
+    head_f1 = df.get("head_inhale_f1", np.nan)
+    df["inhale"] = np.where(df["head"], head_f1, df["inhale_f1"]).astype(float)
+    df = df.drop(columns="head")
     if level == "clips":
         df["stem"] = df["clip_id"].str.split("/").str[-1]
     return df
@@ -247,6 +291,10 @@ def clip_sets() -> dict[str, str]:
 
 
 def entry(stem: str) -> features.ClipEntry:
+    """The cache entry of any clip: a test clip of the published split, else any clip of
+    the dataset copy (the cross-validation folds test others)."""
+    if stem not in clips():
+        return _all_entries()[stem]
     clip, recipe = clips()[stem]
     found = features.lookup(clip, recipe, root() / "cache" / test_sets.RECIPE)
     if found is None:
@@ -267,7 +315,7 @@ def _amp(dev: torch.device) -> torch.dtype | None:
 @functools.cache
 def network(name: str) -> tuple:
     """``(model, mean, std, window, frame_chunk)`` of a network's first seed."""
-    m = ALL[name]
+    m = RUNS[name]
     path = _fetch(f"{folder(m)}/{seeds(folder(m))[0]}/best.pt")
     model, mean, std, state = load_checkpoint(path, device())
     params = state.get("params") or {}
@@ -285,7 +333,7 @@ def _saved(
 ) -> tuple[np.ndarray, np.ndarray | None] | None:
     """``(trace, onset)`` as the run saved it when it scored *e* (a network's
     ``traces/``, the baselines' ``traces/``), downloaded; ``None`` if it saved none."""
-    m = ALL[name]
+    m = RUNS[name]
     if m.kind == "network":
         path = _fetch(
             f"{folder(m)}/{seeds(folder(m))[0]}/{TRACES}/{trace_name(e)}"
@@ -296,12 +344,12 @@ def _saved(
         return s["signal"].to_numpy(), (s["onset"].to_numpy() if "onset" in s else None)
     if m.kind == "facemap":
         path = _fetch(
-            f"{m.run}/{RESULTS.fold}/facemap/{m.variant}/traces/{baselines.trace_key(e)}.npy"
+            f"{folder(m)}/facemap/{m.variant}/traces/{baselines.trace_key(e)}.npy"
         )
         return None if path is None else (np.load(path), None)
     method = m.variant.split("/")[0]
     path = _fetch(
-        f"{m.run}/{RESULTS.fold}/pixel/{method}/traces/{baselines.trace_key(e)}.npy"
+        f"{folder(m)}/pixel/{method}/traces/{baselines.trace_key(e)}.npy"
     )
     return None if path is None else (_calibrated(name, np.load(path)), None)
 
@@ -309,7 +357,7 @@ def _saved(
 def _calibrated(name: str, raw: np.ndarray) -> np.ndarray:
     """A pixel method's output-grid trace as its variant reports it."""
     trace = common.blind_polarity(raw)
-    if ALL[name].variant.endswith("/calibrated"):
+    if RUNS[name].variant.endswith("/calibrated"):
         fitted = evaluation(name)
         trace = fitted["sign"] * common.shift(trace, fitted["lag_samples"])
     return trace
@@ -319,7 +367,7 @@ def _predicted(
     name: str, e: features.ClipEntry
 ) -> tuple[np.ndarray, np.ndarray | None]:
     """``(trace, onset)`` predicted here, for a run that saved no traces."""
-    m = ALL[name]
+    m = RUNS[name]
     if m.kind == "pixel":
         method = m.variant.split("/")[0]
         raw = baselines.pixel_trace(method, e, common.FS, PIXEL_BIN)
@@ -347,8 +395,8 @@ def prediction(name: str, stem: str) -> dict:
     here, for a run that saved none, is cached (``cache/walkthrough/``), and a saved
     one always wins over it."""
     e = entry(stem)
-    m = ALL[name]
-    path = PREDICTIONS / m.run / (m.variant.replace("/", "-") or "net") / f"{stem}.npz"
+    m = RUNS[name]
+    path = _prediction_path(name, stem)
     found = _saved(name, e)
     if found is None and path.is_file():
         with np.load(path) as p:
@@ -373,6 +421,16 @@ def prediction(name: str, stem: str) -> dict:
     if m.head:
         out["head"] = out["times"][head_event_indices(out["onset"], out["times"])]
     return out
+
+
+def _prediction_path(name: str, stem: str) -> Path:
+    m = RUNS[name]
+    kind = m.variant.replace("/", "-") or "net"
+    return PREDICTIONS / m.run / m.fold / kind / f"{stem}.npz"
+
+
+def cached(name: str, stem: str) -> bool:
+    return _prediction_path(name, stem).is_file()
 
 
 def truth(stem: str) -> dict:
@@ -427,7 +485,7 @@ def wall_time(names, n_clips: int = 8) -> pd.DataFrame:
     for name in names:
         if name in done:
             continue
-        m = ALL[name]
+        m = RUNS[name]
         if m.kind == "network":
             model = network(name)[0]
             dev = device()
@@ -453,7 +511,7 @@ def wall_time(names, n_clips: int = 8) -> pd.DataFrame:
             result["device"] = "cpu (numpy)"
         else:
             fitted = evaluation(name)
-            bases = _fetch(f"{m.run}/{RESULTS.fold}/facemap/bases.npz")
+            bases = _fetch(f"{folder(m)}/facemap/bases.npz")
             result = timing.time_method(
                 timing.facemap_method(
                     m.variant,
@@ -494,13 +552,26 @@ def wall_time(names, n_clips: int = 8) -> pd.DataFrame:
 
 
 def _tables_paths(name: str) -> dict[str, Path]:
-    tag = name.replace(" ", "_").replace("(", "").replace(")", "").replace(",", "")
+    tag = re.sub(r"[^A-Za-z0-9_.-]+", "_", name).strip("_")
     return {k: PREDICTIONS / f"analysis-{tag}-{k}.parquet" for k in analysis.TABLES}
 
 
 def done(name: str) -> bool:
     """Whether :func:`tables` of *name* are cached."""
     return all(p.is_file() for p in _tables_paths(name).values())
+
+
+def test_clips(name: str) -> dict[str, str]:
+    """Clip stem -> test set of the clips run *name* was scored on: the published test
+    lists, or, for a cross-validation run, the clips its own ``evaluation.json`` lists."""
+    if name not in CV_RUNS:
+        return clip_sets()
+    result = evaluation(name)
+    return {
+        c["clip_id"].split("/")[-1]: SETS[c["group"]]
+        for c in result["clips"]
+        if c["group"] in SETS
+    }
 
 
 def tables(
@@ -513,10 +584,11 @@ def tables(
     if done(name):
         return {k: pd.read_parquet(p) for k, p in paths.items()}
     parts: dict[str, list] = {k: [] for k in analysis.TABLES}
-    for stem in progress(list(clips())):
-        label = {"method": name, "stem": stem, "set": clip_sets()[stem]}
+    sets = test_clips(name)
+    for stem in progress(list(sets)):
+        label = {"method": name, "stem": stem, "set": sets[stem]}
         found = analysis.clip_tables(
-            prediction(name, stem), truth(stem), ALL[name].head
+            prediction(name, stem), truth(stem), RUNS[name].head
         )
         for k, v in found.items():
             parts[k].append(v.assign(**label))
@@ -531,7 +603,7 @@ def errors(name: str, stem: str) -> pd.DataFrame:
     """:func:`zephyr.benchmarks.analysis.errors` of one method on one test clip."""
     frame_t, frames = gray(stem)
     found = analysis.errors(
-        prediction(name, stem), truth(stem), ALL[name].head, frame_t, frames
+        prediction(name, stem), truth(stem), RUNS[name].head, frame_t, frames
     )
     return found.assign(stem=stem, method=name)
 
@@ -539,12 +611,12 @@ def errors(name: str, stem: str) -> pd.DataFrame:
 def set_errors(name: str, set_name: str) -> pd.DataFrame:
     """:func:`errors` of every clip of one test set (``SETS`` value), cached in
     ``cache/walkthrough``; delete the file to recompute."""
-    m = ALL[name]
+    m = RUNS[name]
     tag = f"{m.run}-{m.fold or RESULTS.fold}-{m.variant.replace('/', '-') or 'net'}"
     path = PREDICTIONS / f"errors-{tag}-{set_name.split(':')[0]}.parquet"
     if path.is_file():
         return pd.read_parquet(path)
-    stems = sorted(s for s, v in clip_sets().items() if v == set_name)
+    stems = sorted(s for s, v in test_clips(name).items() if v == set_name)
     found = pd.concat([errors(name, s) for s in stems], ignore_index=True)
     path.parent.mkdir(parents=True, exist_ok=True)
     found.to_parquet(path)
