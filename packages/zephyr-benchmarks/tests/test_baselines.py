@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 
 from zephyr.benchmarks import baselines
+from zephyr.config import EventsSource
 
 
 class ScoreTracesTests(unittest.TestCase):
@@ -30,6 +31,7 @@ class ScoreTracesTests(unittest.TestCase):
                 stem=Path(tmp) / "c1",
                 thermistor=Path(tmp) / "thermistor.parquet",
                 events=Path(tmp) / "events.npz",
+                detector=EventsSource(method="adaptive_prominence"),
             )
             result = baselines.score_traces({"feat-c1": signal}, {"g": [entry]})
         self.assertAlmostEqual(result["summary"]["correlation"], 1.0, places=3)

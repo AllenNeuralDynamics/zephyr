@@ -26,7 +26,7 @@ from zephyr.benchmarks import analysis, baselines, common, timing
 from zephyr.benchmarks.config import ReportedRun, ResultsManifest
 from zephyr.benchmarks.runner import load_checkpoint
 from zephyr.config import ClipList, load
-from zephyr.evaluate import TRACES, head_event_indices, trace_name
+from zephyr.evaluate import TRACES, aggregate_recordings, head_event_indices, trace_name
 from zephyr.infer import predict_clip
 
 from . import test_sets
@@ -205,7 +205,7 @@ def runs_table(names=ALL) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-# --- scores, as the runs scored themselves -------------------------------------------
+# --- scores, re-scored here by zephyr's scorer -----------------------------------------
 
 
 def _subjects() -> dict[str, str]:
@@ -214,10 +214,10 @@ def _subjects() -> dict[str, str]:
 
 
 def scores(names=ALL, level: str = "clips") -> pd.DataFrame:
-    """Per-clip (``clips``) or per-recording (``per_recording``) scores of every seed of
-    every finished method in *names*, from their own ``evaluation.json``; one ``inhale``
+    """Per-clip (``clips``) or per-recording (``per_recording``) scores of every
+    finished method in *names* on its test clips (:func:`rescored`); one ``inhale``
     column holds the F1 each method reports (the head's if it has one)."""
-    return _scores([(name, RUNS[name]) for name in names], level)
+    return _scores([(name, name) for name in names], level)
 
 
 def cv_scores(level: str = "per_recording") -> pd.DataFrame:
@@ -227,7 +227,7 @@ def cv_scores(level: str = "per_recording") -> pd.DataFrame:
     if cv is None:
         return pd.DataFrame()
     frames = [
-        _scores([(m.label, m.model_copy(update={"fold": f}))], level).assign(fold=f)
+        _scores([(m.label, cv_name(m.label, f))], level).assign(fold=f)
         for f in cv.folds
         for m in cv.method
     ]
@@ -235,18 +235,59 @@ def cv_scores(level: str = "per_recording") -> pd.DataFrame:
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
 
-def _scores(named: list[tuple[str, ReportedRun]], level: str) -> pd.DataFrame:
+def _scores_path(name: str) -> Path:
+    tag = re.sub(r"[^A-Za-z0-9_.-]+", "_", name).strip("_")
+    return PREDICTIONS / f"scores-{tag}.parquet"
+
+
+def rescored(name: str) -> pd.DataFrame:
+    """Per-clip scores of run *name* on the test clips its ``evaluation.json`` lists
+    (its ``clip_id``, ``recording`` and ``group``), scored again from the cached
+    predictions by zephyr's scorer (:func:`zephyr.benchmarks.analysis.score_prediction`),
+    so that every run is scored by the current rule whenever it was trained; cached."""
+    path = _scores_path(name)
+    if path.is_file():
+        return pd.read_parquet(path)
+    rows = []
+    for c in evaluation(name)["clips"]:
+        if c["group"] not in SETS:
+            continue
+        stem = c["clip_id"].split("/")[-1]
+        score = analysis.score_prediction(
+            entry(stem), prediction(name, stem), RUNS[name].head
+        )
+        keys = {k: c[k] for k in ("clip_id", "recording", "group")}
+        rows.append(keys | score)
+    out = pd.DataFrame(rows)
+    PREDICTIONS.mkdir(parents=True, exist_ok=True)
+    out.to_parquet(path)
+    return out
+
+
+def _level(clips: pd.DataFrame, level: str) -> pd.DataFrame:
+    """Clip rows as they are (``clips``), or averaged per recording within each group
+    (``per_recording``), as ``evaluate`` does."""
+    if level == "clips":
+        return clips
+    rows = []
+    for group, part in clips.groupby("group", sort=False):
+        rows += [
+            r | {"group": group} for r in aggregate_recordings(part.to_dict("records"))
+        ]
+    return pd.DataFrame(rows)
+
+
+def _scores(named: list[tuple[str, str]], level: str) -> pd.DataFrame:
+    """*named*: ``(label, run name)`` pairs; the label goes in the ``method`` column."""
     subjects = _subjects()
     frames = []
-    for name, m in named:
-        for seed in seeds(folder(m)) if m.kind == "network" else (None,):
-            result = _evaluation(m, seed)
-            if result is None:
-                continue
-            df = pd.DataFrame(result[level]).assign(
-                method=name, seed=seed or "—", head=m.head
-            )
-            frames.append(df)
+    for label, name in named:
+        if evaluation(name) is None:
+            continue
+        m = RUNS[name]
+        seed = seeds(folder(m))[0] if m.kind == "network" else "—"
+        df = _level(rescored(name), level).assign(method=label, seed=seed, head=m.head)
+        frames.append(df)
     if not frames:
         return pd.DataFrame()
     df = pd.concat(frames, ignore_index=True)
