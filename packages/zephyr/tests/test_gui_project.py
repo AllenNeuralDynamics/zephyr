@@ -7,21 +7,32 @@ import tempfile
 import tomllib
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
+import numpy as np
+import pandas as pd
 from _clipfiles import touch_clip, write_list
 from _synthetic import HAS_FFMPEG, make_dataset, write_experiment
 
-from zephyr.config import Experiment, load
+from zephyr.config import Derive, Experiment, PreprocessParams, load
 from zephyr.gui.jobs import Job
 from zephyr.gui.project import (
+    CACHE_BYTES_PER_FRAME,
     DONE,
     FOLDERS,
     PARTLY,
     TODO,
     Project,
+    _scored,
+    cache_need,
+    human_bytes,
+    is_smoke,
+    preview_scan,
+    run_label,
     run_status,
     split_groups,
 )
+from zephyr.preprocess import select_anchor_indices
 
 
 class ProjectTests(unittest.TestCase):
@@ -34,6 +45,15 @@ class ProjectTests(unittest.TestCase):
 
     def tearDown(self):
         self._tmp.cleanup()
+
+    def test_a_project_is_a_folder_with_a_clip_list_or_its_layout(self):
+        self.assertTrue(Project.exists(self.root))  # clips.toml
+        self.assertTrue(Project.exists(self.list))
+        empty = self.root / "empty"
+        empty.mkdir()
+        self.assertFalse(Project.exists(empty))
+        Project.open(empty)
+        self.assertTrue(Project.exists(empty))
 
     def test_a_folder_gets_the_layout_and_its_clip_lists(self):
         project = Project.open(self.root)
@@ -201,6 +221,72 @@ class RunTests(unittest.TestCase):
         )
         (run / "evaluation.json").write_text("{}")
         self.assertTrue(run_status(run).endswith(", scored"))
+
+    def test_runs_are_named_by_fold_and_seed(self):
+        (real,) = self.project.run_dirs(self.experiment)
+        (smoke,) = self.project.run_dirs(self.experiment, smoke=True)
+        runs = self.project.runs_dir
+        self.assertEqual(run_label(real, runs), "e · seed 3")
+        self.assertEqual(run_label(smoke, runs), "e · seed 3 · smoke")
+        self.assertEqual(run_label(runs / "x" / "f" / "seed-1", runs), "x / f · seed 1")
+        self.assertEqual(run_label(Path("/else/run"), runs), "/else/run")
+        self.assertEqual((is_smoke(real, runs), is_smoke(smoke, runs)), (False, True))
+
+    def test_a_scored_trace_comes_with_its_sensor_and_both_inhales(self):
+        t = np.arange(0, 20, 1 / 60)
+        signal = np.sin(2 * np.pi * 2 * t)
+        trace = self.root / "feat-x.parquet"
+        pd.DataFrame({"time": t + 100, "signal": signal}).to_parquet(trace)
+        target = self.root / "target.parquet"
+        pd.DataFrame({"signal": signal[:-10]}).to_parquet(target)
+        events = self.root / "events.npz"
+        np.savez(events, onset_times=[101.0, 101.5], offset_times=[101.2, 101.7])
+        entry = SimpleNamespace(target=target, events=events)
+        found = _scored(trace, entry)
+        self.assertEqual(len(found["time"]), len(t) - 10)  # cut to the sensor's
+        self.assertEqual(list(found["truth_inhale"]), [101.0, 101.5])
+        self.assertGreater(len(found["inhale"]), 30)  # about 2 Hz, from DSP
+        self.assertIsNone(_scored(self.root / "none.parquet", entry))
+        self.assertIsNone(self.project.scored_trace(self.root / "runs" / "x", "c"))
+
+
+class CacheNeedTests(unittest.TestCase):
+    def test_the_space_is_frames_times_crop_pixels_of_clips_not_cached(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            videos = [touch_clip(root / "data", g, 1) for g in (1, 2, 3)]
+            listed = write_list(root / "clips.toml", videos, box=(10, 10, 32, 32))
+            for video in videos[:2]:  # the third's timestamps stay unreadable
+                frame = pd.DataFrame({"Time": np.arange(1000) / 200})  # a 200 Hz camera
+                frame.to_parquet(video.with_suffix(".parquet"))
+            need = cache_need([listed], root / "cache")
+            self.assertEqual((need.todo, need.cached, need.unknown), (3, 0, 1))
+            kept = len(
+                select_anchor_indices(
+                    np.arange(1000) / 200,
+                    PreprocessParams(target_size=(100, 80)).select_fs,
+                )
+            )
+            self.assertLess(kept, 1000)  # only the frames on the select_fs grid
+            self.assertEqual(need.bytes, 2 * kept * (32 * 32 + CACHE_BYTES_PER_FRAME))
+        self.assertEqual(human_bytes(1.3e9), "1.3 GB")
+        self.assertEqual(human_bytes(512), "512 bytes")
+
+
+class PreviewTests(unittest.TestCase):
+    def test_a_scan_preview_lists_sessions_and_missing_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            videos = [touch_clip(root, g, 1) for g in (1, 2)]
+            (root / "video_face_other.mp4").touch()
+            found = preview_scan(root, "*.mp4", Derive())
+            self.assertEqual([f.video for f in found[:2]], videos)
+            self.assertEqual([f.group for f in found], ["1", "2", None])
+            self.assertEqual([f.timestamps for f in found], [True, True, False])
+            self.assertEqual(
+                found[0].sensor, (root / "thermistor_1_part_1.parquet").exists()
+            )
+            self.assertEqual(preview_scan(root / "missing", "*.mp4", Derive()), [])
 
 
 class SplitTests(unittest.TestCase):

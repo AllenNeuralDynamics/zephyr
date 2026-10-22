@@ -1,22 +1,32 @@
 """The Train page (write an experiment, preprocess, smoke-run and run it, watch its
 curves and live validation snippets) and the Results page (a run's scores)."""
 
+import html
 import json
 import math
 import re
 from pathlib import Path
 
-from PySide6 import QtCore, QtWidgets
+from PySide6 import QtCore, QtGui, QtWidgets
 
 from ..config import Experiment, load
 from .jobs import Job
 from .pages import Page, _fill, _table
-from .project import Project, run_status, split_groups
+from .project import (
+    Project,
+    is_smoke,
+    run_label,
+    run_status,
+    split_groups,
+)
+from .theme import THEME
 from .widgets import (
     HistoryPlot,
     JobPanel,
     SnippetGallery,
+    TraceView,
     accent,
+    ask_cache_space,
     find_data,
     heading,
     note,
@@ -55,6 +65,45 @@ def experiment_lists(experiment: Experiment) -> list[Path]:
         if fold.val is not None:
             paths.append(fold.val.clips)
     return list(dict.fromkeys(paths))
+
+
+def describe(experiment: Experiment, root: Path) -> str:
+    """An experiment as a small table: each fold's sides, epochs, seeds, where it
+    trains."""
+
+    def groups(selection) -> str:
+        return html.escape(", ".join(selection.groups or ["all"]))
+
+    rows = []
+    for fold in experiment.fold:
+        train = ", ".join(
+            html.escape(g) for s in fold.train for g in (s.groups or ["all"])
+        )
+        if fold.val is not None:
+            val = groups(fold.val)
+        else:
+            val = f"the last {fold.train_params.val_fraction:.0%} of each clip"
+        test = "; ".join(
+            f"{html.escape(name)}: {groups(s)}" for name, s in fold.test.items()
+        )
+        name = "" if len(experiment.fold) == 1 else f"<b>{html.escape(fold.name)}</b>"
+        rows += [
+            f"<tr><td colspan='2'>{name}</td></tr>" if name else "",
+            f"<tr><td>Train on</td><td>{train}</td></tr>",
+            f"<tr><td>Stop early on</td><td>{val}</td></tr>",
+            f"<tr><td>Test on</td><td>{test}</td></tr>",
+            f"<tr><td>Epochs</td><td>{fold.train_params.epochs}</td></tr>",
+        ]
+    try:
+        where = experiment.output_dir.resolve().relative_to(root.resolve()).as_posix()
+    except ValueError:
+        where = experiment.output_dir.as_posix()
+    seeds = ", ".join(map(str, experiment.seeds))
+    rows += [
+        f"<tr><td>Seeds</td><td>{seeds}</td></tr>",
+        f"<tr><td>Runs in</td><td>{html.escape(where)}/</td></tr>",
+    ]
+    return f"<table cellpadding='2'>{''.join(rows)}</table>"
 
 
 class NewExperiment(QtWidgets.QGroupBox):
@@ -286,7 +335,6 @@ class TrainPage(Page):
         self.jobs.finished.connect(lambda _: self._fill_runs())
         self.tabs.addTab(self.history, "Progress")
         self.tabs.addTab(self.gallery, "Snippets")
-        self.tabs.addTab(self.jobs, "Log")
         right.addWidget(self.tabs, 1)
         self._timer = QtCore.QTimer(self, interval=HISTORY_MS)
         self._timer.timeout.connect(self.refresh_history)
@@ -328,8 +376,8 @@ class TrainPage(Page):
         self.experiment.setCurrentIndex(find_data(self.experiment, path))
         self.define.setChecked(False)
         self.summary.setText(
-            f"Wrote experiments/{path.name}.\n{self.summary.text()}\n"
-            "Next: 3. Smoke run, then Run."
+            f"<p><b>Wrote experiments/{path.name}.</b> Next: 3 Train, a smoke run "
+            f"first, then Run.</p>{self.summary.text()}"
         )
         self.app.refresh_steps()
 
@@ -356,27 +404,7 @@ class TrainPage(Page):
             for button in self.buttons.values():
                 button.setEnabled(False)
             return
-        lines = []
-        for fold in experiment.fold:
-            groups = [g for s in fold.train for g in (s.groups or ["all"])]
-            val = fold.val.groups if fold.val is not None else None
-            lines.append(
-                f"fold {fold.name}: train {', '.join(groups)}; "
-                + (
-                    f"stop on {', '.join(val or ['all'])}; "
-                    if fold.val is not None
-                    else f"stop on the last {fold.train_params.val_fraction:.0%} of "
-                    "each clip; "
-                )
-                + "test "
-                + "; ".join(
-                    f"{name} = {', '.join(s.groups or ['all'])}"
-                    for name, s in fold.test.items()
-                )
-                + f"; {fold.train_params.epochs} epochs"
-            )
-        lines.append(f"seeds {experiment.seeds} -> {experiment.output_dir}")
-        self.summary.setText("\n".join(lines))
+        self.summary.setText(describe(experiment, self.project.root))
         self._fill_runs()
 
     def _fill_runs(self) -> None:
@@ -392,10 +420,7 @@ class TrainPage(Page):
             except ValueError:
                 dirs = []
             for run in dirs:
-                label = f"{run.parent.name}/{run.name}"
-                if run.parent.parent.name == "smoke":
-                    label = "smoke: " + label
-                self.run_dir.addItem(label, run)
+                self.run_dir.addItem(run_label(run, self.project.runs_dir), run)
         index = find_data(self.run_dir, current)
         self.run_dir.setCurrentIndex(max(index, 0))
         self.run_dir.blockSignals(False)
@@ -410,17 +435,19 @@ class TrainPage(Page):
         if step == "preprocess":
             if path is not None:  # the experiment's lists, into its cache
                 experiment = self._loaded()
-                argv = [*map(str, experiment_lists(experiment))]
-                argv += ["--cache", str(experiment.features_dir)]
+                lists, cache = experiment_lists(experiment), experiment.features_dir
             elif project.clip_list is not None:  # where new experiments look
-                argv = [str(project.clip_list), "--cache", str(project.cache_dir)]
+                lists, cache = [project.clip_list], project.cache_dir
             else:
                 return
+            if not ask_cache_space(self, lists, cache):
+                return
+            argv = [*map(str, lists), "--cache", str(cache)]
             job = Job("preprocess", argv, project.root)
         elif path is None:
             return
         else:
-            argv = [str(path)]
+            argv = [str(path), "--save-traces"]  # for Results to draw
             if step == "smoke":  # a check of the plumbing: always from scratch
                 argv += ["--smoke", "--restart"]
             if step == "resume":
@@ -440,10 +467,9 @@ class TrainPage(Page):
             job = Job("run", argv, project.root, snippets=snippets)
             self.gallery.clear()
         self._smoke = step == "smoke"
-        if self.jobs.run(job):
-            self.tabs.setCurrentWidget(
-                self.jobs if step == "preprocess" else self.history
-            )
+        # Preprocessing tells its progress in its output alone.
+        if self.jobs.run(job, show_log=step == "preprocess"):
+            self.tabs.setCurrentWidget(self.history)
 
     def _may_start_over(self, project: Project, path: Path) -> bool:
         """Whether Run may train *path* from scratch: yes when none of its runs
@@ -486,22 +512,20 @@ class TrainPage(Page):
             epochs = json.loads(config.read_text())["fold"]["train_params"]["epochs"]
         except (OSError, ValueError, KeyError):
             pass
-        last = rows[-1]
         seconds = sum(r.get("seconds", 0) for r in rows) / len(rows)
-        text = f"epoch {last['epoch'] + 1}"
-        if epochs:
-            left = epochs - last["epoch"] - 1
-            text += f" of {epochs}, {seconds:.0f} s each"
-            if left > 0 and self.jobs.busy:
-                text += f", at most {left * seconds / 60:.0f} min left"
-        if (run / "evaluation.json").is_file():
-            text += "; finished and scored"
+        text = f"{run_status(run)}; {seconds:.0f} s per epoch"
+        left = epochs - rows[-1]["epoch"] - 1 if epochs else 0
+        if left > 0 and self.jobs.busy:
+            text += f", at most {left * seconds / 60:.0f} min left"
+        elif left > 0 and not (run / "evaluation.json").is_file():
+            text += " (stopped: Resume continues it)"
         self.status.setText(text)
 
 
 class ResultsPage(Page):
-    """A run's ``evaluation.json`` (and any later scoring) per test group and clip,
-    its training curves, and scoring its checkpoint on another clip list."""
+    """A run's scores per test group and clip (``evaluation.json``, and any scoring
+    on another list), the trace of a clip against its sensor, the training curves;
+    scoring the run on its test groups or on another clip list."""
 
     title = "Results"
 
@@ -514,9 +538,10 @@ class ResultsPage(Page):
         self.runs.currentRowChanged.connect(lambda _: self.show_run())
         left.addWidget(self.runs, 1)
         other = QtWidgets.QPushButton("Open a run folder...")
+        other.setToolTip("A run from elsewhere, read only")
         other.clicked.connect(self._browse)
         left.addWidget(other)
-        holder = QtWidgets.QWidget(maximumWidth=380)
+        holder = QtWidgets.QWidget(maximumWidth=320)
         holder.setLayout(left)
         layout.addWidget(holder)
 
@@ -534,11 +559,21 @@ class ResultsPage(Page):
         )
         own.clicked.connect(self.score_own)
         bar.addWidget(own)
-        bar.addWidget(QtWidgets.QLabel("scores"))
-        self.result = QtWidgets.QComboBox()
-        self.result.currentIndexChanged.connect(lambda _: self.show_result())
-        bar.addWidget(self.result)
+        more = QtWidgets.QPushButton("Score on another list...")
+        more.setToolTip(
+            "Score best.pt on another clip list of the project (zephyr evaluate), "
+            "into the run's scores/; clips it trained on are refused"
+        )
+        more.clicked.connect(self.score)
+        bar.addWidget(more)
         right.addLayout(bar)
+        row = QtWidgets.QHBoxLayout()
+        row.addWidget(QtWidgets.QLabel("Scores"))
+        self.result = QtWidgets.QComboBox(minimumWidth=260)
+        self.result.currentIndexChanged.connect(lambda _: self.show_result())
+        row.addWidget(self.result)
+        row.addStretch(1)
+        right.addLayout(row)
         self.tabs = QtWidgets.QTabWidget()
         self.groups = _table(
             [
@@ -563,32 +598,19 @@ class ResultsPage(Page):
             ]
         )
         self.clips.setSortingEnabled(True)
+        self.clips.itemSelectionChanged.connect(self.show_trace)
+        clips = QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)
+        clips.addWidget(self.clips)
+        self.trace = TraceView()
+        clips.addWidget(self.trace)
+        clips.setSizes([260, 340])
         self.history = HistoryPlot()
-        score = QtWidgets.QWidget()
-        form = QtWidgets.QVBoxLayout(score)
-        row = QtWidgets.QHBoxLayout()
-        row.addWidget(QtWidgets.QLabel("Score best.pt on"))
-        self.score_list = QtWidgets.QComboBox()
-        row.addWidget(self.score_list, 1)
-        go = accent("Score")
-        go.clicked.connect(self.score)
-        row.addWidget(go)
-        form.addLayout(row)
-        form.addWidget(
-            note(
-                "Writes scores/<list>.json in the run folder (zephyr evaluate, on the "
-                "project's cache: preprocess the list first). Clips the checkpoint "
-                "trained on are refused."
-            )
-        )
+        self.tabs.addTab(self.groups, "Test groups")
+        self.tabs.addTab(clips, "Clips")
+        self.tabs.addTab(self.history, "Training")
+        right.addWidget(self.tabs, 1)
         self.jobs = JobPanel()
         self.jobs.finished.connect(lambda _: self.show_run())
-        form.addWidget(self.jobs, 1)
-        self.tabs.addTab(self.groups, "Test groups")
-        self.tabs.addTab(self.clips, "Clips")
-        self.tabs.addTab(self.history, "Training")
-        self.tabs.addTab(score, "Score more / log")
-        right.addWidget(self.tabs, 1)
         self._extra: list[Path] = []
 
     def set_project(self, project: Project | None) -> None:
@@ -599,20 +621,17 @@ class ResultsPage(Page):
         current = self._current()
         self.runs.blockSignals(True)
         self.runs.clear()
-        dirs = (project.runs() if project else []) + self._extra
-        for run in dirs:
-            label = (
-                str(run.relative_to(project.runs_dir))
-                if (project and run.is_relative_to(project.runs_dir))
-                else str(run)
-            )
+        dirs = project.runs() if project else []
+        if project is not None:  # real runs first, newest first; smoke runs after
+            dirs.sort(key=lambda run: is_smoke(run, project.runs_dir))
+        for run in dirs + self._extra:
+            label = run_label(run, project.runs_dir) if project else str(run)
             item = QtWidgets.QListWidgetItem(label)
             item.setData(QtCore.Qt.ItemDataRole.UserRole, run)
+            item.setToolTip(str(run))
+            if project is not None and is_smoke(run, project.runs_dir):
+                item.setForeground(QtGui.QColor(THEME["muted"]))
             self.runs.addItem(item)
-        self.score_list.clear()
-        if project is not None:
-            for path in project.clip_lists():
-                self.score_list.addItem(path.name, path)
         rows = [
             self.runs.item(i).data(QtCore.Qt.ItemDataRole.UserRole)
             for i in range(self.runs.count())
@@ -637,22 +656,28 @@ class ResultsPage(Page):
         self.result.clear()
         self.run_state.setText(run_status(run) if run is not None else "")
         if run is None:
-            self.title_label.setText("No runs yet")
+            self.title_label.setText("No runs yet: train one on 4 Train")
             self.result.blockSignals(False)
             self.groups.setRowCount(0)
             self.clips.setRowCount(0)
             self.history.set_history([])
             return
-        self.title_label.setText(f"{run.parent.name}/{run.name}")
-        for path in [run / "evaluation.json", *sorted((run / "scores").glob("*.json"))]:
-            if path.is_file():
-                self.result.addItem(path.relative_to(run).as_posix(), path)
+        runs_dir = self.project.runs_dir if self.project else run.parent
+        self.title_label.setText(run_label(run, runs_dir))
+        if (run / "evaluation.json").is_file():
+            self.result.addItem("its test groups", run / "evaluation.json")
+        for path in sorted((run / "scores").glob("*.json")):
+            self.result.addItem(f"clip list {path.stem}", path)
+        if not self.result.count():
+            self.result.addItem("not scored yet: Score its test groups")
+        self.result.setEnabled(self.result.currentData() is not None)
         self.result.blockSignals(False)
         self.history.set_history(read_history(run))
         self.show_result()
 
     def show_result(self) -> None:
         path = self.result.currentData()
+        self.trace.clear("Select a clip to see its trace.")
         if path is None:
             self.groups.setRowCount(0)
             self.clips.setRowCount(0)
@@ -688,6 +713,35 @@ class ResultsPage(Page):
         )
         self.clips.setSortingEnabled(True)
 
+    def show_trace(self) -> None:
+        """The selected clip's saved trace against its sensor, with the crops."""
+        run, project = self._current(), self.project
+        rows = self.clips.selectionModel().selectedRows()
+        if run is None or project is None or not rows:
+            return
+        clip_id = self.clips.item(rows[0].row(), 1).text()
+        try:
+            found = project.scored_trace(run, clip_id)
+        except (OSError, ValueError) as exc:
+            self.trace.clear(f"<b>{clip_id}</b><br>cannot be read: {exc}")
+            return
+        if found is None:
+            self.trace.clear(
+                f"<b>{clip_id}</b><br>No trace saved for it: a run started here "
+                "saves them, and Score its test groups saves them again."
+            )
+            return
+        self.trace.set_trace(
+            f"<b>{clip_id}</b>",
+            found["time"],
+            found["signal"],
+            truth=found["truth"],
+            inhale=found["inhale"],
+            truth_inhale=found["truth_inhale"],
+            entry=found["entry"],
+            onset=found["onset"],
+        )
+
     def score_own(self) -> None:
         """Score the run's best.pt on its fold's test groups, asking before an
         evaluation.json is replaced."""
@@ -712,22 +766,23 @@ class ResultsPage(Page):
             answer = QtWidgets.QMessageBox.question(
                 self,
                 "Replace the scores?",
-                f"{run.parent.name}/{run.name} already has an evaluation.json. Score "
-                "best.pt again and replace it?",
+                f"{run_label(run, project.runs_dir)} already has an evaluation.json. "
+                "Score best.pt again and replace it?",
             )
             if answer != QtWidgets.QMessageBox.StandardButton.Yes:
                 return
         experiment, fold, seed, smoke = found
         argv = [str(experiment), "--evaluate-only", "--folds", fold]
         argv += ["--seeds", str(seed)] + (["--smoke"] if smoke else [])
-        self.tabs.setCurrentIndex(self.tabs.count() - 1)  # where the log is
-        self.jobs.run(Job("run", argv, project.root))
+        self.jobs.run(Job("run", [*argv, "--save-traces"], project.root))
 
     def score(self) -> None:
-        run, clips = self._current(), self.score_list.currentData()
-        if run is None or clips is None or self.project is None:
+        """Score best.pt on a clip list the user picks, into ``scores/<list>.json``
+        (on the project's cache: preprocess the list first)."""
+        run, project = self._current(), self.project
+        if run is None or project is None:
             return
-        if not run.is_relative_to(self.project.runs_dir):
+        if not run.is_relative_to(project.runs_dir):
             QtWidgets.QMessageBox.information(
                 self,
                 "Not this project's run",
@@ -735,6 +790,20 @@ class ResultsPage(Page):
                 "from elsewhere is read, never written to.",
             )
             return
+        lists = project.clip_lists()
+        if not lists:
+            return
+        name, chosen = QtWidgets.QInputDialog.getItem(
+            self,
+            "Score on another list",
+            "Clip list (preprocessed into the project's cache; clips the run "
+            "trained on are refused):",
+            [p.name for p in lists],
+            editable=False,
+        )
+        if not chosen:
+            return
+        clips = project.root / name
         out = run / "scores" / f"{clips.stem}.json"
         self.jobs.run(
             Job(
@@ -745,11 +814,11 @@ class ResultsPage(Page):
                     "--clips",
                     str(clips),
                     "--cache",
-                    str(self.project.cache_dir),
+                    str(project.cache_dir),
                     "--out",
                     str(out),
                 ],
-                self.project.root,
+                project.root,
             )
         )
 

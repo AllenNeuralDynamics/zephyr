@@ -2,6 +2,7 @@
 crop frames it came from, played back in step with a cursor."""
 
 import json
+import shutil
 from pathlib import Path
 
 import numpy as np
@@ -11,11 +12,19 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from .. import features
 from ..features import ClipEntry
 from .jobs import Job
+from .project import cache_need, human_bytes
 from .theme import SERIES, THEME
 
 pg.setConfigOptions(antialias=True, background=THEME["card"], foreground=THEME["ink"])
 
 POLL_MS = 150
+IDLE = "Nothing running. Commands started on this page show their progress here."
+LOG_HEIGHT = (100, 220)
+"""Smallest and largest height of a job's log when it is open, in pixels."""
+ONSET_HEIGHT = 110
+"""Height of the onset head's strip under a trace, in pixels."""
+TRACE_S = 30.0
+"""The span of a trace shown at first, in seconds (zoom and pan show the rest)."""
 PLOT_HEIGHT = (200, 320)
 """Smallest and largest height of a training-curve plot, in pixels."""
 
@@ -56,8 +65,70 @@ def accent(text: str) -> QtWidgets.QPushButton:
     return QtWidgets.QPushButton(text, objectName="accent")
 
 
+def ask_cache_space(parent, lists: list[Path], cache: Path) -> bool:
+    """Whether to write *lists*' frames into *cache*, after saying how much space it
+    takes and how much the drive has (nothing to ask when all is cached)."""
+    try:
+        need = cache_need(lists, cache)
+    except ValueError:
+        return True  # the command says what is wrong with the list
+    if not need.todo:
+        return True
+    drive = cache if cache.exists() else cache.parent
+    free = shutil.disk_usage(drive).free
+    unknown = (
+        f" ({need.unknown} more of unknown size: their timestamps cannot be read)"
+        if need.unknown
+        else ""
+    )
+    text = (
+        f"This writes about {human_bytes(need.bytes)} of frames into {cache.name}/ "
+        f"for {need.todo} clip(s){unknown}; {need.cached} are cached already. The "
+        f"drive has {human_bytes(free)} free."
+    )
+    if need.bytes > free:
+        text += "\n\nThat is not enough: free some space or cancel."
+    answer = QtWidgets.QMessageBox.question(parent, "Space for the cache", text)
+    return answer == QtWidgets.QMessageBox.StandardButton.Yes
+
+
+class ElidedLabel(QtWidgets.QLabel):
+    """One line that never widens its window: cut with an ellipsis to the room it
+    has, the whole of it in the tooltip (:meth:`text` is the whole of it too)."""
+
+    def __init__(self, text: str = "", **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Preferred
+        )
+        self._full = ""
+        self.setText(text)
+
+    def setText(self, text: str) -> None:
+        self._full = text
+        self.setToolTip(text)
+        self._elide()
+
+    def text(self) -> str:
+        return self._full
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._elide()
+
+    def _elide(self) -> None:
+        metrics = self.fontMetrics()
+        width = max(self.width(), 1)
+        shown = metrics.elidedText(
+            self._full, QtCore.Qt.TextElideMode.ElideRight, width
+        )
+        super().setText(shown)
+
+
 class JobPanel(QtWidgets.QWidget):
-    """Runs one :class:`Job` at a time: its live log, Cancel, and the command line."""
+    """Runs one :class:`Job` at a time: a line saying what runs (or how it ended),
+    Cancel, the command line, and its live log, folded away until asked for or the
+    command fails. The main window shows the current page's panel below it."""
 
     line = QtCore.Signal(str)
     snippets = QtCore.Signal(dict)
@@ -74,10 +145,7 @@ class JobPanel(QtWidgets.QWidget):
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         bar = QtWidgets.QHBoxLayout()
-        self.status = QtWidgets.QLabel("idle", objectName="jobstatus")
-        self.status.setTextInteractionFlags(
-            QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
-        )
+        self.status = ElidedLabel(IDLE, objectName="jobstatus")
         bar.addWidget(self.status, 1)
         self.copy = QtWidgets.QPushButton("Copy command")
         self.copy.setToolTip("The same command, to run in a terminal from the project")
@@ -87,6 +155,14 @@ class JobPanel(QtWidgets.QWidget):
         for button in (self.copy, self.cancel):
             button.setEnabled(False)
             bar.addWidget(button)
+        self.toggle = QtWidgets.QToolButton(
+            text="Log",
+            checkable=True,
+            toolButtonStyle=QtCore.Qt.ToolButtonStyle.ToolButtonTextBesideIcon,
+        )
+        self.toggle.setToolTip("Show or hide everything the commands printed")
+        self.toggle.toggled.connect(self.show_log)
+        bar.addWidget(self.toggle)
         layout.addLayout(bar)
         self.progress = QtWidgets.QProgressBar(textVisible=False, maximumHeight=6)
         self.progress.setRange(0, 0)  # busy: no end is known
@@ -94,7 +170,10 @@ class JobPanel(QtWidgets.QWidget):
         layout.addWidget(self.progress)
         self.log = QtWidgets.QPlainTextEdit(readOnly=True)
         self.log.setMaximumBlockCount(20000)
+        self.log.setMinimumHeight(LOG_HEIGHT[0])
+        self.log.setMaximumHeight(LOG_HEIGHT[1])
         layout.addWidget(self.log, 1)
+        self.show_log(False)
         self._timer = QtCore.QTimer(self, interval=POLL_MS)
         self._timer.timeout.connect(self._poll)
 
@@ -102,8 +181,23 @@ class JobPanel(QtWidgets.QWidget):
     def busy(self) -> bool:
         return self.job is not None and self.job.running
 
-    def run(self, job: Job) -> bool:
-        """Start *job*; False (after saying so) while another one runs."""
+    def show_log(self, shown: bool) -> None:
+        self.toggle.blockSignals(True)
+        self.toggle.setChecked(shown)
+        self.toggle.blockSignals(False)
+        self.toggle.setArrowType(
+            QtCore.Qt.ArrowType.DownArrow if shown else QtCore.Qt.ArrowType.UpArrow
+        )
+        self.log.setVisible(shown)
+
+    def say(self, text: str) -> None:
+        """Put *text* in the log and open it (a page's error that is not a command's)."""
+        self.log.appendPlainText(text)
+        self.show_log(True)
+
+    def run(self, job: Job, *, show_log: bool = False) -> bool:
+        """Start *job* (opening the log with *show_log*, for a command whose output
+        is its progress); False (after saying so) while another one runs."""
         if self.busy:
             QtWidgets.QMessageBox.information(
                 self, "Busy", "Another command is running; cancel it or wait."
@@ -114,8 +208,11 @@ class JobPanel(QtWidgets.QWidget):
         try:
             job.start()
         except OSError as exc:
-            self.log.appendPlainText(f"could not start: {exc}")
+            self._show_state("failed", f"Could not start zephyr {job.command}: {exc}")
+            self.say(f"could not start: {exc}")
             return False
+        if show_log:
+            self.show_log(True)
         self._since.start()
         self._last = ""
         self._show_state("running")
@@ -171,9 +268,9 @@ class JobPanel(QtWidgets.QWidget):
                 elif payload == 0:
                     self._show_state("done", f"Done: {name}")
                 else:
-                    self._show_state(
-                        "failed", f"Failed (exit {payload}): {name}, see the log"
-                    )
+                    last = f": {self._last}" if self._last else ""
+                    self._show_state("failed", f"Failed (exit {payload}): {name}{last}")
+                    self.show_log(True)
                 self.finished.emit(None if cancelled else payload)
                 return
         if self.busy:
@@ -269,6 +366,7 @@ class TraceView(QtWidgets.QWidget):
         self._frames: np.ndarray | None = None
         self._frame_times: np.ndarray | None = None
         self._t = np.empty(0)
+        self._offset = 0.0
         layout = QtWidgets.QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         side = QtWidgets.QVBoxLayout()
@@ -287,11 +385,26 @@ class TraceView(QtWidgets.QWidget):
         side.addWidget(self.play)
         side.addStretch(1)
         layout.addLayout(side)
+        plots = QtWidgets.QVBoxLayout()
+        plots.setSpacing(0)
         self.plot = pg.PlotWidget()
         self.plot.showGrid(x=True, alpha=0.15)
-        self.plot.setLabel("bottom", "time (s)")
+        self.plot.setLabel("bottom", "time from the start (s)")
         self.legend = self.plot.addLegend(offset=(-10, 5))
-        layout.addWidget(self.plot, 1)
+        plots.addWidget(self.plot, 1)
+        # The onset head's own output, under the trace: how sure it is of an inhale
+        # at each moment, not only where it crossed the threshold.
+        self.onset_plot = pg.PlotWidget()
+        self.onset_plot.setMaximumHeight(ONSET_HEIGHT)
+        self.onset_plot.setMinimumHeight(ONSET_HEIGHT // 2)
+        self.onset_plot.setXLink(self.plot)
+        self.onset_plot.setYRange(0, 1, padding=0.05)
+        self.onset_plot.setMouseEnabled(y=False)
+        self.onset_plot.setLabel("left", "onset head")
+        self.onset_plot.showGrid(x=True, alpha=0.15)
+        self.onset_plot.hide()
+        plots.addWidget(self.onset_plot)
+        layout.addLayout(plots, 1)
         self.cursor = pg.InfiniteLine(
             angle=90, movable=True, pen=pg.mkPen(THEME["muted"], width=1)
         )
@@ -314,17 +427,24 @@ class TraceView(QtWidgets.QWidget):
         truth_inhale: np.ndarray | None = None,
         entry: ClipEntry | None = None,
         bad_spans: list[tuple[float, float]] = (),
+        onset: np.ndarray | None = None,
     ) -> None:
-        """Show one trace; *entry* (its cache entry) gives the crop frames."""
+        """Show one trace; *entry* (its cache entry) gives the crop frames, *onset*
+        the onset head's probability (drawn below, with its threshold). Times (any
+        clock) are shown in seconds from the trace's start."""
         self.play.setChecked(False)
         self.title.setText(title)
-        self._t = np.asarray(time, float)
+        time = np.asarray(time, float)
+        self._offset = float(time[0]) if len(time) else 0.0
+        self._t = time - self._offset
         plot = self.plot
         plot.clear()
         self.legend.clear()
         for start, end in bad_spans:
             region = pg.LinearRegionItem(
-                (start, end), movable=False, brush=pg.mkBrush(217, 83, 79, 40)
+                (start - self._offset, end - self._offset),
+                movable=False,
+                brush=pg.mkBrush(217, 83, 79, 40),
             )
             region.setZValue(-10)
             plot.addItem(region)
@@ -339,7 +459,7 @@ class TraceView(QtWidgets.QWidget):
         top = 3.2
         if truth_inhale is not None and len(truth_inhale):
             plot.plot(
-                np.asarray(truth_inhale),
+                np.asarray(truth_inhale) - self._offset,
                 np.full(len(truth_inhale), top),
                 pen=None,
                 symbol="t",
@@ -349,7 +469,7 @@ class TraceView(QtWidgets.QWidget):
             )
         if inhale is not None and len(inhale):
             plot.plot(
-                np.asarray(inhale),
+                np.asarray(inhale) - self._offset,
                 np.full(len(inhale), -top),
                 pen=None,
                 symbol="t1",
@@ -358,11 +478,48 @@ class TraceView(QtWidgets.QWidget):
                 name="predicted inhale",
             )
         plot.addItem(self.cursor)
+        self._show_onset(onset)
         if len(self._t):
             self.cursor.setValue(self._t[0])
-            self.plot.setXRange(self._t[0], min(self._t[-1], self._t[0] + 20))
+            self.plot.setXRange(self._t[0], min(self._t[-1], self._t[0] + TRACE_S))
         self._load_frames(entry)
         self.show_frame(self.cursor.value())
+
+    def _show_onset(self, onset: np.ndarray | None) -> None:
+        """The onset head's probability under the trace, or nothing for a network
+        without the head (no output, or one that never moves)."""
+        self.onset_plot.clear()
+        onset = None if onset is None else np.asarray(onset, float)[: len(self._t)]
+        if onset is None or not len(onset) or np.nanstd(onset) == 0:
+            self.onset_plot.hide()
+            return
+        from ..evaluate import HEAD_THRESHOLD  # the scorer's own: same inhales
+
+        self.onset_plot.plot(
+            self._t[: len(onset)],
+            onset,
+            pen=pg.mkPen(THEME["inhale"], width=1),
+            fillLevel=0,
+            brush=pg.mkBrush(47, 158, 99, 50),
+        )
+        self.onset_plot.addItem(
+            pg.InfiniteLine(
+                HEAD_THRESHOLD,
+                angle=0,
+                pen=pg.mkPen(THEME["muted"], style=QtCore.Qt.PenStyle.DashLine),
+            )
+        )
+        self.onset_plot.show()
+
+    def clear(self, title: str) -> None:
+        """Show no trace, only *title* (why there is none)."""
+        self.play.setChecked(False)
+        self.title.setText(title)
+        self._t = np.empty(0)
+        self.plot.clear()
+        self.legend.clear()
+        self._show_onset(None)
+        self._load_frames(None)
 
     def _load_frames(self, entry: ClipEntry | None) -> None:
         self._frames = self._frame_times = None
@@ -373,7 +530,7 @@ class TraceView(QtWidgets.QWidget):
             return
         if not len(self._t):
             return
-        times = np.load(entry.frame_times)
+        times = np.load(entry.frame_times) - self._offset
         rows = np.flatnonzero((times >= self._t[0] - 0.05) & (times <= self._t[-1]))
         if len(rows) == 0:
             return
@@ -482,6 +639,7 @@ class SnippetGallery(QtWidgets.QWidget):
                 inhale=np.asarray(clip["inhale"]),
                 truth_inhale=np.asarray(clip["truth_inhale"]),
                 entry=entry_from(clip["entry"]),
+                onset=np.asarray(clip["onset"]) if "onset" in clip else None,
             )
         for view in self.views[len(payload["clips"]) :]:
             view.setVisible(False)

@@ -47,17 +47,23 @@ uv run zephyr gui my-project/clips.toml
 
 A project is a folder: its clip lists (`*.toml`) and, beside them, `experiments/`,
 `frames/` (one frame per clip, for boxes), `cache/` (the feature cache), `runs/` and
-`predictions/`. The pages, in order:
+`predictions/`. Opening a folder that is not a project yet asks before making it
+one, the header says which project is open and where, and **Project → Recent
+projects** goes back to another. The steps are listed on the left, each marked done (✓), partly done (◐)
+or to do (○) from what the folder holds; above the page are the clip list every step
+works on and **Next**, highlighted once the step is done; below it, what the page's
+command is doing (its log opens on **Log**, and on its own when a command fails). The
+pages, in order:
 
 | Page | Does | Command it runs |
 | --- | --- | --- |
-| Project | opens or creates a project; what it holds | |
-| Clips | makes a clip list from a video folder (default or your own file names), checks every file | `clips scan`, `clips check` |
-| Boxes | one crop box per recording (the `zephyr annotate` window); **Auto** matches your boxes on the rest | `annotate --prepare` |
-| Breathing | each clip's events and detector, bad stretches and clips (the `zephyr annotate events` window); **Auto** gives every clip the default detector | |
-| Train | writes a new experiment (one fold over the clip list's groups; **Auto split** draws sessions in train/val/test shares), preprocesses, smoke-runs, runs and resumes it | `preprocess`, `run` |
-| Results | a run's scores per test group and clip, its curves, scoring it on another list | `evaluate` |
-| Predict | a checkpoint's trace for each video, with the crop it came from, and its quality control; **Videos** takes a folder of videos and timestamps from anywhere, its crops placed at the network's size | `clips scan --checkpoint`, `annotate --prepare`, `predict`, `quality-control run` |
+| Project | opens or creates a project; where each step stands | |
+| Clips | makes a clip list from a video folder, showing first what it would list (each video's session, timestamps and breathing file; other file names under **Other file names**) and the frame size, fixed for the list; checks every file; **Edit TOML** opens the list in your text editor (add clips or paths by hand), **Reload** reads it again and says why if it does not load | `clips scan`, `clips check` |
+| Boxes | one crop box per recording (the `zephyr annotate` window, its frame size the list's); **Auto** matches your boxes on the rest | `annotate --prepare` |
+| Breathing | each clip's events and detector, bad stretches and clips (the `zephyr annotate events` window), opening on the suggestions for every clip; **Auto** gives every clip the default detector; a dot in the list marks unsaved changes | |
+| Train | writes a new experiment (one fold over the clip list's groups; **Auto split** draws sessions in train/val/test shares), preprocesses, smoke-runs, runs and resumes it | `preprocess`, `run --save-traces` |
+| Results | a run's scores per test group and clip, a clip's trace against its sensor (the run's `traces/`), its curves; scoring it on its test groups or another list | `run --evaluate-only`, `evaluate` |
+| Predict | a checkpoint's trace for each video, with the onset head's probability under it, the crop it came from (when its frames are cached) and its quality control; **Videos** takes a folder of videos and timestamps from anywhere into a list you can see, add videos to and remove them from, its crops placed at the network's size; frames are read straight from the videos unless you ask to keep them in the cache | `clips scan --checkpoint`, `annotate --prepare`, `predict`, `quality-control run` |
 
 The app writes only clip lists (as the two windows do) and new experiments (never
 editing one). Every command runs on this machine, in a child process of the app, with
@@ -65,7 +71,12 @@ the same arguments the command line takes (**Copy command** gives that line), so
 or **Cancel** leaves the app running and a stopped run continues with **Resume**.
 **Run** on an experiment that already has a run asks before starting it over
 (`--restart`), and **Score its test groups** on Results scores a run's `best.pt`,
-finished or stopped (`--evaluate-only`), asking before it replaces scores. While a
+finished or stopped (`--evaluate-only`), asking before it replaces scores. Runs and
+scorings the app starts save the traces they score (`--save-traces`, about 1 MB a
+test clip), which Results draws against the sensor. Before anything fills the
+feature cache (**Preprocess**, or a prediction keeping its frames), the app says how
+much space it takes (frames kept × crop pixels, one byte each) and how much the drive
+has. While a
 run trains, its curves are read from its `history.json`, and after each validation
 scoring it sends the app a window of a few validation clips (the true and predicted
 traces, their inhales and the crop frames to play along): those snippets are shown,

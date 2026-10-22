@@ -300,12 +300,20 @@ def _hist_plot(title: str, xlabel: str) -> pg.PlotItem:
 
 class EditorWindow(QtWidgets.QMainWindow):
     """The editor on one clip list. In the app it is a page; *opener*, when given,
-    opens another list in its place (File > Open) instead of a new window."""
+    opens another list in its place (File > Open) instead of a new window. With
+    *suggest* the Selection tab's suggestions are run as soon as it is first shown."""
 
-    def __init__(self, state: TuneState, window_s: float = 10.0, opener=None) -> None:
+    def __init__(
+        self,
+        state: TuneState,
+        window_s: float = 10.0,
+        opener=None,
+        suggest: bool = False,
+    ) -> None:
         super().__init__()
         self.state = state
         self.opener = opener
+        self.suggest = suggest
         self.width_s = self.initial_s = window_s
         self.band = list(RATE_BAND_HZ)
         self.cursor_x: float | None = None
@@ -336,6 +344,8 @@ class EditorWindow(QtWidgets.QMainWindow):
             QtCore.QTimer.singleShot(
                 0, lambda: self.set_window(lo, lo + self.initial_s)
             )
+            if self.suggest and self._suggestions is None:
+                QtCore.QTimer.singleShot(0, self.run_selection)
 
     # ---- construction ----------------------------------------------------------
 
@@ -1401,8 +1411,13 @@ class EditorWindow(QtWidgets.QMainWindow):
         job.signals.progress.connect(lambda done, _total: dialog.setValue(done))
 
         def finished(error: str) -> None:
-            dialog.close()
             self._jobs.remove(job)
+            try:
+                dialog.close()
+                dialog.deleteLater()
+            except RuntimeError:  # the window was closed while it worked
+                return
+            self.window().activateWindow()  # the keys are the editor's again
             then(error)
 
         job.signals.done.connect(finished)
@@ -1438,17 +1453,48 @@ class EditorWindow(QtWidgets.QMainWindow):
         )
         auto.clicked.connect(self.auto)
         quick.addWidget(auto)
-        quick.addWidget(
-            QtWidgets.QLabel(
-                "then check the suggestions below, and the Editor for single videos",
-                objectName="sub",
-            )
+        run = QtWidgets.QPushButton("Run suggestions again")
+        run.setToolTip("Score every video in rolling windows with the thresholds")
+        run.clicked.connect(self.run_selection)
+        quick.addWidget(run)
+        write = QtWidgets.QPushButton("Apply suggestions to unreviewed videos")
+        write.setToolTip(
+            "Write the suggested mark and spans into every video not reviewed; "
+            "Save keeps them"
         )
+        write.clicked.connect(self.apply_selection)
+        quick.addWidget(write)
+        save = QtWidgets.QPushButton("Save (Ctrl+S)")
+        save.setToolTip("Write the marks, spans and detectors into the clip list")
+        save.clicked.connect(lambda: self.save())
+        quick.addWidget(save)
+        self.thresholds = QtWidgets.QToolButton(
+            text="Thresholds",
+            checkable=True,
+            toolButtonStyle=QtCore.Qt.ToolButtonStyle.ToolButtonTextBesideIcon,
+        )
+        quick.addWidget(self.thresholds)
         quick.addStretch(1)
         layout.addLayout(quick)
+        layout.addWidget(
+            QtWidgets.QLabel(
+                "1. Auto sets the default detector for every video. 2. Check the "
+                "suggestions below (bold: differs from the video's mark) and apply "
+                "them. 3. Double-click a video to look at it in the Editor. 4. Save.",
+                objectName="sub",
+                wordWrap=True,
+            )
+        )
         card = QtWidgets.QFrame(objectName="card")
         grid = QtWidgets.QGridLayout(card)
-        grid.addWidget(QtWidgets.QLabel("SELECTION", objectName="title"), 0, 0)
+        self.thresholds.toggled.connect(card.setVisible)
+        self.thresholds.toggled.connect(
+            lambda on: self.thresholds.setArrowType(
+                QtCore.Qt.ArrowType.DownArrow if on else QtCore.Qt.ArrowType.RightArrow
+            )
+        )
+        self.thresholds.setArrowType(QtCore.Qt.ArrowType.RightArrow)
+        card.setVisible(False)
         defaults = session_selection.Settings()
         self.sel_edits: dict[str, QtWidgets.QLineEdit] = {}
         labels = {
@@ -1462,23 +1508,16 @@ class EditorWindow(QtWidgets.QMainWindow):
             "artifact_z": "artifact z",
             "artifact_pad_s": "artifact pad (s)",
         }
+        per_row = 5  # two rows, so the tab never needs more than the window's width
         for n, (name, label) in enumerate(labels.items()):
             edit = QtWidgets.QLineEdit(f"{getattr(defaults, name):g}")
             edit.setMaximumWidth(80)
-            grid.addWidget(QtWidgets.QLabel(label), 0, 1 + 2 * n)
-            grid.addWidget(edit, 0, 2 + 2 * n)
+            edit.returnPressed.connect(self.run_selection)
+            row, column = divmod(n, per_row)
+            grid.addWidget(QtWidgets.QLabel(label), row, 2 * column)
+            grid.addWidget(edit, row, 1 + 2 * column)
             self.sel_edits[name] = edit
-        run = QtWidgets.QPushButton("Run suggestions", objectName="accent")
-        run.clicked.connect(self.run_selection)
-        write = QtWidgets.QPushButton("Apply to unreviewed videos")
-        write.setToolTip(
-            "Write the suggested mark and spans into every video not reviewed; "
-            "File > Save keeps them"
-        )
-        write.clicked.connect(self.apply_selection)
-        grid.addWidget(run, 0, 2 + 2 * len(labels))
-        grid.addWidget(write, 0, 3 + 2 * len(labels))
-        grid.setColumnStretch(4 + 2 * len(labels), 1)
+        grid.setColumnStretch(2 * per_row, 1)
         layout.addWidget(card)
         bar = QtWidgets.QHBoxLayout()
         bar.addWidget(QtWidgets.QLabel("Selected videos:"))
@@ -2017,8 +2056,9 @@ class EditorWindow(QtWidgets.QMainWindow):
         action(file_menu, "&Remove selected videos", self.remove_videos, "Del")
         file_menu.addSeparator()
         action(file_menu, "&Save", self.save, "Ctrl+S")
-        file_menu.addSeparator()
-        action(file_menu, "&Quit", self.close, "Ctrl+Q")
+        if self.opener is None:  # in the app, Quit (and its key) is the app's
+            file_menu.addSeparator()
+            action(file_menu, "&Quit", self.close, "Ctrl+Q")
         edit_menu = bar.addMenu("&Edit")
         action(
             edit_menu,

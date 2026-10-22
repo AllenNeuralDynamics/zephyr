@@ -6,22 +6,39 @@ import json
 import tempfile
 from pathlib import Path
 
-from PySide6 import QtCore, QtWidgets
+from PySide6 import QtCore, QtGui, QtWidgets
 
 from .. import features
-from ..annotate import DEFAULT_BOX_SIZE, frame_path, missing_frames, open_state
+from ..annotate import frame_path, missing_frames, open_state
 from ..annotate_events import TuneState
 from ..config import Derive
+from ..video import probe_size
 from .boxes import BoxWindow
 from .breathing import EditorWindow
 from .jobs import Job
-from .project import Project
+from .project import Project, preview_scan
 from .widgets import JobPanel, accent, heading, note
+
+FRAME_DIVISORS = (("native", 1), ("1/2", 2), ("1/3", 3), ("1/4", 4))
+"""The frame sizes a new list can take, as fractions of the first video's."""
+PREVIEW_MS = 300
+"""How long typing pauses before the Clips page looks for the files again."""
+PREVIEW_ROWS = 500
+STEP_HELP = {
+    "Clips": "list the videos and check their files",
+    "Boxes": "one crop box per recording, around the face",
+    "Breathing": "check the breathing events the network learns from",
+    "Train": "split the sessions, then train",
+    "Results": "score a run on its held-out sessions",
+    "Predict": "traces for new videos",
+}
+STATE_MARK = {"done": "✓", "partly": "◐", "todo": "○"}
 
 
 class Page(QtWidgets.QWidget):
     """One step of the app. *set_project* is called when the project or its clip
-    list changes; *leave* may refuse to switch away (unsaved changes)."""
+    list changes; *leave* may refuse to switch away (unsaved changes), and
+    *attention* says what the user must still do here (shown above the page)."""
 
     title = ""
 
@@ -41,6 +58,9 @@ class Page(QtWidgets.QWidget):
 
     def leave(self) -> bool:
         return True
+
+    def attention(self) -> str:
+        return ""
 
 
 def _table(headers: list[str]) -> QtWidgets.QTableWidget:
@@ -137,25 +157,38 @@ class ProjectPage(Page):
             f"<li>{len(project.experiments())} experiment(s), {len(project.runs())} "
             "run(s)</li></ul>"
         )
+        steps = project.steps()
+        lines.append("<p><b>Where the project is</b></p><table cellpadding='3'>")
+        for number, (title, what) in enumerate(STEP_HELP.items(), start=1):
+            step = steps.get(title)
+            state = step.state if step else "todo"
+            lines.append(
+                f"<tr><td>{STATE_MARK[state]}</td><td><b>{number} {title}</b></td>"
+                f"<td>{what}</td><td style='color:#7b8794'>"
+                f"{html.escape(step.detail) if step else ''}</td></tr>"
+            )
+        lines.append("</table>")
         lines.append(
-            "<p>Steps: <b>Clips</b> (list and check the files) &rarr; <b>Boxes</b> "
-            "(one crop per recording) &rarr; <b>Breathing</b> (check the events) "
-            "&rarr; <b>Train</b> &rarr; <b>Results</b> &rarr; <b>Predict</b>.</p>"
+            "<p>Work down the list on the left; <b>Next</b> (top right) goes on once "
+            "a step is done.</p>"
         )
         self.summary.setText("".join(lines))
 
 
 class ClipsPage(Page):
-    """Make a clip list from a folder of videos (``zephyr clips scan``), see its
-    clips, and check every file (``zephyr clips check``)."""
+    """Make a clip list from a folder of videos (``zephyr clips scan``), seeing first
+    what it would list, then its clips, and check every file (``zephyr clips
+    check``)."""
 
     title = "Clips"
 
     def __init__(self, app) -> None:
         super().__init__(app)
         layout = QtWidgets.QHBoxLayout(self)
-        left = QtWidgets.QVBoxLayout()
-        layout.addLayout(left, 1)
+        self.new_form = QtWidgets.QWidget(maximumWidth=520)
+        left = QtWidgets.QVBoxLayout(self.new_form)
+        left.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.new_form, 1)
         right = QtWidgets.QVBoxLayout()
         layout.addLayout(right, 2)
 
@@ -168,21 +201,37 @@ class ClipsPage(Page):
         folder_row.addWidget(self.folder)
         folder_row.addWidget(browse)
         form.addRow("Video folder", folder_row)
-        self.glob = QtWidgets.QLineEdit("video_*.mp4")
+        self.glob = QtWidgets.QLineEdit("*.mp4")
         form.addRow("Videos", self.glob)
         self.name = QtWidgets.QLineEdit("clips")
         form.addRow("List name", self.name)
-        self.unlabelled = QtWidgets.QCheckBox("no breathing sensor (predict only)")
-        form.addRow("", self.unlabelled)
+        self.frame = QtWidgets.QComboBox()
+        for label, divisor in FRAME_DIVISORS:
+            self.frame.addItem(label, divisor)
+        self.frame.setToolTip(
+            "The size every frame is shrunk to before the crop; boxes are placed on "
+            "it, and it is fixed for the list (a new size is a new list)"
+        )
+        form.addRow("Frame size", self.frame)
+        left.addLayout(form)
+        self.naming = QtWidgets.QToolButton(
+            text="Other file names",
+            checkable=True,
+            toolButtonStyle=QtCore.Qt.ToolButtonStyle.ToolButtonTextBesideIcon,
+        )
+        self.naming.toggled.connect(self._show_naming)
+        left.addWidget(self.naming)
+        self.naming_form = QtWidgets.QWidget()
+        names = QtWidgets.QFormLayout(self.naming_form)
+        names.setContentsMargins(0, 0, 0, 0)
         defaults = Derive()
         self.pattern = QtWidgets.QLineEdit(defaults.pattern)
         self.timestamps = QtWidgets.QLineEdit(defaults.timestamps)
         self.thermistor = QtWidgets.QLineEdit(defaults.thermistor)
-        form.addRow("Name pattern", self.pattern)
-        form.addRow("Timestamps", self.timestamps)
-        form.addRow("Breathing file", self.thermistor)
-        left.addLayout(form)
-        left.addWidget(
+        names.addRow("Name pattern", self.pattern)
+        names.addRow("Timestamps", self.timestamps)
+        names.addRow("Breathing file", self.thermistor)
+        names.addRow(
             note(
                 "The pattern is a regex searched in each video's file name (without "
                 "extension); it must capture (?P<group>...), the session. The two "
@@ -191,27 +240,79 @@ class ClipsPage(Page):
                 "with <stem>.parquet and thermistor_<session>_part_<n>.parquet."
             )
         )
-        scan = accent("Make the clip list")
-        scan.clicked.connect(self.scan)
-        left.addWidget(scan)
-        left.addStretch(1)
+        left.addWidget(self.naming_form)
+        self._show_naming(False)
+        self.found_label = note("Choose the folder of videos.")
+        left.addWidget(self.found_label)
+        self.found = _table(["video", "session", "timestamps", "sensor"])
+        left.addWidget(self.found, 1)
+        self.scan_button = accent("Make the clip list")
+        self.scan_button.clicked.connect(self.scan)
+        left.addWidget(self.scan_button)
+        self._preview = QtCore.QTimer(self, singleShot=True, interval=PREVIEW_MS)
+        self._preview.timeout.connect(self.preview)
+        for edit in (self.folder, self.glob, self.pattern):
+            edit.textChanged.connect(lambda _=None: self._preview.start())
+        for edit in (self.timestamps, self.thermistor):
+            edit.textChanged.connect(lambda _=None: self._preview.start())
+        self.frame.currentIndexChanged.connect(lambda _: self._show_size())
+        self._native: tuple[Path, tuple[int, int] | None] | None = None
 
         bar = QtWidgets.QHBoxLayout()
         self.list_label = heading("Clips")
         bar.addWidget(self.list_label, 1)
+        self.another = QtWidgets.QToolButton(
+            text="New clip list",
+            checkable=True,
+            toolButtonStyle=QtCore.Qt.ToolButtonStyle.ToolButtonTextBesideIcon,
+        )
+        self.another.toggled.connect(self._show_form)
+        bar.addWidget(self.another)
+        self.edit = QtWidgets.QPushButton("Edit TOML")
+        self.edit.setToolTip(
+            "Open the clip list in your text editor (add or change clips, file "
+            "names, [derive]); save it there, then Reload"
+        )
+        self.edit.clicked.connect(self.edit_list)
+        bar.addWidget(self.edit)
+        self.reload = QtWidgets.QPushButton("Reload")
+        self.reload.setToolTip("Read the clip list again, as saved on disk")
+        self.reload.clicked.connect(self.reload_list)
+        bar.addWidget(self.reload)
         check = accent("Check files")
+        check.setToolTip("Read every file the list names and say what would be refused")
         check.clicked.connect(self.check)
         bar.addWidget(check)
         right.addLayout(bar)
+        self.hint = note("")
+        self.hint.setVisible(False)
+        right.addWidget(self.hint)
+        self.problem = QtWidgets.QLabel(objectName="bad", wordWrap=True)
+        self.problem.setTextInteractionFlags(
+            QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        self.problem.setVisible(False)
+        right.addWidget(self.problem)
         self.table = _table(
             ["clip", "group", "sensor", "box", "events", "mark", "check"]
         )
-        right.addWidget(self.table, 3)
+        right.addWidget(self.table, 1)
         self.jobs = JobPanel()
         self.jobs.finished.connect(self._finished)
-        right.addWidget(self.jobs, 1)
         self._pending: tuple[str, Path] | None = None
         self._checks: dict[str, dict] = {}
+
+    def _show_naming(self, shown: bool) -> None:
+        self.naming_form.setVisible(shown)
+        self.naming.setArrowType(
+            QtCore.Qt.ArrowType.DownArrow if shown else QtCore.Qt.ArrowType.RightArrow
+        )
+
+    def _show_form(self, shown: bool) -> None:
+        self.new_form.setVisible(shown)
+        self.another.setArrowType(
+            QtCore.Qt.ArrowType.DownArrow if shown else QtCore.Qt.ArrowType.LeftArrow
+        )
 
     def _browse(self) -> None:
         start = str(self.project.root) if self.project else ""
@@ -219,14 +320,129 @@ class ClipsPage(Page):
         if folder:
             self.folder.setText(folder)
 
+    def _derive(self) -> Derive:
+        return Derive(
+            pattern=self.pattern.text(),
+            timestamps=self.timestamps.text(),
+            thermistor=self.thermistor.text(),
+        )
+
+    def preview(self) -> None:
+        """What the scan would list, as the fields are typed: each video's session
+        and whether its timestamps and breathing file are there."""
+        self.found.setRowCount(0)
+        folder = self.folder.text().strip()
+        if not folder:
+            self.found_label.setText("Choose the folder of videos.")
+            return
+        try:
+            found = preview_scan(Path(folder), self.glob.text().strip(), self._derive())
+        except ValueError as exc:
+            self.found_label.setText(f"File names: {exc}")
+            return
+        if not found:
+            self.found_label.setText(
+                f"No video in {folder} matches {self.glob.text()!r}."
+            )
+            self._native = None
+            self._show_size()
+            return
+        unmatched = sum(f.group is None for f in found)
+        stamped = sum(f.timestamps for f in found)
+        sensed = sum(f.sensor for f in found)
+        problems = []
+        if unmatched:
+            problems.append(
+                f"{unmatched} name(s) do not match the pattern (Other file names)"
+            )
+        if stamped < len(found):
+            problems.append(f"{len(found) - stamped} without timestamps")
+        if sensed < len(found):
+            problems.append(f"{len(found) - sensed} without a breathing file")
+        groups = len({f.group for f in found if f.group is not None})
+        self.found_label.setText(
+            f"{len(found)} video(s) in {groups} session(s). "
+            + ("; ".join(problems) + "." if problems else "Every file is there.")
+        )
+        _fill(
+            self.found,
+            [
+                [
+                    f.video.name,
+                    f.group or "no match",
+                    "✓" if f.timestamps else "✗",
+                    "✓" if f.sensor else "✗",
+                ]
+                for f in found[:PREVIEW_ROWS]
+            ],
+        )
+        first = found[0].video
+        if self._native is None or self._native[0] != first:
+            try:
+                self._native = (first, probe_size(first))
+            except Exception:  # noqa: BLE001 - only the size label goes without
+                self._native = (first, None)
+        self._show_size()
+
+    def frame_size(self) -> tuple[int, int] | None:
+        """The frame size chosen, from the first video's (None while unknown)."""
+        if self._native is None or self._native[1] is None:
+            return None
+        width, height = self._native[1]
+        divisor = self.frame.currentData()
+        return width // divisor, height // divisor
+
+    def _show_size(self) -> None:
+        size = self.frame_size()
+        for i, (label, divisor) in enumerate(FRAME_DIVISORS):
+            native = self._native[1] if self._native else None
+            text = label
+            if native is not None:
+                text = f"{label}: {native[0] // divisor} x {native[1] // divisor}"
+            self.frame.setItemText(i, text)
+        self.frame.setEnabled(size is not None)
+
     def set_project(self, project: Project | None) -> None:
         self._checks = {}
+        listed = project is not None and project.clip_list is not None
+        self.another.setChecked(not listed)  # no list yet: make one
+        self._show_form(self.another.isChecked())
         self.shown()
+
+    def edit_list(self) -> None:
+        """Open the clip list in the system's editor for ``.toml`` files (it is the
+        user's file to edit; the app only reads it again on Reload)."""
+        path = self.project.clip_list if self.project else None
+        if path is None:
+            return
+        url = QtCore.QUrl.fromLocalFile(str(path))
+        if not QtGui.QDesktopServices.openUrl(url):
+            QtGui.QGuiApplication.clipboard().setText(str(path))
+            QtWidgets.QMessageBox.information(
+                self,
+                "No editor for .toml files",
+                f"No program opens .toml files here. Open {path} in a text editor "
+                "(its path is on the clipboard), save it, then Reload.",
+            )
+        self.hint.setText(
+            f"{path.name} is open in your editor: save it there, then Reload."
+        )
+        self.hint.setVisible(True)
+
+    def reload_list(self) -> None:
+        """Read the clip list again, after it was edited outside the app."""
+        if self.project is not None and self.project.clip_list is not None:
+            self.hint.setVisible(False)
+            self.app.open_project(self.project.clip_list)
 
     def shown(self) -> None:
         project = self.project
-        if project is None or project.clip_list is None:
-            self.list_label.setText("Clips: no clip list")
+        self.problem.setVisible(False)
+        listed = project is not None and project.clip_list is not None
+        self.edit.setEnabled(listed)
+        self.reload.setEnabled(listed)
+        if not listed:
+            self.list_label.setText("Clips: no clip list yet")
             self.table.setRowCount(0)
             return
         self.list_label.setText(f"Clips of {project.clip_list.name}")
@@ -234,7 +450,11 @@ class ClipsPage(Page):
             clip_list = project.load_list()
         except ValueError as exc:
             self.table.setRowCount(0)
-            self.jobs.log.appendPlainText(str(exc))
+            self.problem.setText(
+                f"{project.clip_list.name} does not load: {exc}\nFix it with Edit "
+                "TOML, then Reload."
+            )
+            self.problem.setVisible(True)
             return
         rows = []
         resolved_clips = clip_list.resolve(include_excluded=True)
@@ -270,8 +490,9 @@ class ClipsPage(Page):
             )
             return
         argv = [self.folder.text(), "--glob", self.glob.text(), "-o", str(out)]
-        if self.unlabelled.isChecked():
-            argv.append("--unlabelled")
+        size = self.frame_size()
+        if size is not None and self.frame.currentData() != 1:
+            argv += ["--target-size", str(size[0]), str(size[1])]
         defaults = Derive()
         for flag, edit, default in (
             ("--pattern", self.pattern, defaults.pattern),
@@ -312,7 +533,8 @@ class ClipsPage(Page):
 
 class BoxesPage(Page):
     """Place one crop box per recording, on the project's clip list (the
-    :class:`~.boxes.BoxWindow`); frames come from ``frames/`` (``--prepare``)."""
+    :class:`~.boxes.BoxWindow`, its frame size the list's, set on Clips); frames
+    come from ``frames/`` (``--prepare``)."""
 
     title = "Boxes"
 
@@ -322,13 +544,12 @@ class BoxesPage(Page):
         layout.setContentsMargins(0, 0, 0, 0)
         bar = QtWidgets.QHBoxLayout()
         bar.setContentsMargins(9, 9, 9, 0)
-        self.label = QtWidgets.QLabel()
+        self.label = QtWidgets.QLabel(wordWrap=True)
         bar.addWidget(self.label, 1)
-        bar.addWidget(QtWidgets.QLabel("box size for unplaced lists"))
-        self.box_size = QtWidgets.QSpinBox(minimum=16, maximum=1024, singleStep=8)
-        self.box_size.setValue(DEFAULT_BOX_SIZE)
-        bar.addWidget(self.box_size)
         self.prepare = accent("Cache one frame per clip")
+        self.prepare.setToolTip(
+            "Decode one frame of every clip into frames/, to place the boxes on"
+        )
         self.prepare.clicked.connect(self.cache_frames)
         bar.addWidget(self.prepare)
         reload = QtWidgets.QPushButton("Reload")
@@ -336,10 +557,11 @@ class BoxesPage(Page):
         bar.addWidget(reload)
         layout.addLayout(bar)
         self.stack = QtWidgets.QStackedWidget()
+        self.empty = QtWidgets.QWidget()
+        self.stack.addWidget(self.empty)
+        layout.addWidget(self.stack, 1)
         self.jobs = JobPanel()
         self.jobs.finished.connect(lambda code: self.load() if code == 0 else None)
-        self.stack.addWidget(self.jobs)
-        layout.addWidget(self.stack, 1)
         self.window: BoxWindow | None = None
         self._loaded: Path | None = None
 
@@ -355,7 +577,6 @@ class BoxesPage(Page):
     def cache_frames(self) -> None:
         if self.project is None or self.project.clip_list is None:
             return
-        self.stack.setCurrentWidget(self.jobs)
         self.jobs.run(
             Job(
                 "annotate",
@@ -375,8 +596,9 @@ class BoxesPage(Page):
             self.stack.removeWidget(self.window)
             self.window.deleteLater()
             self.window = None
+        self.prepare.setVisible(False)
         if project is None or project.clip_list is None:
-            self.label.setText("No clip list: make one on the Clips page.")
+            self.label.setText("No clip list yet: make one on 1 Clips.")
             return
         self._loaded = project.clip_list
         try:
@@ -388,24 +610,27 @@ class BoxesPage(Page):
                 for c in clips
                 if c.video is not None
             )
-            state = open_state(
-                project.clip_list,
-                project.frames_dir,
-                box_size=self.box_size.value(),
-                remote=remote,
-            )
+            state = open_state(project.clip_list, project.frames_dir, remote=remote)
         except (ValueError, SystemExit, OSError) as exc:
             self.label.setText(f"Cannot place boxes: {exc}")
-            self.stack.setCurrentWidget(self.jobs)
             return
         missing = missing_frames(state, project.frames_dir)
         done, total = state.progress()
-        self.label.setText(
-            f"{project.clip_list.name}: {done} of {total} recordings placed"
-            + (f"; {len(missing)} clip(s) have no cached frame" if missing else "")
-        )
+        if missing:
+            self.label.setText(
+                f"{len(missing)} clip(s) have no cached frame yet, so their boxes "
+                "would be placed on black: cache them first."
+            )
+        else:
+            self.label.setText(
+                f"{done} of {total} recordings placed. Click the face (mouth and "
+                "nose) in each; Auto (A) places the rest from those placed by hand. "
+                "Every change is saved."
+            )
         self.prepare.setVisible(bool(missing))
-        self.window = BoxWindow(state, project.frames_dir, project.clip_list)
+        self.window = BoxWindow(
+            state, project.frames_dir, project.clip_list, frame_fixed=True
+        )
         self.window.setWindowFlags(QtCore.Qt.WindowType.Widget)
         self.stack.addWidget(self.window)
         self.stack.setCurrentWidget(self.window)
@@ -448,7 +673,7 @@ class BreathingPage(Page):
             self.editor = None
         self._loaded = project.clip_list if project else None
         if project is None or project.clip_list is None:
-            self.message.setText("No clip list: make one on the Clips page.")
+            self.message.setText("No clip list yet: make one on 1 Clips.")
             self.message.setVisible(True)
             return
         try:
@@ -458,7 +683,7 @@ class BreathingPage(Page):
             self.message.setVisible(True)
             return
         self.message.setVisible(False)
-        self.editor = EditorWindow(state, opener=self.open_list)
+        self.editor = EditorWindow(state, opener=self.open_list, suggest=True)
         self.editor.setWindowFlags(QtCore.Qt.WindowType.Widget)
         self.editor.menuBar().setNativeMenuBar(False)
         self.layout_.addWidget(self.editor, 1)
@@ -466,3 +691,8 @@ class BreathingPage(Page):
 
     def leave(self) -> bool:
         return self.editor is None or self.editor._confirm_discard()
+
+    def attention(self) -> str:
+        if self.editor is not None and self.editor.state.modified:
+            return "Breathing has unsaved changes: Save (Ctrl+S) keeps them"
+        return ""

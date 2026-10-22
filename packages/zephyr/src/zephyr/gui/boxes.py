@@ -68,13 +68,26 @@ class _Canvas(pg.GraphicsView):
 
 
 class BoxWindow(QtWidgets.QMainWindow):
-    """Place the boxes of *state*, saving each change to the clip list *out_path*."""
+    """Place the boxes of *state*, saving each change to the clip list *out_path*.
+    With *frame_fixed* (the app, where Clips chose it) the frame size is shown, not
+    offered."""
 
-    def __init__(self, state: BoxState, frame_dir: Path, out_path: Path) -> None:
+    saved = QtCore.Signal()
+    """The clip list was written (after every change)."""
+
+    def __init__(
+        self,
+        state: BoxState,
+        frame_dir: Path,
+        out_path: Path,
+        *,
+        frame_fixed: bool = False,
+    ) -> None:
         super().__init__()
         self.state = state
         self.frame_dir = frame_dir
         self.out_path = out_path
+        self.frame_fixed = frame_fixed
         self.setWindowTitle("Crop ROI per recording")
         self._frames: dict[str, list[np.ndarray]] = {}
         self._items: dict[str, QtWidgets.QTreeWidgetItem] = {}
@@ -93,20 +106,35 @@ class BoxWindow(QtWidgets.QMainWindow):
         column = QtWidgets.QVBoxLayout(left)
         column.addWidget(QtWidgets.QLabel("Recordings", objectName="heading"))
         self.tree = QtWidgets.QTreeWidget()
-        self.tree.setHeaderLabels(["Recording", "Clips", "ROI"])
-        self.tree.setColumnWidth(0, 200)
-        self.tree.setColumnWidth(1, 50)
+        self.tree.setHeaderLabels(["Recording", "Clips", "Box"])
+        header = self.tree.header()
+        header.setStretchLastSection(False)
+        header.setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeMode.Stretch)
+        for section in (1, 2):
+            header.setSectionResizeMode(
+                section, QtWidgets.QHeaderView.ResizeMode.ResizeToContents
+            )
+        self.tree.setTextElideMode(QtCore.Qt.TextElideMode.ElideMiddle)
         # Keys belong to the box, as in the frame: the tree only takes clicks.
         self.tree.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
         folders: dict[Path, QtWidgets.QTreeWidgetItem] = {}
+        one_folder = len({r.clips[0].video.parent for r in self.state.recordings}) == 1
+        self.tree.setRootIsDecorated(not one_folder)
         for recording in self.state.recordings:
             folder = recording.clips[0].video.parent
-            if folder not in folders:
-                folders[folder] = QtWidgets.QTreeWidgetItem(self.tree, [folder.name])
-                folders[folder].setExpanded(True)
+            if one_folder:  # no folder level to tell them apart
+                parent = self.tree
+            else:
+                if folder not in folders:
+                    folders[folder] = QtWidgets.QTreeWidgetItem(
+                        self.tree, [folder.name]
+                    )
+                    folders[folder].setExpanded(True)
+                parent = folders[folder]
             item = QtWidgets.QTreeWidgetItem(
-                folders[folder], [recording.label, str(len(recording.clips)), ""]
+                parent, [recording.label, str(len(recording.clips)), ""]
             )
+            item.setToolTip(0, recording.label)
             item.setData(0, QtCore.Qt.ItemDataRole.UserRole, recording.key)
             self._items[recording.key] = item
         self.tree.currentItemChanged.connect(self._tree_picked)
@@ -116,14 +144,16 @@ class BoxWindow(QtWidgets.QMainWindow):
         right = QtWidgets.QWidget()
         column = QtWidgets.QVBoxLayout(right)
         controls = QtWidgets.QHBoxLayout()
-        controls.addWidget(QtWidgets.QLabel("Downsample to:"))
+        downsample = QtWidgets.QLabel("Downsample to:")
+        controls.addWidget(downsample)
         self.width_edit = QtWidgets.QLineEdit(maximumWidth=60)
         self.height_edit = QtWidgets.QLineEdit(maximumWidth=60)
         for edit in (self.width_edit, self.height_edit):
             edit.setValidator(QtGui.QIntValidator(1, 100000))
             edit.returnPressed.connect(self.apply_target)
         controls.addWidget(self.width_edit)
-        controls.addWidget(QtWidgets.QLabel("x"))
+        by = QtWidgets.QLabel("x")
+        controls.addWidget(by)
         controls.addWidget(self.height_edit)
         apply = QtWidgets.QPushButton("Apply")
         apply.clicked.connect(self.apply_target)
@@ -134,7 +164,11 @@ class BoxWindow(QtWidgets.QMainWindow):
             button.clicked.connect(lambda _=False, d=divisor: self.set_divisor(d))
             controls.addWidget(button)
             sizing.append(button)
-        controls.addSpacing(16)
+        if self.frame_fixed:
+            for widget in [downsample, by, *sizing]:
+                widget.hide()
+        else:
+            controls.addSpacing(16)
         controls.addWidget(QtWidgets.QLabel("Box:"))
         smaller = QtWidgets.QPushButton("-")
         smaller.clicked.connect(lambda: self.resize_box(-STEP))
@@ -186,7 +220,7 @@ class BoxWindow(QtWidgets.QMainWindow):
         column.addWidget(self.canvas, 1)
         split.addWidget(right)
         split.setStretchFactor(1, 1)
-        split.setSizes([330, 1100])
+        split.setSizes([380, 1050])
 
         self.info = QtWidgets.QLabel()
         self.statusBar().addWidget(self.info, 1)
@@ -246,8 +280,9 @@ class BoxWindow(QtWidgets.QMainWindow):
         self.crosshair.setData([box_centre(box)[0]], [box_centre(box)[1]])
 
         scale = state.scale_from_native
+        fixed = " (the list's, set when it was made)" if self.frame_fixed else ""
         self.title.setText(
-            f"<b>{state.recording.label}</b><br>frame {width}x{height} "
+            f"<b>{state.recording.label}</b><br>frame {width}x{height}{fixed} "
             f"({scale:.2f}x downsample)   box {state.box_size}px = "
             f"{state.box_size * scale:.0f} native px   at {box[:2]}"
         )
@@ -264,10 +299,14 @@ class BoxWindow(QtWidgets.QMainWindow):
 
     # ---- actions ----------------------------------------------------------------
 
+    def _save(self) -> None:
+        save_boxes(self.out_path, self.state)
+        self.saved.emit()
+
     def commit(self) -> None:
         """Save after a change to the boxes, as every change is."""
         self._refresh_row(self.state.key)
-        save_boxes(self.out_path, self.state)
+        self._save()
         self.redraw()
 
     def select_key(self, key: str) -> None:
@@ -303,7 +342,7 @@ class BoxWindow(QtWidgets.QMainWindow):
             return
         for key in scores:
             self._refresh_row(key)
-        save_boxes(self.out_path, self.state)
+        self._save()
         self.redraw()
         boxed = sum(key in self.state.matched for key in scores)
         self.statusBar().showMessage(
@@ -323,7 +362,7 @@ class BoxWindow(QtWidgets.QMainWindow):
             return
         self.state.set_target(width, height)
         self._fitted = False
-        save_boxes(self.out_path, self.state)
+        self._save()
         self.redraw()
         self.canvas.setFocus()
 
@@ -331,7 +370,7 @@ class BoxWindow(QtWidgets.QMainWindow):
         native = self.state.native_size
         self.state.set_target(native[0] // divisor, native[1] // divisor)
         self._fitted = False
-        save_boxes(self.out_path, self.state)
+        self._save()
         self.redraw()
 
     def keyPressEvent(self, event) -> None:
@@ -382,7 +421,7 @@ class BoxWindow(QtWidgets.QMainWindow):
         return True
 
     def closeEvent(self, event) -> None:
-        save_boxes(self.out_path, self.state)
+        self._save()
         print(f"saved {len(self.state.placed)} recording box(es) -> {self.out_path}")
         event.accept()
 

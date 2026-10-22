@@ -187,13 +187,15 @@ def update_clip_list(
     add: list[Path] | None = None,
     remove: set[Path] | None = None,
     list_events: EventsSource | None = None,
+    unlabelled: bool = False,
 ) -> None:
     """Edit *path* in place: set each clip's ``events = {method, params}`` (keyed
     by resolved source path: the video, or a thermistor-only entry's thermistor;
     ``None`` removes it, so the clip uses the list's), set each clip's ``excluded``
     and ``included`` spans and ``selection`` mark (removing the key when there are
-    none, or the clip is accepted), append the *add* videos, delete the *remove* ones
-    and, given *list_events*, set the list's ``[events]``.
+    none, or the clip is accepted), append the *add* videos (``thermistor = false``
+    with *unlabelled*, as in a list to predict with), delete the *remove* ones and,
+    given *list_events*, set the list's ``[events]``.
 
     Like :func:`write_boxes` this keeps every comment and other field.  The result
     is validated before it is written.
@@ -217,6 +219,8 @@ def update_clip_list(
         if video not in present:
             entry = tomlkit.table()
             entry.add("video", _relative(video, path.parent))
+            if unlabelled:
+                entry.add("thermistor", False)
             clips.append(entry)
             present.add(video)
     for entry in clips:

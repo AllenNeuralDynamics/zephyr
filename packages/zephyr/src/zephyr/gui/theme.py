@@ -32,7 +32,11 @@ QLabel#jobstatus[state="running"] {{ color: {THEME["accent"]}; font-weight: 600;
 QLabel#jobstatus[state="done"] {{ color: {THEME["placed"]}; font-weight: 600; }}
 QLabel#jobstatus[state="failed"] {{ color: {THEME["bad"]}; font-weight: 600; }}
 QProgressBar {{ border: none; background: {THEME["line"]}; }}
-QProgressBar::chunk {{ background: {THEME["accent"]}; }}QListWidget, QTableView, QTreeView, QLineEdit, QComboBox, QDoubleSpinBox, QSpinBox,
+QProgressBar::chunk {{ background: {THEME["accent"]}; }}
+QFrame#header {{ background: {THEME["card"]}; border-bottom: 1px solid {THEME["line"]}; }}
+QFrame#activity {{ border-top: 1px solid {THEME["line"]}; }}
+QFrame#header QLabel {{ background: transparent; }}
+QListWidget, QTableView, QTreeView, QLineEdit, QComboBox, QDoubleSpinBox, QSpinBox,
 QPlainTextEdit {{
     background: {THEME["card"]}; border: 1px solid {THEME["line"]}; border-radius: 4px; }}
 QPlainTextEdit {{ font-family: "Consolas", "Menlo", monospace; font-size: 11px; }}

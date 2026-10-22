@@ -12,9 +12,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import tomlkit
 
-from ..config import FOLD_NAME, ClipList, Experiment, load
+from .. import features
+from ..clips import natural_key
+from ..config import FOLD_NAME, ClipList, Derive, Experiment, load
 
 FOLDERS = ("experiments", "frames", "cache", "runs", "predictions")
 RUN_FILES = ("history.json", "best.pt", "evaluation.json")
@@ -58,6 +61,148 @@ def run_status(run: Path) -> str:
     return ", ".join(parts)
 
 
+def run_label(run: Path, runs_dir: Path) -> str:
+    """A run's name for a list: ``fold · seed N``, the experiment first when the fold
+    is named otherwise, and ``· smoke`` for a smoke run; a run outside *runs_dir* is
+    its path."""
+    run = Path(run)
+    try:
+        parts = run.resolve().relative_to(Path(runs_dir).resolve()).parts
+    except ValueError:
+        return run.as_posix()
+    if len(parts) < 3 or not parts[-1].startswith("seed-"):
+        return "/".join(parts)
+    experiment, *middle, fold, seed = parts
+    smoke = middle == ["smoke"]
+    name = fold if fold == experiment else f"{experiment} / {fold}"
+    return f"{name} · seed {seed[5:]}" + (" · smoke" if smoke else "")
+
+
+def is_smoke(run: Path, runs_dir: Path) -> bool:
+    try:
+        return "smoke" in Path(run).resolve().relative_to(runs_dir.resolve()).parts
+    except ValueError:
+        return False
+
+
+@dataclass(frozen=True)
+class Found:
+    """A video a scan would list: its group (None where the pattern misses) and
+    whether its timestamps and breathing files exist."""
+
+    video: Path
+    group: str | None
+    timestamps: bool
+    sensor: bool
+
+
+def preview_scan(folder: Path, glob: str, derive: Derive) -> list[Found]:
+    """What ``clips scan`` would list from *folder*, without writing anything."""
+    folder = Path(folder)
+    if not glob or not folder.is_dir():
+        return []
+    found = []
+    for video in sorted(folder.glob(glob), key=natural_key):
+        fields = derive.fields(video)
+        if fields is None:
+            found.append(Found(video, None, False, False))
+            continue
+        found.append(
+            Found(
+                video,
+                fields["group"],
+                (video.parent / derive.timestamps.format(**fields)).is_file(),
+                (video.parent / derive.thermistor.format(**fields)).is_file(),
+            )
+        )
+    return found
+
+
+def _scored(path: Path, entry) -> dict | None:
+    from ..evaluate import truth_events
+    from ..quality_control.metrics import find_events
+
+    if not path.is_file():
+        return None
+    trace = pd.read_parquet(path)
+    time = trace["time"].to_numpy()
+    signal = trace["signal"].to_numpy()
+    onset = trace["onset"].to_numpy() if "onset" in trace else None
+    out = {
+        "time": time,
+        "signal": signal,
+        "inhale": time[find_events(time, signal, onset).inhale],
+        "onset": onset,
+        "entry": entry,
+        "truth": None,
+        "truth_inhale": None,
+    }
+    if entry.target is not None and entry.target.is_file():
+        truth = pd.read_parquet(entry.target)["signal"].to_numpy()
+        n = min(len(truth), len(time))
+        out |= {"time": time[:n], "signal": signal[:n], "truth": truth[:n]}
+    if entry.events is not None and entry.events.is_file():
+        out["truth_inhale"] = truth_events(entry).inhale
+    return out
+
+
+@dataclass(frozen=True)
+class CacheNeed:
+    """What preprocessing would add to a cache: *bytes* for the *todo* clips not
+    cached yet (*unknown* of them without a readable timestamps file, not counted),
+    beside the *cached* ones."""
+
+    bytes: int
+    todo: int
+    cached: int
+    unknown: int
+
+
+CACHE_BYTES_PER_FRAME = 20
+"""Besides its crop, what each frame adds to an entry (its time, the output grid,
+the target), in bytes."""
+
+
+def cache_need(clip_lists: list[Path], cache_dir: Path) -> CacheNeed:
+    """The space preprocessing *clip_lists* into *cache_dir* would take: per clip
+    not cached, the frames it keeps (its timestamps' frames nearest the recipe's
+    ``select_fs`` grid, as preprocessing picks them) times its crop's pixels, one
+    byte each, as the cache stores them (:mod:`zephyr.features`)."""
+    from ..preprocess import select_anchor_indices
+
+    total = todo = cached = unknown = 0
+    for path in clip_lists:
+        clip_list = load(ClipList, path, check_files=False)
+        for clip in clip_list.resolve():
+            if clip.video is None or clip.box is None:
+                continue  # preprocessing refuses it
+            if features.lookup(clip, clip_list.preprocess, cache_dir) is not None:
+                cached += 1
+                continue
+            todo += 1
+            try:
+                times = pd.read_parquet(clip.timestamps, columns=["Time"])
+                frames = len(
+                    select_anchor_indices(
+                        times["Time"].to_numpy(), clip_list.preprocess.select_fs
+                    )
+                )
+            except (OSError, ValueError, KeyError):
+                unknown += 1
+                continue
+            width, height = clip.box[2], clip.box[3]
+            total += frames * (width * height + CACHE_BYTES_PER_FRAME)
+    return CacheNeed(total, todo, cached, unknown)
+
+
+def human_bytes(count: float) -> str:
+    for unit in ("bytes", "KB", "MB", "GB"):
+        if count < 1000 or unit == "GB":
+            return f"{count:.0f} {unit}" if unit == "bytes" else f"{count:.1f} {unit}"
+        count /= 1000
+    return ""
+
+
 def split_groups(
     groups: list[str], proportions: tuple[float, float, float], seed: int = 1
 ) -> tuple[list[str], list[str], list[str]]:
@@ -95,6 +240,17 @@ class Project:
     clip_list: Path | None = None
     errors: dict[Path, str] = field(default_factory=dict)
     """Clip lists in the folder that do not load, and why."""
+
+    @staticmethod
+    def exists(path: Path) -> bool:
+        """Whether *path* (a folder, or a clip list in one) is a project already: it
+        has a clip list or any of the project's folders. Opening one that is not
+        makes it one, so the app asks first."""
+        path = Path(path)
+        root = path.parent if path.suffix == ".toml" else path
+        if path.suffix == ".toml" or any((root / name).is_dir() for name in FOLDERS):
+            return True
+        return root.is_dir() and bool(Project(root).clip_lists())
 
     @classmethod
     def open(cls, path: Path) -> "Project":
@@ -189,6 +345,33 @@ class Project:
                     break
                 if run in dirs:
                     return experiment, run.parent.name, int(run.name[5:]), smoke
+        return None
+
+    def scored_trace(self, run: Path, clip_id: str) -> dict | None:
+        """What *run* was scored on for its test clip *clip_id*, to draw: the trace
+        it saved (``traces/``, with ``--save-traces``), the sensor's, both sets of
+        inhales and the clip's cache entry; None for a run of no experiment here, a
+        clip not cached, or no trace saved."""
+        from ..evaluate import TRACES, trace_name  # imports torch: only when drawn
+
+        found = self.run_of(run)
+        if found is None:
+            return None
+        experiment = load(Experiment, found[0])
+        for path in dict.fromkeys(
+            s.clips
+            for fold in experiment.fold
+            for s in [*fold.train, *fold.test.values()]
+        ):
+            clip_list = load(ClipList, path, check_files=False)
+            for clip in clip_list.resolve():
+                if clip.video is None or clip.box is None:
+                    continue
+                entry = features.lookup(
+                    clip, clip_list.preprocess, experiment.features_dir
+                )
+                if entry is not None and entry.clip_id == clip_id:
+                    return _scored(Path(run) / TRACES / trace_name(entry), entry)
         return None
 
     def steps(self) -> dict[str, Step]:

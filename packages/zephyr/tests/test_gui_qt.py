@@ -17,18 +17,24 @@ HAS_UI = bool(find_spec("PySide6") and find_spec("pyqtgraph"))
 
 if HAS_UI:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    from PySide6 import QtCore, QtWidgets
+    from PySide6 import QtCore, QtGui, QtWidgets
     from PySide6.QtTest import QTest
 
     from zephyr.annotate import frame_path, open_state
-    from zephyr.gui.app import MainWindow
+    from zephyr.gui.app import ICON, MainWindow, place
     from zephyr.gui.boxes import BoxWindow
     from zephyr.gui.jobs import Job
     from zephyr.gui.project import Project
     from zephyr.gui.training import _checked
-    from zephyr.gui.widgets import HistoryPlot, JobPanel, SnippetGallery
+    from zephyr.gui.widgets import HistoryPlot, JobPanel, SnippetGallery, TraceView
 
     APP = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    _SETTINGS = tempfile.TemporaryDirectory()  # recent projects: never the user's
+    QtCore.QSettings.setPath(
+        QtCore.QSettings.Format.IniFormat,
+        QtCore.QSettings.Scope.UserScope,
+        _SETTINGS.name,
+    )
 
 NATIVE = (100, 80)
 Key = QtCore.Qt.Key if HAS_UI else None
@@ -251,6 +257,8 @@ class AppTests(unittest.TestCase):
         self.window.show()
 
     def tearDown(self):
+        QtCore.QThreadPool.globalInstance().waitForDone()  # Breathing's suggestions
+        APP.processEvents()
         for page in self.window.pages:
             editor = getattr(page, "editor", None)
             if editor is not None:
@@ -279,14 +287,17 @@ class AppTests(unittest.TestCase):
         for video in (self.root / "data").glob("*.mp4"):
             video.unlink()
         boxes = self.go("Boxes")
-        boxes.box_size.setValue(32)
         boxes.load()
+        boxes.window.resize_box(32 - boxes.window.state.box_size)
         self.assertEqual(boxes.window.state.native_size, NATIVE)
         boxes.window.place(50, 40)
         self.assertEqual(_boxes(self.list)["video_face_1_part_1"], [34, 24, 32, 32])
 
     def test_a_hidden_pages_shortcuts_stay_quiet(self):
         editor = self.go("Breathing").editor
+        QtCore.QThreadPool.globalInstance().waitForDone()  # the suggestions, on open
+        APP.processEvents()
+        self.assertIsNotNone(editor._suggestions)
         boxes = self.go("Boxes").window
         QTest.keyClick(boxes.canvas, Key.Key_N)
         self.assertEqual((boxes.state.index, editor.state.index), (1, 0))
@@ -412,7 +423,8 @@ class AppTests(unittest.TestCase):
             results.score_own()
             argv = started.call_args.args[0].argv
             self.assertEqual(
-                argv[1:], ["--evaluate-only", "--folds", "e", "--seeds", "1"]
+                argv[1:],
+                ["--evaluate-only", "--folds", "e", "--seeds", "1", "--save-traces"],
             )
             (run / "evaluation.json").write_text('{"groups": {}, "clips": []}')
             started.reset_mock()
@@ -432,6 +444,203 @@ class AppTests(unittest.TestCase):
         form.auto_split()
         self.assertEqual(_checked(form.val), [])
         self.assertEqual(len(_checked(form.train) + _checked(form.test)), 3)
+
+    def test_clips_shows_what_a_scan_would_list_before_writing(self):
+        clips = self.go("Clips")
+        self.assertFalse(clips.new_form.isVisibleTo(clips))  # a list exists: folded
+        clips.another.setChecked(True)
+        with mock.patch("zephyr.gui.pages.probe_size", return_value=NATIVE):
+            clips.folder.setText(str(self.root / "data"))
+            clips.preview()
+        self.assertEqual(clips.found.rowCount(), 4)
+        self.assertIn(
+            "4 video(s) in 3 session(s). Every file", clips.found_label.text()
+        )
+        self.assertEqual(clips.found.item(0, 3).text(), "✓")
+        clips.frame.setCurrentIndex(1)
+        self.assertEqual(clips.frame.currentText(), "1/2: 50 x 40")
+        clips.name.setText("half")
+        with mock.patch.object(clips.jobs, "run") as started:
+            clips.scan()
+        argv = started.call_args.args[0].argv
+        self.assertEqual(argv[argv.index("--target-size") + 1 :][:2], ["50", "40"])
+        clips.thermistor.setText("nothing_{stem}.parquet")
+        clips.preview()
+        self.assertIn("4 without a breathing file", clips.found_label.text())
+
+    def test_the_list_is_edited_outside_the_app_and_read_again(self):
+        clips = self.go("Clips")
+        with mock.patch.object(
+            QtGui.QDesktopServices, "openUrl", return_value=True
+        ) as opened:
+            clips.edit_list()
+        self.assertEqual(
+            Path(opened.call_args.args[0].toLocalFile()), self.window.project.clip_list
+        )
+        self.assertIn("save it there, then Reload", clips.hint.text())
+        self.list.write_text(self.list.read_text() + "\nnot toml = = \n")
+        clips.reload_list()
+        clips = self.go("Clips")
+        self.assertFalse(clips.hint.isVisibleTo(clips))
+        self.assertTrue(clips.problem.isVisibleTo(clips))
+        self.assertIn("does not load", clips.problem.text())
+        self.list.write_text(self.list.read_text().replace("\nnot toml = = \n", ""))
+        clips.reload_list()
+        self.assertEqual(self.go("Clips").table.rowCount(), 4)
+        self.assertFalse(clips.problem.isVisibleTo(clips))
+
+    def test_the_videos_to_predict_are_listed_added_and_removed(self):
+        predict = self.go("Predict")
+        listed = self.window.project.predictions_dir / "videos" / "videos.toml"
+        videos = sorted((self.root / "data").glob("*.mp4"))
+        listed.parent.mkdir(parents=True)
+        listed.write_text(
+            f"[preprocess]\ntarget_size = {list(NATIVE)}\n[derive]\n"
+            'pattern = "(?P<group>.+)"\nthermistor = "{stem}.thermistor.parquet"\n'
+            + "".join(
+                f'[[clip]]\nvideo = "{v.resolve().as_posix()}"\nthermistor = false\n'
+                "box = [10, 10, 32, 32]\n"
+                for v in videos[:2]
+            )
+        )
+        predict.refresh_listed()
+        self.assertEqual(predict.listed.count(), 2)
+        self.assertIn("(crop placed)", predict.listed.item(0).text())
+        with (
+            mock.patch.object(
+                QtWidgets.QFileDialog,
+                "getOpenFileNames",
+                return_value=([str(videos[2])], ""),
+            ),
+            mock.patch.object(predict.jobs, "run") as started,
+        ):
+            predict.add_videos()
+        self.assertEqual(predict.listed.count(), 3)
+        self.assertIn("--prepare", started.call_args.args[0].argv)  # its crop frame
+        self.assertFalse(tomllib.loads(listed.read_text())["clip"][2]["thermistor"])
+        predict.listed.item(0).setSelected(True)
+        predict.remove_videos()
+        self.assertEqual(predict.listed.count(), 2)
+        checkpoint = self.root / "best.pt"
+        predict.checkpoint.addItem("best.pt", checkpoint)
+        predict.checkpoint.setCurrentIndex(predict.checkpoint.count() - 1)
+        with mock.patch.object(predict.jobs, "run") as started:
+            predict.predict_videos()  # from the videos: nothing cached
+            self.assertNotIn("--cache", started.call_args.args[0].argv)
+            predict.video_cache.setChecked(True)
+            started.reset_mock()
+            predict.predict_videos()  # asks first (the patched question declines)
+            self.assertRegex(self.said[-1], "writes about")
+            self.assertFalse(started.called)
+
+    def test_the_onset_heads_output_is_drawn_under_the_trace(self):
+        view = TraceView()
+        t = np.arange(0, 10, 1 / 60)
+        view.set_trace("x", t, np.sin(t), onset=(np.sin(t) + 1) / 2)
+        self.assertFalse(view.onset_plot.isHidden())
+        view.set_trace("x", t, np.sin(t), onset=np.zeros(len(t)))  # no head
+        self.assertTrue(view.onset_plot.isHidden())
+
+    def test_preprocess_asks_with_the_space_it_needs(self):
+        self.list.write_text(
+            self.list.read_text().replace('.mp4"\n', '.mp4"\nbox = [10, 10, 32, 32]\n')
+        )
+        train = self.go("Train")
+        with mock.patch.object(train.jobs, "run") as started:
+            train.start("preprocess")  # declined (the patched question answers nothing)
+            self.assertRegex(self.said[-1], r"writes about .* for 4 clip\(s\)")
+            self.assertRegex(self.said[-1], "free")
+            self.assertFalse(started.called)
+            with self._yes():
+                train.start("preprocess")
+            self.assertEqual(started.call_args.args[0].command, "preprocess")
+
+    def test_a_folder_becomes_a_project_only_when_asked(self):
+        other = self.root / "videos-elsewhere"
+        other.mkdir()
+        self.window.open_project(
+            other
+        )  # declined (the patched question answers nothing)
+        self.assertRegex(self.said[-1], "not a zephyr project yet")
+        self.assertFalse((other / "runs").exists())
+        self.assertEqual(self.window.project.root, self.root.resolve())
+        with self._yes():
+            self.window.open_project(other)
+        self.assertTrue((other / "runs").is_dir())
+        self.assertEqual(self.window.project_label.text(), "videos-elsewhere")
+        self.assertEqual(
+            self.window.project_where.text(), f"in {other.resolve().parent}"
+        )
+        self.assertEqual(
+            self.window.recent()[:2], [other.resolve(), self.root.resolve()]
+        )
+        self.said.clear()
+        self.window.open_project(self.root)  # a project already: no question
+        self.assertEqual(self.said, [])
+
+    def test_the_window_opens_on_a_screen_and_fits_it(self):
+        self.assertFalse(QtGui.QIcon(str(ICON)).pixmap(32, 32).isNull())
+        free = QtCore.QRect(3840, 6, 1920, 1032)  # a second monitor, to the right
+        screen = mock.Mock(availableGeometry=lambda: free)
+        window = QtWidgets.QWidget()
+        place(window, screen)
+        self.assertEqual(window.size(), QtCore.QSize(1600, 949))  # 92% of 1032 high
+        self.assertTrue(free.contains(window.geometry()))
+        self.assertEqual(window.geometry().center().x(), free.center().x())
+
+    def test_a_short_window_scrolls_the_page_instead_of_growing(self):
+        self.go("Breathing")
+        self.window.pages[4].jobs.show_log(True)
+        self.assertLess(self.window.minimumSizeHint().height(), 600)
+
+    def test_the_header_offers_the_next_step_once_this_one_is_done(self):
+        self.go("Clips")
+        self.assertEqual(self.window.next.text(), "Next: 2 Boxes  →")
+        self.assertEqual(self.window.next.objectName(), "accent")  # Clips is done
+        self.window.next.click()
+        APP.processEvents()
+        self.assertEqual(
+            self.window.pages[self.window.stack.currentIndex()].title, "Boxes"
+        )
+        self.assertEqual(self.window.next.objectName(), "")  # no box yet
+        self.assertEqual(self.window.lists.currentText(), "clips.toml")
+
+    def test_only_the_shown_pages_command_panel_is_shown(self):
+        clips, train = self.go("Clips"), self.window.pages[4]
+        self.assertTrue(clips.jobs.isVisibleTo(self.window))
+        self.assertFalse(train.jobs.isVisibleTo(self.window))
+        self.go("Project")
+        self.assertFalse(self.window.activity.isVisibleTo(self.window))
+
+    def test_unsaved_breathing_changes_are_marked(self):
+        editor = self.go("Breathing").editor
+        QtCore.QThreadPool.globalInstance().waitForDone()
+        APP.processEvents()
+        editor.state.set_selection([0], "exclude")
+        self.window.refresh_steps()
+        self.assertTrue(self.window.nav.item(3).text().endswith("●"))
+        self.assertIn("unsaved", self.window.attention.text())
+        self.assertTrue(editor.save())
+        self.window.refresh_steps()
+        self.assertFalse(self.window.nav.item(3).text().endswith("●"))
+
+    def test_boxes_in_the_app_show_the_frame_size_and_do_not_offer_it(self):
+        window = self.go("Boxes").window
+        self.assertTrue(window.frame_fixed)
+        self.assertFalse(window.width_edit.isVisibleTo(window))
+        self.assertIn("set when it was made", window.title.text())
+
+    def test_results_says_when_a_clip_has_no_trace(self):
+        run = self._trained()
+        (run / "evaluation.json").write_text(
+            '{"groups": {"test": {"recordings": ["2"], "summary": {}}}, '
+            '"clips": [{"group": "test", "clip_id": "c2", "correlation": 0.5}]}'
+        )
+        results = self.go("Results")
+        self.assertEqual(results.result.currentText(), "its test groups")
+        self.assertEqual(results.runs.item(0).text(), "e · seed 1")
+        results.clips.selectRow(0)
+        self.assertIn("No trace saved", results.trace.title.text())
 
     def test_breathing_auto_makes_the_default_the_lists(self):
         editor = self.go("Breathing").editor
@@ -460,6 +669,8 @@ class WidgetTests(unittest.TestCase):
                 self.assertLess(timer.elapsed(), 60000)
         self.assertRegex(panel.status.text(), r"^Failed \(exit \d+\): zephyr clips")
         self.assertTrue(panel.progress.isHidden())
+        self.assertFalse(panel.log.isHidden())  # a failure opens the log
+        self.assertTrue(panel.toggle.isChecked())
 
     def test_history_marks_each_best(self):
         plot = HistoryPlot()

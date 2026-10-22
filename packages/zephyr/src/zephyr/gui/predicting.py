@@ -4,6 +4,7 @@ predict``), and, on request, quality control of them (``zephyr quality-control r
 shown per video with the crop it came from."""
 
 import json
+import re
 from pathlib import Path
 
 import pandas as pd
@@ -11,13 +12,22 @@ from PySide6 import QtCore, QtWidgets
 
 from .. import features
 from ..annotate import open_state
+from ..clips import update_clip_list
 from ..config import Derive
 from ..predict import SUFFIX
 from .boxes import BoxWindow
 from .jobs import Job
 from .pages import Page
-from .project import Project
-from .widgets import JobPanel, TraceView, accent, find_data, heading, note
+from .project import Project, is_smoke, run_label, run_status
+from .widgets import (
+    JobPanel,
+    TraceView,
+    accent,
+    ask_cache_space,
+    find_data,
+    heading,
+    note,
+)
 
 QC_SUFFIX = ".qc.json"
 VIDEO_LIST = "videos.toml"
@@ -38,10 +48,11 @@ class PredictPage(Page):
         row = QtWidgets.QHBoxLayout()
         self.checkpoint = QtWidgets.QComboBox()
         row.addWidget(self.checkpoint, 1)
-        browse = QtWidgets.QPushButton("...")
-        browse.clicked.connect(self._browse)
-        row.addWidget(browse)
         top.addRow("Checkpoint", row)
+        browse = QtWidgets.QPushButton("Open a checkpoint...")
+        browse.setToolTip("Any best.pt, from this project or another")
+        browse.clicked.connect(self._browse)
+        top.addRow("", browse)
         left.addLayout(top)
         self.source = QtWidgets.QTabWidget()
         left.addWidget(self.source)
@@ -57,8 +68,9 @@ class PredictPage(Page):
         form.addRow("Groups", self.groups)
         self.name = QtWidgets.QLineEdit("predictions")
         form.addRow("Into predictions/", self.name)
-        self.keep = QtWidgets.QCheckBox("keep the frames in the project's cache")
-        self.keep.setChecked(True)
+        self.keep = QtWidgets.QCheckBox(
+            "keep the frames in the project's cache (shows the crop; takes space)"
+        )
         form.addRow("", self.keep)
         self.qc = QtWidgets.QCheckBox("judge them (quality control; keeps the frames)")
         self.qc.toggled.connect(lambda on: self.keep.setChecked(True) if on else None)
@@ -76,32 +88,40 @@ class PredictPage(Page):
         go.clicked.connect(self.predict)
         tab.addWidget(go)
         tab.addStretch(1)
+        left.addStretch(1)
         self.jobs = JobPanel()
         self.jobs.finished.connect(self._finished)
-        left.addWidget(self.jobs, 1)
 
         right = QtWidgets.QVBoxLayout()
         layout.addLayout(right, 1)
         bar = QtWidgets.QHBoxLayout()
-        bar.addWidget(QtWidgets.QLabel("Folder"))
-        self.folder = QtWidgets.QComboBox()
+        bar.addWidget(heading("Predictions"))
+        bar.addSpacing(12)
+        bar.addWidget(QtWidgets.QLabel("in predictions/"))
+        self.folder = QtWidgets.QComboBox(minimumWidth=200)
         self.folder.currentIndexChanged.connect(lambda _: self.fill_videos())
-        bar.addWidget(self.folder, 1)
+        bar.addWidget(self.folder)
+        bar.addStretch(1)
         right.addLayout(bar)
         split = QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)
         self.videos = QtWidgets.QListWidget()
         self.videos.currentRowChanged.connect(lambda _: self.show_video())
         split.addWidget(self.videos)
-        self.trace = TraceView()
-        split.addWidget(self.trace)
+        view = QtWidgets.QWidget()
+        column = QtWidgets.QVBoxLayout(view)
+        column.setContentsMargins(0, 0, 0, 0)
         self.verdict = QtWidgets.QLabel(wordWrap=True)
         self.verdict.setTextFormat(QtCore.Qt.TextFormat.RichText)
-        split.addWidget(self.verdict)
-        split.setSizes([160, 420, 120])
+        column.addWidget(self.verdict)
+        self.trace = TraceView()
+        column.addWidget(self.trace, 1)
+        split.addWidget(view)
+        split.setSizes([150, 550])
         right.addWidget(split, 1)
         self._queue: list[Job] = []
         self._then = None
         self.box_window: BoxWindow | None = None
+        self._reopen = False
 
     # ---- videos from anywhere ----------------------------------------------------
 
@@ -121,6 +141,7 @@ class PredictPage(Page):
         self.video_times = QtWidgets.QLineEdit(Derive().timestamps)
         form.addRow("Timestamps", self.video_times)
         self.video_name = QtWidgets.QLineEdit("videos")
+        self.video_name.textChanged.connect(lambda _: self.refresh_listed())
         form.addRow("Into predictions/", self.video_name)
         tab.addLayout(form)
         tab.addWidget(
@@ -130,19 +151,115 @@ class PredictPage(Page):
                 "trained on: you choose only where it goes, on one frame per video."
             )
         )
-        steps = (
-            ("1. Make the list", self.make_video_list),
-            ("2. Place the crops", self.place_crops),
-            ("3. Predict", self.predict_videos),
+        make = QtWidgets.QPushButton("1. Make the list")
+        make.clicked.connect(self.make_video_list)
+        tab.addWidget(make)
+        self.listed_label = note("No list yet.")
+        tab.addWidget(self.listed_label)
+        self.listed = QtWidgets.QListWidget()
+        self.listed.setSelectionMode(
+            QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection
         )
-        for text, slot in steps:
-            button = (
-                accent(text) if text.startswith("3") else QtWidgets.QPushButton(text)
-            )
-            button.clicked.connect(slot)
-            tab.addWidget(button)
-        tab.addStretch(1)
+        self.listed.setMinimumHeight(120)
+        tab.addWidget(self.listed, 1)
+        edits = QtWidgets.QHBoxLayout()
+        add = QtWidgets.QPushButton("Add videos...")
+        add.setToolTip("Add videos from anywhere to the list (each needs timestamps)")
+        add.clicked.connect(self.add_videos)
+        edits.addWidget(add)
+        remove = QtWidgets.QPushButton("Remove selected")
+        remove.clicked.connect(self.remove_videos)
+        edits.addWidget(remove)
+        edits.addStretch(1)
+        tab.addLayout(edits)
+        place = QtWidgets.QPushButton("2. Place the crops")
+        place.clicked.connect(self.place_crops)
+        tab.addWidget(place)
+        self.video_cache = QtWidgets.QCheckBox(
+            "keep the frames in the project's cache (shows the crop; takes space)"
+        )
+        self.video_cache.setToolTip(
+            "Off: the frames are read from the videos into a temporary folder and "
+            "removed afterwards"
+        )
+        tab.addWidget(self.video_cache)
+        go = accent("3. Predict")
+        go.clicked.connect(self.predict_videos)
+        tab.addWidget(go)
         return page
+
+    def refresh_listed(self) -> None:
+        """The videos in the Videos tab's list, each with its crop (placed or not)
+        and whether its timestamps were found."""
+        self.listed.clear()
+        path = self.video_list()
+        if path is None or not path.is_file():
+            self.listed_label.setText("No list yet: 1. Make the list.")
+            return
+        try:
+            clips = self.project.load_list(path).resolve()
+        except ValueError as exc:
+            self.listed_label.setText(f"The list does not load: {exc}")
+            return
+        placed = sum(c.box is not None for c in clips)
+        self.listed_label.setText(
+            f"{len(clips)} video(s) in predictions/{path.parent.name}, {placed} with "
+            "a crop placed:"
+        )
+        for clip in clips:
+            state = "crop placed" if clip.box is not None else "no crop yet"
+            if clip.timestamps is not None and not clip.timestamps.is_file():
+                state = "no timestamps"
+            item = QtWidgets.QListWidgetItem(f"{clip.video.name}   ({state})")
+            item.setData(QtCore.Qt.ItemDataRole.UserRole, clip.video)
+            item.setToolTip(str(clip.video))
+            self.listed.addItem(item)
+
+    def _edit_listed(self, **change) -> bool:
+        """Change the Videos tab's list (``zephyr.clips``), its crop window closed
+        first (it saves) so nothing it holds overwrites the change."""
+        path = self.video_list()
+        if path is None or not path.is_file():
+            QtWidgets.QMessageBox.information(
+                self, "No list yet", "Make the list of videos first."
+            )
+            return False
+        reopen = self.box_window is not None and self.box_window.isVisible()
+        if self.box_window is not None:
+            self.box_window.close()
+            self.box_window = None
+        try:
+            update_clip_list(path, **change)
+        except ValueError as exc:
+            QtWidgets.QMessageBox.warning(self, "The list is unchanged", str(exc))
+            return False
+        finally:
+            self.refresh_listed()
+        self._reopen = reopen
+        return True
+
+    def add_videos(self) -> None:
+        """Add videos to the list, then cache a frame of each for its crop."""
+        start = self.video_folder.text().strip()
+        files, _ = QtWidgets.QFileDialog.getOpenFileNames(
+            self, "Videos to add", start, "Videos (*.mp4 *.avi *.mov *.mkv);;All (*)"
+        )
+        if not files or not self._edit_listed(
+            add=list(map(Path, files)), unlabelled=True
+        ):
+            return
+        path = self.video_list()
+        prepare = ["--prepare", "--frame-dir", str(self.project.frames_dir)]
+        self._then = self.place_crops if self._reopen else self.refresh_listed
+        self.jobs.run(Job("annotate", [str(path), *prepare], self.project.root))
+
+    def remove_videos(self) -> None:
+        chosen = {
+            item.data(QtCore.Qt.ItemDataRole.UserRole)
+            for item in self.listed.selectedItems()
+        }
+        if chosen and self._edit_listed(remove=chosen) and self._reopen:
+            self.place_crops()
 
     def _pick_folder(self) -> None:
         folder = QtWidgets.QFileDialog.getExistingDirectory(self, "Video folder")
@@ -211,6 +328,8 @@ class PredictPage(Page):
             QtWidgets.QMessageBox.warning(self, "Cannot place the crops", str(exc))
             return
         self.box_window = BoxWindow(state, self.project.frames_dir, path)
+        self.box_window.saved.connect(self.refresh_listed)
+        self.refresh_listed()
         self.box_window.setWindowTitle(f"Crops of predictions/{path.parent.name}")
         self.box_window.resize(1300, 850)
         self.box_window.show()
@@ -230,7 +349,12 @@ class PredictPage(Page):
             self.box_window.close()  # saves every crop
             self.box_window = None
         argv = ["--checkpoint", str(checkpoint), "--clips", str(path)]
-        argv += ["--out", str(path.parent), "--cache", str(self.project.cache_dir)]
+        argv += ["--out", str(path.parent)]
+        if self.video_cache.isChecked():
+            cache = self.project.cache_dir
+            if not ask_cache_space(self, [path], cache):
+                return
+            argv += ["--cache", str(cache)]
         self._out = path.parent
         self.jobs.run(Job("predict", argv, self.project.root))
 
@@ -244,8 +368,22 @@ class PredictPage(Page):
         self.clip_list.clear()
         if project is None:
             return
-        for path in project.checkpoints():
-            self.checkpoint.addItem(str(path.relative_to(project.runs_dir)), path)
+        checkpoints = project.checkpoints()
+        checkpoints.sort(key=lambda path: is_smoke(path.parent, project.runs_dir))
+        for path in checkpoints:
+            status = run_status(path.parent)
+            best = re.search(r"best\.pt from epoch \d+", status)
+            label = run_label(path.parent, project.runs_dir)
+            self.checkpoint.addItem(
+                f"{label} · {best.group(0)}" if best else label, path
+            )
+            self.checkpoint.setItemData(
+                self.checkpoint.count() - 1,
+                str(path),
+                QtCore.Qt.ItemDataRole.ToolTipRole,
+            )
+        if not checkpoints and keep is None:
+            self.checkpoint.addItem("none yet: train one on 4 Train")
         if keep is not None and find_data(self.checkpoint, keep) < 0:
             self.checkpoint.addItem(str(keep), keep)
         self.checkpoint.setCurrentIndex(max(find_data(self.checkpoint, keep), 0))
@@ -253,14 +391,18 @@ class PredictPage(Page):
             self.clip_list.addItem(path.name, path)
         index = find_data(self.clip_list, project.clip_list)
         self.clip_list.setCurrentIndex(max(index, 0))
+        self.refresh_listed()
         self.fill_folders()
 
     def _browse(self) -> None:
+        start = str(self.project.runs_dir) if self.project else ""
         path, _ = QtWidgets.QFileDialog.getOpenFileName(
-            self, "Checkpoint", "", "Checkpoints (*.pt)"
+            self, "Checkpoint", start, "Checkpoints (*.pt)"
         )
         if path:
-            self.checkpoint.addItem(path, Path(path))
+            self.checkpoint.addItem(
+                f"{Path(path).parent.name} (elsewhere): {path}", Path(path)
+            )
             self.checkpoint.setCurrentIndex(self.checkpoint.count() - 1)
 
     def fill_folders(self, select: Path | None = None) -> None:
@@ -291,6 +433,8 @@ class PredictPage(Page):
         selection = ["--groups", *groups] if groups else []
         argv = [*common, "--out", str(out), *selection]
         if self.keep.isChecked():
+            if not ask_cache_space(self, [clips], project.cache_dir):
+                return
             argv += ["--cache", str(project.cache_dir)]
         self._queue = []
         if self.qc.isChecked():
@@ -360,7 +504,7 @@ class PredictPage(Page):
         table = pd.read_parquet(path)
         time = table["time"].to_numpy()
         report_path = path.with_name(stem + QC_SUFFIX)
-        bad, verdict = [], "No quality control for this video."
+        bad, verdict = [], ""
         if report_path.is_file():
             report = json.loads(report_path.read_text())
             bad = [
@@ -380,6 +524,7 @@ class PredictPage(Page):
                 "measure is judged per window; a video is never failed as a whole."
             )
         self.verdict.setText(verdict)
+        self.verdict.setVisible(bool(verdict))
         self.trace.set_trace(
             f"<b>{stem}</b>",
             time,
@@ -387,4 +532,5 @@ class PredictPage(Page):
             inhale=time[table["inhale"].to_numpy(bool)],
             entry=self._entry(stem),
             bad_spans=bad,
+            onset=table["onset"].to_numpy() if "onset" in table else None,
         )
