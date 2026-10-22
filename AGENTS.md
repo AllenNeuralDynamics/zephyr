@@ -6,7 +6,7 @@ README and in the pydantic models; this file only says what must and must not be
 ## Packages
 
 A uv workspace (`uv sync --all-packages --extra cpu`, or `--extra gpu`; `--extra ui` for
-the annotation windows):
+the app and its windows):
 
 | Package | Import | Command | Details |
 | --- | --- | --- | --- |
@@ -45,8 +45,9 @@ Never:
 Clip lists and experiments:
 
 - Put all sessions of a dataset in **one clip list**; folds select them with `groups`.
-- Create lists with `zephyr clips scan`, place boxes with `zephyr annotate`; never
-  hand-edit boxes in bulk.
+- Create lists with `zephyr clips scan` (`[derive]` flags for other file names), check
+  them with `zephyr clips check`, place boxes in the app (`zephyr gui`, Boxes); never hand-edit
+  boxes in bulk.
 - Seeds and machine settings belong to the experiment, never to a fold; fold names are
   distinct plain file names.
 - To early-stop on held-out clips (e.g. validation animals), give the fold a `[fold.val]`
@@ -63,6 +64,44 @@ Clip lists and experiments:
   experiment rather than deleting results.
 - Never compare scores made before and after a scoring rule changed (time alignment,
   event tolerance; see the zephyr README, "Scoring").
+
+## The app (zephyr.gui)
+
+`zephyr gui` walks a project folder (zephyr README, "The app") through the same steps
+as the commands.
+
+- It **runs only `zephyr` commands**, the ones in `gui/worker.py`'s `COMMANDS`, through
+  their own `main(argv)` in a local child process (`gui/jobs.py`); never reimplement a
+  step in the app, never call one in the app's own process, never launch remote jobs.
+  A step the app needs that no command does is a new command first.
+- It **writes only clip lists** (through `zephyr.clips`, as the windows do; a list of
+  videos to predict, from `clips scan --checkpoint`, lives in its `predictions/<name>/`
+  and gains or loses videos through `update_clip_list`) **and new experiments**
+  (`Project.new_experiment`, validated before it is kept, never overwriting); it never
+  edits an experiment, and never writes into a run folder outside its project's `runs/`
+  (a folder opened from elsewhere, e.g. `benchmarks/`, is read only). Its own settings
+  (recent projects) go in the user's Qt settings file, never a project. A folder
+  becomes a project (its layout made) only after the user agrees, and the feature
+  cache is filled only after saying how much space it takes (`gui/project.py`'s
+  `cache_need`).
+- **Run** never silently re-scores: an experiment that already has a run is started
+  over (`zephyr run --restart`, which deletes that run folder) only after the user
+  agrees; scoring a stopped or finished run is Results' button (`--evaluate-only`),
+  which asks before replacing an `evaluation.json`.
+- Validation snippets reach the app only through `train_fold`'s `on_scored` hook, on the
+  worker's stdout, and are **never saved**; the hook never changes training
+  (`test_predict.py` runs training with and without it).
+- Qt (`PySide6`, `pyqtgraph`) is imported only by `gui/`'s window modules; everything
+  else (`gui/project.py`, `gui/jobs.py`, `gui/worker.py`, the logic of each window, the
+  commands) imports without the `ui` extra and is tested headless. A window's logic
+  lives in a headless class (`annotate.BoxState`, `annotate_events.TuneState`).
+- Placing boxes and choosing detectors by hand happen only in the app (`zephyr gui
+  <list> --page boxes|breathing`); `zephyr annotate` keeps only what needs no window
+  (`--prepare`, `--auto`, `annotate events --auto`). A key or control of the Boxes or
+  Breathing page is never dropped (`tests/test_gui_qt.py` checks each against the saved
+  clip list, offscreen). The Boxes page shows the list's frame size (chosen on Clips)
+  instead of offering it (`frame_fixed`). Opening a project writes nothing; a folder
+  is made only by the step that fills it (a dataset's own folder stays as it was).
 
 ## Quality control (zephyr.quality_control)
 
@@ -117,7 +156,8 @@ resumable steps; what each does and the folder layout are in its README.
   `folds.check`, which refuses a held-out animal in training. Keep the README's "Why these
   sessions" current with any change to the split.
 - Face crop boxes are made by `python -m zephyr.corpus.boxes` (template match, your
-  corrections in `zephyr annotate --remote`, then `publish`) and live in `clips.toml`;
+  corrections on the app's Boxes page, `zephyr gui boxes/face.toml --page boxes`, then
+  `publish`) and live in `clips.toml`;
   `clips` keeps them, and lists the side camera as excluded (`[clips] exclude_cameras`). `python -m zephyr.corpus.rois` is a helper that writes only to a
   local folder, never the dataset or the spec; OWLv2 needs `--extra rois`.
 - Cross-validation (`[cross_validation]`, `cross_validation.parquet`) is drawn beside the
@@ -126,9 +166,9 @@ resumable steps; what each does and the folder layout are in its README.
   `folds.check`). `build` does not run it.
 - In `clips.toml` the `group` is the session; the animal split lives in `folds.parquet`.
 - The root may be remote (`s3://...`, through `storage.py`). Zephyr core reads only
-  local files and must not learn about remote paths: `qc`, `zephyr annotate events` and
-  `preprocess` run on a local copy (`zephyr annotate --remote` only skips checking that
-  a list's clips exist and reads cached frames). Never rename remote objects; delete only with
+  local files and must not learn about remote paths: `qc`, the app's Breathing page and
+  `preprocess` run on a local copy (the Boxes page needs only the cached frames, not the
+  clips). Never rename remote objects; delete only with
   `clips --prune`.
 - Paths that identify a clip (cache keys, sidecars, `train_videos`, recordings) go
   through `config.canonical`, never `str()` or a raw comparison; a local copy of a

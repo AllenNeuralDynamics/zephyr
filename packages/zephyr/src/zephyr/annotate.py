@@ -1,4 +1,4 @@
-"""Choose a downsample target and hand-place crop boxes for a clip list.
+"""Choose a downsample target and hand-place crop boxes for a clip list (the logic).
 
 Boxes are placed on the frame downsampled to the list's ``[preprocess] target_size``.
 One box covers a whole recording (the camera does not move within it); ``o`` gives a
@@ -6,15 +6,15 @@ single clip its own. Boxes are written back as ``box = [x, y, w, h]`` with tomlk
 leaving the rest of the file untouched; an unplaced recording gets no box and
 preprocessing refuses it.
 
-Keys: click place | arrows nudge (shift x10) | [ ] resize | n/p recording | 1/2/3 clip |
-o own box | c copy previous | r re-centre.
+Boxes are placed by hand in the app (``zephyr gui <list> --page boxes``,
+:mod:`zephyr.gui.boxes`); :class:`BoxState` is that page's logic.
 
 CLI
 ---
-    zephyr annotate list.toml --prepare   # cache one frame per clip, once
-    zephyr annotate list.toml --width 360 --height 270 --box-size 96
-    zephyr annotate list.toml --remote --frame-dir frames   # clips kept elsewhere: frames only
-    zephyr annotate events list.toml   # choose each clip's event detector: zephyr.annotate_events
+    zephyr annotate list.toml --prepare --frame-dir frames   # one frame per clip, once
+    zephyr annotate list.toml --auto --frame-dir frames [--min-score 0.5]   # match, save
+    zephyr annotate predict.toml --auto --frame-dir frames --checkpoint best.pt
+    zephyr annotate events list.toml --auto   # the default detector: zephyr.annotate_events
 """
 
 import argparse
@@ -24,6 +24,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+import pandas as pd
 
 from .clips import write_boxes
 from .config import ClipList, ResolvedClip, load, require_videos
@@ -31,6 +32,11 @@ from .video import Box, clamp_box, decode_window, probe_size
 
 DEFAULT_BOX_SIZE = 128
 PREPARE_START_S = 150.0
+"""Where the cached frame is taken: this far in, or halfway through a shorter clip."""
+AUTO_MIN_SCORE = 0.5
+"""The correlation a match needs for Auto to place a box (else it stays unplaced)."""
+AUTO_BLUR = 2.0
+"""Gaussian sigma (target pixels) of the frames and templates Auto matches."""
 
 
 # ---------------------------------------------------------------------------
@@ -92,7 +98,7 @@ class BoxState:
     """The chosen geometry, plus where every recording's box currently sits.
 
     Boxes are stored in *target_size* coordinates -- the downsampled frame the
-    annotator placed them on.  Holds no Tk or matplotlib objects, so each
+    annotator placed them on.  Holds no Qt objects, so each
     transition below is testable.
     """
 
@@ -105,6 +111,10 @@ class BoxState:
     index: int = 0
     box_size: int = DEFAULT_BOX_SIZE
     part_index: int = 0
+    matched: dict[str, float] = field(default_factory=dict)
+    """Recordings :meth:`auto` placed, with their match score, until moved by hand."""
+    locked: bool = False
+    """Box and frame size are a network's (``--checkpoint``): only the place moves."""
 
     def __post_init__(self) -> None:
         self.box_size = min(self.box_size, *self.target_size)
@@ -170,6 +180,57 @@ class BoxState:
         else:
             self.boxes[self.key] = box
         self.placed.add(self.key)
+        self.matched.pop(self.key, None)
+
+    def auto(self, frames, min_score: float = AUTO_MIN_SCORE) -> dict[str, float]:
+        """Box every unplaced recording where the hand-placed boxes match its frame.
+
+        The crop of each recording placed by hand (not by an earlier match) is a
+        template; *frames* gives a recording's native frames. A recording whose best
+        normalised cross-correlation (mean over the templates) reaches *min_score*
+        gets a box there, placed and kept in :attr:`matched` with its score until it
+        is moved; the others stay unplaced. Returns every tried recording's score.
+        """
+        by_hand = [r for r in self.recordings if self.is_placed(r.key)]
+        by_hand = [r for r in by_hand if r.key not in self.matched]
+        templates = []
+        for recording in by_hand:
+            image = self._gray(frames(recording))
+            if image is not None:
+                x, y, w, h = self.boxes[recording.key]
+                templates.append(image[y : y + h, x : x + w])
+        if not templates:
+            raise ValueError("place a box by hand first: it is what Auto looks for")
+        size = templates[0].shape[1]
+        scores = {}
+        for recording in self.recordings:
+            if self.is_placed(recording.key):
+                continue
+            image = self._gray(frames(recording))
+            if image is None:
+                continue
+            score = np.mean(
+                [cv2.matchTemplate(image, t, cv2.TM_CCOEFF_NORMED) for t in templates],
+                axis=0,
+            )
+            y, x = np.unravel_index(np.argmax(score), score.shape)
+            scores[recording.key] = float(score[y, x])
+            if scores[recording.key] >= min_score:
+                self.boxes[recording.key] = centre_box(
+                    x + size / 2, y + size / 2, self.box_size, self.target_size
+                )
+                self.placed.add(recording.key)
+                self.matched[recording.key] = scores[recording.key]
+        return scores
+
+    def _gray(self, frames: list[np.ndarray]) -> np.ndarray | None:
+        """A recording's first frame at the target size, gray and a little blurred."""
+        if not frames:
+            return None
+        image = downsample(frames[0], self.target_size).astype(np.float32)
+        if image.ndim == 3:
+            image = image.mean(axis=2)
+        return cv2.GaussianBlur(image, (0, 0), AUTO_BLUR)
 
     def nudge(self, dx: int, dy: int) -> None:
         cx, cy = box_centre(self.box)
@@ -177,6 +238,8 @@ class BoxState:
 
     def resize(self, delta: int) -> None:
         """Change the box size for *every* clip -- one input shape for the model."""
+        if self.locked:
+            return
         self.box_size = int(np.clip(self.box_size + delta, 16, min(self.target_size)))
         for table in (self.boxes, self.overrides):
             for key, box in table.items():
@@ -191,6 +254,8 @@ class BoxState:
         the annotator picks it directly.  Changing the target therefore changes
         how much of the frame that shape covers, which is the actual trade-off.
         """
+        if self.locked:
+            return
         width = int(np.clip(width, 16, self.native_size[0]))
         height = int(np.clip(height, 16, self.native_size[1]))
         ratio_x = width / self.target_size[0]
@@ -214,6 +279,7 @@ class BoxState:
             self.target_size,
         )
         self.placed.discard(self.key)
+        self.matched.pop(self.key, None)
 
     def copy_previous(self) -> None:
         if self.index > 0:
@@ -279,8 +345,15 @@ def initial_state(
 
 
 def save_boxes(path: Path, state: BoxState) -> None:
-    """Write the geometry and every placed box back into the clip list."""
-    write_boxes(path, state.clip_boxes(), state.target_size)
+    """Write the geometry and every placed box back into the clip list; a recording
+    re-centred (unplaced) loses its box."""
+    unplaced = {
+        clip.video
+        for recording in state.recordings
+        if recording.key not in state.placed
+        for clip in recording.clips
+    }
+    write_boxes(path, state.clip_boxes(), state.target_size, clear=unplaced)
 
 
 # ---------------------------------------------------------------------------
@@ -292,6 +365,12 @@ def frame_path(frame_dir: Path, video: Path) -> Path:
     """Cache file for *video*'s frame, keyed by its path."""
     digest = hashlib.sha256(str(video).encode()).hexdigest()[:10]
     return frame_dir / f"frame_{video.stem}-{digest}.npy"
+
+
+def frame_time(clip: ResolvedClip) -> float:
+    """Seconds into *clip* of its cached frame."""
+    times = pd.read_parquet(clip.timestamps, columns=["Time"])["Time"].to_numpy()
+    return min(PREPARE_START_S, float(times[-1] - times[0]) / 2)
 
 
 def prepare_frames(clips: list[ResolvedClip], frame_dir: Path) -> None:
@@ -312,7 +391,7 @@ def prepare_frames(clips: list[ResolvedClip], frame_dir: Path) -> None:
         frame = decode_window(
             clip.video,
             scale_to=size,
-            start_s=PREPARE_START_S,
+            start_s=frame_time(clip),
             dur_s=1.0 / 60.0,
         )[0]
         np.save(path, frame)
@@ -339,300 +418,61 @@ def load_recording_frames(recording: Recording, frame_dir: Path) -> list[np.ndar
     return frames
 
 
-# ---------------------------------------------------------------------------
-# UI
-# ---------------------------------------------------------------------------
+def open_state(
+    path: Path,
+    frame_dir: Path,
+    *,
+    width: int | None = None,
+    height: int | None = None,
+    box_size: int = DEFAULT_BOX_SIZE,
+    remote: bool = False,
+    checkpoint: Path | None = None,
+) -> BoxState:
+    """The box state of the clip list at *path*, on the target ``width x height``
+    (default: the list's), its existing boxes carried across. With *checkpoint* the
+    box is that network's crop and the frame its size, both locked."""
+    clip_list = load(ClipList, path, check_files=not remote)
+    if checkpoint is not None:
+        from .clips import checkpoint_recipe
+
+        recipe, crop = checkpoint_recipe(checkpoint)
+        if tuple(recipe["target_size"]) != clip_list.preprocess.target_size:
+            raise SystemExit(
+                f"{path} is not on {checkpoint}'s {recipe['target_size']} frames: "
+                "make it with `zephyr clips scan --checkpoint`"
+            )
+        if crop is None or crop[0] != crop[1]:
+            raise SystemExit(f"{checkpoint} does not say one square crop size")
+        width = height = None
+        box_size = crop[0]
+    clips = clip_list.resolve()
+    try:
+        require_videos(clips, "placing boxes")
+    except ValueError as exc:
+        raise SystemExit(f"{path}: {exc}") from None
+    native = frame_size(clips, frame_dir) if remote else probe_size(clips[0].video)
+    saved_target = clip_list.preprocess.target_size
+    target = (width or saved_target[0], height or saved_target[1])
+    # Start on the grid the boxes were saved on, then move to the requested
+    # target, so existing placements are carried across rather than
+    # reinterpreted as coordinates on a different-sized frame.
+    state = initial_state(clips, native, saved_target, box_size)
+    if box_size != DEFAULT_BOX_SIZE or checkpoint is not None:
+        state.resize(box_size - state.box_size)
+    if state.target_size != target:
+        state.set_target(*target)
+    state.locked = checkpoint is not None
+    return state
 
 
-def run_ui(state: BoxState, frame_dir: Path, out_path: Path) -> None:
-    """Recording list on the left, downsampled frame with the box on the right.
-
-    Requires a display.  Everything else in this module runs headless.
-    """
-    import tkinter as tk
-    from tkinter import ttk
-
-    import matplotlib
-
-    matplotlib.use("TkAgg")
-    from matplotlib import patches
-    from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-    from matplotlib.figure import Figure
-
-    by_key = {r.key: r for r in state.recordings}
-    native_cache: dict[str, list[np.ndarray]] = {}
-
-    def frames_for(key: str) -> list[np.ndarray]:
-        if key not in native_cache:
-            native_cache[key] = load_recording_frames(by_key[key], frame_dir)
-        return native_cache[key]
-
-    root = tk.Tk()
-    root.title("Crop ROI per recording")
-    root.geometry("1500x900")
-
-    # ---- left: recording tree ----------------------------------------------
-    left = ttk.Frame(root, padding=(8, 8))
-    left.pack(side=tk.LEFT, fill=tk.Y)
-    ttk.Label(left, text="Recordings", font=("TkDefaultFont", 11, "bold")).pack(
-        anchor="w"
-    )
-
-    tree = ttk.Treeview(
-        left,
-        columns=("clips", "roi"),
-        show="tree headings",
-        height=34,
-        selectmode="browse",
-    )
-    for column, heading, width, anchor in (
-        ("#0", "Recording", 190, "w"),
-        ("clips", "Clips", 60, "center"),
-        ("roi", "ROI", 70, "center"),
-    ):
-        tree.heading(column, text=heading)
-        tree.column(column, width=width, anchor=anchor, stretch=False)
-    tree.pack(side=tk.LEFT, fill=tk.Y)
-
-    scroll = ttk.Scrollbar(left, orient="vertical", command=tree.yview)
-    tree.configure(yscrollcommand=scroll.set)
-    scroll.pack(side=tk.LEFT, fill=tk.Y)
-    tree.tag_configure("placed", foreground="#0a7a28")
-    tree.tag_configure("auto", foreground="#999999")
-
-    item_for: dict[str, str] = {}
-    folders: dict[str, str] = {}
-    for recording in state.recordings:
-        folder = recording.clips[0].video.parent
-        if str(folder) not in folders:
-            folders[str(folder)] = tree.insert("", "end", text=folder.name, open=True)
-        item_for[recording.key] = tree.insert(
-            folders[str(folder)],
-            "end",
-            text=f"   {recording.label}",
-            values=(len(recording.clips), ""),
-        )
-
-    def refresh_row(key: str) -> None:
-        placed = state.is_placed(key)
-        tree.item(
-            item_for[key],
-            values=(len(by_key[key].clips), "set" if placed else "auto"),
-            tags=("placed" if placed else "auto",),
-        )
-
-    # ---- right: controls + canvas -----------------------------------------
-    right = ttk.Frame(root, padding=(8, 8))
-    right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-
-    controls = ttk.Frame(right)
-    controls.pack(side=tk.TOP, fill=tk.X)
-
-    width_var = tk.StringVar(value=str(state.target_size[0]))
-    height_var = tk.StringVar(value=str(state.target_size[1]))
-    size_var = tk.StringVar(value=str(state.box_size))
-    part_var = tk.StringVar(value="")
-    info_var = tk.StringVar(value="")
-    progress_var = tk.StringVar(value="")
-
-    figure = Figure(figsize=(9, 7), layout="constrained")
-    axis = figure.add_subplot(111)
-    axis.axis("off")
-    canvas = FigureCanvasTkAgg(figure, master=right)
-    canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
-
-    rect = patches.Rectangle((0, 0), 1, 1, fill=False, edgecolor="cyan", lw=2)
-    axis.add_patch(rect)
-    (crosshair,) = axis.plot([], [], "c+", ms=16, mew=2)
-    image = None
-
-    def redraw() -> None:
-        nonlocal image
-        key = state.key
-        recording = state.recording
-        frames = frames_for(key)
-
-        if frames:
-            state.set_part(state.part_index)
-            data = downsample(frames[state.part_index], state.target_size)
-            suffix = "  (own box)" if state.has_override else ""
-            part_var.set(f"{state.clip.video.stem}{suffix}")
-        else:
-            data = np.zeros(state.target_size[::-1], dtype=np.uint8)
-            part_var.set("no cached frame")
-
-        extent = (0, state.target_size[0], state.target_size[1], 0)
-        if image is None:
-            image = axis.imshow(data, cmap="gray", extent=extent, aspect="equal")
-        else:
-            image.set_data(data)
-            image.set_extent(extent)
-            image.set_clim(0, 255)
-
-        box = state.box
-        rect.set_bounds(*box)
-        rect.set_edgecolor("cyan" if state.is_placed(key) else "yellow")
-        rect.set_linestyle("--" if state.has_override else "-")
-        crosshair.set_data(*[[v] for v in box_centre(box)])
-
-        axis.set_title(
-            f"{recording.label}\n"
-            f"frame {state.target_size[0]}x{state.target_size[1]} "
-            f"({state.scale_from_native:.2f}x downsample)   "
-            f"box {state.box_size}px = {state.box_size * state.scale_from_native:.0f} "
-            f"native px   at {box[:2]}",
-            fontsize=10,
-        )
-        canvas.draw_idle()
-
-        done, total = state.progress()
-        progress_var.set(f"{done} / {total} placed")
-        info_var.set(f"clips: {', '.join(c.video.stem for c in recording.clips)}")
-        width_var.set(str(state.target_size[0]))
-        height_var.set(str(state.target_size[1]))
-        size_var.set(str(state.box_size))
-
-    def commit() -> None:
-        refresh_row(state.key)
-        save_boxes(out_path, state)
-        redraw()
-
-    def select_key(key: str) -> None:
-        state.select(key)
-        tree.selection_set(item_for[key])
-        tree.see(item_for[key])
-        redraw()
-
-    def apply_target() -> None:
-        try:
-            width, height = int(width_var.get()), int(height_var.get())
-        except ValueError:
-            redraw()
-            return
-        state.set_target(width, height)
-        save_boxes(out_path, state)
-        redraw()
-
-    def set_divisor(divisor: int) -> None:
-        state.set_target(
-            state.native_size[0] // divisor, state.native_size[1] // divisor
-        )
-        save_boxes(out_path, state)
-        redraw()
-
-    # ---- events ------------------------------------------------------------
-
-    def on_tree_select(_event=None) -> None:
-        selection = tree.selection()
-        if not selection:
-            return
-        for key, item in item_for.items():
-            if item == selection[0]:
-                state.select(key)
-                redraw()
-                return
-
-    def on_click(event) -> None:
-        if event.inaxes is axis and event.xdata is not None:
-            state.place(event.xdata, event.ydata)
-            commit()
-
-    def on_key(event) -> str | None:
-        key = event.keysym
-        step = 10 if event.state & 0x0001 else 1
-        moves = {
-            "Left": (-step, 0),
-            "Right": (step, 0),
-            "Up": (0, -step),
-            "Down": (0, step),
-        }
-        if key in moves:
-            state.nudge(*moves[key])
-            commit()
-        elif key in ("n", "N"):
-            state.advance(1)
-            select_key(state.key)
-        elif key in ("p", "P"):
-            state.advance(-1)
-            select_key(state.key)
-        elif key in ("c", "C"):
-            state.copy_previous()
-            commit()
-        elif key in ("r", "R"):
-            state.reset()
-            commit()
-        elif key in ("o", "O"):
-            state.toggle_override()
-            commit()
-        elif key in ("1", "2", "3"):
-            state.set_part(int(key) - 1)
-            redraw()
-        elif key == "bracketright":
-            state.resize(8)
-            commit()
-        elif key == "bracketleft":
-            state.resize(-8)
-            commit()
-        else:
-            return None
-        return "break"
-
-    tree.bind("<<TreeviewSelect>>", on_tree_select)
-    canvas.mpl_connect("button_press_event", on_click)
-    root.bind("<Key>", on_key)
-
-    # ---- control widgets ---------------------------------------------------
-    ttk.Label(controls, text="Downsample to:").pack(side=tk.LEFT)
-    ttk.Entry(controls, textvariable=width_var, width=6).pack(side=tk.LEFT, padx=2)
-    ttk.Label(controls, text="x").pack(side=tk.LEFT)
-    ttk.Entry(controls, textvariable=height_var, width=6).pack(side=tk.LEFT, padx=2)
-    ttk.Button(controls, text="Apply", command=apply_target).pack(side=tk.LEFT, padx=4)
-    for label, divisor in (("native", 1), ("1/2", 2), ("1/3", 3), ("1/4", 4)):
-        ttk.Button(
-            controls,
-            text=label,
-            width=6,
-            command=lambda d=divisor: set_divisor(d),
-        ).pack(side=tk.LEFT, padx=1)
-
-    ttk.Separator(controls, orient="vertical").pack(side=tk.LEFT, fill=tk.Y, padx=8)
-    ttk.Label(controls, text="Box:").pack(side=tk.LEFT)
-    ttk.Button(
-        controls, text="-", width=3, command=lambda: (state.resize(-8), commit())
-    ).pack(side=tk.LEFT)
-    ttk.Label(controls, textvariable=size_var, width=5, anchor="center").pack(
-        side=tk.LEFT
-    )
-    ttk.Button(
-        controls, text="+", width=3, command=lambda: (state.resize(8), commit())
-    ).pack(side=tk.LEFT)
-
-    ttk.Separator(controls, orient="vertical").pack(side=tk.LEFT, fill=tk.Y, padx=8)
-    ttk.Label(controls, textvariable=part_var).pack(side=tk.LEFT)
-    ttk.Separator(controls, orient="vertical").pack(side=tk.LEFT, fill=tk.Y, padx=8)
-    ttk.Label(controls, textvariable=progress_var).pack(side=tk.LEFT)
-
-    status = ttk.Frame(right, padding=(0, 6))
-    status.pack(side=tk.BOTTOM, fill=tk.X)
-    ttk.Label(status, textvariable=info_var, justify="left").pack(side=tk.LEFT)
-    ttk.Label(
-        status,
-        text="click=place   arrows=nudge (shift x10)   [ ]=box size   "
-        "n/p=recording   1/2/3=clip   o=own box   c=copy prev   r=re-centre",
-        foreground="#666666",
-    ).pack(side=tk.RIGHT)
-
-    def on_close() -> None:
-        save_boxes(out_path, state)
-        print(f"saved {len(state.placed)} recording box(es) -> {out_path}")
-        root.destroy()
-
-    root.protocol("WM_DELETE_WINDOW", on_close)
-
-    for recording in state.recordings:
-        refresh_row(recording.key)
-    select_key(state.recordings[state.index].key)
-    root.mainloop()
+def missing_frames(state: BoxState, frame_dir: Path) -> list[str]:
+    """Clips with no cached frame (they show blank)."""
+    return [
+        clip.name
+        for recording in state.recordings
+        for clip in recording.clips
+        if not frame_path(frame_dir, clip.video).exists()
+    ]
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -642,72 +482,53 @@ def main(argv: list[str] | None = None) -> None:
         annotate_events.main(argv[1:])
         return
     parser = argparse.ArgumentParser(
-        description="Choose a downsample target and hand-place crop boxes."
+        description="Cache a frame per clip, or box the rest from the boxes placed "
+        "(placing them by hand is the app's: zephyr gui <list> --page boxes)."
     )
-    parser.add_argument("clips", type=Path, help="Clip list TOML file to annotate.")
-    parser.add_argument(
-        "--width", type=int, help="Downsample target width (default: the list's)"
-    )
-    parser.add_argument(
-        "--height", type=int, help="Downsample target height (default: the list's)"
-    )
-    parser.add_argument("--box-size", type=int, default=DEFAULT_BOX_SIZE)
+    parser.add_argument("clips", type=Path, help="Clip list TOML file.")
     parser.add_argument("--frame-dir", type=Path, default=Path("artifacts/frames"))
-    parser.add_argument(
-        "--prepare",
-        action="store_true",
-        help="Cache one frame per clip, then exit.",
+    action = parser.add_mutually_exclusive_group(required=True)
+    action.add_argument(
+        "--prepare", action="store_true", help="Cache one frame per clip, then exit."
     )
-    parser.add_argument(
-        "--remote",
+    action.add_argument(
+        "--auto",
         action="store_true",
-        help="The clips are not on this machine: do not check they exist and take "
-        "the frame size from the cached frames in --frame-dir.",
+        help="Box the unplaced recordings where the list's boxes match their cached "
+        "frame, and save (A in the app's Boxes page).",
+    )
+    parser.add_argument("--min-score", type=float, default=AUTO_MIN_SCORE)
+    parser.add_argument(
+        "--checkpoint",
+        type=Path,
+        help="With --auto: the boxes are this network's crop size (a list from "
+        "`clips scan --checkpoint`).",
     )
     args = parser.parse_args(argv)
-
-    clip_list = load(ClipList, args.clips, check_files=not args.remote)
-    clips = clip_list.resolve()
-    try:
-        require_videos(clips, "placing boxes")
-    except ValueError as exc:
-        raise SystemExit(f"{args.clips}: {exc}") from None
-    if args.prepare and args.remote:
-        raise SystemExit("--prepare decodes the videos, which --remote has not got")
     if args.prepare:
+        clips = load(ClipList, args.clips).resolve()
+        try:
+            require_videos(clips, "placing boxes")
+        except ValueError as exc:
+            raise SystemExit(f"{args.clips}: {exc}") from None
         prepare_frames(clips, args.frame_dir)
         return
-
-    native = (
-        frame_size(clips, args.frame_dir) if args.remote else probe_size(clips[0].video)
+    # Matching reads only the cached frames: the videos may be elsewhere.
+    state = open_state(
+        args.clips, args.frame_dir, remote=True, checkpoint=args.checkpoint
     )
-    saved_target = clip_list.preprocess.target_size
-    target = (args.width or saved_target[0], args.height or saved_target[1])
-    # Start on the grid the boxes were saved on, then move to the requested
-    # target, so existing placements are carried across rather than
-    # reinterpreted as coordinates on a different-sized frame.
-    state = initial_state(clips, native, saved_target, args.box_size)
-    if args.box_size != DEFAULT_BOX_SIZE:
-        state.resize(args.box_size - state.box_size)
-    if state.target_size != target:
-        state.set_target(*target)
-    print(
-        f"resuming: {len(state.placed)} of {len(state.recordings)} recordings placed"
-        if state.placed
-        else "no boxes placed yet"
-    )
-
-    missing = [
-        c.name for c in clips if not frame_path(args.frame_dir, c.video).exists()
-    ]
-    if missing:
-        print(
-            f"WARNING: {len(missing)} clips have no cached frame and will show "
-            "blank. Run with --prepare first."
+    try:
+        scores = state.auto(
+            lambda r: load_recording_frames(r, args.frame_dir), args.min_score
         )
-
+    except ValueError as exc:
+        raise SystemExit(f"{args.clips}: {exc}") from None
+    save_boxes(args.clips, state)
+    for recording in state.recordings:
+        if recording.key in scores:
+            kept = "boxed" if recording.key in state.matched else "left unplaced"
+            print(f"  {recording.label}: {scores[recording.key]:.2f} {kept}")
     print(
-        f"{len(state.recordings)} recordings | native {native[0]}x{native[1]} | "
-        f"target {target[0]}x{target[1]} | box {state.box_size} | -> {args.clips}"
+        f"matched {len(state.matched)} of {len(scores)} recording(s); "
+        f"{len(state.placed)} of {len(state.recordings)} placed -> {args.clips}"
     )
-    run_ui(state, args.frame_dir, args.clips)

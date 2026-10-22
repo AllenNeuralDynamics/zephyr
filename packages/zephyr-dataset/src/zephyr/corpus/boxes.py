@@ -5,7 +5,7 @@ clips of ``clips.toml``, whose files are not on this machine) and one frame per 
 session's thumbnail. ``publish`` writes the boxes back into the dataset's ``clips.toml``.
 
     uv run python -m zephyr.corpus.boxes prepare <spec.toml> --work boxes
-    uv run zephyr annotate boxes/face.toml --remote --frame-dir boxes/frames --box-size 96
+    uv run zephyr gui boxes/face.toml --page boxes   # frames from boxes/frames
     uv run python -m zephyr.corpus.boxes publish <spec.toml> --work boxes
 """
 

@@ -19,6 +19,10 @@ cd zephyr
 uv sync --locked --all-packages --extra cpu     # or --extra gpu for CUDA
 ```
 
+For the desktop app, which walks a project from videos to a trained network and its
+predictions, add `--extra ui` and run `uv run zephyr gui` (see
+[The app](packages/zephyr/README.md#the-app)).
+
 ## Data
 
 The dataset (face-camera videos, frame timestamps and thermistor traces) is on

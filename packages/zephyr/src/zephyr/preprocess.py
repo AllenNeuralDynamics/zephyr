@@ -333,7 +333,7 @@ def main(argv: list[str] | None = None) -> None:
         if unboxed:
             raise SystemExit(
                 f"{len(unboxed)} clip(s) in {path} have no hand-placed box: "
-                f"{unboxed}\nAnnotate them with `zephyr annotate`."
+                f"{unboxed}\nPlace them in `zephyr gui` (Boxes)."
             )
         native = probe_size(clips[0].video)
         print(f"{path.name}: native {native[0]}x{native[1]}", flush=True)

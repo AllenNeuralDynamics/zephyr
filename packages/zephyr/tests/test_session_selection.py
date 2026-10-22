@@ -8,7 +8,14 @@ from _clipfiles import write_list
 
 from zephyr.annotate_events import TuneState
 from zephyr.config import ClipList, load
-from zephyr.session_selection import Settings, apply, assess, runs, snr_threshold
+from zephyr.session_selection import (
+    Settings,
+    apply,
+    assess,
+    consistency,
+    runs,
+    snr_threshold,
+)
 
 FS = 250.0
 SETTINGS = Settings(window_s=2.0, min_span_s=6.0, min_amplitude=0.5)
@@ -189,6 +196,29 @@ class ClippingAndGateTests(unittest.TestCase):
         )
         self.assertIn("alternation", broken.iloc[0]["reason"])
         self.assertEqual(assess(self.state, SETTINGS).iloc[0]["suggested"], "include")
+
+
+class ConsistencyTests(unittest.TestCase):
+    def table(self, **columns) -> pd.DataFrame:
+        base = {"break_frac": 0.0, "outside_frac": 0.0, "rate_cv": 0.3, "amp_cv": 0.2}
+        return pd.DataFrame(
+            [base | {k: v[i] for k, v in columns.items()} for i in range(5)]
+        )
+
+    def test_a_feature_most_clips_share_gives_no_huge_score(self):
+        z = consistency(self.table(break_frac=[0, 0, 0, 0.01, 0.2]))
+        self.assertLess(z.max(), 10)  # MAD 0: the mean deviation sets the scale
+        self.assertEqual(z.idxmax(), 4)
+        self.assertEqual(z[0], 0)
+
+    def test_a_feature_every_clip_shares_scores_nothing(self):
+        self.assertEqual(consistency(self.table()).tolist(), [0.0] * 5)
+
+    def test_with_a_spread_the_robust_z_is_unchanged(self):
+        x = [0.1, 0.2, 0.3, 0.4, 2.0]
+        z = consistency(self.table(rate_cv=x))
+        mad = 1.4826 * 0.1
+        self.assertAlmostEqual(z[4], (2.0 - 0.3) / mad / 4)
 
 
 if __name__ == "__main__":

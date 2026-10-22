@@ -1,4 +1,4 @@
-"""The detector tuner's window: pyqtgraph traces, live stats and a per-clip table.
+"""The Breathing page (``zephyr gui <list> --page breathing``): traces, live stats, a per-clip table.
 
 Needs the ``ui`` extra (``pyqtgraph`` and ``PySide6``) and a display; the logic it
 drives is :class:`zephyr.annotate_events.TuneState`.  Events are never edited: the
@@ -16,8 +16,8 @@ import pandas as pd
 import pyqtgraph as pg
 from PySide6 import QtCore, QtGui, QtWidgets
 
-from . import events, session_selection
-from .annotate_events import (
+from .. import events, session_selection
+from ..annotate_events import (
     METRICS,
     POINT_KINDS,
     RATE_BAND_HZ,
@@ -25,22 +25,10 @@ from .annotate_events import (
     mean_metrics,
     parallel_map,
 )
-from .rates import breath_rates
+from ..clips import SCAN_EVENTS
+from ..rates import breath_rates
+from .theme import THEME
 
-THEME = {
-    "bg": "#f3f4f7",
-    "card": "#ffffff",
-    "ink": "#1f2933",
-    "muted": "#7b8794",
-    "line": "#e1e5ea",
-    "accent": "#3b6fd4",
-    "raw": "#6b7785",
-    "inhale": "#2f9e63",
-    "exhale": "#d9534f",
-    "span": "#f0a53a",
-    "keep": "#1a9fa0",
-    "bad": "#d9534f",
-}
 SYMBOLS = {"inhale": "t1", "exhale": "t"}
 HIST_MAX_HZ = 20.0
 SEEKER_BUCKETS = 2000
@@ -48,6 +36,8 @@ AMPLITUDE_WINDOW_S = 1.0
 """Width of the rolling window whose raw 5th-95th percentile range is the amplitude."""
 AMPLITUDE_COLOUR = "#8e5bd0"
 SELECTION_LABELS = ("unset", "include", "exclude")
+SELECTION_TAB = 2
+"""The tab the window opens on (Editor 0, Methods 1, Selection 2)."""
 SPAN_COLOUR = {"exclude": THEME["span"], "include": THEME["keep"]}
 AMPLITUDE_HZ = 50.0
 SERIES_BINS = 120
@@ -55,28 +45,6 @@ SERIES_BINS = 120
 MARKER_MAX_WINDOW_S = 60.0
 """Beyond this window the event markers are hidden: there would be thousands."""
 MIN_WINDOW_S = 0.5
-
-STYLE = f"""
-QWidget {{ background: {THEME["bg"]}; color: {THEME["ink"]}; font-family: "Segoe UI"; font-size: 13px; }}
-QFrame#card {{ background: {THEME["card"]}; border-radius: 6px; }}
-QFrame#card QLabel {{ background: transparent; }}
-QLabel#title {{ color: {THEME["muted"]}; font-size: 9px; }}
-QLabel#value {{ font-size: 19px; font-weight: 600; }}
-QLabel#sub {{ color: {THEME["muted"]}; font-size: 10px; }}
-QListWidget, QTableView, QLineEdit, QComboBox, QDoubleSpinBox {{
-    background: {THEME["card"]}; border: 1px solid {THEME["line"]}; border-radius: 4px; }}
-QListWidget, QTableView {{ font-size: 12px; }}
-QListWidget::item {{ padding: 1px 4px; }}
-QTableView::item {{ padding: 0px 4px; }}
-QListWidget::item:selected, QTableView::item:selected {{ background: {THEME["accent"]}; color: white; }}
-QHeaderView::section {{ background: {THEME["bg"]}; border: none; padding: 3px; color: {THEME["muted"]}; }}
-QPushButton {{ background: {THEME["line"]}; border: none; border-radius: 4px; padding: 6px 14px; }}
-QPushButton:hover {{ background: #d3d9e0; }}
-QPushButton#accent {{ background: {THEME["accent"]}; color: white; font-weight: 600; }}
-QPushButton#accent:hover {{ background: #2f5bb5; }}
-QPushButton:disabled {{ color: {THEME["muted"]}; }}
-QSplitter::handle {{ background: {THEME["line"]}; }}
-"""
 
 
 def _binned(t, y, t0: float, width: float, median: bool = False):
@@ -331,9 +299,21 @@ def _hist_plot(title: str, xlabel: str) -> pg.PlotItem:
 
 
 class EditorWindow(QtWidgets.QMainWindow):
-    def __init__(self, state: TuneState, window_s: float = 10.0) -> None:
+    """The editor on one clip list. In the app it is a page; *opener*, when given,
+    opens another list in its place (File > Open) instead of a new window. With
+    *suggest* the Selection tab's suggestions are run as soon as it is first shown."""
+
+    def __init__(
+        self,
+        state: TuneState,
+        window_s: float = 10.0,
+        opener=None,
+        suggest: bool = False,
+    ) -> None:
         super().__init__()
         self.state = state
+        self.opener = opener
+        self.suggest = suggest
         self.width_s = self.initial_s = window_s
         self.band = list(RATE_BAND_HZ)
         self.cursor_x: float | None = None
@@ -354,6 +334,7 @@ class EditorWindow(QtWidgets.QMainWindow):
         self._timer = QtCore.QTimer(singleShot=True, interval=25)
         self._timer.timeout.connect(self.refresh_analysis)
         self.load_clip()
+        self.tabs.setCurrentIndex(SELECTION_TAB)  # start from the whole list
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
@@ -363,6 +344,8 @@ class EditorWindow(QtWidgets.QMainWindow):
             QtCore.QTimer.singleShot(
                 0, lambda: self.set_window(lo, lo + self.initial_s)
             )
+            if self.suggest and self._suggestions is None:
+                QtCore.QTimer.singleShot(0, self.run_selection)
 
     # ---- construction ----------------------------------------------------------
 
@@ -1428,8 +1411,13 @@ class EditorWindow(QtWidgets.QMainWindow):
         job.signals.progress.connect(lambda done, _total: dialog.setValue(done))
 
         def finished(error: str) -> None:
-            dialog.close()
             self._jobs.remove(job)
+            try:
+                dialog.close()
+                dialog.deleteLater()
+            except RuntimeError:  # the window was closed while it worked
+                return
+            self.window().activateWindow()  # the keys are the editor's again
             then(error)
 
         job.signals.done.connect(finished)
@@ -1455,9 +1443,58 @@ class EditorWindow(QtWidgets.QMainWindow):
         :mod:`zephyr.session_selection`), with its thresholds editable."""
         page = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(page)
+        quick = QtWidgets.QHBoxLayout()
+        auto = QtWidgets.QPushButton(
+            "Auto: the default detector for all", objectName="accent"
+        )
+        auto.setToolTip(
+            f"{SCAN_EVENTS.method} for every video, as the list's [events]; marks, "
+            "spans and reviews are kept. File > Save writes it"
+        )
+        auto.clicked.connect(self.auto)
+        quick.addWidget(auto)
+        run = QtWidgets.QPushButton("Run suggestions again")
+        run.setToolTip("Score every video in rolling windows with the thresholds")
+        run.clicked.connect(self.run_selection)
+        quick.addWidget(run)
+        write = QtWidgets.QPushButton("Apply suggestions to unreviewed videos")
+        write.setToolTip(
+            "Write the suggested mark and spans into every video not reviewed; "
+            "Save keeps them"
+        )
+        write.clicked.connect(self.apply_selection)
+        quick.addWidget(write)
+        save = QtWidgets.QPushButton("Save (Ctrl+S)")
+        save.setToolTip("Write the marks, spans and detectors into the clip list")
+        save.clicked.connect(lambda: self.save())
+        quick.addWidget(save)
+        self.thresholds = QtWidgets.QToolButton(
+            text="Thresholds",
+            checkable=True,
+            toolButtonStyle=QtCore.Qt.ToolButtonStyle.ToolButtonTextBesideIcon,
+        )
+        quick.addWidget(self.thresholds)
+        quick.addStretch(1)
+        layout.addLayout(quick)
+        layout.addWidget(
+            QtWidgets.QLabel(
+                "1. Auto sets the default detector for every video. 2. Check the "
+                "suggestions below (bold: differs from the video's mark) and apply "
+                "them. 3. Double-click a video to look at it in the Editor. 4. Save.",
+                objectName="sub",
+                wordWrap=True,
+            )
+        )
         card = QtWidgets.QFrame(objectName="card")
         grid = QtWidgets.QGridLayout(card)
-        grid.addWidget(QtWidgets.QLabel("SELECTION", objectName="title"), 0, 0)
+        self.thresholds.toggled.connect(card.setVisible)
+        self.thresholds.toggled.connect(
+            lambda on: self.thresholds.setArrowType(
+                QtCore.Qt.ArrowType.DownArrow if on else QtCore.Qt.ArrowType.RightArrow
+            )
+        )
+        self.thresholds.setArrowType(QtCore.Qt.ArrowType.RightArrow)
+        card.setVisible(False)
         defaults = session_selection.Settings()
         self.sel_edits: dict[str, QtWidgets.QLineEdit] = {}
         labels = {
@@ -1471,23 +1508,16 @@ class EditorWindow(QtWidgets.QMainWindow):
             "artifact_z": "artifact z",
             "artifact_pad_s": "artifact pad (s)",
         }
+        per_row = 5  # two rows, so the tab never needs more than the window's width
         for n, (name, label) in enumerate(labels.items()):
             edit = QtWidgets.QLineEdit(f"{getattr(defaults, name):g}")
             edit.setMaximumWidth(80)
-            grid.addWidget(QtWidgets.QLabel(label), 0, 1 + 2 * n)
-            grid.addWidget(edit, 0, 2 + 2 * n)
+            edit.returnPressed.connect(self.run_selection)
+            row, column = divmod(n, per_row)
+            grid.addWidget(QtWidgets.QLabel(label), row, 2 * column)
+            grid.addWidget(edit, row, 1 + 2 * column)
             self.sel_edits[name] = edit
-        run = QtWidgets.QPushButton("Run suggestions", objectName="accent")
-        run.clicked.connect(self.run_selection)
-        write = QtWidgets.QPushButton("Apply to unreviewed videos")
-        write.setToolTip(
-            "Write the suggested mark and spans into every video not reviewed; "
-            "File > Save keeps them"
-        )
-        write.clicked.connect(self.apply_selection)
-        grid.addWidget(run, 0, 2 + 2 * len(labels))
-        grid.addWidget(write, 0, 3 + 2 * len(labels))
-        grid.setColumnStretch(4 + 2 * len(labels), 1)
+        grid.setColumnStretch(2 * per_row, 1)
         layout.addWidget(card)
         bar = QtWidgets.QHBoxLayout()
         bar.addWidget(QtWidgets.QLabel("Selected videos:"))
@@ -1901,6 +1931,15 @@ class EditorWindow(QtWidgets.QMainWindow):
     def apply_all(self) -> None:
         self._apply(self.state.accepted(), self.methods_card)
 
+    def auto(self) -> None:
+        """The default detector as the list's, for every clip (saved with Save)."""
+        self._work(
+            f"Giving {len(self.state.entries)} video(s) the default detector...",
+            self.state.auto,
+            self._applied,
+            total=len(self.state.entries),
+        )
+
     def _targets(self) -> list[int]:
         """The videos a menu command acts on: the table's selection, else this one."""
         if self.tabs.currentIndex() == 1:
@@ -2017,8 +2056,9 @@ class EditorWindow(QtWidgets.QMainWindow):
         action(file_menu, "&Remove selected videos", self.remove_videos, "Del")
         file_menu.addSeparator()
         action(file_menu, "&Save", self.save, "Ctrl+S")
-        file_menu.addSeparator()
-        action(file_menu, "&Quit", self.close, "Ctrl+Q")
+        if self.opener is None:  # in the app, Quit (and its key) is the app's
+            file_menu.addSeparator()
+            action(file_menu, "&Quit", self.close, "Ctrl+Q")
         edit_menu = bar.addMenu("&Edit")
         action(
             edit_menu,
@@ -2038,6 +2078,7 @@ class EditorWindow(QtWidgets.QMainWindow):
             lambda: self._apply_from_menu("all"),
             "Ctrl+Shift+Return",
         )
+        action(edit_menu, "A&uto: the default detector for all clips", self.auto)
         edit_menu.addSeparator()
         action(
             edit_menu,
@@ -2100,6 +2141,9 @@ class EditorWindow(QtWidgets.QMainWindow):
             "Clip lists (*.toml)",
         )
         if not path or not self._confirm_discard():
+            return
+        if self.opener is not None:
+            self.opener(Path(path))
             return
         if open_window(Path(path), self.initial_s, self):
             self._skip_prompt = True
@@ -2205,17 +2249,3 @@ def open_window(path: Path, window_s: float, parent=None) -> bool:
     _windows.append(window)
     window.showMaximized()
     return True
-
-
-def run_ui(path: Path | None, window_s: float = 10.0) -> None:  # pragma: no cover
-    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
-    app.setStyleSheet(STYLE)
-    if path is None:
-        chosen, _ = QtWidgets.QFileDialog.getOpenFileName(
-            None, "Open clip list", "", "Clip lists (*.toml)"
-        )
-        if not chosen:
-            return
-        path = Path(chosen)
-    if open_window(path, window_s):
-        app.exec()

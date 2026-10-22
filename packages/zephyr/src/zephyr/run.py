@@ -12,9 +12,12 @@ CLI
     zephyr run examples/experiment.toml
     zephyr run examples/experiment.toml --smoke
     zephyr run examples/experiment.toml --folds fold --seeds 1
+    zephyr run examples/experiment.toml --restart         # delete the runs, train anew
+    zephyr run examples/experiment.toml --evaluate-only   # score best.pt as it is
 """
 
 import argparse
+import shutil
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,7 +26,7 @@ import torch
 
 from .config import Experiment, Fold, load
 from .evaluate import TRACES, Loader, evaluate_groups, load_checkpoint
-from .train import ZEPHYR, Architecture, Machine, train_fold
+from .train import ZEPHYR, Architecture, Machine, OnScored, train_fold
 
 
 @dataclass(frozen=True)
@@ -65,17 +68,29 @@ def run_fold(
     *,
     smoke: bool = False,
     resume: bool = False,
+    restart: bool = False,
+    evaluate_only: bool = False,
     runner: Runner = ZEPHYR_RUNNER,
     save_traces: bool = False,
+    on_scored: OnScored | None = None,
 ) -> None:
     """Train one fold with one seed, then evaluate its test groups (writing the traces
-    scored into ``traces/`` with *save_traces*)."""
+    scored into ``traces/`` with *save_traces*; *on_scored* goes to ``train_fold``).
+    *restart* first deletes *run_dir*; *evaluate_only* never trains, only scores the
+    ``best.pt`` there."""
     if smoke:
         fold = smoke_fold(fold)
     if fold.init_from is not None and not fold.init_from.is_file():
         raise SystemExit(f"init_from checkpoint {fold.init_from} does not exist")
     best = run_dir / "best.pt"
-    if not needs_training(run_dir, resume):
+    if restart and run_dir.exists():
+        shutil.rmtree(run_dir)
+        print(f"{run_dir}: removed, starting over", flush=True)
+    if evaluate_only:
+        if not best.is_file():
+            raise SystemExit(f"{run_dir} has no best.pt to score")
+        print(f"{run_dir}: scoring best.pt as it is", flush=True)
+    elif not needs_training(run_dir, resume):
         print(f"{run_dir}: already trained, skipping to evaluation", flush=True)
     else:
         train_fold(
@@ -86,6 +101,7 @@ def run_fold(
             machine,
             resume=resume,
             architecture=runner.architecture(fold),
+            on_scored=on_scored,
         )
     params = fold.train_params
     evaluate_groups(
@@ -123,7 +139,14 @@ def choose_machine(args: argparse.Namespace, defaults: dict) -> Machine:
     )
 
 
-def main(argv: list[str] | None = None, *, runner: Runner = ZEPHYR_RUNNER) -> None:
+def main(
+    argv: list[str] | None = None,
+    *,
+    runner: Runner = ZEPHYR_RUNNER,
+    on_scored: OnScored | None = None,
+) -> None:
+    """Run the experiment *argv* names; *on_scored* (Python callers only, e.g. the GUI)
+    sees each validation scoring of every fold and seed."""
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("config", type=Path, help="Experiment TOML file.")
     parser.add_argument(
@@ -152,10 +175,22 @@ def main(argv: list[str] | None = None, *, runner: Runner = ZEPHYR_RUNNER) -> No
         help="Cut every fold to 1 epoch of 2 steps, to check the plumbing.  "
         "Writes under {output dir}/smoke/ unless --output-dir is given.",
     )
-    parser.add_argument(
+    again = parser.add_mutually_exclusive_group()
+    again.add_argument(
         "--resume",
         action="store_true",
         help="Continue runs that have a last.pt instead of refusing the directory.",
+    )
+    again.add_argument(
+        "--restart",
+        action="store_true",
+        help="Delete each run folder first and train it from scratch.",
+    )
+    again.add_argument(
+        "--evaluate-only",
+        action="store_true",
+        help="Never train: score each run's best.pt (finished or stopped) on its "
+        "fold's test groups, rewriting evaluation.json; a run without one is refused.",
     )
     parser.add_argument(
         "--save-traces",
@@ -197,8 +232,11 @@ def main(argv: list[str] | None = None, *, runner: Runner = ZEPHYR_RUNNER) -> No
                 machine,
                 smoke=args.smoke,
                 resume=args.resume,
+                restart=args.restart,
+                evaluate_only=args.evaluate_only,
                 runner=runner,
                 save_traces=args.save_traces or experiment.save_traces,
+                on_scored=on_scored,
             )
 
 

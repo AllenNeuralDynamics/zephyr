@@ -10,13 +10,15 @@ the complete list.
 
 CLI
 ---
+    zephyr gui [<project folder or clip list>] [--page boxes|breathing|...]
     zephyr clips scan <dir> --glob <pattern> -o <list.toml>
-    zephyr clips select <list.toml> [--out <list.toml>] [--min-span-s 300]
-    zephyr annotate <list.toml> [--prepare]
-    zephyr annotate events [<list.toml>]
+    zephyr clips check <list.toml>
+    zephyr annotate <list.toml> --prepare|--auto [--frame-dir <dir>]
+    zephyr annotate events <list.toml> --auto
     zephyr preprocess <list.toml>... --cache <dir>
     zephyr run <experiment.toml> [--smoke] [--folds <name>...]
     zephyr evaluate --checkpoint <best.pt> --clips <list.toml>... --cache <dir>
+    zephyr predict --checkpoint <best.pt> --clips <list.toml>... --out <dir>
     zephyr quality-control run --checkpoint <best.pt> --clips <list.toml>...
         --cache <dir> --out <dir> [--reference <ref.json>]
     zephyr quality-control reference --checkpoint <best.pt> --clips <list.toml>...
@@ -40,6 +42,15 @@ class _PassthroughCommand(BaseModel):
     args: CliUnknownArgs = []
 
 
+class GuiCommand(_PassthroughCommand):
+    """The desktop app: a project from videos to predictions. See ``zephyr.gui``."""
+
+    def cli_cmd(self) -> None:
+        from . import gui
+
+        gui.main(self.args)
+
+
 class ClipsCommand(_PassthroughCommand):
     """Create clip lists. See ``zephyr.clips``."""
 
@@ -50,7 +61,7 @@ class ClipsCommand(_PassthroughCommand):
 
 
 class AnnotateCommand(_PassthroughCommand):
-    """Place crop boxes, or (``annotate events``) choose each clip's event detector."""
+    """Cache a frame per clip or match boxes; ``annotate events``: the default detector."""
 
     def cli_cmd(self) -> None:
         from . import annotate
@@ -85,6 +96,15 @@ class EvaluateCommand(_PassthroughCommand):
         evaluate.main(self.args)
 
 
+class PredictCommand(_PassthroughCommand):
+    """Predict breathing from videos with a checkpoint. See ``zephyr.predict``."""
+
+    def cli_cmd(self) -> None:
+        from . import predict
+
+        predict.main(self.args)
+
+
 class QualityControlCommand(_PassthroughCommand):
     """Judge predictions on videos without a thermistor. See ``zephyr.quality_control``."""
 
@@ -108,11 +128,13 @@ class Zephyr(BaseSettings):
 
     model_config = SettingsConfigDict(cli_kebab_case=True)
 
+    gui: CliSubCommand[GuiCommand]
     clips: CliSubCommand[ClipsCommand]
     annotate: CliSubCommand[AnnotateCommand]
     preprocess: CliSubCommand[PreprocessCommand]
     run: CliSubCommand[RunCommand]
     evaluate: CliSubCommand[EvaluateCommand]
+    predict: CliSubCommand[PredictCommand]
     quality_control: CliSubCommand[QualityControlCommand]
     schema_: CliSubCommand[SchemaCommand] = Field(alias="schema")
 

@@ -6,12 +6,12 @@ parameters) can be picked per clip.  Events are never placed by hand, only stret
 to exclude are marked: saving writes each clip's ``events = {method, params}`` and
 ``excluded = [[start, end], ...]`` next to its ``box`` in the clip list.
 
+:class:`TuneState` is the logic of the app's Breathing page (``zephyr gui <list>
+--page breathing``).
+
 CLI
 ---
-    zephyr annotate events [<list.toml>]
-
-Menu: File > Open / Add videos / Remove / Save; Edit > apply a method to the current
-clip, the selected clips or all of them.
+    zephyr annotate events <list.toml> --auto   # the default detector for all, saved
 """
 
 import argparse
@@ -25,8 +25,8 @@ import numpy as np
 import pandas as pd
 
 from . import events
-from .clips import update_clip_list
-from .config import Clip, ClipList, ResolvedClip, load, resolve_clip
+from .clips import SCAN_EVENTS, update_clip_list
+from .config import Clip, ClipList, EventsSource, ResolvedClip, load, resolve_clip
 from .rates import breath_rates
 
 POINT_KINDS = ("inhale", "exhale")
@@ -144,6 +144,8 @@ class TuneState:
         self.index = 0
         self.added: list[Path] = []
         self.removed: set[Path] = set()
+        self.list_events: EventsSource | None = None
+        """The list's ``[events]`` to write on save (set by :meth:`auto`)."""
 
     @staticmethod
     def _entry(clip: ResolvedClip, custom: bool) -> Entry:
@@ -235,6 +237,19 @@ class TuneState:
             entry.custom = entry.dirty = True
             entry.rows = entry.trace = None  # the filter may have changed
         parallel_map(self.rows, indices, progress)
+
+    def auto(self, progress=None) -> None:
+        """Make the default detector (:data:`zephyr.clips.SCAN_EVENTS`) the list's
+        ``[events]`` and every clip's, dropping their own; marks, spans and reviews
+        are kept, and nothing is marked reviewed."""
+        source = SCAN_EVENTS
+        full = events.detector_params(source.method, source.params).model_dump()
+        self.list_events = source
+        for entry in self.entries:
+            entry.method, entry.params = source.method, dict(full)
+            entry.custom, entry.dirty = False, True
+            entry.rows = entry.trace = None
+        parallel_map(self.rows, list(range(len(self.entries))), progress)
 
     # ---- include / exclude marks ----------------------------------------------------
 
@@ -523,7 +538,8 @@ class TuneState:
         selection = {e.clip.source.resolve(): e.selection for e in self.entries}
         update_clip_list(
             self.path,
-            events=chosen,
+            events={e.clip.source.resolve(): None for e in self.entries} | chosen,
+            list_events=self.list_events,
             excluded=spans,
             included={e.clip.source.resolve(): e.included for e in self.entries},
             selection=selection,
@@ -535,16 +551,24 @@ class TuneState:
             entry.dirty = False
             entry.undo.clear()
         self.added, self.removed = [], set()
+        self.list_events = None
         return len(chosen)
 
 
 def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument(
-        "clips", nargs="?", type=Path, help="Clip list TOML file (else File > Open)."
+    parser = argparse.ArgumentParser(
+        description="Give every clip the default detector (choosing one by hand is "
+        "the app's: zephyr gui <list> --page breathing)."
     )
-    parser.add_argument("--window-s", type=float, default=10.0)
+    parser.add_argument("clips", type=Path, help="Clip list TOML file.")
+    parser.add_argument(
+        "--auto",
+        action="store_true",
+        required=True,
+        help="Give every clip the default detector and save (Auto in the app).",
+    )
     args = parser.parse_args(argv)
-    from .annotate_events_ui import run_ui
-
-    run_ui(args.clips, args.window_s)
+    state = TuneState(args.clips)
+    state.auto()
+    state.save()
+    print(f"{args.clips}: {len(state.entries)} clip(s) use {SCAN_EVENTS.method}")

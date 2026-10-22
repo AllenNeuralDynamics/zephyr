@@ -142,7 +142,7 @@ Two things need local files, because zephyr itself reads only local paths:
   aws s3 cp <copy>/qc.parquet s3://aind-scratch-data/vr-foraging/zephyr-dataset/
   ```
 
-- Reviewing (`zephyr annotate events <copy>/sessions.toml`) and preprocessing
+- Reviewing (`zephyr gui <copy>/sessions.toml --page breathing`) and preprocessing
   (`clips.toml`) work on such a copy. Every path in the lists is relative, so a copy
   anywhere works; sync `clips/` only for the clips you need. Decisions made by hand go
   in the spec's `[[review]]`, so `qc` writes them back on every run.
@@ -182,7 +182,7 @@ one frame per clip, the session's thumbnail:
 
 ```bash
 uv run python -m zephyr.corpus.boxes prepare <spec> --work boxes --profile IAmAnywhere
-uv run zephyr annotate boxes/face.toml --remote --frame-dir boxes/frames --box-size 96
+uv run zephyr gui boxes/face.toml --page boxes   # on boxes/frames; the box size is prepare's
 uv run python -m zephyr.corpus.boxes publish <spec> --work boxes --profile IAmAnywhere
 ```
 
