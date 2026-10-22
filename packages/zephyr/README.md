@@ -53,16 +53,19 @@ A project is a folder: its clip lists (`*.toml`) and, beside them, `experiments/
 | --- | --- | --- |
 | Project | opens or creates a project; what it holds | |
 | Clips | makes a clip list from a video folder (default or your own file names), checks every file | `clips scan`, `clips check` |
-| Boxes | one crop box per recording (the `zephyr annotate` window) | `annotate --prepare` |
-| Breathing | each clip's events and detector, bad stretches and clips (the `zephyr annotate events` window) | |
-| Train | writes a new experiment (one fold over the clip list's groups), preprocesses, smoke-runs, runs and resumes it | `preprocess`, `run` |
+| Boxes | one crop box per recording (the `zephyr annotate` window); **Auto** matches your boxes on the rest | `annotate --prepare` |
+| Breathing | each clip's events and detector, bad stretches and clips (the `zephyr annotate events` window); **Auto** gives every clip the default detector | |
+| Train | writes a new experiment (one fold over the clip list's groups; **Auto split** draws sessions in train/val/test shares), preprocesses, smoke-runs, runs and resumes it | `preprocess`, `run` |
 | Results | a run's scores per test group and clip, its curves, scoring it on another list | `evaluate` |
-| Predict | a checkpoint's trace for each video, with the crop it came from, and its quality control | `predict`, `quality-control run` |
+| Predict | a checkpoint's trace for each video, with the crop it came from, and its quality control; **Videos** takes a folder of videos and timestamps from anywhere, its crops placed at the network's size | `clips scan --checkpoint`, `annotate --prepare`, `predict`, `quality-control run` |
 
 The app writes only clip lists (as the two windows do) and new experiments (never
 editing one). Every command runs on this machine, in a child process of the app, with
 the same arguments the command line takes (**Copy command** gives that line), so a crash
-or **Cancel** leaves the app running and a stopped run continues with **Resume**. While a
+or **Cancel** leaves the app running and a stopped run continues with **Resume**.
+**Run** on an experiment that already has a run asks before starting it over
+(`--restart`), and **Score its test groups** on Results scores a run's `best.pt`,
+finished or stopped (`--evaluate-only`), asking before it replaces scores. While a
 run trains, its curves are read from its `history.json`, and after each validation
 scoring it sends the app a window of a few validation clips (the true and predicted
 traces, their inhales and the crop frames to play along): those snippets are shown,
@@ -86,11 +89,27 @@ never saved.
    ```
 
    Files named otherwise are scanned with `--pattern`, `--timestamps` and
-   `--thermistor`, written as the list's `[derive]` (see "Clip lists" below).
+   `--thermistor`, written as the list's `[derive]` (see "Clip lists" below). The
+   list's `[events]` starts as `adaptive_prominence` with the corpus's settings
+   (`zephyr.clips.SCAN_EVENTS`); a list without `[events]` uses `peak_detection`.
    `zephyr clips check my_clips.toml` then reads every file the list names and reports,
    per clip, what preprocessing or training would refuse: missing files or columns,
    frames that differ from the timestamp rows, a camera slower than `select_fs`, a
    breathing sensor at 80 Hz or less, a sensor and video sharing no time, a missing box.
+
+   To predict on videos that have only timestamps, from any folder, scan them for the
+   network: `--checkpoint` writes its `[preprocess]`, no sensor, each video its own group
+   (unless `--pattern`) and absolute paths. The crop must be the size the network trained
+   on (read from the run's training lists in the checkpoint): `zephyr annotate
+   --checkpoint` locks the box and frame size, so only the place is chosen, and `zephyr
+   predict` refuses any other size.
+
+   ```bash
+   uv run zephyr clips scan D:/new-videos --glob '*.mp4' -o new.toml --checkpoint best.pt
+   uv run zephyr annotate new.toml --prepare --frame-dir frames
+   uv run zephyr annotate new.toml --frame-dir frames --checkpoint best.pt
+   uv run zephyr predict --checkpoint best.pt --clips new.toml --out predictions/new
+   ```
 
 3. **Annotate**: place one crop box per recording (one box covers a
    recording's parts; `o` gives a single clip its own) in the box window (needs
@@ -106,6 +125,16 @@ never saved.
 
    For a list whose clips are not on this machine, `--remote` skips checking that they
    exist and reads the frames you cached in `--frame-dir` (one `frame_path` file per clip).
+
+   **Auto** (`a`, or `--auto` without the window) places a few boxes for you: the crop
+   of every recording you placed is a template, matched (normalised cross-correlation,
+   on the cached frames at the list's size) against each unplaced recording; one whose
+   best match reaches `--min-score` (0.5) gets a box there, shown as "match 0.73" until
+   you move it, and the rest stay unplaced. Place one of those and run Auto again.
+
+   ```bash
+   uv run zephyr annotate my_clips.toml --auto --frame-dir artifacts/frames
+   ```
 
 4. **Preprocess** into a feature cache (~1-2 min per clip on CPU). Entries are
    keyed by video, recipe and box, so a cache directory is safe to share and
@@ -128,6 +157,11 @@ never saved.
    uv run zephyr run examples/experiment.toml --smoke
    uv run zephyr run examples/experiment.toml
    ```
+
+   A run that has a `best.pt` is not trained again: `zephyr run` only scores it (a
+   stopped one too). `--resume` continues a stopped run, `--restart` deletes each run
+   folder and trains it from scratch, and `--evaluate-only` never trains, scoring
+   `best.pt` as it is.
 
    `evaluation.json` reports each clip, each recording, and each named test
    group (plus the onset head's inhale F1 for multitask networks). With
@@ -310,7 +344,9 @@ section explains the ones whose behaviour is not obvious.
 a clip list; it never places events by hand. The **Editor** tab shows a clip's traces,
 events, rate and amplitude; **Methods** has one row per clip with its method, parameters
 and quality metrics; **Spans** lists the clip's spans. Apply a method to the current,
-selected or all clips; mark an excluded stretch with `x` (start, then end), an included
+selected or all clips, or **Auto** (Edit menu; `--auto` saves without the window):
+the default detector (`zephyr.clips.SCAN_EVENTS`) becomes the list's `[events]` and
+every clip's own `events` is removed, marks, spans and `reviewed` untouched; mark an excluded stretch with `x` (start, then end), an included
 one with `i`, delete with right-click or Shift+X, undo with Ctrl+Z, drag edges to move.
 Each video has a mark (unset, include, exclude) and a reviewed flag (Ctrl+E cycles the
 mark, Ctrl+R toggles reviewed); an excluded video keeps its settings and is left out of

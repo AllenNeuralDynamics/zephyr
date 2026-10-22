@@ -2,13 +2,14 @@ import argparse
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import numpy as np
 import pandas as pd
 
 from zephyr.config import Experiment, TrainParams
 from zephyr.evaluate import trace_name, write_trace
-from zephyr.run import choose_machine, needs_training
+from zephyr.run import choose_machine, needs_training, run_fold
 from zephyr.train import snapshot_path
 
 
@@ -73,6 +74,46 @@ class NeedsTrainingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             run = self._run(d, "best.pt", "last.pt", "evaluation.json")
             self.assertFalse(needs_training(run, resume=True))
+
+
+class AgainTests(unittest.TestCase):
+    """``--restart`` and ``--evaluate-only``, with training and scoring mocked."""
+
+    def run_fold(self, run_dir: Path, **flags):
+        fold = mock.MagicMock(init_from=None)
+        with (
+            mock.patch("zephyr.run.train_fold") as train,
+            mock.patch("zephyr.run.evaluate_groups") as score,
+        ):
+            run_fold(
+                fold,
+                1,
+                run_dir,
+                run_dir,
+                mock.MagicMock(),
+                runner=mock.MagicMock(),
+                **flags,
+            )
+        return train.called, score.called
+
+    def test_restart_deletes_the_run_and_trains_it_again(self):
+        with tempfile.TemporaryDirectory() as d:
+            run = Path(d) / "seed-1"
+            run.mkdir()
+            for name in ("best.pt", "last.pt", "evaluation.json"):
+                (run / name).touch()
+            self.assertEqual(self.run_fold(run), (False, True))  # finished: scored
+            self.assertEqual(self.run_fold(run, restart=True), (True, True))
+            self.assertFalse((run / "evaluation.json").exists())
+
+    def test_evaluate_only_scores_a_stopped_run_and_never_trains(self):
+        with tempfile.TemporaryDirectory() as d:
+            run = Path(d)
+            with self.assertRaisesRegex(SystemExit, "no best.pt"):
+                self.run_fold(run, evaluate_only=True)
+            (run / "best.pt").touch()
+            (run / "last.pt").touch()
+            self.assertEqual(self.run_fold(run, evaluate_only=True), (False, True))
 
 
 class TraceTests(unittest.TestCase):

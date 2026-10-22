@@ -1,5 +1,6 @@
 """``zephyr clips check`` reads every file of a list and names, per clip, what
-preprocessing or training would refuse; ``scan`` writes a ``[derive]`` for other names."""
+preprocessing or training would refuse; ``scan`` writes a ``[derive]`` for other names
+and the adaptive detector as ``[events]``."""
 
 import tempfile
 import tomllib
@@ -9,7 +10,7 @@ from pathlib import Path
 import pandas as pd
 from _synthetic import HAS_FFMPEG, make_clip, make_dataset
 
-from zephyr.clips import check, main, scan
+from zephyr.clips import SCAN_EVENTS, check, main, scan
 from zephyr.config import ClipList, Derive, load
 
 
@@ -109,6 +110,16 @@ class ScanDeriveTests(unittest.TestCase):
             out = root / "list.toml"
             main(["scan", str(root), "--glob", "*.mp4", "-o", str(out)])
             self.assertNotIn("derive", tomllib.loads(out.read_text()))
+
+    def test_a_scanned_list_uses_the_adaptive_detector(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_clip(root, 1, 1)
+            out = root / "list.toml"
+            main(["scan", str(root), "--glob", "*.mp4", "-o", str(out)])
+            events = load(ClipList, out).resolve()[0].events
+            self.assertEqual(events, SCAN_EVENTS)
+            self.assertEqual(events.method, "adaptive_prominence")
 
 
 if __name__ == "__main__":

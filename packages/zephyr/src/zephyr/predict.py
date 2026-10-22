@@ -4,7 +4,8 @@ Each clip of the lists (boxed like any other) is preprocessed, into ``--cache`` 
 temporary folder removed afterwards, and predicted end to end. ``<out>/<video
 stem>.prediction.parquet`` holds one row per output sample: ``time``, the z-scored
 ``signal``, the onset head's ``onset`` probability and ``inhale`` (an inhale found
-there, by the head). The lists' ``[preprocess]`` must be the checkpoint's recipe.
+there, by the head). The lists' ``[preprocess]`` must be the checkpoint's recipe, and
+every box the size it trained on (``clips scan --checkpoint`` writes such a list).
 
 CLI
 ---
@@ -47,6 +48,25 @@ def recipe_mismatch(state: dict, recipe: PreprocessParams) -> list[str]:
 
 def _plain(value):
     return list(value) if isinstance(value, list | tuple) else value
+
+
+def crop_size(state: dict) -> tuple[int, int] | None:
+    """The ``(width, height)`` of the crops a checkpoint's network trained on: the
+    one box size of the clips its run lists as training (None when they differ, or
+    the checkpoint does not say)."""
+    lists = (state.get("config") or {}).get("train_clip_lists") or []
+    sizes = {
+        (int(clip["box"][2]), int(clip["box"][3]))
+        for clip_list in lists
+        for clip in clip_list.get("clip", [])
+        if clip.get("box") and clip.get("selection") != "exclude"
+    }
+    return sizes.pop() if len(sizes) == 1 else None
+
+
+def read_checkpoint(path: Path) -> dict:
+    """A checkpoint's saved state, on the CPU (its recipe, crop and lineage)."""
+    return torch.load(path, map_location="cpu", weights_only=False)
 
 
 def select_clips(lists: list[ClipList], groups: list[str] | None) -> list[ResolvedClip]:
@@ -120,6 +140,13 @@ def predict(
     if differs:
         raise SystemExit(
             f"the clip lists' [preprocess] is not {checkpoint.name}'s: {differs}"
+        )
+    crop = crop_size(state)
+    wrong = [c.name for c in clips if crop is not None and tuple(c.box[2:]) != crop]
+    if wrong:
+        raise SystemExit(
+            f"{checkpoint.name} trained on {crop[0]}x{crop[1]} crops; these clips' "
+            f"boxes are another size: {wrong}"
         )
     head = has_onset_head([state])
     _settings(out, checkpoint, checkpoint_hash(checkpoint))

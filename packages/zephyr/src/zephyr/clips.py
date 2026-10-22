@@ -11,6 +11,7 @@ CLI
     zephyr clips scan data/train --glob 'video_face_*.mp4' -o examples/clips.toml
     zephyr clips scan data --glob '*.mp4' -o list.toml --pattern '(?P<group>.+)'
         --timestamps '{stem}_times.parquet' --thermistor '{stem}_breath.parquet'
+    zephyr clips scan other/videos --glob '*.mp4' -o predict.toml --checkpoint best.pt
     zephyr clips check examples/clips.toml [--json report.json]
 """
 
@@ -26,13 +27,24 @@ import numpy as np
 import pandas as pd
 import tomlkit
 
-from .config import ClipList, Derive, ResolvedClip, load
+from .config import ClipList, Derive, EventsSource, ResolvedClip, load
 from .signal import BREATHING_SIGNAL_COLUMN, TIME_COLUMN
 from .video import Box, probe_size
 
 SENSOR_MIN_HZ = 80.0
 """The breathing signal is low-passed at 40 Hz at its own rate, which needs more than
 twice that (:func:`zephyr.signal.filter_sniff_signal`)."""
+SCAN_EVENTS = EventsSource(
+    method="adaptive_prominence",
+    params={
+        "highpass_hz": 1.0,
+        "distance_s": 0.05,
+        "prominence_frac": 0.2,
+        "window_s": 1.5,
+    },
+)
+"""The detector a scanned list's ``[events]`` starts with: the corpus's, tuned on the
+ephys sessions. Lists without ``[events]`` keep ``peak_detection``."""
 
 
 def natural_key(path: Path) -> list[int | str]:
@@ -41,7 +53,22 @@ def natural_key(path: Path) -> list[int | str]:
 
 
 def _relative(path: Path, base: Path) -> str:
-    return Path(os.path.relpath(path, base)).as_posix()
+    """*path* relative to *base*, or absolute where none exists (another drive)."""
+    try:
+        return Path(os.path.relpath(path, base)).as_posix()
+    except ValueError:
+        return Path(path).resolve().as_posix()
+
+
+def _events_table(source: EventsSource):
+    """A list's ``[events]`` table for *source*."""
+    table = tomlkit.table()
+    table.add("method", source.method)
+    if source.params:
+        params = tomlkit.inline_table()
+        params.update(source.params)
+        table.add("params", params)
+    return table
 
 
 def scan(
@@ -52,13 +79,18 @@ def scan(
     target_size: tuple[int, int] | None = None,
     unlabelled: bool = False,
     derive: Derive | None = None,
+    recipe: dict | None = None,
+    note: str | None = None,
 ) -> None:
     """Write a clip list of the videos in *directory* matching any of *patterns*.
 
-    *target_size* defaults to the first video's native size; *derive*, unless it is the
-    default naming, is written as the list's ``[derive]``.  The list is
-    validated before it is written, so a scan that would produce an unloadable
-    file (say, thermistors that do not exist) fails instead of leaving it behind.
+    *target_size* defaults to the first video's native size, and *recipe* (a whole
+    ``[preprocess]``, e.g. a checkpoint's) replaces it, its videos then named by
+    absolute path; *derive*, unless it is the
+    default naming, is written as the list's ``[derive]``, and a labelled list's
+    ``[events]`` is :data:`SCAN_EVENTS`; *note* is a comment at the top.  The list is
+    validated before it is written, so a scan that would produce an unloadable file
+    (say, thermistors that do not exist) fails instead of leaving it behind.
     """
     out = out.resolve()
     found = {
@@ -69,8 +101,10 @@ def scan(
     videos = sorted(found, key=natural_key)
     if not videos:
         raise SystemExit(f"no videos match {patterns} in {directory}")
-    if target_size is None:
-        target_size = probe_size(videos[0])
+    recipe_given = recipe is not None
+    if recipe is None:
+        recipe = {"target_size": list(target_size or probe_size(videos[0]))}
+    target_size = tuple(recipe["target_size"])
 
     doc = tomlkit.document()
     doc.add(tomlkit.comment("Clip list written by `zephyr clips scan`."))
@@ -80,9 +114,14 @@ def scan(
             "derived from each file name (see [derive] in zephyr.config)."
         )
     )
+    if note:
+        doc.add(tomlkit.comment(note))
     preprocess = tomlkit.table()
-    preprocess.add("target_size", list(target_size))
+    for key, value in recipe.items():
+        preprocess.add(key, list(value) if isinstance(value, list | tuple) else value)
     doc.add("preprocess", preprocess)
+    if not unlabelled:
+        doc.add("events", _events_table(SCAN_EVENTS))
     if derive is not None and derive != Derive():
         table = tomlkit.table()
         for name, value in derive.model_dump(exclude_defaults=True).items():
@@ -91,7 +130,9 @@ def scan(
     clips = tomlkit.aot()
     for video in videos:
         entry = tomlkit.table()
-        entry.add("video", _relative(video, out.parent))
+        # A list for a checkpoint names videos from anywhere: absolute, so it can move.
+        where = video.as_posix() if recipe_given else _relative(video, out.parent)
+        entry.add("video", where)
         if unlabelled:
             entry.add("thermistor", False)
         clips.append(entry)
@@ -138,17 +179,21 @@ def write_boxes(
 def update_clip_list(
     path: Path,
     *,
-    events: dict[Path, tuple[str, dict[str, float]]] | None = None,
+    events: dict[Path, tuple[str, dict[str, float]] | None] | None = None,
     excluded: dict[Path, list[tuple[float, float]]] | None = None,
     included: dict[Path, list[tuple[float, float]]] | None = None,
     selection: dict[Path, str | None] | None = None,
     reviewed: dict[Path, bool] | None = None,
     add: list[Path] | None = None,
     remove: set[Path] | None = None,
+    list_events: EventsSource | None = None,
 ) -> None:
     """Edit *path* in place: set each clip's ``events = {method, params}`` (keyed
-    by resolved source path: the video, or a thermistor-only entry's thermistor), set each clip's ``excluded`` and ``included`` spans and ``selection`` mark (removing the key when
-    there are none, or the clip is accepted), append the *add* videos and delete the *remove* ones.
+    by resolved source path: the video, or a thermistor-only entry's thermistor;
+    ``None`` removes it, so the clip uses the list's), set each clip's ``excluded``
+    and ``included`` spans and ``selection`` mark (removing the key when there are
+    none, or the clip is accepted), append the *add* videos, delete the *remove* ones
+    and, given *list_events*, set the list's ``[events]``.
 
     Like :func:`write_boxes` this keeps every comment and other field.  The result
     is validated before it is written.
@@ -197,8 +242,10 @@ def update_clip_list(
                 entry["excluded"] = [[float(a), float(b)] for a, b in spans]
             elif "excluded" in entry:
                 del entry["excluded"]
-        chosen = (events or {}).get(resolved(entry))
-        if chosen is None:
+        chosen = (events or {}).get(resolved(entry), "unchanged")
+        if chosen is None and "events" in entry:
+            del entry["events"]
+        if chosen is None or chosen == "unchanged":
             continue
         method, params = chosen
         inline = tomlkit.inline_table()
@@ -207,6 +254,8 @@ def update_clip_list(
             inline["params"] = tomlkit.inline_table()
             inline["params"].update({k: float(v) for k, v in params.items()})
         entry["events"] = inline
+    if list_events is not None:
+        doc["events"] = _events_table(list_events)
     ClipList.model_validate(doc.unwrap(), context={"base": path.parent})
     path.write_text(tomlkit.dumps(doc))
 
@@ -393,6 +442,12 @@ def main(argv: list[str] | None = None) -> None:
     )
     scan_parser.add_argument("--timestamps", help="[derive] timestamps template.")
     scan_parser.add_argument("--thermistor", help="[derive] thermistor template.")
+    scan_parser.add_argument(
+        "--checkpoint",
+        type=Path,
+        help="A list to predict with this network: no sensor (--unlabelled), its "
+        "[preprocess], and each video its own group unless --pattern says otherwise.",
+    )
     check_parser = sub.add_parser(
         "check", help="Read every file of a list and report what would be refused."
     )
@@ -429,6 +484,16 @@ def main(argv: list[str] | None = None) -> None:
         for name in ("pattern", "timestamps", "thermistor")
         if (value := getattr(args, name)) is not None
     }
+    recipe = note = None
+    if args.checkpoint is not None:
+        if args.target_size:
+            raise SystemExit("--checkpoint sets the frame size; drop --target-size")
+        recipe, crop = checkpoint_recipe(args.checkpoint)
+        derive.setdefault("pattern", EACH_VIDEO)
+        derive.setdefault("thermistor", "{stem}.thermistor.parquet")  # never read
+        note = f"For predicting with {args.checkpoint}" + (
+            f": every box must be {crop[0]}x{crop[1]}." if crop else "."
+        )
     try:
         rule = Derive(**derive) if derive else None
     except ValueError as exc:
@@ -438,6 +503,27 @@ def main(argv: list[str] | None = None) -> None:
         args.glob,
         args.out,
         target_size=tuple(args.target_size) if args.target_size else None,
-        unlabelled=args.unlabelled,
+        unlabelled=args.unlabelled or args.checkpoint is not None,
         derive=rule,
+        recipe=recipe,
+        note=note,
     )
+
+
+EACH_VIDEO = r"(?P<group>.+)"
+"""The ``[derive]`` pattern of a list to predict with: each video its own group."""
+
+
+def checkpoint_recipe(path: Path) -> tuple[dict, tuple[int, int] | None]:
+    """A checkpoint's ``[preprocess]`` and the crop size it trained on."""
+    from .config import PreprocessParams
+    from .predict import crop_size, read_checkpoint
+
+    if not Path(path).is_file():
+        raise SystemExit(f"no checkpoint {path}")
+    state = read_checkpoint(path)
+    trained = state.get("feature_config") or {}
+    if "target_size" not in trained:
+        raise SystemExit(f"{path} does not record its [preprocess]")
+    recipe = {k: v for k, v in trained.items() if k in PreprocessParams.model_fields}
+    return recipe, crop_size(state)

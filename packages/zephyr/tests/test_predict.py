@@ -11,9 +11,18 @@ import pandas as pd
 from _synthetic import HAS_FFMPEG, make_dataset, write_experiment
 
 from zephyr import run
+from zephyr.annotate import open_state, prepare_frames, save_boxes
+from zephyr.clips import main as scan_main
 from zephyr.config import ClipList, load
 from zephyr.gui.worker import snippets
-from zephyr.predict import SETTINGS, SUFFIX, main, select_clips
+from zephyr.predict import (
+    SETTINGS,
+    SUFFIX,
+    crop_size,
+    main,
+    read_checkpoint,
+    select_clips,
+)
 from zephyr.preprocess import main as preprocess
 
 RUN = Path("runs/experiment/fold/seed-1")
@@ -120,6 +129,49 @@ class TrainedRunTests(unittest.TestCase):
         self.assertAlmostEqual(float(table["signal"].mean()), 0.0, places=4)
         self.assertAlmostEqual(float(table["signal"].std(ddof=0)), 1.0, places=3)
         self.assertTrue((out / SETTINGS).is_file())
+
+    def predict(self, clips: Path, out: Path) -> None:
+        main(
+            ["--checkpoint", str(self.checkpoint), "--clips", str(clips)]
+            + ["--out", str(out), "--device", "cpu", "--amp", "off", "--workers", "1"]
+        )
+
+    def test_a_checkpoint_says_its_crop_and_predict_refuses_another(self):
+        self.assertEqual(crop_size(read_checkpoint(self.checkpoint)), (32, 32))
+        other = self.root / "wrong-crop.toml"
+        other.write_text(
+            self.list.read_text().replace("16, 8, 32, 32", "16, 8, 24, 24")
+        )
+        with self.assertRaisesRegex(SystemExit, "trained on 32x32 crops"):
+            self.predict(other, self.root / "predictions" / "wrong")
+
+    def test_videos_from_any_folder_are_listed_cropped_and_predicted(self):
+        folder = self.root / "elsewhere"
+        folder.mkdir()
+        for name in ("video_face_1_part_1.mp4", "video_face_1_part_1.parquet"):
+            (folder / name).write_bytes((self.root / "data" / name).read_bytes())
+        out = self.root / "predictions" / "videos"
+        path = out / "videos.toml"
+        scan_main(
+            ["scan", str(folder), "--glob", "*.mp4", "-o", str(path)]
+            + ["--checkpoint", str(self.checkpoint)]
+        )
+        listed = load(ClipList, path)
+        self.assertEqual(listed.preprocess.target_size, (64, 48))
+        (clip,) = listed.resolve()
+        self.assertEqual(clip.group, "video_face_1_part_1")  # each video its own
+        self.assertFalse(clip.labelled)
+        frames = self.root / "frames"
+        prepare_frames(listed.resolve(), frames)
+        state = open_state(path, frames, checkpoint=self.checkpoint)
+        self.assertEqual((state.box_size, state.locked), (32, True))
+        state.resize(16)
+        state.set_target(32, 24)
+        self.assertEqual((state.box_size, state.target_size), (32, (64, 48)))
+        state.place(32, 24)
+        save_boxes(path, state)
+        self.predict(path, out)
+        self.assertTrue((out / f"video_face_1_part_1{SUFFIX}").is_file())
 
     def test_predict_needs_the_checkpoints_recipe(self):
         other = self.root / "other.toml"

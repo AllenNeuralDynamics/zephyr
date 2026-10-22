@@ -25,6 +25,7 @@ from ..annotate_events import (
     mean_metrics,
     parallel_map,
 )
+from ..clips import SCAN_EVENTS
 from ..rates import breath_rates
 from .theme import STYLE, THEME
 
@@ -35,6 +36,8 @@ AMPLITUDE_WINDOW_S = 1.0
 """Width of the rolling window whose raw 5th-95th percentile range is the amplitude."""
 AMPLITUDE_COLOUR = "#8e5bd0"
 SELECTION_LABELS = ("unset", "include", "exclude")
+SELECTION_TAB = 2
+"""The tab the window opens on (Editor 0, Methods 1, Selection 2)."""
 SPAN_COLOUR = {"exclude": THEME["span"], "include": THEME["keep"]}
 AMPLITUDE_HZ = 50.0
 SERIES_BINS = 120
@@ -323,6 +326,7 @@ class EditorWindow(QtWidgets.QMainWindow):
         self._timer = QtCore.QTimer(singleShot=True, interval=25)
         self._timer.timeout.connect(self.refresh_analysis)
         self.load_clip()
+        self.tabs.setCurrentIndex(SELECTION_TAB)  # start from the whole list
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
@@ -1424,6 +1428,24 @@ class EditorWindow(QtWidgets.QMainWindow):
         :mod:`zephyr.session_selection`), with its thresholds editable."""
         page = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(page)
+        quick = QtWidgets.QHBoxLayout()
+        auto = QtWidgets.QPushButton(
+            "Auto: the default detector for all", objectName="accent"
+        )
+        auto.setToolTip(
+            f"{SCAN_EVENTS.method} for every video, as the list's [events]; marks, "
+            "spans and reviews are kept. File > Save writes it"
+        )
+        auto.clicked.connect(self.auto)
+        quick.addWidget(auto)
+        quick.addWidget(
+            QtWidgets.QLabel(
+                "then check the suggestions below, and the Editor for single videos",
+                objectName="sub",
+            )
+        )
+        quick.addStretch(1)
+        layout.addLayout(quick)
         card = QtWidgets.QFrame(objectName="card")
         grid = QtWidgets.QGridLayout(card)
         grid.addWidget(QtWidgets.QLabel("SELECTION", objectName="title"), 0, 0)
@@ -1870,6 +1892,15 @@ class EditorWindow(QtWidgets.QMainWindow):
     def apply_all(self) -> None:
         self._apply(self.state.accepted(), self.methods_card)
 
+    def auto(self) -> None:
+        """The default detector as the list's, for every clip (saved with Save)."""
+        self._work(
+            f"Giving {len(self.state.entries)} video(s) the default detector...",
+            self.state.auto,
+            self._applied,
+            total=len(self.state.entries),
+        )
+
     def _targets(self) -> list[int]:
         """The videos a menu command acts on: the table's selection, else this one."""
         if self.tabs.currentIndex() == 1:
@@ -2007,6 +2038,7 @@ class EditorWindow(QtWidgets.QMainWindow):
             lambda: self._apply_from_menu("all"),
             "Ctrl+Shift+Return",
         )
+        action(edit_menu, "A&uto: the default detector for all clips", self.auto)
         edit_menu.addSeparator()
         action(
             edit_menu,

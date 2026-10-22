@@ -6,7 +6,8 @@ import numpy as np
 import pandas as pd
 from _clipfiles import write_list
 
-from zephyr.annotate_events import METRICS, TuneState, mean_metrics
+from zephyr.annotate_events import METRICS, TuneState, main, mean_metrics
+from zephyr.clips import SCAN_EVENTS
 from zephyr.config import ClipList, load
 
 FS = 250.0
@@ -89,6 +90,29 @@ class TuneStateTests(unittest.TestCase):
         self.assertEqual(
             again.describe(1), ("adaptive_prominence", "prominence_frac=0.3")
         )
+
+    def test_auto_makes_the_default_the_lists_and_keeps_the_hand_work(self):
+        self.state.apply([1], "hysteresis_cycles")
+        self.state.exclude(3.0, 4.0, 1)
+        self.state.set_selection([0], "include")
+        self.state.save()
+        again = TuneState(self.path)
+        again.auto()
+        self.assertEqual(again.dirty, {0, 1})
+        self.assertEqual(again.save(), 0)  # no clip keeps a detector of its own
+        clip_list = load(ClipList, self.path)
+        self.assertEqual(clip_list.events, SCAN_EVENTS)
+        self.assertTrue(all(c.events is None for c in clip_list.clip))
+        _, second = clip_list.resolve()
+        self.assertEqual(second.events.method, "adaptive_prominence")
+        self.assertEqual(second.excluded, ((3.0, 4.0),))
+        self.assertEqual(clip_list.clip[0].selection, "include")
+        self.assertFalse(any(c.reviewed for c in clip_list.clip))
+        self.assertIn("# keep this comment", self.path.read_text())
+
+    def test_auto_from_the_command_line_needs_no_window(self):
+        main([str(self.path), "--auto"])
+        self.assertEqual(load(ClipList, self.path).events, SCAN_EVENTS)
 
     def test_add_and_remove_videos_reach_the_file_on_save(self):
         extra = make_video(self.root, 3)

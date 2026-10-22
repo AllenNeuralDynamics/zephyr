@@ -28,7 +28,11 @@ QLabel#value {{ font-size: 19px; font-weight: 600; }}
 QLabel#sub {{ color: {THEME["muted"]}; font-size: 10px; }}
 QLabel#heading {{ font-size: 17px; font-weight: 600; }}
 QLabel#bad {{ color: {THEME["bad"]}; }}
-QListWidget, QTableView, QTreeView, QLineEdit, QComboBox, QDoubleSpinBox, QSpinBox,
+QLabel#jobstatus[state="running"] {{ color: {THEME["accent"]}; font-weight: 600; }}
+QLabel#jobstatus[state="done"] {{ color: {THEME["placed"]}; font-weight: 600; }}
+QLabel#jobstatus[state="failed"] {{ color: {THEME["bad"]}; font-weight: 600; }}
+QProgressBar {{ border: none; background: {THEME["line"]}; }}
+QProgressBar::chunk {{ background: {THEME["accent"]}; }}QListWidget, QTableView, QTreeView, QLineEdit, QComboBox, QDoubleSpinBox, QSpinBox,
 QPlainTextEdit {{
     background: {THEME["card"]}; border: 1px solid {THEME["line"]}; border-radius: 4px; }}
 QPlainTextEdit {{ font-family: "Consolas", "Menlo", monospace; font-size: 11px; }}

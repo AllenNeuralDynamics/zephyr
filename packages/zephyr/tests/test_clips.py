@@ -107,6 +107,38 @@ class AnnotateStateTests(_Tmp):
         state.toggle_override()
         self.assertEqual(state.clip_boxes()[first.video], boxes[second.video])
 
+    def _scene(self, centre, rng) -> np.ndarray:
+        """A native frame of noise with a bright blob (a snout) at target *centre*."""
+        y, x = np.mgrid[0:160, 0:200]
+        cx, cy = 2 * centre[0], 2 * centre[1]
+        blob = 160 * np.exp(-((x - cx) ** 2 + (y - cy) ** 2) / (2 * 12.0**2))
+        return np.clip(40 + blob + rng.normal(0, 4, x.shape), 0, 255).astype(np.uint8)
+
+    def test_auto_matches_the_hand_placed_box_and_leaves_poor_matches(self):
+        videos = [touch_clip(self.root / "d", g, 1) for g in (1, 2, 3)]
+        path = write_list(self.root / "l.toml", videos)
+        path.write_text(path.read_text().replace("box = [10, 10, 32, 32]\n", ""))
+        state = initial_state(load(ClipList, path).resolve(), (200, 160), (100, 80), 32)
+        rng = np.random.default_rng(0)
+        frames = {
+            state.recordings[0].key: [self._scene((60, 50), rng)],
+            state.recordings[1].key: [self._scene((30, 25), rng)],
+            state.recordings[2].key: [rng.integers(0, 255, (160, 200), np.uint8)],
+        }
+        with self.assertRaises(ValueError):  # nothing to look for yet
+            state.auto(lambda r: frames[r.key])
+        state.place(60, 50)
+        scores = state.auto(lambda r: frames[r.key])
+        first, second, noise = (r.key for r in state.recordings)
+        self.assertEqual(set(scores), {second, noise})
+        self.assertGreater(scores[second], 0.9)
+        self.assertEqual(state.boxes[second], (14, 9, 32, 32))  # centred on (30, 25)
+        self.assertEqual(set(state.matched), {second})
+        self.assertEqual(state.placed, {first, second})
+        state.select(second)
+        state.nudge(1, 0)  # moved by hand: no longer a match
+        self.assertEqual(state.matched, {})
+
     def test_recordings_group_by_folder_and_group(self):
         a = touch_clip(self.root / "x", 1, 1)
         b = touch_clip(self.root / "y", 1, 1)

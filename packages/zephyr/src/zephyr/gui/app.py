@@ -1,4 +1,5 @@
-"""The app's main window: the steps on the left, the current one on the right."""
+"""The app's main window: the steps on the left, each marked done, partly done or to
+do (:meth:`.project.Project.steps`), and the current one on the right."""
 
 from pathlib import Path
 
@@ -6,10 +7,15 @@ from PySide6 import QtCore, QtGui, QtWidgets
 
 from .pages import BoxesPage, BreathingPage, ClipsPage, ProjectPage
 from .predicting import PredictPage
-from .project import Project
-from .theme import STYLE
+from .project import DONE, PARTLY, TODO, Project
+from .theme import STYLE, THEME
 from .training import ResultsPage, TrainPage
 from .widgets import find_data
+
+STEP_MARKS = {DONE: ("✓", "placed"), PARTLY: ("◐", "span"), TODO: ("○", "muted")}
+"""The mark and theme colour of a step in the list, by its state."""
+STEPS_MS = 3000
+"""How often the steps' marks are read again from the project folder."""
 
 PAGES = (
     ProjectPage,
@@ -31,12 +37,24 @@ class MainWindow(QtWidgets.QMainWindow):
         split.setContentsMargins(0, 0, 0, 0)
         self.nav = QtWidgets.QListWidget(objectName="nav")
         self.nav.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
-        self.nav.setFixedWidth(150)
+        self.nav.setFixedWidth(180)
         self.stack = QtWidgets.QStackedWidget()
         self.pages = [page(self) for page in PAGES]
-        for number, page in enumerate(self.pages):
-            self.nav.addItem(f"{number}  {page.title}" if number else page.title)
+        for page in self.pages:
+            self.nav.addItem("")
             self.stack.addWidget(page)
+            if getattr(page, "jobs", None) is not None:
+                page.jobs.started.connect(lambda _line, p=page: self._busy(p))
+                page.jobs.finished.connect(lambda _code, p=page: self._busy(p))
+        self._held: dict[int, list] = {}
+        self.running = QtWidgets.QLabel(objectName="jobstatus")
+        self.running.setProperty("state", "running")
+        self.statusBar().addWidget(self.running, 1)
+        self._busy_timer = QtCore.QTimer(self, interval=1000)
+        self._busy_timer.timeout.connect(self._show_running)
+        self._steps_timer = QtCore.QTimer(self, interval=STEPS_MS)
+        self._steps_timer.timeout.connect(self.refresh_steps)
+        self._steps_timer.start()
         self.nav.currentRowChanged.connect(self._go)
         split.addWidget(self.nav)
         split.addWidget(self.stack, 1)
@@ -105,6 +123,54 @@ class MainWindow(QtWidgets.QMainWindow):
         self.lists.blockSignals(False)
         for page in self.pages:
             page.set_project(project)
+        self.refresh_steps()
+
+    def refresh_steps(self) -> None:
+        """Mark each step in the list as done, partly done or to do, from the
+        project folder; the tooltip says what the mark rests on."""
+        steps = self.project.steps() if self.project is not None else {}
+        for number, page in enumerate(self.pages):
+            item = self.nav.item(number)
+            step = steps.get(page.title)
+            state = step.state if step else TODO
+            mark, colour = STEP_MARKS[state]
+            label = f"{number}  {page.title}" if number else page.title
+            item.setText(f"{mark}  {label}")
+            item.setForeground(QtGui.QColor(THEME[colour]))
+            item.setToolTip(
+                f"{page.title}: {state}" + (f"\n{step.detail}" if step else "")
+            )
+
+    def _busy(self, page) -> None:
+        """While *page*'s command runs, grey out its buttons (not the log's Cancel and
+        Copy) so nothing starts twice; give them back once it ends. Read from the job,
+        not the signal, so a chain of commands holds them throughout."""
+        key = id(page)
+        if page.jobs.busy and key not in self._held:
+            held = [
+                button
+                for button in page.findChildren(QtWidgets.QAbstractButton)
+                if button.isEnabled() and not page.jobs.isAncestorOf(button)
+            ]
+            for button in held:
+                button.setEnabled(False)
+            self._held[key] = held
+        elif not page.jobs.busy and key in self._held:
+            for button in self._held.pop(key):
+                button.setEnabled(True)
+            self.refresh_steps()
+        self._show_running()
+
+    def _show_running(self) -> None:
+        """What runs, on which page, in the status bar (any page can be shown)."""
+        busy = [p for p in self.pages if getattr(p, "jobs", None) and p.jobs.busy]
+        self.running.setText(
+            "   ".join(f"{p.title}: running {p.jobs.describe()}" for p in busy)
+        )
+        if busy:
+            self._busy_timer.start()
+        else:
+            self._busy_timer.stop()
 
     def _list_chosen(self, index: int) -> None:
         path = self.lists.itemData(index)
@@ -114,6 +180,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _go(self, row: int) -> None:
         self.stack.setCurrentIndex(row)
         self.pages[row].shown()
+        self.refresh_steps()
 
     def closeEvent(self, event) -> None:
         busy = [p.title for p in self.pages if getattr(p, "jobs", None) and p.jobs.busy]

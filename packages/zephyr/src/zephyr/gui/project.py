@@ -5,21 +5,86 @@ once, never edited), ``frames/`` (one frame per clip, for boxes), ``cache/`` (th
 feature cache), ``runs/<experiment>/`` and ``predictions/<name>/``. Needs no Qt.
 """
 
+import json
 import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import numpy as np
 import tomlkit
 
 from ..config import FOLD_NAME, ClipList, Experiment, load
 
 FOLDERS = ("experiments", "frames", "cache", "runs", "predictions")
 RUN_FILES = ("history.json", "best.pt", "evaluation.json")
+DONE, PARTLY, TODO = "done", "partly", "todo"
+
+
+@dataclass(frozen=True)
+class Step:
+    """How far one step of the project is: :data:`DONE`, :data:`PARTLY` or
+    :data:`TODO`, and what that rests on."""
+
+    state: str
+    detail: str
 
 
 def _relative(path: Path, base: Path) -> str:
     return Path(os.path.relpath(path, base)).as_posix()
+
+
+def run_status(run: Path) -> str:
+    """Where a run folder stands: epochs logged of those planned, the epoch
+    ``best.pt`` was kept from, and whether it is scored (empty for no run yet)."""
+    run = Path(run)
+    try:
+        rows = json.loads((run / "history.json").read_text())
+    except (OSError, ValueError):
+        rows = []
+    if not rows and not (run / "best.pt").is_file():
+        return ""
+    try:
+        config = json.loads((run / "config.json").read_text())
+        planned = f" of {config['fold']['train_params']['epochs']}"
+    except (OSError, ValueError, KeyError, TypeError):
+        planned = ""
+    parts = [f"{len(rows)}{planned} epochs"]
+    best = [r["epoch"] + 1 for r in rows if r.get("since_best") == 0]
+    if best:
+        parts.append(f"best.pt from epoch {best[-1]}")
+    scored = (run / "evaluation.json").is_file()
+    parts.append("scored" if scored else "not scored")
+    return ", ".join(parts)
+
+
+def split_groups(
+    groups: list[str], proportions: tuple[float, float, float], seed: int = 1
+) -> tuple[list[str], list[str], list[str]]:
+    """Draw *groups* (sessions) into train, validation and test in *proportions*
+    (any scale; a zero validation share means none), with *seed*. Counts are rounded
+    by largest remainder, and train and test (and validation, if asked for) get at
+    least one group each; each side keeps the groups' order."""
+    shares = np.asarray(proportions, float)
+    if shares.shape != (3,) or (shares < 0).any() or shares[[0, 2]].min() <= 0:
+        raise ValueError("train and test need a share above 0, validation 0 or more")
+    wanted = shares > 0
+    if len(groups) < wanted.sum():
+        raise ValueError(
+            f"{len(groups)} group(s) cannot fill {wanted.sum()} sides; add sessions "
+            "or drop validation"
+        )
+    exact = shares / shares.sum() * len(groups)
+    counts = np.floor(exact).astype(int)
+    for k in np.argsort(-(exact - counts), kind="stable")[: len(groups) - counts.sum()]:
+        counts[k] += 1
+    for k in np.flatnonzero(wanted & (counts == 0)):
+        counts[k] += 1
+        counts[np.argmax(counts)] -= 1
+    order = np.random.default_rng(seed).permutation(len(groups))
+    bounds = np.cumsum(counts)[:-1]
+    sides = [sorted(part) for part in np.split(order, bounds)]
+    return tuple([groups[i] for i in side] for side in sides)
 
 
 @dataclass
@@ -111,6 +176,96 @@ class Project:
 
     def checkpoints(self) -> list[Path]:
         return [run / "best.pt" for run in self.runs() if (run / "best.pt").is_file()]
+
+    def run_of(self, run: Path) -> tuple[Path, str, int, bool] | None:
+        """The experiment, fold, seed and smoke flag *run* was trained for, from
+        the project's experiments (None for a run none of them names)."""
+        run = Path(run).resolve()
+        for experiment in self.experiments():
+            for smoke in (False, True):
+                try:
+                    dirs = self.run_dirs(experiment, smoke=smoke)
+                except ValueError:
+                    break
+                if run in dirs:
+                    return experiment, run.parent.name, int(run.name[5:]), smoke
+        return None
+
+    def steps(self) -> dict[str, Step]:
+        """Each step's state, read from the folder alone (keyed by page title)."""
+        out = {"Project": Step(DONE, str(self.root))}
+        out.update(self._list_steps())
+        real = [
+            r for r in self.runs() if "smoke" not in r.relative_to(self.runs_dir).parts
+        ]
+        trained = [r for r in real if (r / "best.pt").is_file()]
+        experiments = self.experiments()
+        out["Train"] = Step(
+            DONE if trained else PARTLY if experiments or real else TODO,
+            f"{len(experiments)} experiment(s), {len(trained)} trained run(s)",
+        )
+        scored = [r for r in real if (r / "evaluation.json").is_file()]
+        out["Results"] = Step(
+            DONE if scored else TODO, f"{len(scored)} evaluated run(s)"
+        )
+        folders = [
+            p.parent
+            for p in self.predictions_dir.glob("*/predictions.json")
+            if any(p.parent.glob("*.prediction.parquet"))
+        ]
+        out["Predict"] = Step(
+            DONE if folders else TODO, f"{len(folders)} folder(s) of predictions"
+        )
+        return out
+
+    def _list_steps(self) -> dict[str, Step]:
+        """Clips (the list loads), Boxes (every clip in use has one) and Breathing
+        (a detector is named, by ``[events]`` or each clip, and every sensed clip in
+        use is decided: reviewed, or marked include or exclude; named or some decided
+        is partly done)."""
+        if self.clip_list is None:
+            nothing = Step(TODO, "no clip list yet")
+            return {"Clips": nothing, "Boxes": nothing, "Breathing": nothing}
+        try:
+            clip_list = self.load_list()
+        except ValueError as exc:
+            broken = Step(TODO, f"{self.clip_list.name} does not load")
+            return {
+                "Clips": Step(PARTLY, str(exc)),
+                "Boxes": broken,
+                "Breathing": broken,
+            }
+        clips = clip_list.resolve()
+        sensed = [c for c in clips if c.labelled]
+        steps = {"Clips": Step(DONE, f"{len(clips)} clip(s), {len(sensed)} sensed")}
+        boxed = sum(c.box is not None for c in clips)
+        steps["Boxes"] = Step(
+            TODO if not boxed else DONE if boxed == len(clips) else PARTLY,
+            f"{boxed} of {len(clips)} clip(s) boxed",
+        )
+        in_use = [c for c in clip_list.clip if c.selection != "exclude"]
+        named = "events" in clip_list.model_fields_set or all(
+            c.events is not None for c in in_use
+        )
+        reviewed = sum(
+            c.reviewed or c.selection is not None
+            for c in in_use
+            if c.thermistor is not False
+        )
+        if not sensed:
+            state = TODO
+        elif named and reviewed >= len(sensed):
+            state = DONE
+        else:
+            state = PARTLY if named or reviewed else TODO
+        method = sensed[0].events.method if sensed else "-"
+        steps["Breathing"] = Step(
+            state,
+            f"{method}{'' if named else ' (the built-in default)'}, "
+            f"{reviewed} of {len(sensed)} sensed clip(s) decided (reviewed, or "
+            "marked include or exclude)",
+        )
+        return steps
 
     def run_dirs(self, experiment: Path, smoke: bool = False) -> list[Path]:
         """Where *experiment*'s (fold, seed) runs train, as ``zephyr run`` puts them."""

@@ -23,8 +23,10 @@ if HAS_UI:
     from zephyr.annotate import frame_path, open_state
     from zephyr.gui.app import MainWindow
     from zephyr.gui.boxes import BoxWindow
+    from zephyr.gui.jobs import Job
     from zephyr.gui.project import Project
-    from zephyr.gui.widgets import HistoryPlot, SnippetGallery
+    from zephyr.gui.training import _checked
+    from zephyr.gui.widgets import HistoryPlot, JobPanel, SnippetGallery
 
     APP = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
 
@@ -196,6 +198,32 @@ class BoxWindowTests(unittest.TestCase):
         )
         self.assertEqual(self.state.recording.label, "data/3")
 
+    def test_a_matches_the_placed_box_on_the_other_recordings(self):
+        y, x = np.mgrid[0 : NATIVE[1], 0 : NATIVE[0]]
+        for stem, (cx, cy) in (
+            ("video_face_1_part_1", (50, 40)),
+            ("video_face_1_part_2", (50, 40)),
+            ("video_face_2_part_1", (30, 30)),
+            ("video_face_3_part_1", (70, 50)),
+        ):
+            blob = 200 * np.exp(-((x - cx) ** 2 + (y - cy) ** 2) / (2 * 6.0**2))
+            video = (self.root / "data" / f"{stem}.mp4").resolve()
+            np.save(frame_path(self.frames, video), (20 + blob).astype(np.uint8))
+        self.window.close()
+        self.open()
+        self.key(Key.Key_A)  # nothing placed by hand: nothing to look for
+        self.assertEqual(
+            set(map(tuple, filter(None, _boxes(self.list).values()))), set()
+        )
+        self.click(50, 40)
+        self.key(Key.Key_A)
+        boxes = _boxes(self.list)
+        self.assertEqual(boxes["video_face_2_part_1"], [14, 14, 32, 32])
+        self.assertEqual(boxes["video_face_3_part_1"], [54, 34, 32, 32])
+        self.assertEqual(self.window.progress_label.text(), "3 / 3 placed")
+        second = self.state.recordings[1].key
+        self.assertRegex(self.window._items[second].text(2), r"^match 0\.9\d|^match 1")
+
     def test_placed_boxes_resume(self):
         self.click(50, 40)
         self.window.close()
@@ -263,12 +291,59 @@ class AppTests(unittest.TestCase):
         QTest.keyClick(boxes.canvas, Key.Key_N)
         self.assertEqual((boxes.state.index, editor.state.index), (1, 0))
         self.go("Breathing")
+        self.assertEqual(editor.tabs.tabText(editor.tabs.currentIndex()), "Selection")
+        editor.tabs.setCurrentIndex(0)  # the keys are the Editor's
         editor.setFocus()
         QTest.keyClick(editor, Key.Key_N)
         self.assertEqual((boxes.state.index, editor.state.index), (1, 1))
 
+    def test_a_running_command_greys_its_page_and_says_what_runs(self):
+        clips = self.go("Clips")
+        job = mock.MagicMock(command="clips", argv=["scan"], running=True)
+        clips.jobs.job = job
+        clips.jobs.started.emit("zephyr clips scan")
+        make = next(
+            b
+            for b in clips.findChildren(QtWidgets.QPushButton)
+            if b.text() == "Make the clip list"
+        )
+        self.assertFalse(make.isEnabled())
+        self.assertIn("Clips: running zephyr clips scan", self.window.running.text())
+        job.running = False
+        clips.jobs.finished.emit(0)
+        self.assertTrue(make.isEnabled())
+        self.assertEqual(self.window.running.text(), "")
+
+    def test_the_videos_tab_lists_crops_and_predicts_videos_from_anywhere(self):
+        predict = self.go("Predict")
+        self.assertEqual(predict.source.tabText(1), "Videos")
+        checkpoint = self.root / "best.pt"
+        predict.checkpoint.addItem("best.pt", checkpoint)
+        predict.checkpoint.setCurrentIndex(predict.checkpoint.count() - 1)
+        predict.video_folder.setText("D:/elsewhere")
+        with mock.patch.object(predict.jobs, "run") as started:
+            predict.make_video_list()
+            argv = started.call_args.args[0].argv
+            listed = self.window.project.predictions_dir / "videos" / "videos.toml"
+            self.assertEqual(argv[:2], ["scan", "D:/elsewhere"])
+            self.assertEqual(argv[argv.index("-o") + 1], str(listed))
+            self.assertEqual(argv[argv.index("--checkpoint") + 1], str(checkpoint))
+            (then,) = predict._queue  # next: one frame per video, for the crops
+            self.assertEqual(then.command, "annotate")
+            self.assertIn("--prepare", then.argv)
+            predict.predict_videos()  # no list yet: nothing runs
+            self.assertRegex(self.said[-1], "Make the list")
+            listed.parent.mkdir(parents=True)
+            listed.write_text("")
+            predict.predict_videos()
+            argv = started.call_args.args[0].argv
+            self.assertEqual(argv[argv.index("--out") + 1], str(listed.parent))
+
     def test_the_train_form_writes_an_experiment(self):
         train = self.go("Train")
+        self.assertTrue(train.form.isVisibleTo(train))  # no experiment: define one
+        self.assertTrue(train.buttons["preprocess"].isEnabled())  # needs only the list
+        self.assertFalse(train.buttons["run"].isEnabled())
         train.form.name.setText("first")
         for widget, row in ((train.form.train, 0), (train.form.test, 2)):
             widget.item(row).setCheckState(QtCore.Qt.CheckState.Checked)
@@ -281,10 +356,111 @@ class AppTests(unittest.TestCase):
         train.form.write()
         self.assertEqual(train.experiment.currentText(), "first.toml", self.said)
         self.assertTrue(train.buttons["run"].isEnabled())
+        self.assertIn("Wrote experiments/first.toml", train.summary.text())
+        self.assertFalse(train.form.isVisibleTo(train))  # folded away once written
+        self.assertTrue(self.window.nav.item(4).text().startswith("◐"))  # not run yet
+
+    def test_the_steps_are_marked_in_the_list(self):
+        nav = [self.window.nav.item(i).text() for i in range(self.window.nav.count())]
+        self.assertEqual(nav[0], "✓  Project")
+        self.assertEqual(nav[1], "✓  1  Clips")
+        self.assertEqual(nav[2], "○  2  Boxes")  # no box yet
+        self.assertIn("0 of 4 clip(s) boxed", self.window.nav.item(2).toolTip())
+
+    def _trained(self) -> Path:
+        """An experiment over the list (boxed) with a stopped run: its run folder."""
+        self.list.write_text(
+            self.list.read_text().replace('.mp4"\n', '.mp4"\nbox = [10, 10, 32, 32]\n')
+        )
+        project = self.window.project
+        experiment = project.new_experiment("e", train=["1"], test={"test": ["2"]})
+        (run,) = project.run_dirs(experiment)
+        run.mkdir(parents=True)
+        (run / "best.pt").touch()
+        (run / "last.pt").touch()
+        (run / "history.json").write_text('[{"epoch": 0, "since_best": 0}]')
+        return run
+
+    def _yes(self):
+        return mock.patch.object(
+            QtWidgets.QMessageBox,
+            "question",
+            return_value=QtWidgets.QMessageBox.StandardButton.Yes,
+        )
+
+    def test_run_asks_before_starting_an_existing_run_over(self):
+        run = self._trained()
+        train = self.go("Train")
+        with mock.patch.object(train.jobs, "run") as started:
+            train.start("run")  # declined (the patched question answers nothing)
+            self.assertRegex(self.said[-1], "already has a run")
+            self.assertFalse(started.called)
+            with self._yes():
+                train.start("run")
+            self.assertIn("--restart", started.call_args.args[0].argv)
+            train.start("smoke")  # a smoke run always starts over, unasked
+            self.assertIn("--restart", started.call_args.args[0].argv)
+        self.assertTrue(run.is_dir())  # deleting is the command's, not the app's
+
+    def test_results_scores_a_stopped_run_and_asks_before_replacing(self):
+        run = self._trained()
+        results = self.go("Results")
+        self.assertIn(
+            "1 epochs, best.pt from epoch 1, not scored", results.run_state.text()
+        )
+        with mock.patch.object(results.jobs, "run") as started:
+            results.score_own()
+            argv = started.call_args.args[0].argv
+            self.assertEqual(
+                argv[1:], ["--evaluate-only", "--folds", "e", "--seeds", "1"]
+            )
+            (run / "evaluation.json").write_text('{"groups": {}, "clips": []}')
+            started.reset_mock()
+            results.score_own()
+            self.assertRegex(self.said[-1], "already has an evaluation.json")
+            self.assertFalse(started.called)
+
+    def test_auto_split_ticks_each_session_on_one_side(self):
+        form = self.go("Train").form
+        form.auto_split()
+        sides = [_checked(w) for w in (form.train, form.val, form.test)]
+        self.assertEqual([len(s) for s in sides], [1, 1, 1])
+        self.assertEqual(len({group for side in sides for group in side}), 3)
+        self.assertEqual(form.name.text(), "split-1")
+        form.shares["val"].setValue(0)
+        form.draw.setValue(2)
+        form.auto_split()
+        self.assertEqual(_checked(form.val), [])
+        self.assertEqual(len(_checked(form.train) + _checked(form.test)), 3)
+
+    def test_breathing_auto_makes_the_default_the_lists(self):
+        editor = self.go("Breathing").editor
+        editor.auto()
+        QtCore.QThreadPool.globalInstance().waitForDone()
+        APP.processEvents()
+        self.assertTrue(editor.save())
+        self.assertEqual(
+            tomllib.loads(self.list.read_text())["events"]["method"],
+            "adaptive_prominence",
+        )
 
 
 @unittest.skipUnless(HAS_UI, "needs the ui extra")
 class WidgetTests(unittest.TestCase):
+    def test_the_job_panel_shows_a_command_running_then_failing(self):
+        panel = JobPanel()
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertTrue(panel.run(Job("clips", ["check", "missing.toml"], tmp)))
+            self.assertTrue(panel.status.text().startswith("Running: zephyr clips"))
+            self.assertFalse(panel.progress.isHidden())
+            timer = QtCore.QElapsedTimer()
+            timer.start()
+            while panel.busy or panel._timer.isActive():
+                APP.processEvents()
+                self.assertLess(timer.elapsed(), 60000)
+        self.assertRegex(panel.status.text(), r"^Failed \(exit \d+\): zephyr clips")
+        self.assertTrue(panel.progress.isHidden())
+
     def test_history_marks_each_best(self):
         plot = HistoryPlot()
         rows = [

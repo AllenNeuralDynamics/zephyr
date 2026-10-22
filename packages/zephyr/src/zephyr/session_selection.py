@@ -201,13 +201,18 @@ def runs(good: np.ndarray, starts: np.ndarray, ends: np.ndarray, value: bool):
 def consistency(table: pd.DataFrame) -> pd.Series:
     """Robust z-score (median / MAD over the clips given) of how inconsistent each
     clip's events are: the mean of its positive z-scores of break fraction,
-    out-of-band fraction, rate CV and amplitude CV."""
+    out-of-band fraction, rate CV and amplitude CV. Where most clips share a value
+    (a MAD of 0, common in short lists) the spread is 1.2533 x the mean absolute
+    deviation instead, and a feature every clip shares scores 0."""
     columns = ["break_frac", "outside_frac", "rate_cv", "amp_cv"]
     z = []
     for column in columns:
         x = table[column].astype(float)
-        mad = 1.4826 * float(np.median(np.abs(x - x.median()))) or 1e-9
-        z.append(((x - x.median()) / mad).clip(lower=0))
+        deviation = np.abs(x - x.median())
+        spread = 1.4826 * float(np.median(deviation))
+        if spread == 0:
+            spread = 1.2533 * float(np.mean(deviation))
+        z.append(((x - x.median()) / spread).clip(lower=0) if spread else 0 * x)
     return pd.concat(z, axis=1).mean(axis=1)
 
 

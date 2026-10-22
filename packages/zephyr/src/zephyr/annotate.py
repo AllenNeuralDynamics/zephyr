@@ -6,14 +6,16 @@ single clip its own. Boxes are written back as ``box = [x, y, w, h]`` with tomlk
 leaving the rest of the file untouched; an unplaced recording gets no box and
 preprocessing refuses it.
 
-Keys (the window is :mod:`zephyr.gui.boxes`): click place | arrows nudge (shift x10) |
-[ ] resize | n/p recording | 1/2/3 clip | o own box | c copy previous | r re-centre.
+Keys (window: :mod:`zephyr.gui.boxes`): click place | arrows nudge (shift x10) | [ ]
+resize | n/p recording | 1/2/3 clip | o own box | c copy previous | r re-centre | a auto.
 
 CLI
 ---
     zephyr annotate list.toml --prepare   # cache one frame per clip, once
     zephyr annotate list.toml --width 360 --height 270 --box-size 96
     zephyr annotate list.toml --remote --frame-dir frames   # clips kept elsewhere: frames only
+    zephyr annotate list.toml --auto --frame-dir frames [--min-score 0.5]   # match, save
+    zephyr annotate predict.toml --checkpoint best.pt   # the network's crop size, locked
     zephyr annotate events list.toml   # choose each clip's event detector: zephyr.annotate_events
 """
 
@@ -33,6 +35,10 @@ from .video import Box, clamp_box, decode_window, probe_size
 DEFAULT_BOX_SIZE = 128
 PREPARE_START_S = 150.0
 """Where the cached frame is taken: this far in, or halfway through a shorter clip."""
+AUTO_MIN_SCORE = 0.5
+"""The correlation a match needs for Auto to place a box (else it stays unplaced)."""
+AUTO_BLUR = 2.0
+"""Gaussian sigma (target pixels) of the frames and templates Auto matches."""
 
 
 # ---------------------------------------------------------------------------
@@ -107,6 +113,10 @@ class BoxState:
     index: int = 0
     box_size: int = DEFAULT_BOX_SIZE
     part_index: int = 0
+    matched: dict[str, float] = field(default_factory=dict)
+    """Recordings :meth:`auto` placed, with their match score, until moved by hand."""
+    locked: bool = False
+    """Box and frame size are a network's (``--checkpoint``): only the place moves."""
 
     def __post_init__(self) -> None:
         self.box_size = min(self.box_size, *self.target_size)
@@ -172,6 +182,57 @@ class BoxState:
         else:
             self.boxes[self.key] = box
         self.placed.add(self.key)
+        self.matched.pop(self.key, None)
+
+    def auto(self, frames, min_score: float = AUTO_MIN_SCORE) -> dict[str, float]:
+        """Box every unplaced recording where the hand-placed boxes match its frame.
+
+        The crop of each recording placed by hand (not by an earlier match) is a
+        template; *frames* gives a recording's native frames. A recording whose best
+        normalised cross-correlation (mean over the templates) reaches *min_score*
+        gets a box there, placed and kept in :attr:`matched` with its score until it
+        is moved; the others stay unplaced. Returns every tried recording's score.
+        """
+        by_hand = [r for r in self.recordings if self.is_placed(r.key)]
+        by_hand = [r for r in by_hand if r.key not in self.matched]
+        templates = []
+        for recording in by_hand:
+            image = self._gray(frames(recording))
+            if image is not None:
+                x, y, w, h = self.boxes[recording.key]
+                templates.append(image[y : y + h, x : x + w])
+        if not templates:
+            raise ValueError("place a box by hand first: it is what Auto looks for")
+        size = templates[0].shape[1]
+        scores = {}
+        for recording in self.recordings:
+            if self.is_placed(recording.key):
+                continue
+            image = self._gray(frames(recording))
+            if image is None:
+                continue
+            score = np.mean(
+                [cv2.matchTemplate(image, t, cv2.TM_CCOEFF_NORMED) for t in templates],
+                axis=0,
+            )
+            y, x = np.unravel_index(np.argmax(score), score.shape)
+            scores[recording.key] = float(score[y, x])
+            if scores[recording.key] >= min_score:
+                self.boxes[recording.key] = centre_box(
+                    x + size / 2, y + size / 2, self.box_size, self.target_size
+                )
+                self.placed.add(recording.key)
+                self.matched[recording.key] = scores[recording.key]
+        return scores
+
+    def _gray(self, frames: list[np.ndarray]) -> np.ndarray | None:
+        """A recording's first frame at the target size, gray and a little blurred."""
+        if not frames:
+            return None
+        image = downsample(frames[0], self.target_size).astype(np.float32)
+        if image.ndim == 3:
+            image = image.mean(axis=2)
+        return cv2.GaussianBlur(image, (0, 0), AUTO_BLUR)
 
     def nudge(self, dx: int, dy: int) -> None:
         cx, cy = box_centre(self.box)
@@ -179,6 +240,8 @@ class BoxState:
 
     def resize(self, delta: int) -> None:
         """Change the box size for *every* clip -- one input shape for the model."""
+        if self.locked:
+            return
         self.box_size = int(np.clip(self.box_size + delta, 16, min(self.target_size)))
         for table in (self.boxes, self.overrides):
             for key, box in table.items():
@@ -193,6 +256,8 @@ class BoxState:
         the annotator picks it directly.  Changing the target therefore changes
         how much of the frame that shape covers, which is the actual trade-off.
         """
+        if self.locked:
+            return
         width = int(np.clip(width, 16, self.native_size[0]))
         height = int(np.clip(height, 16, self.native_size[1]))
         ratio_x = width / self.target_size[0]
@@ -216,6 +281,7 @@ class BoxState:
             self.target_size,
         )
         self.placed.discard(self.key)
+        self.matched.pop(self.key, None)
 
     def copy_previous(self) -> None:
         if self.index > 0:
@@ -362,10 +428,25 @@ def open_state(
     height: int | None = None,
     box_size: int = DEFAULT_BOX_SIZE,
     remote: bool = False,
+    checkpoint: Path | None = None,
 ) -> BoxState:
     """The box state of the clip list at *path*, on the target ``width x height``
-    (default: the list's), its existing boxes carried across."""
+    (default: the list's), its existing boxes carried across. With *checkpoint* the
+    box is that network's crop and the frame its size, both locked."""
     clip_list = load(ClipList, path, check_files=not remote)
+    if checkpoint is not None:
+        from .clips import checkpoint_recipe
+
+        recipe, crop = checkpoint_recipe(checkpoint)
+        if tuple(recipe["target_size"]) != clip_list.preprocess.target_size:
+            raise SystemExit(
+                f"{path} is not on {checkpoint}'s {recipe['target_size']} frames: "
+                "make it with `zephyr clips scan --checkpoint`"
+            )
+        if crop is None or crop[0] != crop[1]:
+            raise SystemExit(f"{checkpoint} does not say one square crop size")
+        width = height = None
+        box_size = crop[0]
     clips = clip_list.resolve()
     try:
         require_videos(clips, "placing boxes")
@@ -378,10 +459,11 @@ def open_state(
     # target, so existing placements are carried across rather than
     # reinterpreted as coordinates on a different-sized frame.
     state = initial_state(clips, native, saved_target, box_size)
-    if box_size != DEFAULT_BOX_SIZE:
+    if box_size != DEFAULT_BOX_SIZE or checkpoint is not None:
         state.resize(box_size - state.box_size)
     if state.target_size != target:
         state.set_target(*target)
+    state.locked = checkpoint is not None
     return state
 
 
@@ -424,7 +506,22 @@ def main(argv: list[str] | None = None) -> None:
         help="The clips are not on this machine: do not check they exist and take "
         "the frame size from the cached frames in --frame-dir.",
     )
+    parser.add_argument(
+        "--auto",
+        action="store_true",
+        help="Box the unplaced recordings where the list's boxes match their cached "
+        "frame, save and exit (A in the window).",
+    )
+    parser.add_argument("--min-score", type=float, default=AUTO_MIN_SCORE)
+    parser.add_argument(
+        "--checkpoint",
+        type=Path,
+        help="Boxes for predicting with this network: its crop size, locked (a list "
+        "from `clips scan --checkpoint`).",
+    )
     args = parser.parse_args(argv)
+    if args.checkpoint is not None and (args.width or args.height):
+        raise SystemExit("--checkpoint fixes the frame size; drop --width/--height")
 
     if args.prepare and args.remote:
         raise SystemExit("--prepare decodes the videos, which --remote has not got")
@@ -437,9 +534,10 @@ def main(argv: list[str] | None = None) -> None:
         prepare_frames(clips, args.frame_dir)
         return
 
-    from .gui import need_ui
+    if not args.auto:
+        from .gui import need_ui
 
-    need_ui()
+        need_ui()
     state = open_state(
         args.clips,
         args.frame_dir,
@@ -447,7 +545,25 @@ def main(argv: list[str] | None = None) -> None:
         height=args.height,
         box_size=args.box_size,
         remote=args.remote,
+        checkpoint=args.checkpoint,
     )
+    if args.auto:
+        try:
+            scores = state.auto(
+                lambda r: load_recording_frames(r, args.frame_dir), args.min_score
+            )
+        except ValueError as exc:
+            raise SystemExit(f"{args.clips}: {exc}") from None
+        save_boxes(args.clips, state)
+        for recording in state.recordings:
+            if recording.key in scores:
+                kept = "boxed" if recording.key in state.matched else "left unplaced"
+                print(f"  {recording.label}: {scores[recording.key]:.2f} {kept}")
+        print(
+            f"matched {len(state.matched)} of {len(scores)} recording(s); "
+            f"{len(state.placed)} of {len(state.recordings)} placed -> {args.clips}"
+        )
+        return
     print(
         f"resuming: {len(state.placed)} of {len(state.recordings)} recordings placed"
         if state.placed

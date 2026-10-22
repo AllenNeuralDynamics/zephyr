@@ -16,6 +16,8 @@ from .theme import SERIES, THEME
 pg.setConfigOptions(antialias=True, background=THEME["card"], foreground=THEME["ink"])
 
 POLL_MS = 150
+PLOT_HEIGHT = (200, 320)
+"""Smallest and largest height of a training-curve plot, in pixels."""
 
 
 def entry_from(fields: dict) -> ClipEntry:
@@ -59,16 +61,23 @@ class JobPanel(QtWidgets.QWidget):
 
     line = QtCore.Signal(str)
     snippets = QtCore.Signal(dict)
+    started = QtCore.Signal(str)
+    """The command line of a job that just started."""
     finished = QtCore.Signal(object)
     """The job's return code (None if it was cancelled before it ended)."""
 
     def __init__(self) -> None:
         super().__init__()
         self.job: Job | None = None
+        self._since = QtCore.QElapsedTimer()
+        self._last = ""
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         bar = QtWidgets.QHBoxLayout()
-        self.status = QtWidgets.QLabel("idle")
+        self.status = QtWidgets.QLabel("idle", objectName="jobstatus")
+        self.status.setTextInteractionFlags(
+            QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
+        )
         bar.addWidget(self.status, 1)
         self.copy = QtWidgets.QPushButton("Copy command")
         self.copy.setToolTip("The same command, to run in a terminal from the project")
@@ -79,6 +88,10 @@ class JobPanel(QtWidgets.QWidget):
             button.setEnabled(False)
             bar.addWidget(button)
         layout.addLayout(bar)
+        self.progress = QtWidgets.QProgressBar(textVisible=False, maximumHeight=6)
+        self.progress.setRange(0, 0)  # busy: no end is known
+        self.progress.hide()
+        layout.addWidget(self.progress)
         self.log = QtWidgets.QPlainTextEdit(readOnly=True)
         self.log.setMaximumBlockCount(20000)
         layout.addWidget(self.log, 1)
@@ -103,16 +116,34 @@ class JobPanel(QtWidgets.QWidget):
         except OSError as exc:
             self.log.appendPlainText(f"could not start: {exc}")
             return False
-        self.status.setText(f"running: zephyr {job.command}")
+        self._since.start()
+        self._last = ""
+        self._show_state("running")
+        self.progress.show()
         self.copy.setEnabled(True)
         self.cancel.setEnabled(True)
         self._timer.start()
+        self.started.emit(job.command_line())
         return True
+
+    def describe(self) -> str:
+        """What runs, for how long, and its latest line of output."""
+        if self.job is None:
+            return ""
+        seconds = self._since.elapsed() // 1000
+        text = f"zephyr {self.job.command} {self.job.argv[0] if self.job.argv else ''}"
+        text = f"{text.strip()} · {seconds // 60}:{seconds % 60:02d}"
+        return f"{text} · {self._last}" if self._last else text
+
+    def _show_state(self, state: str, text: str = "") -> None:
+        self.status.setProperty("state", state)
+        self.status.style().polish(self.status)
+        self.status.setText(text or f"Running: {self.describe()}")
 
     def stop(self) -> None:
         if self.busy:
             self.job.cancel()
-            self.status.setText("cancelling...")
+            self._show_state("running", "Cancelling...")
 
     def _copy(self) -> None:
         if self.job is not None:
@@ -124,21 +155,29 @@ class JobPanel(QtWidgets.QWidget):
         for kind, payload in self.job.poll():
             if kind == "log":
                 self.log.appendPlainText(payload)
+                if payload.strip():
+                    self._last = payload.strip()[:90]
                 self.line.emit(payload)
             elif kind == "snippets":
                 self.snippets.emit(payload)
             elif kind == "exit":
                 self._timer.stop()
+                self.progress.hide()
                 self.cancel.setEnabled(False)
                 cancelled = self.job.cancelled
-                self.status.setText(
-                    "cancelled"
-                    if cancelled
-                    else "done"
-                    if payload == 0
-                    else f"failed (exit {payload}): see the log"
-                )
+                name = f"zephyr {self.job.command}"
+                if cancelled:
+                    self._show_state("idle", f"Cancelled: {name}")
+                elif payload == 0:
+                    self._show_state("done", f"Done: {name}")
+                else:
+                    self._show_state(
+                        "failed", f"Failed (exit {payload}): {name}, see the log"
+                    )
                 self.finished.emit(None if cancelled else payload)
+                return
+        if self.busy:
+            self._show_state("running")
 
 
 def _plot(title: str, left: str) -> pg.PlotWidget:
@@ -167,11 +206,16 @@ class HistoryPlot(QtWidgets.QWidget):
         super().__init__()
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
+        plots = QtWidgets.QHBoxLayout()
         self.loss = _plot("Loss", "loss")
         self.scores = _plot("Validation, whole clips", "score")
         self.scores.setXLink(self.loss)
-        layout.addWidget(self.loss, 1)
-        layout.addWidget(self.scores, 1)
+        for plot in (self.loss, self.scores):
+            plot.setMinimumHeight(PLOT_HEIGHT[0])
+            plot.setMaximumHeight(PLOT_HEIGHT[1])
+            plots.addWidget(plot, 1)
+        layout.addLayout(plots)
+        layout.addStretch(1)
         self.curves = {}
         for i, (key, name) in enumerate(self.LOSSES):
             self.curves[key] = self.loss.plot(

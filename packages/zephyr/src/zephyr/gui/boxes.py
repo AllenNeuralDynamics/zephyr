@@ -4,7 +4,8 @@ frame.
 Recordings on the left, the frame with its box on the right; every change is saved to
 the clip list at once (only ``box`` and ``target_size``). The logic is
 :class:`zephyr.annotate.BoxState`. Keys: click place | arrows nudge (shift x10) |
-[ ] resize | n/p recording | 1/2/3 clip | o own box | c copy previous | r re-centre.
+[ ] resize | n/p recording | 1/2/3 clip | o own box | c copy previous | r re-centre |
+a auto (the hand-placed boxes matched on the unplaced recordings).
 """
 
 from pathlib import Path
@@ -27,7 +28,7 @@ STEP = 8
 DIVISORS = (("native", 1), ("1/2", 2), ("1/3", 3), ("1/4", 4))
 HELP = (
     "click=place   arrows=nudge (shift x10)   [ ]=box size   n/p=recording   "
-    "1/2/3=clip   o=own box   c=copy prev   r=re-centre"
+    "1/2/3=clip   o=own box   c=copy prev   r=re-centre   a=auto"
 )
 
 
@@ -127,10 +128,12 @@ class BoxWindow(QtWidgets.QMainWindow):
         apply = QtWidgets.QPushButton("Apply")
         apply.clicked.connect(self.apply_target)
         controls.addWidget(apply)
+        sizing = [self.width_edit, self.height_edit, apply]
         for label, divisor in DIVISORS:
             button = QtWidgets.QPushButton(label)
             button.clicked.connect(lambda _=False, d=divisor: self.set_divisor(d))
             controls.addWidget(button)
+            sizing.append(button)
         controls.addSpacing(16)
         controls.addWidget(QtWidgets.QLabel("Box:"))
         smaller = QtWidgets.QPushButton("-")
@@ -144,6 +147,19 @@ class BoxWindow(QtWidgets.QMainWindow):
         larger = QtWidgets.QPushButton("+")
         larger.clicked.connect(lambda: self.resize_box(STEP))
         controls.addWidget(larger)
+        sizing += [smaller, larger]
+        if self.state.locked:  # the network's crop and frame: only the place moves
+            for widget in sizing:
+                widget.setEnabled(False)
+            self.size_label.setToolTip("The network's crop size: it cannot change")
+        controls.addSpacing(16)
+        auto = QtWidgets.QPushButton("Auto")
+        auto.setToolTip(
+            "Box every unplaced recording where the boxes placed by hand match its "
+            "frame (A); the rest stay unplaced"
+        )
+        auto.clicked.connect(self.auto)
+        controls.addWidget(auto)
         controls.addSpacing(16)
         self.part_label = QtWidgets.QLabel()
         controls.addWidget(self.part_label)
@@ -187,7 +203,11 @@ class BoxWindow(QtWidgets.QMainWindow):
     def _refresh_row(self, key: str) -> None:
         placed = self.state.is_placed(key)
         item = self._items[key]
-        item.setText(2, "set" if placed else "auto")
+        score = self.state.matched.get(key)
+        item.setText(
+            2,
+            f"match {score:.2f}" if score is not None else "set" if placed else "",
+        )
         colour = QtGui.QColor(THEME["placed" if placed else "auto"])
         for column in range(3):
             item.setForeground(column, colour)
@@ -274,6 +294,27 @@ class BoxWindow(QtWidgets.QMainWindow):
         self.state.resize(delta)
         self.commit()
 
+    def auto(self) -> None:
+        """Match the hand-placed boxes on every unplaced recording, and save."""
+        try:
+            scores = self.state.auto(self._frames_for_recording)
+        except ValueError as exc:
+            self.statusBar().showMessage(str(exc), 8000)
+            return
+        for key in scores:
+            self._refresh_row(key)
+        save_boxes(self.out_path, self.state)
+        self.redraw()
+        boxed = sum(key in self.state.matched for key in scores)
+        self.statusBar().showMessage(
+            f"Auto boxed {boxed} of {len(scores)} unplaced recording(s); the rest "
+            "need a box by hand (then Auto again)",
+            8000,
+        )
+
+    def _frames_for_recording(self, recording) -> list[np.ndarray]:
+        return self._frames_for(recording.key)
+
     def apply_target(self) -> None:
         try:
             width, height = int(self.width_edit.text()), int(self.height_edit.text())
@@ -323,6 +364,8 @@ class BoxWindow(QtWidgets.QMainWindow):
         elif k == key.Key_R:
             state.reset()
             self.commit()
+        elif k == key.Key_A:
+            self.auto()
         elif k == key.Key_O:
             state.toggle_override()
             self.commit()

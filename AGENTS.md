@@ -74,11 +74,16 @@ as the commands.
   their own `main(argv)` in a local child process (`gui/jobs.py`); never reimplement a
   step in the app, never call one in the app's own process, never launch remote jobs.
   A step the app needs that no command does is a new command first.
-- It **writes only clip lists** (through `zephyr.clips`, as the windows do) **and new
-  experiments** (`Project.new_experiment`, validated before it is kept, never
+- It **writes only clip lists** (through `zephyr.clips`, as the windows do; a list of
+  videos to predict, from `clips scan --checkpoint`, lives in its `predictions/<name>/`)
+  **and new experiments** (`Project.new_experiment`, validated before it is kept, never
   overwriting); it never edits an experiment, and never writes into a run folder
   outside its project's `runs/` (a folder opened from elsewhere, e.g. `benchmarks/`,
   is read only).
+- **Run** never silently re-scores: an experiment that already has a run is started
+  over (`zephyr run --restart`, which deletes that run folder) only after the user
+  agrees; scoring a stopped or finished run is Results' button (`--evaluate-only`),
+  which asks before replacing an `evaluation.json`.
 - Validation snippets reach the app only through `train_fold`'s `on_scored` hook, on the
   worker's stdout, and are **never saved**; the hook never changes training
   (`test_predict.py` runs training with and without it).
