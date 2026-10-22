@@ -33,7 +33,9 @@ the app and its windows):
   The phase head is a training signal only; events never come from its phase.
 - Inhale events of a network with an onset head come from the head
   (`head_event_indices`), never from DSP on its trace. DSP is for the thermistor, headless
-  methods (labelled "DSP") and exhale F1, or an explicitly labelled comparison.
+  methods (labelled "DSP") and exhale F1, or an explicitly labelled comparison; DSP on a
+  predicted trace is always the clip's own event detector (`evaluate.predicted_events`),
+  never a detector of its own.
 - The head's onset threshold belongs to the checkpoint (`head_threshold` in its state,
   chosen on `[fold.val]` clips by `train_params.head_thresholds`; 0.5 without). Read it
   with `evaluate.head_threshold` / `checkpoint_head_threshold`, never the constant;
