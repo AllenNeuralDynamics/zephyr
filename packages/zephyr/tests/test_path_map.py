@@ -77,7 +77,6 @@ class CopyTests(unittest.TestCase):
         np.save(files["frames"], np.zeros((5, 1, 2, 2), np.uint8))
         self.trained = {
             "train_videos": [canonical(clip.video)],
-            "train_recordings": [clip.recording_id],
         }
         shutil.copytree(self.original, self.copy)
 

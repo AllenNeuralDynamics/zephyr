@@ -28,6 +28,8 @@ Everything goes into `data/` at the repository root.
 
 - `examples/` has one clip list and one experiment to start from; the
   [zephyr README](packages/zephyr/README.md) walks through them.
+- To train or predict on your own recordings, see
+  [Zephyr on your own data](packages/zephyr/docs/your-own-data.md).
 - `packages/zephyr-benchmarks/configs/` holds the benchmark's configs; its
   [README](packages/zephyr-benchmarks/README.md) covers downloading the data
   and reproducing the published results.

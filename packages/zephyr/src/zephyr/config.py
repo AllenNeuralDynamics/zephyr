@@ -5,9 +5,8 @@ are scored) and the seeds they run with. Nothing else knows the dataset layout;
 the example dataset appears only in ``examples/`` and zephyr-benchmarks. Every path
 field is a :data:`RelPath`: relative to the file it is written in, absolute once loaded.
 
-A clip's ``group`` plus its video's folder is its *recording*, the unit leakage is
-judged on: parts of one session share an animal and a camera placement. The same group
-label in two folders is two recordings.
+A clip's ``group`` plus its video's folder is its *recording* (one crop box, one score
+average); a fold refuses only a video on both sides, the rest is its author's call.
 """
 
 import argparse
@@ -626,8 +625,8 @@ class Fold(_Model):
     A bare path is shorthand for the whole list."""
     val: Selection | None = None
     """Clips, scored whole, that select ``best.pt`` and stop training early, in place
-    of the time-tail of the training clips (``val_fraction``). They never train and
-    must share no recording with the training or test clips."""
+    of the time-tail of the training clips (``val_fraction``). They never train, and
+    no video of theirs is a training or test clip."""
     train_params: TrainParams = TrainParams()
 
     @field_validator("name")
@@ -716,17 +715,11 @@ class Fold(_Model):
             raise ValueError(f"training clips need a thermistor: {unlabelled}")
 
         train_videos = {c.video for c in train_clips}
-        train_recordings = {c.recording for c in train_clips}
         for name, clips in test.items():
             for c in clips:
                 if c.video in train_videos:
                     raise ValueError(
                         f"test group {name!r}: {c.name} is also a training clip"
-                    )
-                if c.recording in train_recordings:
-                    raise ValueError(
-                        f"test group {name!r}: {c.name} shares recording "
-                        f"{c.recording_id} with a training clip"
                     )
         if self.val is not None:
             self._check_val(val, train_clips, test)
@@ -755,12 +748,10 @@ class Fold(_Model):
             f"test group {n!r}": cs for n, cs in test.items()
         }
         for what, clips in against.items():
-            recordings = {c.recording for c in clips}
+            videos = {c.video for c in clips}
             for c in val:
-                if c.recording in recordings:
-                    raise ValueError(
-                        f"val: {c.name} shares recording {c.recording_id} with {what}"
-                    )
+                if c.video in videos:
+                    raise ValueError(f"val: {c.name} is also a clip of {what}")
 
 
 # ---------------------------------------------------------------------------

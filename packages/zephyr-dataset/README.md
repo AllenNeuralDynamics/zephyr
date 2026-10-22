@@ -170,7 +170,7 @@ It holds only what later stages need:
 | `thumbnails/<session_id>_<camera>.png` | the camera at full resolution, losslessly: the first frame of the session's first clip |
 | `clips.parquet` | every clip: frames, first frame, span, start and end, rate, bytes, or the error that stopped it |
 | `cross_validation.parquet` | per assigned session its animal's test A fold, its test B fold and its set in each fold (see [Cross-validation](#cross-validation)) |
-| `clips.toml` | the clips as a zephyr clip list (`group` = session, zephyr's leakage unit, so test B and C can hold out sessions of training animals; face clips carry their `box`; `[clips] exclude_cameras` lists the side and front cameras as `selection = "exclude"`, so zephyr uses the face camera only and their files stay in the folder) |
+| `clips.toml` | the clips as a zephyr clip list (`group` = session, so folds can pick sessions and test B and C can hold out sessions of training animals; face clips carry their `box`; `[clips] exclude_cameras` lists the side and front cameras as `selection = "exclude"`, so zephyr uses the face camera only and their files stay in the folder) |
 
 `clips` cuts only the sessions `folds.parquet` assigns, once it exists.
 

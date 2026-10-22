@@ -273,7 +273,6 @@ def train_fold(
     weights = [source.weight for source in fold.train]
     train_entries = [e for source in sources for e in source]
     train_videos = [canonical(e.video) for e in train_entries]
-    train_recordings = sorted({e.recording for e in train_entries})
     resolved = {
         "seed": seed,
         "fold": dump(fold),
@@ -285,7 +284,6 @@ def train_fold(
 
     init = None
     inherited_videos: list[str] = []
-    inherited_recordings: list[str] = []
     lineage_known = True
     if fold.init_from is not None:
         init = torch.load(fold.init_from, map_location=device, weights_only=False)
@@ -307,9 +305,6 @@ def train_fold(
             inherited_videos = sorted(
                 {*init["train_videos"], *init.get("inherited_videos", ())}
             )
-            inherited_recordings = sorted(
-                {*init["train_recordings"], *init.get("inherited_recordings", ())}
-            )
     else:
         mean, std = frame_stats(train_entries, stats_path(features_dir, train_entries))
 
@@ -328,8 +323,9 @@ def train_fold(
     scoring = fold.val is not None or params.val_fraction > 0
     if not scoring:
         tail = f"NO validation -- fixed {params.epochs} epochs, no early stopping"
+    n_recordings = len({e.recording for e in train_entries})
     print(
-        f"train {len(train_entries)} clips / {len(train_recordings)} recordings in "
+        f"train {len(train_entries)} clips / {n_recordings} recordings in "
         f"{len(sources)} list(s) (weights {weights})  |  {tail}",
         flush=True,
     )
@@ -489,11 +485,9 @@ def train_fold(
             "numpy_rng_state": np.random.get_state(),
             "python_rng_state": random.getstate(),
             # What this checkpoint trained on: evaluate refuses to score any
-            # clip whose video or recording is listed here.
+            # clip whose video is listed here.
             "train_videos": train_videos,
-            "train_recordings": train_recordings,
             "inherited_videos": inherited_videos,
-            "inherited_recordings": inherited_recordings,
             "lineage_known": lineage_known,
             "init_from": str(fold.init_from) if fold.init_from else None,
             "seed": seed,

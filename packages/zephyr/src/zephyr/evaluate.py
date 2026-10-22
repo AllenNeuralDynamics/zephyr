@@ -3,7 +3,7 @@
 Truth is the raw thermistor trace and the clip's cached event set (the events its
 target was built from, see :mod:`.events`), scored by :func:`score_entry`. ``zephyr
 evaluate`` and the evaluation after :mod:`zephyr.run` share :func:`evaluate_groups`:
-named groups of clips in, one result out. Clips sharing a video or recording with a
+named groups of clips in, one result out. Clips whose video is in a
 checkpoint's recorded training set are refused (older checkpoints only warn). Zephyr
 checkpoints trained with the onset head also report its inhale F1. Several checkpoints
 are z-scored then averaged; ``--plot`` (one checkpoint) writes :mod:`.plot_diagnosis`
@@ -83,7 +83,7 @@ Loader = Callable[[Path, torch.device], tuple[torch.nn.Module, float, float, dic
 
 
 def refuse_leaked(states: list[dict], clips: list[ResolvedClip]) -> None:
-    """Refuse to score clips any checkpoint trained on, by video or recording.
+    """Refuse to score clips any checkpoint trained on (by video).
 
     A fine-tuned checkpoint is checked against its parents' clips too.  One with
     no training record, or descended from one, cannot be fully checked: that is
@@ -96,20 +96,16 @@ def refuse_leaked(states: list[dict], clips: list[ResolvedClip]) -> None:
             print(
                 "WARNING: checkpoint (or a checkpoint it was initialised from) "
                 "records no training clips, so leakage cannot be fully checked; "
-                "make sure it never saw these recordings."
+                "make sure it never saw these clips."
             )
         if videos is None:
             continue
         trained_videos = {*videos, *state.get("inherited_videos", ())}
-        trained_recordings = {
-            *state.get("train_recordings", ()),
-            *state.get("inherited_recordings", ()),
-        }
-        for clip in clips:
-            if canonical(clip.video) in trained_videos:
-                leaked.append(f"{clip.name} (trained on this video)")
-            elif clip.recording_id in trained_recordings:
-                leaked.append(f"{clip.name} (trained on its recording)")
+        leaked += [
+            f"{c.name} (trained on this video)"
+            for c in clips
+            if canonical(c.video) in trained_videos
+        ]
     if leaked:
         raise SystemExit(
             f"refusing to score: {len(leaked)} clip(s) were not held out by every "

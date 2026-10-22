@@ -61,22 +61,17 @@ class RefuseLeakedTests(unittest.TestCase):
         self.trained = _clip("train", "1")
         self.state = {
             "train_videos": [canonical(self.trained.video)],
-            "train_recordings": [self.trained.recording_id],
         }
 
     def test_refuses_a_trained_video(self):
         with self.assertRaisesRegex(SystemExit, "trained on this video"):
             refuse_leaked([self.state], [self.trained])
 
-    def test_refuses_another_clip_of_a_trained_recording(self):
+    def test_another_clip_of_a_trained_recording_is_scored(self):
         sibling = _clip("train", "1").model_copy(
             update={"video": self.trained.video.with_name("video_1b.mp4")}
         )
-        with self.assertRaisesRegex(SystemExit, "its recording"):
-            refuse_leaked([self.state], [sibling])
-
-    def test_same_group_in_another_folder_is_fine(self):
-        refuse_leaked([self.state], [_clip("test", "1")])
+        refuse_leaked([self.state], [sibling])
 
     def test_old_checkpoint_without_a_record_warns_instead(self):
         refuse_leaked([{}], [self.trained])
@@ -85,9 +80,7 @@ class RefuseLeakedTests(unittest.TestCase):
         parent = _clip("parent", "7")
         fine_tuned = {
             "train_videos": [canonical(self.trained.video)],
-            "train_recordings": [self.trained.recording_id],
             "inherited_videos": [canonical(parent.video)],
-            "inherited_recordings": [parent.recording_id],
         }
         with self.assertRaisesRegex(SystemExit, "trained on this video"):
             refuse_leaked([fine_tuned], [parent])

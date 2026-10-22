@@ -134,16 +134,10 @@ class FoldTests(_Dataset):
         with self.assertRaisesRegex(ValueError, "also a training clip"):
             load(Fold, self._fold([a], [a]))
 
-    def test_other_part_of_a_training_recording_is_refused(self):
+    def test_other_part_of_a_training_recording_may_be_scored(self):
         a = touch_clip(self.root / "d", 1, 1)
         a2 = touch_clip(self.root / "d", 1, 2)
-        with self.assertRaisesRegex(ValueError, "shares recording"):
-            load(Fold, self._fold([a], [a2]))
-
-    def test_same_group_label_in_two_folders_is_two_recordings(self):
-        a = touch_clip(self.root / "train", 1, 1)
-        b = touch_clip(self.root / "test", 1, 1)
-        load(Fold, self._fold([a], [b]))
+        load(Fold, self._fold([a], [a2]))
 
     def test_unlabelled_training_clip_is_refused(self):
         a = touch_clip(self.root / "d", 1, 1, thermistor=False)
@@ -230,9 +224,9 @@ class FoldTests(_Dataset):
         self.assertEqual(load(Fold, self._one_list_fold([1], [3])).val_clips(), [])
 
     def test_val_may_not_overlap_training_or_a_test_group(self):
-        with self.assertRaisesRegex(ValueError, "val: .* with training"):
+        with self.assertRaisesRegex(ValueError, "val: .* of training"):
             load(Fold, self._val_fold([1]))
-        with self.assertRaisesRegex(ValueError, "val: .* with test group 'held'"):
+        with self.assertRaisesRegex(ValueError, "val: .* of test group 'held'"):
             load(Fold, self._val_fold([2], test_groups=[2]))
 
     def test_val_and_val_fraction_are_exclusive(self):

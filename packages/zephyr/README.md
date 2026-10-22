@@ -12,6 +12,9 @@ runs through the single `zephyr <subcommand>` command; `zephyr <subcommand>
 Benchmarks on our dataset, and the methods zephyr is compared against, live in
 the separate `zephyr-benchmarks` package of the same repository.
 
+**Your own recordings:** [docs/your-own-data.md](docs/your-own-data.md) explains what
+files zephyr needs, how to name them, and how to train and predict on them.
+
 ## How inputs are described
 
 Zephyr knows nothing about where data came from. Every input is a **TOML file
@@ -25,9 +28,9 @@ are relative to the file they are written in.
   more **folds** inline as `[[fold]]` blocks. A fold has a `name` (its run
   directory) and names the clip lists to train on (with relative weights), the
   clip lists to score (each a named group in the report), the training
-  hyperparameters, and optionally a checkpoint to start from. Leakage is
-  refused at load: no test clip may share a video, or a *recording* (video
-  folder + group), with a training clip.
+  hyperparameters, and optionally a checkpoint to start from. A video on
+  both sides is refused at load; which sessions or animals each side holds is
+  the fold's to choose.
 
 `zephyr schema <dir>` writes JSON schemas of both for editor validation.
 The repository's `examples/` holds one of each, used below; they read the face
@@ -95,7 +98,7 @@ the download).
 
 6. **Evaluate** any checkpoint on any clip lists; each list is reported as a
    group. A checkpoint records the videos it trained on and `evaluate` refuses
-   clips that share a video or recording with them (older checkpoints without
+   those videos (older checkpoints without
    the record are scored with a warning):
 
    ```bash
@@ -201,8 +204,8 @@ section explains the ones whose behaviour is not obvious.
 - Validation picks `best.pt` and stops the run early (`score_every`, `patience`,
   `min_epochs`). By default it is the last `val_fraction` of every training clip; a
   `[fold.val]` selection (written like a test group) validates on whole clips instead,
-  e.g. held-out animals. They never train, must share no recording with the training or
-  test clips, and replace `val_fraction` (leave it out). `val_fraction = 0` without
+  e.g. held-out animals. They never train, may not be a training or test clip, and
+  replace `val_fraction` (leave it out). `val_fraction = 0` without
   `[fold.val]` trains a fixed number of epochs. With `ema_decay > 0` it selects on the
   averaged weights once they have relaxed (about 3 / (1 - `ema_decay`) steps), and the
   count starts afresh then: a live-weights best, noisier, is no bar for them.
