@@ -31,7 +31,9 @@ dependencies = [
 [project.optional-dependencies]
 cpu = ["torch>=2.6,<2.8"]
 gpu = ["torch>=2.6,<2.8"]
-ui = ["pyqtgraph>=0.13", "PySide6>=6.6"]
+# PySide6 6.12.0 loses a reference to None on every call returning nothing (Python
+# 3.11 aborts, later ones crash at exit).
+ui = ["pyqtgraph>=0.13", "PySide6>=6.6,!=6.12.0"]
 
 [project.scripts]
 zephyr = "zephyr.cli:run"
