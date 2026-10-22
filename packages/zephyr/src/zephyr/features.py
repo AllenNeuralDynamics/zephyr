@@ -52,7 +52,7 @@ def cache_key(clip: ResolvedClip, params: PreprocessParams) -> dict:
     if clip.video is None or clip.timestamps is None:
         raise ValueError(f"{clip.name} is thermistor only; features need its video")
     if clip.box is None:
-        raise ValueError(f"{clip.name} has no box; place it with `zephyr annotate`")
+        raise ValueError(f"{clip.name} has no box; place it in `zephyr gui` (Boxes)")
     recipe = params.KEY_RETIRED | {
         k: v
         for k, v in dump(params).items()

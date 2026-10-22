@@ -653,6 +653,7 @@ class BreathingPage(Page):
         self._loaded: Path | None = None
 
     def set_project(self, project: Project | None) -> None:
+        self._loaded = None  # the list may have changed on disk (Reload): read again
         if self.isVisible():
             self.load()
 

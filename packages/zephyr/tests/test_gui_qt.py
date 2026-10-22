@@ -413,6 +413,32 @@ class AppTests(unittest.TestCase):
             self.assertIn("--restart", started.call_args.args[0].argv)
         self.assertTrue(run.is_dir())  # deleting is the command's, not the app's
 
+    def test_resume_asks_before_scoring_finished_runs_again(self):
+        run = self._trained()
+        (run / "evaluation.json").write_text('{"groups": {}, "clips": []}')
+        train = self.go("Train")
+        with mock.patch.object(train.jobs, "run") as started:
+            train.start("resume")  # declined (the patched question answers nothing)
+            self.assertRegex(self.said[-1], "scores these finished ones again")
+            self.assertFalse(started.called)
+            with self._yes():
+                train.start("resume")
+            self.assertIn("--resume", started.call_args.args[0].argv)
+
+    def test_runs_outside_the_project_are_never_started_over(self):
+        self._trained()
+        experiment = self.root / "experiments" / "e.toml"
+        elsewhere = (self.root.parent / f"{self.root.name}-elsewhere").as_posix()
+        experiment.write_text(
+            experiment.read_text().replace('"../runs/e"', f'"{elsewhere}"')
+        )
+        train = self.go("Train")
+        with mock.patch.object(train.jobs, "run") as started, self._yes():
+            train.start("run")
+            train.start("smoke")
+        self.assertFalse(started.called)
+        self.assertRegex(self.said[-1], "outside this project's runs/")
+
     def test_results_scores_a_stopped_run_and_asks_before_replacing(self):
         run = self._trained()
         results = self.go("Results")

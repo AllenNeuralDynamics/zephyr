@@ -5,14 +5,11 @@ breaks, seconds clipped at a rail), with seconds around artifacts (large excursi
 cut out; good runs at least ``--min-span-s`` long become ``included`` spans, bad
 stretches ``excluded`` spans.  A clip is suggested ``exclude`` for a dead sensor (the
 list's low SNR mode), a small amplitude, too many alternation breaks, inconsistent
-events, or no accepted span.  Reviewed clips never change.
-
-    zephyr clips select <list.toml> [--out <list.toml>] [--report <csv>] [--min-span-s 300]
+events, or no accepted span.  Reviewed clips never change. The app's Breathing page
+(Selection) runs it; the corpus's ``qc`` step runs it with the spec's thresholds.
 """
 
-import argparse
 from dataclasses import dataclass
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -339,55 +336,3 @@ def apply(state: TuneState, table: pd.DataFrame) -> int:
     if not state.accepted():
         raise ValueError("every clip would be excluded; nothing written")
     return changed
-
-
-def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("clips", type=Path)
-    parser.add_argument(
-        "--out",
-        type=Path,
-        help="Write a copy of the list with the suggestions (the input if it is the "
-        "same path); without it only the report is printed.",
-    )
-    parser.add_argument("--report", type=Path, help="Also save the table as CSV.")
-    defaults = Settings()
-    parser.add_argument("--min-span-s", type=float, default=defaults.min_span_s)
-    parser.add_argument("--window-s", type=float, default=defaults.window_s)
-    parser.add_argument("--min-amplitude", type=float, default=defaults.min_amplitude)
-    parser.add_argument("--artifact-z", type=float, default=defaults.artifact_z)
-    parser.add_argument("--artifact-pad-s", type=float, default=defaults.artifact_pad_s)
-    args = parser.parse_args(argv)
-    settings = Settings(
-        window_s=args.window_s,
-        min_span_s=args.min_span_s,
-        min_amplitude=args.min_amplitude,
-        artifact_z=args.artifact_z,
-        artifact_pad_s=args.artifact_pad_s,
-    )
-    state = TuneState(args.clips)
-    table = assess(state, settings)
-    cut = table.attrs["snr_threshold"]
-    print(
-        f"SNR gate: {'none (no dead-sensor mode)' if cut is None else f'{cut:.1f} dB'}"
-    )
-    shown = table.assign(
-        accepted_min=(table["accepted_s"] / 60).round(1),
-        spans=table["included"].map(len),
-        current=[e.selection or "-" for e in state.entries],
-    )
-    columns = ["clip", "current", "reviewed", "suggested", "snr_db", "consistency_z"]
-    columns += ["good_frac", "artifacts", "accepted_min", "spans", "reason"]
-    with pd.option_context("display.width", 200, "display.max_rows", None):
-        print(shown[columns].round(2).to_string(index=False))
-    if args.report:
-        table.drop(columns=["included", "excluded"]).to_csv(args.report, index=False)
-    if args.out:
-        if args.out.resolve().parent != args.clips.resolve().parent:
-            raise SystemExit("--out must be in the same folder (paths are relative)")
-        changed = apply(state, table)
-        if args.out.resolve() != args.clips.resolve():
-            args.out.write_text(args.clips.read_text())
-            state.path = args.out
-        state.save()
-        print(f"{changed} unreviewed clip(s) updated in {args.out}")

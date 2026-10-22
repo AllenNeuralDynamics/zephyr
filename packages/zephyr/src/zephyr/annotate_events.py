@@ -6,13 +6,12 @@ parameters) can be picked per clip.  Events are never placed by hand, only stret
 to exclude are marked: saving writes each clip's ``events = {method, params}`` and
 ``excluded = [[start, end], ...]`` next to its ``box`` in the clip list.
 
+:class:`TuneState` is the logic of the app's Breathing page (``zephyr gui <list>
+--page breathing``).
+
 CLI
 ---
-    zephyr annotate events [<list.toml>]
     zephyr annotate events <list.toml> --auto   # the default detector for all, saved
-
-Menu: File > Open / Add videos / Remove / Save; Edit > apply a method to the current
-clip, the selected clips or all of them.
 """
 
 import argparse
@@ -557,29 +556,19 @@ class TuneState:
 
 
 def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument(
-        "clips", nargs="?", type=Path, help="Clip list TOML file (else File > Open)."
+    parser = argparse.ArgumentParser(
+        description="Give every clip the default detector (choosing one by hand is "
+        "the app's: zephyr gui <list> --page breathing)."
     )
-    parser.add_argument("--window-s", type=float, default=10.0)
+    parser.add_argument("clips", type=Path, help="Clip list TOML file.")
     parser.add_argument(
         "--auto",
         action="store_true",
-        help="Give every clip the default detector and save, without the window "
-        "(Edit > Auto in it).",
+        required=True,
+        help="Give every clip the default detector and save (Auto in the app).",
     )
     args = parser.parse_args(argv)
-    if args.auto:
-        if args.clips is None:
-            parser.error("--auto needs a clip list")
-        state = TuneState(args.clips)
-        state.auto()
-        state.save()
-        print(f"{args.clips}: {len(state.entries)} clip(s) use {SCAN_EVENTS.method}")
-        return
-    from .gui import need_ui
-
-    need_ui()
-    from .gui.breathing import run_ui
-
-    run_ui(args.clips, args.window_s)
+    state = TuneState(args.clips)
+    state.auto()
+    state.save()
+    print(f"{args.clips}: {len(state.entries)} clip(s) use {SCAN_EVENTS.method}")

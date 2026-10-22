@@ -8,6 +8,7 @@ import tomllib
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 import numpy as np
 import pandas as pd
@@ -52,12 +53,16 @@ class ProjectTests(unittest.TestCase):
         empty = self.root / "empty"
         empty.mkdir()
         self.assertFalse(Project.exists(empty))
-        Project.open(empty)
+        Project.open(empty, create=True)
         self.assertTrue(Project.exists(empty))
 
-    def test_a_folder_gets_the_layout_and_its_clip_lists(self):
+    def test_opening_writes_nothing_and_a_new_project_gets_the_layout(self):
         project = Project.open(self.root)
-        self.assertTrue(all((self.root / name).is_dir() for name in FOLDERS))
+        self.assertFalse(any((self.root / name).exists() for name in FOLDERS))
+        new = Project.open(self.root / "new", create=True)
+        self.assertTrue(all((new.root / name).is_dir() for name in FOLDERS))
+        with self.assertRaises(FileNotFoundError):
+            Project.open(self.root / "missing")
         self.assertEqual(project.clip_lists(), [self.list.resolve()])
         self.assertEqual(project.clip_list, self.list.resolve())
         self.assertEqual(project.groups(), ["1", "2", "3", "4"])
@@ -181,7 +186,7 @@ class StepTests(unittest.TestCase):
         (run / "evaluation.json").write_text("{}")
         self.assertEqual(self.states(project)["Results"], DONE)
         out = self.root / "predictions" / "first"
-        out.mkdir()
+        out.mkdir(parents=True)
         (out / "predictions.json").write_text("{}")
         self.assertEqual(self.states(project)["Predict"], TODO)
         (out / "video.prediction.parquet").touch()
@@ -271,6 +276,32 @@ class CacheNeedTests(unittest.TestCase):
             self.assertEqual(need.bytes, 2 * kept * (32 * 32 + CACHE_BYTES_PER_FRAME))
         self.assertEqual(human_bytes(1.3e9), "1.3 GB")
         self.assertEqual(human_bytes(512), "512 bytes")
+
+
+class CommandSurfaceTests(unittest.TestCase):
+    """Placing boxes and choosing detectors by hand is the app's; the commands do
+    only what needs no window."""
+
+    def test_annotate_does_only_the_headless_steps(self):
+        from zephyr.annotate import main as annotate
+        from zephyr.annotate_events import main as events
+
+        for argv in (["list.toml"], ["list.toml", "--width", "100"]):
+            with self.assertRaises(SystemExit), mock.patch("sys.stderr"):
+                annotate(argv)
+        with self.assertRaises(SystemExit), mock.patch("sys.stderr"):
+            events(["list.toml"])  # --auto is required
+
+    def test_clips_select_is_gone_and_gui_opens_on_a_page(self):
+        from zephyr.clips import main as clips
+        from zephyr.gui import PAGES
+        from zephyr.gui import main as gui
+
+        with self.assertRaises(SystemExit), mock.patch("sys.stderr"):
+            clips(["select", "list.toml"])
+        with self.assertRaises(SystemExit), mock.patch("sys.stderr"):
+            gui(["--page", "boxes"])  # a page needs a project
+        self.assertEqual(PAGES[2:4], ("boxes", "breathing"))
 
 
 class PreviewTests(unittest.TestCase):

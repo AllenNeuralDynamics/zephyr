@@ -208,7 +208,7 @@ class EventsSource(_Model):
 
     Training (the onset head, rate balancing) and scoring both read them; see
     :mod:`zephyr.events`.  Set for a whole list with ``[events]`` or for one clip
-    with ``events = {...}`` next to its ``box`` (``zephyr annotate events``);
+    with ``events = {...}`` next to its ``box`` (the app's Breathing page);
     without either, ``peak_detection`` with its defaults.
     """
 
@@ -240,8 +240,8 @@ class Clip(_Model):
     """One clip as written in a clip list; omitted fields are derived.
 
     Without a ``video`` the entry is a thermistor-only recording (e.g. a whole session):
-    it names its ``thermistor`` and has no timestamps or box. The detector tuner and
-    ``zephyr clips select`` read such entries; everything that needs frames refuses
+    it names its ``thermistor`` and has no timestamps or box. The app's Breathing page
+    and the corpus QC read such entries; everything that needs frames refuses
     them (:func:`require_videos`).
     """
 
@@ -255,24 +255,24 @@ class Clip(_Model):
     group: str | None = None
     """Recording label within the video's folder; derived when omitted."""
     box: Box | None = None
-    """Hand-placed crop box in ``target_size`` pixels; see ``zephyr annotate``."""
+    """Hand-placed crop box in ``target_size`` pixels; placed in the app's Boxes page."""
     events: "EventsSource | None" = None
     """This clip's own detector, overriding the list's ``[events]``."""
     selection: Literal["include", "exclude"] | None = None
-    """Curation mark set from ``zephyr annotate events``.  ``"exclude"``: never use
+    """Curation mark set in the app's Breathing page.  ``"exclude"``: never use
     this video; it is left out of everything downstream (preprocessing, folds,
     training, scoring).  ``"include"`` is a note only; neither touches the clip's
     other settings."""
     reviewed: bool = False
-    """Whether a person has confirmed ``selection`` (and the spans) in ``zephyr
-    annotate events``; ``zephyr clips select`` never changes a reviewed clip."""
+    """Whether a person has confirmed ``selection`` (and the spans) in the app's
+    Breathing page; its suggestions never change a reviewed clip."""
     excluded: list[tuple[float, float]] = []
     """Spans ``[start, end]`` (seconds on the thermistor's clock) whose events are
     untrusted: nothing is scored there and no training window overlaps them."""
 
     included: list[tuple[float, float]] = []
-    """Spans ``[start, end]`` marked as good stretches of data from ``zephyr annotate
-    events``: a note only, nothing downstream reads them."""
+    """Spans ``[start, end]`` marked as good stretches of data in the app's Breathing
+    page: a note only, nothing downstream reads them."""
 
     @field_validator("excluded", "included")
     @classmethod
@@ -704,8 +704,8 @@ class Fold(_Model):
         unboxed = [c.name for c in selected if not c.box]
         if unboxed:
             raise ValueError(
-                f"{len(unboxed)} clip(s) have no box; place them with "
-                f"`zephyr annotate`: {unboxed}"
+                f"{len(unboxed)} clip(s) have no box; place them in "
+                f"`zephyr gui` (Boxes): {unboxed}"
             )
         if len(sizes) > 1:
             raise ValueError(f"clip lists crop to different box sizes {sorted(sizes)}")

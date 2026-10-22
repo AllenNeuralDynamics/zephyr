@@ -74,7 +74,9 @@ def ask_cache_space(parent, lists: list[Path], cache: Path) -> bool:
         return True  # the command says what is wrong with the list
     if not need.todo:
         return True
-    drive = cache if cache.exists() else cache.parent
+    drive = cache
+    while not drive.exists() and drive.parent != drive:  # the nearest folder there is
+        drive = drive.parent
     free = shutil.disk_usage(drive).free
     unknown = (
         f" ({need.unknown} more of unknown size: their timestamps cannot be read)"

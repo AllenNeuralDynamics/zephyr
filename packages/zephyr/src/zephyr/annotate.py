@@ -6,17 +6,15 @@ single clip its own. Boxes are written back as ``box = [x, y, w, h]`` with tomlk
 leaving the rest of the file untouched; an unplaced recording gets no box and
 preprocessing refuses it.
 
-Keys (window: :mod:`zephyr.gui.boxes`): click place | arrows nudge (shift x10) | [ ]
-resize | n/p recording | 1/2/3 clip | o own box | c copy previous | r re-centre | a auto.
+Boxes are placed by hand in the app (``zephyr gui <list> --page boxes``,
+:mod:`zephyr.gui.boxes`); :class:`BoxState` is that page's logic.
 
 CLI
 ---
-    zephyr annotate list.toml --prepare   # cache one frame per clip, once
-    zephyr annotate list.toml --width 360 --height 270 --box-size 96
-    zephyr annotate list.toml --remote --frame-dir frames   # clips kept elsewhere: frames only
+    zephyr annotate list.toml --prepare --frame-dir frames   # one frame per clip, once
     zephyr annotate list.toml --auto --frame-dir frames [--min-score 0.5]   # match, save
-    zephyr annotate predict.toml --checkpoint best.pt   # the network's crop size, locked
-    zephyr annotate events list.toml   # choose each clip's event detector: zephyr.annotate_events
+    zephyr annotate predict.toml --auto --frame-dir frames --checkpoint best.pt
+    zephyr annotate events list.toml --auto   # the default detector: zephyr.annotate_events
 """
 
 import argparse
@@ -484,47 +482,29 @@ def main(argv: list[str] | None = None) -> None:
         annotate_events.main(argv[1:])
         return
     parser = argparse.ArgumentParser(
-        description="Choose a downsample target and hand-place crop boxes."
+        description="Cache a frame per clip, or box the rest from the boxes placed "
+        "(placing them by hand is the app's: zephyr gui <list> --page boxes)."
     )
-    parser.add_argument("clips", type=Path, help="Clip list TOML file to annotate.")
-    parser.add_argument(
-        "--width", type=int, help="Downsample target width (default: the list's)"
-    )
-    parser.add_argument(
-        "--height", type=int, help="Downsample target height (default: the list's)"
-    )
-    parser.add_argument("--box-size", type=int, default=DEFAULT_BOX_SIZE)
+    parser.add_argument("clips", type=Path, help="Clip list TOML file.")
     parser.add_argument("--frame-dir", type=Path, default=Path("artifacts/frames"))
-    parser.add_argument(
-        "--prepare",
-        action="store_true",
-        help="Cache one frame per clip, then exit.",
+    action = parser.add_mutually_exclusive_group(required=True)
+    action.add_argument(
+        "--prepare", action="store_true", help="Cache one frame per clip, then exit."
     )
-    parser.add_argument(
-        "--remote",
-        action="store_true",
-        help="The clips are not on this machine: do not check they exist and take "
-        "the frame size from the cached frames in --frame-dir.",
-    )
-    parser.add_argument(
+    action.add_argument(
         "--auto",
         action="store_true",
         help="Box the unplaced recordings where the list's boxes match their cached "
-        "frame, save and exit (A in the window).",
+        "frame, and save (A in the app's Boxes page).",
     )
     parser.add_argument("--min-score", type=float, default=AUTO_MIN_SCORE)
     parser.add_argument(
         "--checkpoint",
         type=Path,
-        help="Boxes for predicting with this network: its crop size, locked (a list "
-        "from `clips scan --checkpoint`).",
+        help="With --auto: the boxes are this network's crop size (a list from "
+        "`clips scan --checkpoint`).",
     )
     args = parser.parse_args(argv)
-    if args.checkpoint is not None and (args.width or args.height):
-        raise SystemExit("--checkpoint fixes the frame size; drop --width/--height")
-
-    if args.prepare and args.remote:
-        raise SystemExit("--prepare decodes the videos, which --remote has not got")
     if args.prepare:
         clips = load(ClipList, args.clips).resolve()
         try:
@@ -533,53 +513,22 @@ def main(argv: list[str] | None = None) -> None:
             raise SystemExit(f"{args.clips}: {exc}") from None
         prepare_frames(clips, args.frame_dir)
         return
-
-    if not args.auto:
-        from .gui import need_ui
-
-        need_ui()
+    # Matching reads only the cached frames: the videos may be elsewhere.
     state = open_state(
-        args.clips,
-        args.frame_dir,
-        width=args.width,
-        height=args.height,
-        box_size=args.box_size,
-        remote=args.remote,
-        checkpoint=args.checkpoint,
+        args.clips, args.frame_dir, remote=True, checkpoint=args.checkpoint
     )
-    if args.auto:
-        try:
-            scores = state.auto(
-                lambda r: load_recording_frames(r, args.frame_dir), args.min_score
-            )
-        except ValueError as exc:
-            raise SystemExit(f"{args.clips}: {exc}") from None
-        save_boxes(args.clips, state)
-        for recording in state.recordings:
-            if recording.key in scores:
-                kept = "boxed" if recording.key in state.matched else "left unplaced"
-                print(f"  {recording.label}: {scores[recording.key]:.2f} {kept}")
-        print(
-            f"matched {len(state.matched)} of {len(scores)} recording(s); "
-            f"{len(state.placed)} of {len(state.recordings)} placed -> {args.clips}"
+    try:
+        scores = state.auto(
+            lambda r: load_recording_frames(r, args.frame_dir), args.min_score
         )
-        return
+    except ValueError as exc:
+        raise SystemExit(f"{args.clips}: {exc}") from None
+    save_boxes(args.clips, state)
+    for recording in state.recordings:
+        if recording.key in scores:
+            kept = "boxed" if recording.key in state.matched else "left unplaced"
+            print(f"  {recording.label}: {scores[recording.key]:.2f} {kept}")
     print(
-        f"resuming: {len(state.placed)} of {len(state.recordings)} recordings placed"
-        if state.placed
-        else "no boxes placed yet"
+        f"matched {len(state.matched)} of {len(scores)} recording(s); "
+        f"{len(state.placed)} of {len(state.recordings)} placed -> {args.clips}"
     )
-    missing = missing_frames(state, args.frame_dir)
-    if missing:
-        print(
-            f"WARNING: {len(missing)} clips have no cached frame and will show "
-            "blank. Run with --prepare first."
-        )
-    native, target = state.native_size, state.target_size
-    print(
-        f"{len(state.recordings)} recordings | native {native[0]}x{native[1]} | "
-        f"target {target[0]}x{target[1]} | box {state.box_size} | -> {args.clips}"
-    )
-    from .gui.boxes import run_ui
-
-    run_ui(state, args.frame_dir, args.clips)

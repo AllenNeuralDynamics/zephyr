@@ -448,9 +448,13 @@ class TrainPage(Page):
             return
         else:
             argv = [str(path), "--save-traces"]  # for Results to draw
+            if step in ("smoke", "run") and not self._inside_runs(project, path):
+                return
             if step == "smoke":  # a check of the plumbing: always from scratch
                 argv += ["--smoke", "--restart"]
             if step == "resume":
+                if not self._may_resume(project, path):
+                    return
                 argv.append("--resume")
             if step == "run":
                 if not self._may_start_over(project, path):
@@ -470,6 +474,44 @@ class TrainPage(Page):
         # Preprocessing tells its progress in its output alone.
         if self.jobs.run(job, show_log=step == "preprocess"):
             self.tabs.setCurrentWidget(self.history)
+
+    def _inside_runs(self, project: Project, path: Path) -> bool:
+        """Whether *path*'s runs are all in the project's ``runs/`` (``--restart``
+        deletes them; a run folder elsewhere is never written to)."""
+        runs = project.runs_dir.resolve()
+        outside = [
+            run
+            for smoke in (False, True)
+            for run in project.run_dirs(path, smoke=smoke)
+            if not run.is_relative_to(runs)
+        ]
+        if outside:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Runs outside the project",
+                f"{path.name} trains into {outside[0].parent.parent}, outside this "
+                "project's runs/: the app never starts those over. Run it from a "
+                "terminal, or write a new experiment here.",
+            )
+        return not outside
+
+    def _may_resume(self, project: Project, path: Path) -> bool:
+        """Resume continues the stopped runs, and scores the finished ones again:
+        ask before it replaces an ``evaluation.json``."""
+        scored = [
+            r for r in project.run_dirs(path) if (r / "evaluation.json").is_file()
+        ]
+        if not scored:
+            return True
+        listed = "\n".join(f"  {run_label(r, project.runs_dir)}" for r in scored)
+        answer = QtWidgets.QMessageBox.question(
+            self,
+            "Score finished runs again?",
+            f"Resume continues the stopped runs of {path.name}, and also scores these "
+            f"finished ones again, replacing their evaluation.json:\n{listed}\n\n"
+            "Go on?",
+        )
+        return answer == QtWidgets.QMessageBox.StandardButton.Yes
 
     def _may_start_over(self, project: Project, path: Path) -> bool:
         """Whether Run may train *path* from scratch: yes when none of its runs

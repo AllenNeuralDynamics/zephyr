@@ -214,6 +214,22 @@ class TrainedRunTests(unittest.TestCase):
                 ]
             )
 
+    def test_restart_predicts_every_clip_again_even_for_another_checkpoint(self):
+        out = self.root / "predictions" / "again"
+        out.mkdir(parents=True)
+        (out / SETTINGS).write_text(json.dumps({"checkpoint_sha256": "0" * 64}))
+        stale = out / f"video_face_1_part_1{SUFFIX}"
+        stale.write_text("old")
+        main(
+            ["--checkpoint", str(self.checkpoint), "--clips", str(self.list)]
+            + ["--out", str(out), "--device", "cpu", "--amp", "off"]
+            + ["--workers", "1", "--restart", "--groups", "1"]
+        )
+        self.assertEqual(len(pd.read_parquet(stale)), 1200)  # predicted again
+        self.assertNotEqual(
+            json.loads((out / SETTINGS).read_text())["checkpoint_sha256"], "0" * 64
+        )
+
     def test_a_missing_thermistor_is_never_needed(self):
         clip_list = load(ClipList, self.list, check_files=False)
         clips = select_clips([clip_list], ["3"])

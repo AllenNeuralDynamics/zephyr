@@ -1,4 +1,4 @@
-"""The Boxes page (``zephyr annotate``): one crop box per recording, on the downsampled
+"""The Boxes page (``zephyr gui <list> --page boxes``): one crop box per recording, on the downsampled
 frame.
 
 Recordings on the left, the frame with its box on the right; every change is saved to
@@ -21,7 +21,7 @@ from ..annotate import (
     load_recording_frames,
     save_boxes,
 )
-from .theme import STYLE, THEME
+from .theme import THEME
 
 STEP = 8
 """Pixels a box grows or shrinks by ([ ] and the -/+ buttons)."""
@@ -424,16 +424,3 @@ class BoxWindow(QtWidgets.QMainWindow):
         self._save()
         print(f"saved {len(self.state.placed)} recording box(es) -> {self.out_path}")
         event.accept()
-
-
-def run_ui(
-    state: BoxState, frame_dir: Path, out_path: Path
-) -> None:  # pragma: no cover
-    """``zephyr annotate``: the box window on its own."""
-    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
-    app.setStyleSheet(STYLE)
-    window = BoxWindow(state, frame_dir, out_path)
-    window.resize(1500, 900)
-    window.show()
-    window.canvas.setFocus()
-    app.exec()

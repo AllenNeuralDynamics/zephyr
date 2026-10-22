@@ -10,7 +10,7 @@ every box the size it trained on (``clips scan --checkpoint`` writes such a list
 CLI
 ---
     zephyr predict --checkpoint best.pt --clips <list.toml>... --out predictions/
-        [--cache <dir>] [--groups <g>...] [--device cpu] [--amp off] [--workers 8]
+        [--cache <dir>] [--groups <g>...] [--restart] [--device cpu] [--amp off]
 """
 
 import argparse
@@ -132,8 +132,11 @@ def predict(
     window: int = 1024,
     frame_chunk: int = 256,
     workers: int = 8,
+    restart: bool = False,
 ) -> list[Path]:
-    """Write one prediction per clip that has none yet into *out*; return them all."""
+    """Write one prediction per clip that has none yet into *out* (with *restart*,
+    first removing the ones there and the checkpoint they came from, so new crops,
+    a new list or another checkpoint are predicted again); return them all."""
     torch_device = torch.device(device)
     model, mean, std, state = load_checkpoint(checkpoint, torch_device)
     differs = recipe_mismatch(state, recipe)
@@ -149,6 +152,10 @@ def predict(
             f"boxes are another size: {wrong}"
         )
     head = has_onset_head([state])
+    if restart:  # the folder's predictions, and whose they were
+        for old in [*out.glob(f"*{SUFFIX}"), out / SETTINGS]:
+            old.unlink(missing_ok=True)
+        print(f"{out}: earlier predictions removed", flush=True)
     _settings(out, checkpoint, checkpoint_hash(checkpoint))
     todo = [c for c in clips if not (out / f"{c.video.stem}{SUFFIX}").is_file()]
     print(f"{len(clips)} clip(s), {len(clips) - len(todo)} already predicted")
@@ -195,6 +202,11 @@ def main(argv: list[str] | None = None) -> None:
     )
     parser.add_argument("--groups", nargs="+", help="Keep only these groups.")
     parser.add_argument(
+        "--restart",
+        action="store_true",
+        help="Remove the predictions already in --out first, and predict every clip.",
+    )
+    parser.add_argument(
         "--device", default="cuda" if torch.cuda.is_available() else "cpu"
     )
     parser.add_argument("--amp", default="bf16", choices=list(AMP))
@@ -218,6 +230,7 @@ def main(argv: list[str] | None = None) -> None:
         window=args.infer_window,
         frame_chunk=args.frame_chunk,
         workers=args.workers,
+        restart=args.restart,
     )
     print(f"{len(written)} prediction(s) in {args.out}")
 

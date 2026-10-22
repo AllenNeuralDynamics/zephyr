@@ -186,7 +186,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def open_project(self, path: Path) -> None:
         """Open the project of *path* (a folder or a clip list in one)."""
-        if not Project.exists(path):
+        create = not Project.exists(path)
+        if create:
             answer = QtWidgets.QMessageBox.question(
                 self,
                 "Start a new project here?",
@@ -201,7 +202,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if not all(page.leave() for page in self.pages):
             return
         try:
-            project = Project.open(path)
+            project = Project.open(path, create=create)
         except OSError as exc:
             QtWidgets.QMessageBox.warning(self, "Cannot open the project", str(exc))
             return
@@ -278,6 +279,7 @@ class MainWindow(QtWidgets.QMainWindow):
         elif not page.jobs.busy and key in self._held:
             for button in self._held.pop(key):
                 button.setEnabled(True)
+            page.shown()  # the page's own rules again (what changed while it ran)
             self.refresh_steps()
         self._show_running()
 
@@ -296,6 +298,11 @@ class MainWindow(QtWidgets.QMainWindow):
         path = self.lists.itemData(index)
         if self.project is not None and path and path != self.project.clip_list:
             self.open_project(path)
+
+    def go_to(self, name: str) -> None:
+        """Show the page titled *name* (any case)."""
+        titles = [page.title.lower() for page in self.pages]
+        self.nav.setCurrentRow(titles.index(name.lower()))
 
     def _go(self, row: int) -> None:
         self.stack.setCurrentIndex(row)
@@ -341,7 +348,9 @@ def place(window: QtWidgets.QWidget, screen: QtGui.QScreen) -> None:
     )
 
 
-def run_app(path: Path | None = None) -> None:  # pragma: no cover
+def run_app(
+    path: Path | None = None, page: str | None = None
+) -> None:  # pragma: no cover
     if sys.platform == "win32":  # the taskbar shows the app's icon, not Python's
         import ctypes
 
@@ -350,9 +359,14 @@ def run_app(path: Path | None = None) -> None:  # pragma: no cover
     app.setApplicationName("zephyr")
     app.setWindowIcon(QtGui.QIcon(str(ICON)))
     app.setStyleSheet(STYLE)
-    window = MainWindow(Project.open(path) if path is not None else None)
+    project = None
+    if path is not None:  # from the command line: a new folder is made a project
+        project = Project.open(path, create=not Project.exists(path))
+    window = MainWindow(project)
     screen = app.screenAt(QtGui.QCursor.pos()) or app.primaryScreen()
     place(window, screen)
+    if page is not None:
+        window.go_to(page)
     window.show()
     window.raise_()
     window.activateWindow()

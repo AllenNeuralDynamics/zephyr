@@ -395,7 +395,7 @@ def check_clip(clip: ResolvedClip, select_fs: float) -> ClipCheck:
                         "columns on the same clock?"
                     )
     if clip.video is not None and clip.box is None:
-        found.problems.append("no crop box: place one with `zephyr annotate`")
+        found.problems.append("no crop box: place one in `zephyr gui` (Boxes)")
     return found
 
 
@@ -457,20 +457,10 @@ def main(argv: list[str] | None = None) -> None:
     )
     check_parser.add_argument("clips", type=Path)
     check_parser.add_argument("--json", type=Path, help="Also write the report here.")
-    sub.add_parser(
-        "select",
-        help="Suggest clips and spans to use (see zephyr.session_selection).",
-        add_help=False,
-    )
     if argv is None:
         import sys
 
         argv = sys.argv[1:]
-    if argv and argv[0] == "select":
-        from .session_selection import main as select
-
-        select(argv[1:])
-        return
     args = parser.parse_args(argv)
     if args.command == "check":
         try:

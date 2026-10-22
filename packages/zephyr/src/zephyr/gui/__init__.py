@@ -11,11 +11,14 @@ CLI
     zephyr gui                        # choose or create a project
     zephyr gui my-project/            # a project folder
     zephyr gui my-project/clips.toml  # a project, on this clip list
+    zephyr gui boxes/face.toml --page boxes   # straight to a page (boxes, breathing, ...)
 """
 
 import argparse
 from pathlib import Path
 
+PAGES = ("project", "clips", "boxes", "breathing", "train", "results", "predict")
+"""The pages, in order, by the name ``--page`` takes."""
 UI_HINT = (
     "the zephyr app needs the `ui` extra: `uv sync --extra ui` in a clone, or "
     "`pip install 'zephyr[ui]'`"
@@ -35,8 +38,15 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "path", nargs="?", type=Path, help="Project folder, or a clip list in one."
     )
+    parser.add_argument(
+        "--page",
+        choices=PAGES,
+        help="Open on this page (default: Clips, or Project without a path).",
+    )
     args = parser.parse_args(argv)
+    if args.page and args.path is None:
+        parser.error("--page needs a project folder or clip list")
     need_ui()
     from .app import run_app
 
-    run_app(args.path)
+    run_app(args.path, args.page)

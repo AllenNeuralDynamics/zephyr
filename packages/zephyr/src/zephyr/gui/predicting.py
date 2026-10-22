@@ -299,7 +299,9 @@ class PredictPage(Page):
             )
             if answer != QtWidgets.QMessageBox.StandardButton.Yes:
                 return
-            path.unlink()
+        if self.box_window is not None:  # it would write the old crops back
+            self.box_window.close()
+            self.box_window = None
         argv = ["scan", folder, "--glob", self.video_glob.text(), "-o", str(path)]
         argv += ["--checkpoint", str(checkpoint)]
         if self.video_times.text() != Derive().timestamps:
@@ -350,6 +352,10 @@ class PredictPage(Page):
             self.box_window = None
         argv = ["--checkpoint", str(checkpoint), "--clips", str(path)]
         argv += ["--out", str(path.parent)]
+        again = self._again(path.parent)
+        if again is None:
+            return
+        argv += again
         if self.video_cache.isChecked():
             cache = self.project.cache_dir
             if not ask_cache_space(self, [path], cache):
@@ -357,6 +363,29 @@ class PredictPage(Page):
             argv += ["--cache", str(cache)]
         self._out = path.parent
         self.jobs.run(Job("predict", argv, self.project.root))
+
+    def _again(self, out: Path) -> list[str] | None:
+        """For a folder that has predictions already: ``--restart`` to predict every
+        video again (new crops, list or checkpoint), nothing to predict only the
+        videos without one, None to cancel."""
+        done = list(out.glob(f"*{SUFFIX}"))
+        if not done:
+            return []
+        box = QtWidgets.QMessageBox(
+            QtWidgets.QMessageBox.Icon.Question,
+            "Predictions exist",
+            f"predictions/{out.name} has {len(done)} prediction(s) already. Predict "
+            "every video again (they are replaced: do this after moving a crop or "
+            "with another checkpoint), or only the videos without one?",
+            parent=self,
+        )
+        everything = box.addButton("Predict all again", box.ButtonRole.AcceptRole)
+        new = box.addButton("Only the new ones", box.ButtonRole.AcceptRole)
+        box.addButton(QtWidgets.QMessageBox.StandardButton.Cancel)
+        box.exec()
+        if box.clickedButton() is everything:
+            return ["--restart"]
+        return [] if box.clickedButton() is new else None
 
     def set_project(self, project: Project | None) -> None:
         self.shown()
@@ -410,7 +439,7 @@ class PredictPage(Page):
         current = select or self.folder.currentData()
         self.folder.blockSignals(True)
         self.folder.clear()
-        if project is not None:
+        if project is not None and project.predictions_dir.is_dir():
             for folder in sorted(
                 p for p in project.predictions_dir.iterdir() if p.is_dir()
             ):
@@ -432,6 +461,10 @@ class PredictPage(Page):
         groups = self.groups.text().split()
         selection = ["--groups", *groups] if groups else []
         argv = [*common, "--out", str(out), *selection]
+        again = self._again(out)
+        if again is None:
+            return
+        argv += again
         if self.keep.isChecked():
             if not ask_cache_space(self, [clips], project.cache_dir):
                 return

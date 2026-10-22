@@ -1,4 +1,4 @@
-"""The Breathing page (``zephyr annotate events``): traces, live stats, a per-clip table.
+"""The Breathing page (``zephyr gui <list> --page breathing``): traces, live stats, a per-clip table.
 
 Needs the ``ui`` extra (``pyqtgraph`` and ``PySide6``) and a display; the logic it
 drives is :class:`zephyr.annotate_events.TuneState`.  Events are never edited: the
@@ -27,7 +27,7 @@ from ..annotate_events import (
 )
 from ..clips import SCAN_EVENTS
 from ..rates import breath_rates
-from .theme import STYLE, THEME
+from .theme import THEME
 
 SYMBOLS = {"inhale": "t1", "exhale": "t"}
 HIST_MAX_HZ = 20.0
@@ -2249,17 +2249,3 @@ def open_window(path: Path, window_s: float, parent=None) -> bool:
     _windows.append(window)
     window.showMaximized()
     return True
-
-
-def run_ui(path: Path | None, window_s: float = 10.0) -> None:  # pragma: no cover
-    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
-    app.setStyleSheet(STYLE)
-    if path is None:
-        chosen, _ = QtWidgets.QFileDialog.getOpenFileName(
-            None, "Open clip list", "", "Clip lists (*.toml)"
-        )
-        if not chosen:
-            return
-        path = Path(chosen)
-    if open_window(path, window_s):
-        app.exec()

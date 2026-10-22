@@ -1,7 +1,7 @@
 """``lists``: the dataset's clip list, ``sessions.toml``, one entry per fetched session.
 
 Entries are thermistor only (``thermistor = "thermistor/<session_id>.parquet"``, no
-video): the whole session, read by ``zephyr annotate events`` and the QC. The header
+video): the whole session, read by the app's Breathing page and the QC. The header
 (``[preprocess]``, ``[events]``) is rewritten from the spec. Entries are only added, so
 marks, spans and reviews survive, but each one's ``group`` is (re)set to its subject
 from the session metadata (never parsed from the session name, which can predate a
@@ -20,7 +20,7 @@ from .config import DatasetSpec, Layout, session_of
 HEADER = [
     "Clip list of a zephyr-dataset folder: one thermistor-only entry per whole",
     "session. Written by `zephyr-dataset lists`; review marks and spans with",
-    "`zephyr annotate events` on this file. `group` is the subject from the session",
+    "`zephyr gui <this file> --page breathing`. `group` is the subject from the session",
     "metadata.",
 ]
 

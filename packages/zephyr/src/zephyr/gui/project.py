@@ -253,14 +253,20 @@ class Project:
         return root.is_dir() and bool(Project(root).clip_lists())
 
     @classmethod
-    def open(cls, path: Path) -> "Project":
+    def open(cls, path: Path, *, create: bool = False) -> "Project":
         """The project of *path*: a folder, or a clip list (the project is its
-        folder). The folder's layout is created if it is missing."""
+        folder). Nothing is written to open one; with *create* (a new project) the
+        folder and its layout are made. Otherwise each folder appears when the step
+        that fills it first runs (a dataset's own folder opened to check its list
+        stays as it was)."""
         path = Path(path).resolve()
         root = path.parent if path.suffix == ".toml" else path
-        root.mkdir(parents=True, exist_ok=True)
-        for name in FOLDERS:
-            (root / name).mkdir(exist_ok=True)
+        if create:
+            root.mkdir(parents=True, exist_ok=True)
+            for name in FOLDERS:
+                (root / name).mkdir(exist_ok=True)
+        elif not root.is_dir():
+            raise FileNotFoundError(f"{root} does not exist")
         project = cls(root)
         lists = project.clip_lists()
         if path.suffix == ".toml":
