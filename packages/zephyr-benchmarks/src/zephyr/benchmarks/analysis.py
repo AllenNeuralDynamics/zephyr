@@ -15,6 +15,7 @@ from collections.abc import Callable, Sequence
 import numpy as np
 import pandas as pd
 import torch
+from scipy import stats
 from scipy.signal import butter, sosfiltfilt, welch
 
 from zephyr import features
@@ -201,13 +202,14 @@ def rate_bins(bins=RATE_BINS_HZ) -> list[str]:
 def f1_by_rate(
     breaths: pd.DataFrame, false: pd.DataFrame, bins=RATE_BINS_HZ
 ) -> pd.DataFrame:
-    """Inhale F1 per breathing-rate bin, per method and set: misses binned by the
-    breath's own rate, false events by the true rate at their time; with the share of
-    breaths in each bin."""
+    """Inhale F1 per breathing-rate bin, per method and set (and fold, when the tables
+    have a ``fold`` column): misses binned by the breath's own rate, false events by the
+    true rate at their time; with the share of breaths in each bin."""
     cut = {"bins": list(bins), "labels": rate_bins(bins)}
     b = breaths.assign(bin=pd.cut(breaths["rate_hz"], **cut))
     f = false.assign(bin=pd.cut(false["rate_hz"], **cut))
-    keys = ["method", "set", "bin"]
+    groups = ["method", *(["fold"] if "fold" in breaths else []), "set"]
+    keys = [*groups, "bin"]
     tp = b[b["detected"]].groupby(keys, observed=False).size()
     fn = b[~b["detected"]].groupby(keys, observed=False).size()
     fp = f.groupby(keys, observed=False).size()
@@ -216,7 +218,7 @@ def f1_by_rate(
         2 * out["tp"] / (2 * out["tp"] + out["fn"] + out["fp"]).replace(0, np.nan)
     )
     in_bin = out["tp"] + out["fn"]
-    out["share"] = in_bin / in_bin.groupby(["method", "set"]).transform("sum")
+    out["share"] = in_bin / in_bin.groupby(groups).transform("sum")
     return out.reset_index()
 
 
@@ -301,6 +303,81 @@ def familiarity(
     return pd.DataFrame(
         {"animal": animal, "rig_trained": rig_trained}, index=recordings.index
     )
+
+
+def across_folds(
+    per_fold: pd.DataFrame,
+    value: str,
+    by: Sequence[str] = ("method",),
+    fold: str = "fold",
+    level: float = 0.95,
+) -> pd.DataFrame:
+    """Per group of *by*: the mean of *value* over folds (one row per fold), its
+    *level* t-interval over folds and the number of folds; with one fold the interval is
+    missing."""
+
+    def one(g: pd.DataFrame) -> pd.Series:
+        v = g[value].dropna().to_numpy(float)
+        n = len(v)
+        mean = v.mean() if n else np.nan
+        half = (
+            stats.t.ppf(0.5 + level / 2, n - 1) * v.std(ddof=1) / np.sqrt(n)
+            if n > 1
+            else np.nan
+        )
+        return pd.Series(
+            {"mean": mean, "low": mean - half, "high": mean + half, "folds": n}
+        )
+
+    return (
+        per_fold.groupby(list(by), sort=False)[[value, fold]].apply(one).reset_index()
+    )
+
+
+def per_fold(
+    recordings: pd.DataFrame,
+    metric: str,
+    unit: str = "unit",
+    fold: str = "fold",
+    by: Sequence[str] = ("set", "method"),
+) -> pd.DataFrame:
+    """Per group of *by* and fold: *metric* averaged within each unit, then over the
+    units (column ``value``)."""
+    keys = [*by, fold]
+    return (
+        recordings.groupby([*keys, unit], sort=False)[metric]
+        .mean()
+        .groupby(keys, sort=False)
+        .mean()
+        .rename("value")
+        .reset_index()
+    )
+
+
+def fold_scores(
+    recordings: pd.DataFrame,
+    metric: str,
+    unit: str = "unit",
+    fold: str = "fold",
+    by: Sequence[str] = ("set", "method"),
+    reference: str | None = "Zephyr",
+    level: float = 0.95,
+) -> pd.DataFrame:
+    """Per group of *by*: *metric* averaged within each unit, then over the units of
+    each fold, then summarised over folds (:func:`across_folds`); with *reference*,
+    also each method minus the reference, paired by fold."""
+    folds = per_fold(recordings, metric, unit, fold, by)
+    out = across_folds(folds, "value", by, fold, level)
+    if reference is None or "method" not in by:
+        return out
+    others = [k for k in by if k != "method"]
+    ref = folds[folds["method"] == reference].drop(columns="method")
+    paired = folds.merge(ref, on=[*others, fold], suffixes=("", "_ref"))
+    paired["value"] = paired["value"] - paired["value_ref"]
+    diff = across_folds(paired, "value", by, fold, level).rename(
+        columns={"mean": "minus ref", "low": "diff low", "high": "diff high"}
+    )
+    return out.merge(diff.drop(columns="folds"), on=list(by), how="left")
 
 
 def clip_scores_wide(clips: pd.DataFrame, metric: str) -> pd.DataFrame:
@@ -436,16 +513,54 @@ def cause_counts(err: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def tolerance_curve(
+    lags: pd.DataFrame,
+    breaths: pd.DataFrame,
+    false: pd.DataFrame,
+    tolerances_ms: Sequence[float],
+) -> pd.DataFrame:
+    """Inhale F1 and the errors left (misses plus false inhales, as a share of true
+    breaths) as the matching tolerance is relaxed, per method (and fold, when the tables
+    have one): a true inhale counts as found when a prediction lies within the
+    tolerance (pairs from the timing table, so up to :data:`LAG_WINDOW_S`)."""
+    keys = ["method", *(["fold"] if "fold" in breaths else [])]
+    rows = []
+    n_false = false.groupby(keys).size()
+    for key, b in breaths.groupby(keys, sort=False):
+        key = key if isinstance(key, tuple) else (key,)
+        m = np.ones(len(lags), bool)
+        for k, v in zip(keys, key, strict=True):
+            m &= lags[k].to_numpy() == v
+        lag = np.abs(lags.loc[m, "lag_s"].to_numpy()) * 1000
+        n_true = len(b)
+        n_pred = int(b["detected"].sum()) + int(
+            n_false.get(key if len(key) > 1 else key[0], 0)
+        )
+        for t in tolerances_ms:
+            hits = int((lag <= t).sum())
+            rows.append(
+                {
+                    **dict(zip(keys, key, strict=True)),
+                    "tolerance_ms": float(t),
+                    "f1": 2 * hits / (n_true + n_pred),
+                    "errors": (n_true + n_pred - 2 * hits) / n_true,
+                }
+            )
+    return pd.DataFrame(rows)
+
+
 def error_profile(err: pd.DataFrame, fast_hz: float = 8.0) -> pd.DataFrame:
     """Per error kind: the share of errors that are near misses, then, among the rest
     (gross errors), the share in fast breathing (above *fast_hz*), in face motion (top
     10% of the clip) and on shallow breaths (bottom 25%), with ``n`` errors behind each
-    share."""
+    share; per fold too, when *err* has a ``fold`` column."""
+    keys = ["kind", *(["fold"] if "fold" in err else [])]
     rows = []
-    for kind, g in err.groupby("kind", sort=False):
+    for key, g in err.groupby(keys, sort=False):
+        label = dict(zip(keys, key if isinstance(key, tuple) else (key,), strict=True))
         rows.append(
             {
-                "kind": kind,
+                **label,
                 "row": "near miss",
                 "share": g["near_miss"].mean(),
                 "n": len(g),
@@ -457,9 +572,7 @@ def error_profile(err: pd.DataFrame, fast_hz: float = 8.0) -> pd.DataFrame:
             ("face motion (top 10%)", gross["motion"] > 0.9),
             ("shallow breath (bottom 25%)", gross["amplitude"] < 0.25),
         ):
-            rows.append(
-                {"kind": kind, "row": row, "share": flag.mean(), "n": len(gross)}
-            )
+            rows.append({**label, "row": row, "share": flag.mean(), "n": len(gross)})
     return pd.DataFrame(rows)
 
 
