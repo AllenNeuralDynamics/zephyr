@@ -23,7 +23,7 @@ import torch
 
 from .config import Experiment, Fold, load
 from .evaluate import TRACES, Loader, evaluate_groups, load_checkpoint
-from .train import ZEPHYR, Architecture, Machine, train_fold
+from .train import ZEPHYR, Architecture, Machine, OnScored, train_fold
 
 
 @dataclass(frozen=True)
@@ -67,9 +67,10 @@ def run_fold(
     resume: bool = False,
     runner: Runner = ZEPHYR_RUNNER,
     save_traces: bool = False,
+    on_scored: OnScored | None = None,
 ) -> None:
     """Train one fold with one seed, then evaluate its test groups (writing the traces
-    scored into ``traces/`` with *save_traces*)."""
+    scored into ``traces/`` with *save_traces*; *on_scored* goes to ``train_fold``)."""
     if smoke:
         fold = smoke_fold(fold)
     if fold.init_from is not None and not fold.init_from.is_file():
@@ -86,6 +87,7 @@ def run_fold(
             machine,
             resume=resume,
             architecture=runner.architecture(fold),
+            on_scored=on_scored,
         )
     params = fold.train_params
     evaluate_groups(
@@ -123,7 +125,14 @@ def choose_machine(args: argparse.Namespace, defaults: dict) -> Machine:
     )
 
 
-def main(argv: list[str] | None = None, *, runner: Runner = ZEPHYR_RUNNER) -> None:
+def main(
+    argv: list[str] | None = None,
+    *,
+    runner: Runner = ZEPHYR_RUNNER,
+    on_scored: OnScored | None = None,
+) -> None:
+    """Run the experiment *argv* names; *on_scored* (Python callers only, e.g. the GUI)
+    sees each validation scoring of every fold and seed."""
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("config", type=Path, help="Experiment TOML file.")
     parser.add_argument(
@@ -199,6 +208,7 @@ def main(argv: list[str] | None = None, *, runner: Runner = ZEPHYR_RUNNER) -> No
                 resume=args.resume,
                 runner=runner,
                 save_traces=args.save_traces or experiment.save_traces,
+                on_scored=on_scored,
             )
 
 

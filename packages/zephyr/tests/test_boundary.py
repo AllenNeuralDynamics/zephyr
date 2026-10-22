@@ -17,12 +17,19 @@ from zephyr.evaluate import checkpoint_stats, load_checkpoint
 from zephyr.model import BreathingNet
 
 SRC = Path(__file__).resolve().parents[1] / "src" / "zephyr"
+
+
+def _needs_qt(path: Path) -> bool:
+    text = path.read_text(encoding="utf-8")
+    return "from PySide6" in text or "import pyqtgraph" in text
+
+
 MODULES = sorted(
     "zephyr." + ".".join(p.relative_to(SRC).with_suffix("").parts)
     for p in SRC.rglob("*.py")
     if p.name not in ("__init__.py", "_version.py")
-    # the annotation windows need the optional `ui` extra, which CI does not install
-    and (find_spec("pyqtgraph") or "pyqtgraph" not in p.read_text(encoding="utf-8"))
+    # the app's windows need the optional `ui` extra, which CI may not install
+    and (find_spec("PySide6") or not _needs_qt(p))
 )
 
 

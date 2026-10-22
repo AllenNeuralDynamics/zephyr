@@ -545,6 +545,9 @@ def main(argv: list[str] | None = None) -> None:
     )
     parser.add_argument("--window-s", type=float, default=10.0)
     args = parser.parse_args(argv)
-    from .annotate_events_ui import run_ui
+    from .gui import need_ui
+
+    need_ui()
+    from .gui.breathing import run_ui
 
     run_ui(args.clips, args.window_s)

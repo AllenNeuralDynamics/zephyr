@@ -1,0 +1,357 @@
+"""The Boxes page (``zephyr annotate``): one crop box per recording, on the downsampled
+frame.
+
+Recordings on the left, the frame with its box on the right; every change is saved to
+the clip list at once (only ``box`` and ``target_size``). The logic is
+:class:`zephyr.annotate.BoxState`. Keys: click place | arrows nudge (shift x10) |
+[ ] resize | n/p recording | 1/2/3 clip | o own box | c copy previous | r re-centre.
+"""
+
+from pathlib import Path
+
+import numpy as np
+import pyqtgraph as pg
+from PySide6 import QtCore, QtGui, QtWidgets
+
+from ..annotate import (
+    BoxState,
+    box_centre,
+    downsample,
+    load_recording_frames,
+    save_boxes,
+)
+from .theme import STYLE, THEME
+
+STEP = 8
+"""Pixels a box grows or shrinks by ([ ] and the -/+ buttons)."""
+DIVISORS = (("native", 1), ("1/2", 2), ("1/3", 3), ("1/4", 4))
+HELP = (
+    "click=place   arrows=nudge (shift x10)   [ ]=box size   n/p=recording   "
+    "1/2/3=clip   o=own box   c=copy prev   r=re-centre"
+)
+
+
+class _FrameBox(pg.ViewBox):
+    """A view whose left click places the box (dragging still pans)."""
+
+    def __init__(self, window: "BoxWindow") -> None:
+        super().__init__(lockAspect=True, invertY=True, enableMenu=False)
+        self.window = window
+
+    def mouseClickEvent(self, ev) -> None:
+        if ev.button() == QtCore.Qt.MouseButton.LeftButton:
+            point = self.mapSceneToView(ev.scenePos())
+            self.window.place(point.x(), point.y())
+            ev.accept()
+        else:
+            super().mouseClickEvent(ev)
+
+
+class _Mark(pg.ScatterPlotItem):
+    """The box's centre cross; a click on it places the box, like anywhere else."""
+
+    def mouseClickEvent(self, ev) -> None:
+        ev.ignore()
+
+
+class _Canvas(pg.GraphicsView):
+    """The frame's view; its keys are the box's (a graphics view would scroll)."""
+
+    def __init__(self, window: "BoxWindow") -> None:
+        super().__init__()
+        self.window = window
+
+    def keyPressEvent(self, event) -> None:
+        if not self.window.handle_key(event):
+            super().keyPressEvent(event)
+
+
+class BoxWindow(QtWidgets.QMainWindow):
+    """Place the boxes of *state*, saving each change to the clip list *out_path*."""
+
+    def __init__(self, state: BoxState, frame_dir: Path, out_path: Path) -> None:
+        super().__init__()
+        self.state = state
+        self.frame_dir = frame_dir
+        self.out_path = out_path
+        self.setWindowTitle("Crop ROI per recording")
+        self._frames: dict[str, list[np.ndarray]] = {}
+        self._items: dict[str, QtWidgets.QTreeWidgetItem] = {}
+        self._build()
+        for recording in state.recordings:
+            self._refresh_row(recording.key)
+        self.select_key(state.key)
+
+    # ---- construction ----------------------------------------------------------
+
+    def _build(self) -> None:
+        split = QtWidgets.QSplitter()
+        self.setCentralWidget(split)
+
+        left = QtWidgets.QWidget()
+        column = QtWidgets.QVBoxLayout(left)
+        column.addWidget(QtWidgets.QLabel("Recordings", objectName="heading"))
+        self.tree = QtWidgets.QTreeWidget()
+        self.tree.setHeaderLabels(["Recording", "Clips", "ROI"])
+        self.tree.setColumnWidth(0, 200)
+        self.tree.setColumnWidth(1, 50)
+        # Keys belong to the box, as in the frame: the tree only takes clicks.
+        self.tree.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
+        folders: dict[Path, QtWidgets.QTreeWidgetItem] = {}
+        for recording in self.state.recordings:
+            folder = recording.clips[0].video.parent
+            if folder not in folders:
+                folders[folder] = QtWidgets.QTreeWidgetItem(self.tree, [folder.name])
+                folders[folder].setExpanded(True)
+            item = QtWidgets.QTreeWidgetItem(
+                folders[folder], [recording.label, str(len(recording.clips)), ""]
+            )
+            item.setData(0, QtCore.Qt.ItemDataRole.UserRole, recording.key)
+            self._items[recording.key] = item
+        self.tree.currentItemChanged.connect(self._tree_picked)
+        column.addWidget(self.tree)
+        split.addWidget(left)
+
+        right = QtWidgets.QWidget()
+        column = QtWidgets.QVBoxLayout(right)
+        controls = QtWidgets.QHBoxLayout()
+        controls.addWidget(QtWidgets.QLabel("Downsample to:"))
+        self.width_edit = QtWidgets.QLineEdit(maximumWidth=60)
+        self.height_edit = QtWidgets.QLineEdit(maximumWidth=60)
+        for edit in (self.width_edit, self.height_edit):
+            edit.setValidator(QtGui.QIntValidator(1, 100000))
+            edit.returnPressed.connect(self.apply_target)
+        controls.addWidget(self.width_edit)
+        controls.addWidget(QtWidgets.QLabel("x"))
+        controls.addWidget(self.height_edit)
+        apply = QtWidgets.QPushButton("Apply")
+        apply.clicked.connect(self.apply_target)
+        controls.addWidget(apply)
+        for label, divisor in DIVISORS:
+            button = QtWidgets.QPushButton(label)
+            button.clicked.connect(lambda _=False, d=divisor: self.set_divisor(d))
+            controls.addWidget(button)
+        controls.addSpacing(16)
+        controls.addWidget(QtWidgets.QLabel("Box:"))
+        smaller = QtWidgets.QPushButton("-")
+        smaller.clicked.connect(lambda: self.resize_box(-STEP))
+        controls.addWidget(smaller)
+        self.size_label = QtWidgets.QLabel(
+            alignment=QtCore.Qt.AlignmentFlag.AlignCenter
+        )
+        self.size_label.setMinimumWidth(40)
+        controls.addWidget(self.size_label)
+        larger = QtWidgets.QPushButton("+")
+        larger.clicked.connect(lambda: self.resize_box(STEP))
+        controls.addWidget(larger)
+        controls.addSpacing(16)
+        self.part_label = QtWidgets.QLabel()
+        controls.addWidget(self.part_label)
+        controls.addStretch(1)
+        self.progress_label = QtWidgets.QLabel()
+        controls.addWidget(self.progress_label)
+        for button in right.findChildren(QtWidgets.QPushButton):
+            button.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
+        column.addLayout(controls)
+
+        self.title = QtWidgets.QLabel(alignment=QtCore.Qt.AlignmentFlag.AlignCenter)
+        column.addWidget(self.title)
+        self.view = _FrameBox(self)
+        self.canvas = _Canvas(self)
+        self.canvas.setCentralItem(self.view)
+        self.canvas.setBackground(THEME["bg"])
+        self.canvas.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
+        self.image = pg.ImageItem(axisOrder="row-major")
+        self.view.addItem(self.image)
+        self.rect = QtWidgets.QGraphicsRectItem()
+        self.view.addItem(self.rect)
+        self.crosshair = _Mark(symbol="+", size=16, pen=pg.mkPen("c", width=2))
+        self.view.addItem(self.crosshair)
+        column.addWidget(self.canvas, 1)
+        split.addWidget(right)
+        split.setStretchFactor(1, 1)
+        split.setSizes([330, 1100])
+
+        self.info = QtWidgets.QLabel()
+        self.statusBar().addWidget(self.info, 1)
+        self.statusBar().addPermanentWidget(QtWidgets.QLabel(HELP, objectName="sub"))
+
+    # ---- drawing ----------------------------------------------------------------
+
+    def _frames_for(self, key: str) -> list[np.ndarray]:
+        if key not in self._frames:
+            recording = next(r for r in self.state.recordings if r.key == key)
+            self._frames[key] = load_recording_frames(recording, self.frame_dir)
+        return self._frames[key]
+
+    def _refresh_row(self, key: str) -> None:
+        placed = self.state.is_placed(key)
+        item = self._items[key]
+        item.setText(2, "set" if placed else "auto")
+        colour = QtGui.QColor(THEME["placed" if placed else "auto"])
+        for column in range(3):
+            item.setForeground(column, colour)
+
+    def redraw(self) -> None:
+        state = self.state
+        frames = self._frames_for(state.key)
+        if frames:
+            state.set_part(state.part_index)
+            data = downsample(frames[state.part_index], state.target_size)
+            suffix = "  (own box)" if state.has_override else ""
+            self.part_label.setText(f"{state.clip.video.stem}{suffix}")
+        else:
+            data = np.zeros(state.target_size[::-1], dtype=np.uint8)
+            self.part_label.setText("no cached frame")
+        if data.ndim == 3:
+            data = data.mean(axis=2)
+        self.image.setImage(data, levels=(0, 255))
+        width, height = state.target_size
+        self.view.setLimits(xMin=-width, xMax=2 * width, yMin=-height, yMax=2 * height)
+        if not self._fitted:
+            self.view.setRange(xRange=(0, width), yRange=(0, height), padding=0.02)
+            self._fitted = True
+
+        box = state.box
+        self.rect.setRect(*box)
+        pen = pg.mkPen(
+            "c" if state.is_placed(state.key) else "y",
+            width=2,
+            style=QtCore.Qt.PenStyle.DashLine
+            if state.has_override
+            else QtCore.Qt.PenStyle.SolidLine,
+        )
+        pen.setCosmetic(True)
+        self.rect.setPen(pen)
+        self.crosshair.setData([box_centre(box)[0]], [box_centre(box)[1]])
+
+        scale = state.scale_from_native
+        self.title.setText(
+            f"<b>{state.recording.label}</b><br>frame {width}x{height} "
+            f"({scale:.2f}x downsample)   box {state.box_size}px = "
+            f"{state.box_size * scale:.0f} native px   at {box[:2]}"
+        )
+        done, total = state.progress()
+        self.progress_label.setText(f"{done} / {total} placed")
+        self.info.setText(
+            f"clips: {', '.join(c.video.stem for c in state.recording.clips)}"
+        )
+        self.width_edit.setText(str(width))
+        self.height_edit.setText(str(height))
+        self.size_label.setText(str(state.box_size))
+
+    _fitted = False
+
+    # ---- actions ----------------------------------------------------------------
+
+    def commit(self) -> None:
+        """Save after a change to the boxes, as every change is."""
+        self._refresh_row(self.state.key)
+        save_boxes(self.out_path, self.state)
+        self.redraw()
+
+    def select_key(self, key: str) -> None:
+        self.state.select(key)
+        item = self._items[key]
+        self.tree.blockSignals(True)
+        self.tree.setCurrentItem(item)
+        self.tree.blockSignals(False)
+        self.tree.scrollToItem(item)
+        self.redraw()
+
+    def _tree_picked(self, item, _previous) -> None:
+        key = item.data(0, QtCore.Qt.ItemDataRole.UserRole) if item else None
+        if key is not None:
+            self.state.select(key)
+            self.redraw()
+        self.canvas.setFocus()
+
+    def place(self, x: float, y: float) -> None:
+        self.state.place(x, y)
+        self.commit()
+
+    def resize_box(self, delta: int) -> None:
+        self.state.resize(delta)
+        self.commit()
+
+    def apply_target(self) -> None:
+        try:
+            width, height = int(self.width_edit.text()), int(self.height_edit.text())
+        except ValueError:
+            self.redraw()
+            return
+        self.state.set_target(width, height)
+        self._fitted = False
+        save_boxes(self.out_path, self.state)
+        self.redraw()
+        self.canvas.setFocus()
+
+    def set_divisor(self, divisor: int) -> None:
+        native = self.state.native_size
+        self.state.set_target(native[0] // divisor, native[1] // divisor)
+        self._fitted = False
+        save_boxes(self.out_path, self.state)
+        self.redraw()
+
+    def keyPressEvent(self, event) -> None:
+        # Keys a size field leaves (arrows) bubble up here: they are not box keys.
+        typing = isinstance(QtWidgets.QApplication.focusWidget(), QtWidgets.QLineEdit)
+        if typing or not self.handle_key(event):
+            super().keyPressEvent(event)
+
+    def handle_key(self, event) -> bool:
+        """Apply a box key; False for any other key."""
+        key = QtCore.Qt.Key
+        k = event.key()
+        step = 10 if event.modifiers() & QtCore.Qt.KeyboardModifier.ShiftModifier else 1
+        moves = {
+            key.Key_Left: (-step, 0),
+            key.Key_Right: (step, 0),
+            key.Key_Up: (0, -step),
+            key.Key_Down: (0, step),
+        }
+        state = self.state
+        if k in moves:
+            state.nudge(*moves[k])
+            self.commit()
+        elif k in (key.Key_N, key.Key_P):
+            state.advance(1 if k == key.Key_N else -1)
+            self.select_key(state.key)
+        elif k == key.Key_C:
+            state.copy_previous()
+            self.commit()
+        elif k == key.Key_R:
+            state.reset()
+            self.commit()
+        elif k == key.Key_O:
+            state.toggle_override()
+            self.commit()
+        elif k in (key.Key_1, key.Key_2, key.Key_3):
+            state.set_part(k - key.Key_1)
+            self.redraw()
+        elif k == key.Key_BracketRight:
+            self.resize_box(STEP)
+        elif k == key.Key_BracketLeft:
+            self.resize_box(-STEP)
+        else:
+            return False
+        event.accept()
+        return True
+
+    def closeEvent(self, event) -> None:
+        save_boxes(self.out_path, self.state)
+        print(f"saved {len(self.state.placed)} recording box(es) -> {self.out_path}")
+        event.accept()
+
+
+def run_ui(
+    state: BoxState, frame_dir: Path, out_path: Path
+) -> None:  # pragma: no cover
+    """``zephyr annotate``: the box window on its own."""
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    app.setStyleSheet(STYLE)
+    window = BoxWindow(state, frame_dir, out_path)
+    window.resize(1500, 900)
+    window.show()
+    window.canvas.setFocus()
+    app.exec()

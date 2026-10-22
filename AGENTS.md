@@ -6,7 +6,7 @@ README and in the pydantic models; this file only says what must and must not be
 ## Packages
 
 A uv workspace (`uv sync --all-packages --extra cpu`, or `--extra gpu`; `--extra ui` for
-the annotation windows):
+the app and its windows):
 
 | Package | Import | Command | Details |
 | --- | --- | --- | --- |
@@ -45,8 +45,9 @@ Never:
 Clip lists and experiments:
 
 - Put all sessions of a dataset in **one clip list**; folds select them with `groups`.
-- Create lists with `zephyr clips scan`, place boxes with `zephyr annotate`; never
-  hand-edit boxes in bulk.
+- Create lists with `zephyr clips scan` (`[derive]` flags for other file names), check
+  them with `zephyr clips check`, place boxes with `zephyr annotate`; never hand-edit
+  boxes in bulk.
 - Seeds and machine settings belong to the experiment, never to a fold; fold names are
   distinct plain file names.
 - To early-stop on held-out clips (e.g. validation animals), give the fold a `[fold.val]`
@@ -63,6 +64,31 @@ Clip lists and experiments:
   experiment rather than deleting results.
 - Never compare scores made before and after a scoring rule changed (time alignment,
   event tolerance; see the zephyr README, "Scoring").
+
+## The app (zephyr.gui)
+
+`zephyr gui` walks a project folder (zephyr README, "The app") through the same steps
+as the commands.
+
+- It **runs only `zephyr` commands**, the ones in `gui/worker.py`'s `COMMANDS`, through
+  their own `main(argv)` in a local child process (`gui/jobs.py`); never reimplement a
+  step in the app, never call one in the app's own process, never launch remote jobs.
+  A step the app needs that no command does is a new command first.
+- It **writes only clip lists** (through `zephyr.clips`, as the windows do) **and new
+  experiments** (`Project.new_experiment`, validated before it is kept, never
+  overwriting); it never edits an experiment, and never writes into a run folder
+  outside its project's `runs/` (a folder opened from elsewhere, e.g. `benchmarks/`,
+  is read only).
+- Validation snippets reach the app only through `train_fold`'s `on_scored` hook, on the
+  worker's stdout, and are **never saved**; the hook never changes training
+  (`test_predict.py` runs training with and without it).
+- Qt (`PySide6`, `pyqtgraph`) is imported only by `gui/`'s window modules; everything
+  else (`gui/project.py`, `gui/jobs.py`, `gui/worker.py`, the logic of each window, the
+  commands) imports without the `ui` extra and is tested headless. A window's logic
+  lives in a headless class (`annotate.BoxState`, `annotate_events.TuneState`).
+- `zephyr annotate` and `zephyr annotate events` open the app's Boxes and Breathing
+  windows; a key, control or flag of either is never dropped (`tests/test_gui_qt.py`
+  checks each against the saved clip list, offscreen).
 
 ## Quality control (zephyr.quality_control)
 

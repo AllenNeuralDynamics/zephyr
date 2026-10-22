@@ -133,6 +133,26 @@ class Selection:
         return False
 
 
+@dataclass(frozen=True)
+class ScoredClip:
+    """One validation clip as a whole-clip scoring predicted it, for a caller watching
+    training (:func:`train_fold`'s *on_scored*): arrays on the clip's output grid."""
+
+    entry: ClipEntry
+    times: np.ndarray
+    truth: np.ndarray
+    signal: np.ndarray
+    onset: np.ndarray
+    span: tuple[float, float]
+    """The scored fraction of the clip; only frames inside it reach the metrics."""
+    scores: dict
+
+
+OnScored = Callable[[int, list[ScoredClip]], None]
+"""``on_scored(epoch, clips)``, called after each whole-clip scoring (0-based epoch)
+with the predictions of the weights selection judged."""
+
+
 def _mean(values: list[dict], key: str) -> float:
     return float(np.mean([v[key] for v in values])) if values else float("nan")
 
@@ -179,8 +199,10 @@ def score_full_clips(
     amp_dtype: torch.dtype | None,
     fs: float = OUTPUT_FS,
     span: tuple[float, float] = (0.0, 1.0),
+    keep: list[ScoredClip] | None = None,
 ) -> tuple[dict[str, float], list[dict]]:
-    """Predict each clip end to end for local training diagnostics.
+    """Predict each clip end to end for local training diagnostics (each prediction
+    also appended to *keep* when given).
 
     *span* restricts which fraction of each clip is *scored*.  The whole clip is
     still predicted -- inference is cheap, and it keeps every scored sample's
@@ -191,7 +213,7 @@ def score_full_clips(
     """
     rows: list[dict] = []
     for entry in entries:
-        pred, _ = predict_clip(
+        pred, onset = predict_clip(
             model,
             entry,
             mean,
@@ -203,6 +225,7 @@ def score_full_clips(
         )
         truth = pd.read_parquet(entry.target)["signal"].to_numpy(np.float64)
         n = min(len(truth), len(pred))
+        whole_truth, whole_pred = truth[:n], pred[:n]
         truth, pred_n = truth[:n], pred[:n].astype(np.float64)
         if span != (0.0, 1.0):
             lo, hi = int(n * span[0]), int(n * span[1])
@@ -223,6 +246,18 @@ def score_full_clips(
                 "n_pred_onsets": len(pred_on),
             }
         )
+        if keep is not None:
+            keep.append(
+                ScoredClip(
+                    entry,
+                    np.load(entry.times)[:n],
+                    whole_truth,
+                    whole_pred,
+                    onset[:n],
+                    span,
+                    rows[-1],
+                )
+            )
     summary = {
         "xcorr": _mean(rows, "correlation"),
         "inhale_f1": _mean(rows, "inhale_f1"),
@@ -252,8 +287,10 @@ def train_fold(
     *,
     resume: bool = False,
     architecture: Architecture = ZEPHYR,
+    on_scored: OnScored | None = None,
 ) -> Path:
-    """Train *fold* with *seed* into *run_dir*; return the path of ``best.pt``.
+    """Train *fold* with *seed* into *run_dir*; return the path of ``best.pt``
+    (*on_scored*, if given, sees each whole-clip scoring's predictions).
 
     Writes ``config.json`` (every input model dumped with absolute paths) and
     ``train_videos.json`` into *run_dir*, and the same two records into every
@@ -608,6 +645,7 @@ def train_fold(
             (epoch + 1) % params.score_every == 0 or epoch == params.epochs - 1
         )
         if scored:
+            live_kept: list[ScoredClip] | None = [] if on_scored else None
             summary, per_clip = score_full_clips(
                 model,
                 val_entries,
@@ -619,7 +657,9 @@ def train_fold(
                 amp_dtype=amp_dtype,
                 fs=recipe.output_fs,
                 span=val_span,
+                keep=live_kept,
             )
+            kept = live_kept
             row |= summary
             # Scoring a handful of clips costs seconds against a ~115 s epoch, so
             # evaluating the averaged weights as well is close to free -- and it
@@ -629,6 +669,7 @@ def train_fold(
             if ema is not None and global_step < ema_ready_step:
                 row["ema_warming"] = True
             if ema is not None:
+                ema_kept: list[ScoredClip] | None = [] if on_scored else None
                 ema_summary, ema_clips = score_full_clips(
                     ema.module,
                     val_entries,
@@ -640,6 +681,7 @@ def train_fold(
                     amp_dtype=amp_dtype,
                     fs=recipe.output_fs,
                     span=val_span,
+                    keep=ema_kept,
                 )
                 row |= {f"ema_{k}": v for k, v in ema_summary.items()}
                 # Select on the averaged weights -- they are what would ship --
@@ -647,6 +689,7 @@ def train_fold(
                 if global_step >= ema_ready_step:
                     summary, per_clip = ema_summary, ema_clips
                     selected, selected_clips = ema.module, ema_clips
+                    kept = ema_kept
                     on_ema = True
 
             improved = selection.offer(summary["xcorr"], ema=on_ema)
@@ -662,6 +705,8 @@ def train_fold(
                     json.dumps(selected_clips, indent=2)
                 )
             row["since_best"] = selection.since_best
+            if on_scored is not None:
+                on_scored(epoch, kept)
 
         row["seconds"] = round(time.perf_counter() - started, 1)
         history.append(row)

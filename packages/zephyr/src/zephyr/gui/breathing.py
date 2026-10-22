@@ -1,4 +1,4 @@
-"""The detector tuner's window: pyqtgraph traces, live stats and a per-clip table.
+"""The Breathing page (``zephyr annotate events``): traces, live stats, a per-clip table.
 
 Needs the ``ui`` extra (``pyqtgraph`` and ``PySide6``) and a display; the logic it
 drives is :class:`zephyr.annotate_events.TuneState`.  Events are never edited: the
@@ -16,8 +16,8 @@ import pandas as pd
 import pyqtgraph as pg
 from PySide6 import QtCore, QtGui, QtWidgets
 
-from . import events, session_selection
-from .annotate_events import (
+from .. import events, session_selection
+from ..annotate_events import (
     METRICS,
     POINT_KINDS,
     RATE_BAND_HZ,
@@ -25,22 +25,9 @@ from .annotate_events import (
     mean_metrics,
     parallel_map,
 )
-from .rates import breath_rates
+from ..rates import breath_rates
+from .theme import STYLE, THEME
 
-THEME = {
-    "bg": "#f3f4f7",
-    "card": "#ffffff",
-    "ink": "#1f2933",
-    "muted": "#7b8794",
-    "line": "#e1e5ea",
-    "accent": "#3b6fd4",
-    "raw": "#6b7785",
-    "inhale": "#2f9e63",
-    "exhale": "#d9534f",
-    "span": "#f0a53a",
-    "keep": "#1a9fa0",
-    "bad": "#d9534f",
-}
 SYMBOLS = {"inhale": "t1", "exhale": "t"}
 HIST_MAX_HZ = 20.0
 SEEKER_BUCKETS = 2000
@@ -55,28 +42,6 @@ SERIES_BINS = 120
 MARKER_MAX_WINDOW_S = 60.0
 """Beyond this window the event markers are hidden: there would be thousands."""
 MIN_WINDOW_S = 0.5
-
-STYLE = f"""
-QWidget {{ background: {THEME["bg"]}; color: {THEME["ink"]}; font-family: "Segoe UI"; font-size: 13px; }}
-QFrame#card {{ background: {THEME["card"]}; border-radius: 6px; }}
-QFrame#card QLabel {{ background: transparent; }}
-QLabel#title {{ color: {THEME["muted"]}; font-size: 9px; }}
-QLabel#value {{ font-size: 19px; font-weight: 600; }}
-QLabel#sub {{ color: {THEME["muted"]}; font-size: 10px; }}
-QListWidget, QTableView, QLineEdit, QComboBox, QDoubleSpinBox {{
-    background: {THEME["card"]}; border: 1px solid {THEME["line"]}; border-radius: 4px; }}
-QListWidget, QTableView {{ font-size: 12px; }}
-QListWidget::item {{ padding: 1px 4px; }}
-QTableView::item {{ padding: 0px 4px; }}
-QListWidget::item:selected, QTableView::item:selected {{ background: {THEME["accent"]}; color: white; }}
-QHeaderView::section {{ background: {THEME["bg"]}; border: none; padding: 3px; color: {THEME["muted"]}; }}
-QPushButton {{ background: {THEME["line"]}; border: none; border-radius: 4px; padding: 6px 14px; }}
-QPushButton:hover {{ background: #d3d9e0; }}
-QPushButton#accent {{ background: {THEME["accent"]}; color: white; font-weight: 600; }}
-QPushButton#accent:hover {{ background: #2f5bb5; }}
-QPushButton:disabled {{ color: {THEME["muted"]}; }}
-QSplitter::handle {{ background: {THEME["line"]}; }}
-"""
 
 
 def _binned(t, y, t0: float, width: float, median: bool = False):
@@ -331,9 +296,13 @@ def _hist_plot(title: str, xlabel: str) -> pg.PlotItem:
 
 
 class EditorWindow(QtWidgets.QMainWindow):
-    def __init__(self, state: TuneState, window_s: float = 10.0) -> None:
+    """The editor on one clip list. In the app it is a page; *opener*, when given,
+    opens another list in its place (File > Open) instead of a new window."""
+
+    def __init__(self, state: TuneState, window_s: float = 10.0, opener=None) -> None:
         super().__init__()
         self.state = state
+        self.opener = opener
         self.width_s = self.initial_s = window_s
         self.band = list(RATE_BAND_HZ)
         self.cursor_x: float | None = None
@@ -2100,6 +2069,9 @@ class EditorWindow(QtWidgets.QMainWindow):
             "Clip lists (*.toml)",
         )
         if not path or not self._confirm_discard():
+            return
+        if self.opener is not None:
+            self.opener(Path(path))
             return
         if open_window(Path(path), self.initial_s, self):
             self._skip_prompt = True
