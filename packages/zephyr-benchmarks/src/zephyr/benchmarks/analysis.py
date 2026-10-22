@@ -5,8 +5,9 @@ timing, band-limited correlation and the errors behind a bad clip; then summarie
 clips: rate agreement, F1 by breathing rate, a bootstrap over animals and how alike two
 methods' per-clip scores are (:func:`score_agreement`). Events are
 matched as the scorer matches them (:func:`zephyr.evaluation.match_events`); inhales
-of a network with an onset head come from the head, the rest from DSP on the trace.
-A prediction is ``{"times", "signal", "onset", "head"?}``; a truth is :func:`truth`.
+of a network with an onset head come from the head, the rest from the clip's own event
+detector run on the trace, as the scorer does (:func:`score_prediction`). A prediction
+is ``{"times", "signal", "onset", "head"?}``; a truth is :func:`truth`.
 """
 
 import itertools
@@ -18,10 +19,11 @@ import torch
 from scipy import stats
 from scipy.signal import butter, sosfiltfilt, welch
 
-from zephyr import features
+from zephyr import events, features
+from zephyr.evaluate import score_entry
 from zephyr.evaluation import frame_tolerance_s, match_events
 from zephyr.events import in_spans
-from zephyr.signal import detect_inhalation_events
+from zephyr.signal import BREATHING_SIGNAL_COLUMN, TIME_COLUMN
 
 RATE_WINDOW_S = 10.0
 """Window over which a breathing rate is counted, for rate agreement."""
@@ -40,30 +42,53 @@ TABLES = ("breaths", "false_positives", "lags", "windows", "bands")
 
 def truth(entry: features.ClipEntry) -> dict:
     """A clip's target (on its output grid, z-scored), its inhale and exhale events,
-    the spans excluded from scoring, and the raw thermistor."""
+    the spans excluded from scoring, the raw thermistor and the detector that found
+    the events."""
     times = np.load(entry.times)
     target = pd.read_parquet(entry.target)["signal"].to_numpy(np.float64)[: len(times)]
-    events = np.load(entry.events)
+    found = np.load(entry.events)
     raw = pd.read_parquet(entry.thermistor)
-    excluded = events["excluded"] if "excluded" in events.files else np.empty((0, 2))
+    excluded = found["excluded"] if "excluded" in found.files else np.empty((0, 2))
     return {
         "times": times[: len(target)],
         "signal": (target - target.mean()) / (target.std() or 1.0),
-        "inhale": events["onset_times"],
-        "exhale": events["offset_times"],
+        "inhale": found["onset_times"],
+        "exhale": found["offset_times"],
         "excluded": excluded,
         "raw_t": raw["Time"].to_numpy(),
         "raw": raw["Signal"].to_numpy(),
+        "detector": getattr(entry, "detector", None),
     }
 
 
-def predicted_inhales(p: dict, head: bool) -> np.ndarray:
-    """Inhale times a method asserts: its head's events, or DSP peaks of its trace."""
+def _frame(p: dict) -> pd.DataFrame:
+    return pd.DataFrame(
+        {TIME_COLUMN: p["times"], BREATHING_SIGNAL_COLUMN: p["signal"].astype(float)}
+    )
+
+
+def score_prediction(entry: features.ClipEntry, p: dict, head: bool) -> dict:
+    """One clip's scores as ``evaluate`` gives them (:func:`zephyr.evaluate.score_entry`),
+    from a prediction already made: correlation, DSP inhale and exhale F1 and KL-IBI,
+    and with an onset head its inhale F1 (``head_inhale_f1``)."""
+    predicted = _frame(p)
+    row = score_entry(entry, predicted).to_dict()
+    if head:
+        row["head_inhale_f1"] = score_entry(
+            entry, predicted, predicted_onset_times_s=p["head"]
+        ).inhale_f1
+    return row
+
+
+def predicted_inhales(p: dict, head: bool, detector=None) -> np.ndarray:
+    """Inhale times a method asserts: its head's events, or the inhales *detector*
+    (the clip's :class:`zephyr.config.EventsSource`; the default detector without
+    one) finds on its trace."""
     if head:
         return p["head"]
-    fs = 1.0 / float(np.median(np.diff(p["times"])))
-    inhale, _ = detect_inhalation_events(p["signal"], fs)
-    return p["times"][inhale]
+    method = detector.method if detector is not None else events.DEFAULT_METHOD
+    params = detector.params if detector is not None else None
+    return events.detect(method, _frame(p), params=params).inhale
 
 
 def _scored(times: np.ndarray, t: dict, span: tuple[float, float]) -> np.ndarray:
@@ -79,7 +104,7 @@ def clip_events(p: dict, t: dict, head: bool) -> dict:
     matched (``hit``, ``used``), and each true breath's rate."""
     span = (max(p["times"][0], t["times"][0]), min(p["times"][-1], t["times"][-1]))
     true_on = _scored(t["inhale"], t, span)
-    pred_on = _scored(predicted_inhales(p, head), t, span)
+    pred_on = _scored(predicted_inhales(p, head, t.get("detector")), t, span)
     pairs = match_events(true_on, pred_on, frame_tolerance_s(p["times"]))
     hit = np.zeros(len(true_on), bool)
     used = np.zeros(len(pred_on), bool)
