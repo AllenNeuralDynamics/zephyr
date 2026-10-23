@@ -895,9 +895,13 @@ def animals_panel(
     set_name: str,
     unit: str = "subject",
     unit_label: str = "Animal",
+    by_animal: str | None = None,
 ) -> Figure:
     """Each unit (value of the *unit* column) of one set, ranked by the first method,
-    one marker per method."""
+    one marker per method. With *by_animal* (the column naming each unit's animal),
+    an inset shows the first method's units again, one column per animal ranked by
+    the animal's mean, its units joined, so the spread within a column is what the
+    rig changes and the climb across columns what the animal does."""
     fig, ax = style.panel(width_mm, height_mm, [["animals"]])
     a = ax["animals"]
     rows = recordings[recordings["set"] == set_name]
@@ -915,10 +919,82 @@ def animals_panel(
             mew=0.7,
             label=_shown(method),
         )
-    a.set_xticks(x, [])
+    ranks = [0, *range(24, len(table), 25)]
+    a.set_xticks(ranks, [str(r + 1) for r in ranks])
+    a.set_xlim(-1, len(table))
     a.set_xlabel(f"{unit_label} (ranked)")
     a.set_ylabel(f"{METRIC_LABELS[metric]} (test A)")
-    a.legend(loc="lower right", fontsize=6, handletextpad=0.2)
+    if len(names) > 1:
+        a.legend(loc="lower right", fontsize=6, handletextpad=0.2)
+    if by_animal is not None:
+        units = (
+            rows[rows["method"] == names[0]]
+            .groupby([by_animal, unit])[metric]
+            .mean()
+            .reset_index()
+        )
+        order = units.groupby(by_animal)[metric].mean().sort_values().index
+        inset = a.inset_axes([0.33, 0.17, 0.64, 0.45])
+        colour = style.color(names[0])
+        for i, animal in enumerate(order):
+            v = units.loc[units[by_animal] == animal, metric].to_numpy()
+            if len(v) > 1:
+                inset.plot([i, i], [v.min(), v.max()], color=colour, lw=0.6, alpha=0.6)
+            inset.plot(np.full(len(v), i), v, "o", color=colour, ms=1.6, mew=0)
+        inset.set_xticks([0, len(order) - 1], ["1", str(len(order))])
+        inset.set_xlim(-1, len(order))
+        inset.set_ylim(a.get_ylim())
+        inset.tick_params(labelsize=5, length=2, pad=1)
+        inset.set_xlabel("Animal (ranked)", fontsize=5, labelpad=0)
+        inset.set_ylabel("")
+    return fig
+
+
+def rig_animal_panel(
+    width_mm: float,
+    height_mm: float,
+    by_metric: dict[str, tuple[pd.DataFrame, pd.DataFrame]],
+    method: str,
+) -> Figure:
+    """How far apart two units score when they share the animal but not the rig, and
+    when they share the rig but not the animal, per metric (side by side, *by_metric*:
+    ``(pairs, summary)`` from ``analysis.rig_animal_pairs`` and
+    ``rig_animal_bootstrap``): the share of each kind's pairs in each bin of absolute
+    difference (30 bins shared by the two kinds), one line per kind, and above it each
+    kind's mean with its 95% interval."""
+    metrics = list(by_metric)
+    fig, ax = style.panel(width_mm, height_mm, [metrics])
+    colours = [style.color(method), CROP_EDGE]
+    for metric, (pairs, ci) in by_metric.items():
+        a = ax[metric]
+        kinds = [k for k in ci["kind"] if k != "difference"]
+        summary = ci.set_index("kind")
+        edges = np.linspace(0, pairs["difference"].max(), 31)
+        top = 0.0
+        for kind, colour in zip(kinds, colours, strict=True):
+            x = pairs.loc[pairs["kind"] == kind, "difference"].to_numpy()
+            share = np.histogram(x, edges)[0] / len(x)
+            top = max(top, share.max())
+            a.stairs(
+                share,
+                edges,
+                color=colour,
+                lw=0.9,
+                label=f"{kind[0].upper()}{kind[1:]} ({len(x)})",
+            )
+        for k, (kind, colour) in enumerate(zip(kinds, colours, strict=True)):
+            r = summary.loc[kind]
+            level = top * (1.1 + 0.1 * k)
+            a.plot([r["low"], r["high"]], [level, level], color=colour, lw=1.0)
+            a.plot(r["mean"], level, "o", color=colour, ms=2.5)
+        a.set_xlim(0, edges[-1])
+        a.set_ylim(0, top * 1.27)
+        a.set_xlabel(f"{METRIC_LABELS[metric]} difference")
+    first = ax[metrics[0]]
+    first.set_ylabel("Share of pairs")
+    ax[metrics[-1]].legend(
+        loc="upper right", bbox_to_anchor=(1, 0.8), fontsize=6, handlelength=1
+    )
     return fig
 
 
@@ -1031,10 +1107,14 @@ def tolerance_panel(
 ) -> Figure:
     """Inhale F1 as the matching tolerance is relaxed, mean over folds with its 95%
     interval (*curve*: ``method``, ``tolerance_ms``, ``mean``, ``low``, ``high`` and
-    ``errors``, the mean share of errors left). The first method's F1 and errors left
-    are written at the scorer's tolerance, twice it and the widest."""
-    fig, ax = style.panel(width_mm, height_mm, [["tol"]])
-    a = ax["tol"]
+    ``errors``, the mean share of errors left), and below it the first method's misses
+    and false inhalations as shares of true breaths (``misses`` and ``false``, each with
+    ``low`` and ``high``). The first method's F1 and errors left are written at half the
+    scorer's tolerance, at it, twice it and the widest."""
+    fig, ax = style.panel(
+        width_mm, height_mm, [["tol"], ["err"]], sharex=True, height_ratios=[3, 2]
+    )
+    a, e = ax["tol"], ax["err"]
     for k, method in enumerate(names):
         c = curve[curve["method"] == method].sort_values("tolerance_ms")
         colour = style.color(method)
@@ -1044,10 +1124,13 @@ def tolerance_panel(
             a.fill_between(t, c["low"], c["high"], color=colour, alpha=0.18, lw=0)
         if k == 0:
             lines = []
-            for at in (TOLERANCE_MS, 2 * TOLERANCE_MS, widest_ms):
+            for at in (TOLERANCE_MS / 2, TOLERANCE_MS, 2 * TOLERANCE_MS, widest_ms):
                 r = c.iloc[int(np.argmin(np.abs(t - at)))]
                 a.plot(at, r["mean"], "o", ms=2.5, color=colour, zorder=4)
-                lines.append(f"{at:g} ms: F1 {r['mean']:.2f}, {r['errors']:.1%} errors")
+                share = (
+                    f"{r['errors']:.0%}" if r["errors"] >= 0.1 else f"{r['errors']:.1%}"
+                )
+                lines.append(f"{at:g} ms: F1 {r['mean']:.2f}, {share} errors")
             a.text(
                 0.2,
                 0.04,
@@ -1059,13 +1142,31 @@ def tolerance_panel(
                 bbox={"facecolor": "white", "edgecolor": "none", "pad": 1.0},
                 zorder=5,
             )
-    for at in (TOLERANCE_MS, 2 * TOLERANCE_MS):
-        a.axvline(at, color="0.5", linewidth=0.6, linestyle=":")
-    a.set_xlabel("Tolerance (ms)")
-    a.set_ylabel("Inhale F1 (new animals)")
+            for kind, label in (("misses", "missed (FN)"), ("false", "false (FP)")):
+                tint = style.ERRORS[label]
+                e.plot(t, 100 * c[kind], color=tint, lw=0.9, label=label)
+                e.fill_between(
+                    t,
+                    100 * c[f"{kind} low"],
+                    100 * c[f"{kind} high"],
+                    color=tint,
+                    alpha=0.18,
+                    lw=0,
+                )
+    for axis in (a, e):
+        for at in (TOLERANCE_MS, 2 * TOLERANCE_MS):
+            axis.axvline(at, color="0.5", linewidth=0.6, linestyle=":")
+    e.set_xlabel("Tolerance (ms)")
+    e.set_ylabel("Errors (%)")
+    wide = c[c["tolerance_ms"] >= 10]
+    e.set_ylim(0, 105 * max(wide["misses high"].max(), wide["false high"].max()))
+    e.legend(loc="upper right", fontsize=6, handlelength=1)
+    a.set_ylabel("Inhale F1")
     a.set_xlim(10, widest_ms)
-    a.set_ylim(0.6, 1.02)
-    a.legend(loc="center right", fontsize=6, handlelength=1)
+    shown = curve[curve["method"].isin(names) & (curve["tolerance_ms"] >= 10)]
+    a.set_ylim(np.floor(20 * shown["low"].fillna(shown["mean"]).min()) / 20, 1.01)
+    if len(names) > 1:
+        a.legend(loc="center right", fontsize=6, handlelength=1)
     return fig
 
 
