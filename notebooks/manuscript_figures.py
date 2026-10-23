@@ -501,36 +501,12 @@ def fig3cde(fold_tables, test_a):
 
 @app.cell
 def table1(by_fold, cv_methods, fold_tables, methods, on_cpu, test_a, timing):
-    # Table 1 (benchmark): per method on new animals, each score averaged within each
-    # unit, then over the units of a fold, then over folds (mean and 95% interval;
-    # methods without cross-validation runs, the published split alone). Rate metrics
-    # from 10-s windows. Written as CSV for main.typ.
-    _a = by_fold[by_fold["set"] == test_a]
-    _windows = fold_tables(methods, ("windows",))["windows"].query("set == @test_a")
-    _unit = _a.drop_duplicates(["fold", "session"]).set_index(["fold", "session"])[
-        "unit"
-    ]
-    _windows["unit"] = [
-        _unit.get((f, st.rsplit("_span", 1)[0]))
-        for f, st in zip(_windows["fold"], _windows["stem"], strict=True)
-    ]
-    _rates = analysis.rate_agreement(
-        _windows.dropna(subset=["unit"]), by=["method", "fold", "unit"]
-    ).reset_index()
-    _rates[["MAE (Hz)", "RMSE (Hz)"]] *= 60  # breaths per minute
-    _columns = {
-        "MAE (Hz)": ("MAE", 1, _rates),
-        "RMSE (Hz)": ("RMSE", 1, _rates),
-        "MAPE (%)": ("MAPE", 1, _rates),
-        "r": ("rate_r", 2, _rates),
-        "correlation": ("trace_r", 2, _a),
-        "inhale": ("inhale_f1", 2, _a),
-        "exhale_f1": ("exhale_f1", 2, _a),
-    }
-    _summary = {
-        c: analysis.fold_scores(t, c, by=["method"]).set_index("method")
-        for c, (_, _, t) in _columns.items()
-    }
+    # Table 1 (benchmark, new animals) and Supplementary Table (new sessions of known
+    # animals, test set B): per method, each score averaged within each unit, then over
+    # the units of a fold, then over folds (mean and 95% interval; methods without
+    # cross-validation runs, the published split alone). Rate metrics from 10-s
+    # windows. Written as CSV for main.typ.
+    _windows_all = fold_tables(methods, ("windows",))["windows"]
 
     def _cell(row, digits):
         mean = 0.0 if abs(row["mean"]) < 0.5 * 10**-digits else row["mean"]
@@ -538,38 +514,82 @@ def table1(by_fold, cv_methods, fold_tables, methods, on_cpu, test_a, timing):
             return f"{mean:.{digits}f}"
         return f"{mean:.{digits}f} ({row['low']:.{digits}f}–{row['high']:.{digits}f})"
 
-    _rows = []
-    for _m in methods:
-        _row = {
-            "method": plots.DISPLAY.get(_m, _m),
-            "splits": str(int(_summary["inhale"].loc[_m, "folds"])),
-            "seconds": f"{timing.loc[_m, 's per clip (median)']:.2f}"
-            + ("*" if _m in on_cpu else ""),
+    def _benchmark(set_name: str) -> tuple[pd.DataFrame, dict, pd.DataFrame]:
+        """The table's rows, each column's summary over folds, and the recordings."""
+        recs = by_fold[by_fold["set"] == set_name]
+        windows = _windows_all[_windows_all["set"] == set_name].copy()
+        unit = recs.drop_duplicates(["fold", "session"]).set_index(["fold", "session"])[
+            "unit"
+        ]
+        windows["unit"] = [
+            unit.get((f, st.rsplit("_span", 1)[0]))
+            for f, st in zip(windows["fold"], windows["stem"], strict=True)
+        ]
+        rates = analysis.rate_agreement(
+            windows.dropna(subset=["unit"]), by=["method", "fold", "unit"]
+        ).reset_index()
+        rates[["MAE (Hz)", "RMSE (Hz)"]] *= 60  # breaths per minute
+        columns = {
+            "MAE (Hz)": ("MAE", 1, rates),
+            "RMSE (Hz)": ("RMSE", 1, rates),
+            "MAPE (%)": ("MAPE", 1, rates),
+            "r": ("rate_r", 2, rates),
+            "correlation": ("trace_r", 2, recs),
+            "inhale": ("inhale_f1", 2, recs),
+            "exhale_f1": ("exhale_f1", 2, recs),
         }
-        for _c, (_name, _digits, _) in _columns.items():
-            _row[_name] = _cell(_summary[_c].loc[_m], _digits).replace("-0.", "−0.")
-        _rows.append(_row)
-    benchmark = pd.DataFrame(_rows)
+        summary = {
+            c: analysis.fold_scores(t, c, by=["method"]).set_index("method")
+            for c, (_, _, t) in columns.items()
+        }
+        rows = []
+        for m in methods:
+            row = {
+                "method": plots.DISPLAY.get(m, m),
+                "splits": str(int(summary["inhale"].loc[m, "folds"])),
+                "seconds": f"{timing.loc[m, 's per clip (median)']:.2f}"
+                + ("*" if m in on_cpu else ""),
+            }
+            for c, (name, digits, _) in columns.items():
+                row[name] = _cell(summary[c].loc[m], digits).replace("-0.", "−0.")
+            rows.append(row)
+        return pd.DataFrame(rows), summary, recs
+
+    benchmark, _summary, _a = _benchmark(test_a)
+    benchmark_b, _summary_b, _b = _benchmark(runs.SETS["test_b"])
     (FIGURES.parent / "tables").mkdir(exist_ok=True)
     benchmark.to_csv(FIGURES.parent / "tables" / "benchmark.csv", index=False)
+    benchmark_b.to_csv(FIGURES.parent / "tables" / "benchmark_b.csv", index=False)
     benchmark_diff = {
         c: _summary[c][["mean", "low", "high", "minus ref", "diff low", "diff high"]]
         for c in ("inhale", "correlation")
     }
-    cv_counts = {
-        "folds": int(_a.loc[_a["method"] == runs.REFERENCE, "fold"].nunique()),
-        "animals": int(_a.loc[_a["method"] == runs.REFERENCE, "subject"].nunique()),
-        "units": int(_a.loc[_a["method"] == runs.REFERENCE, "unit"].nunique()),
-        "cv methods": cv_methods,
+    benchmark_b_diff = {
+        c: _summary_b[c][["mean", "low", "high", "minus ref", "diff low", "diff high"]]
+        for c in ("inhale", "correlation")
     }
+
+    def _counts(recs: pd.DataFrame) -> dict:
+        ref = recs[recs["method"] == runs.REFERENCE]
+        return {
+            "folds": int(ref["fold"].nunique()),
+            "animals": int(ref["subject"].nunique()),
+            "units": int(ref["unit"].nunique()),
+        }
+
+    cv_counts = {**_counts(_a), "cv methods": cv_methods}
+    cv_counts_b = _counts(_b)
     mo.vstack(
         [
-            mo.md(f"{cv_counts}"),
+            mo.md(f"Test A: {cv_counts}"),
             mo.ui.table(benchmark, selection=None),
             *(mo.ui.table(v.round(3).reset_index()) for v in benchmark_diff.values()),
+            mo.md(f"Test B: {cv_counts_b}"),
+            mo.ui.table(benchmark_b, selection=None),
+            *(mo.ui.table(v.round(3).reset_index()) for v in benchmark_b_diff.values()),
         ]
     )
-    return benchmark_diff, cv_counts
+    return benchmark_b_diff, benchmark_diff, cv_counts, cv_counts_b
 
 
 @app.cell
