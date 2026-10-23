@@ -198,12 +198,13 @@ remove a rule that became wrong rather than working around it.
 ## The documentation site
 
 `docs/` is the user documentation of the `zephyr` package only (never benchmarks or the
-corpus), built with Zensical from `zensical.toml` (`uvx zensical serve`; CI builds it
-`--strict` and publishes it from main). A change to the app, a command's flags, a config
-field or an output file updates its page in the same change. Screenshots in
-`docs/assets/screens/` come only from `scripts/docs_screenshots.py`, which drives the
-real app through the tutorial's project (never mock or hand-edit one); re-run it when a
-page they show changes.
+corpus build; the tutorial only uses a few of the corpus's clips), built with Zensical
+from `zensical.toml` (`uvx zensical serve`). CI builds it `--strict` on pull requests and
+publishes it to GitHub Pages on each release, from the release's tag. A change to the
+app, a command's flags, a config field or an output file updates its page in the same
+change. Screenshots in `docs/assets/screens/` come only from
+`scripts/docs_screenshots.py`, which drives the real app through the tutorial's project
+(never mock or hand-edit one); re-run it when a page they show changes.
 
 ## Hard rules
 
