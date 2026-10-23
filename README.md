@@ -2,6 +2,9 @@
 
 CNN + TCN network that predicts a mouse's breathing trace from video.
 
+**Documentation:** <https://allenneuraldynamics.github.io/zephyr/> (installation, a
+tutorial of the app, guides and reference; sources in `docs/`).
+
 This repository is a [uv workspace](https://docs.astral.sh/uv/concepts/projects/workspaces/)
 of three packages:
 
@@ -33,7 +36,8 @@ Everything goes into `data/` at the repository root.
 - `examples/` has one clip list and one experiment to start from; the
   [zephyr README](packages/zephyr/README.md) walks through them.
 - To train or predict on your own recordings, see
-  [Zephyr on your own data](packages/zephyr/docs/your-own-data.md).
+  [Preparing your own data](https://allenneuraldynamics.github.io/zephyr/guides/your-data/)
+  (sources in `docs/guides/your-data.md`).
 - `packages/zephyr-benchmarks/configs/` holds the benchmark's configs; its
   [README](packages/zephyr-benchmarks/README.md) covers downloading the data
   and reproducing the published results.

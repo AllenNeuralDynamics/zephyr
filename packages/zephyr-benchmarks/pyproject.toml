@@ -2,7 +2,7 @@
 name = "zephyr-benchmarks"
 dynamic = ["version"]
 description = "Benchmarks of zephyr on our dataset, and the methods it is compared against"
-authors = [{ name = "Allen Institute for Neural Dynamics" }]
+authors = [{ name = "Bruno Cruz", email = "bruno.cruz@alleninstitute.org" }]
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]

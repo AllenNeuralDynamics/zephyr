@@ -8,7 +8,7 @@ reads every file a list names and reports, per clip, what would be refused.
 
 CLI
 ---
-    zephyr clips scan data/train --glob 'video_face_*.mp4' -o examples/clips.toml
+    zephyr clips scan data/my-rig --glob 'video_face_*.mp4' -o list.toml   # default names
     zephyr clips scan data --glob '*.mp4' -o list.toml --pattern '(?P<group>.+)'
         --timestamps '{stem}_times.parquet' --thermistor '{stem}_breath.parquet'
     zephyr clips scan other/videos --glob '*.mp4' -o predict.toml --checkpoint best.pt

@@ -154,9 +154,9 @@ class PreprocessParams(_Model):
 class Derive(_Model):
     """How a clip's omitted fields are derived from its video file name.
 
-    The defaults match the example dataset, whose files are named
-    ``video_{camera}_{session}_part_{part}.mp4`` next to
-    ``thermistor_{session}_part_{part}.parquet``.
+    The defaults match files named ``video_{camera}_{session}_part_{part}.mp4`` next
+    to ``thermistor_{session}_part_{part}.parquet``; ``examples/clips.toml`` shows
+    another naming.
     """
 
     pattern: str = r"video_.+_(?P<group>\d+)_part_(?P<part>\d+)$"

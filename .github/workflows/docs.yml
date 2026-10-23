@@ -1,0 +1,40 @@
+name: Documentation
+
+# Builds the site in docs/ with Zensical and publishes it to GitHub Pages: when a
+# release is published (from the release's tag, so the site documents the released
+# version), or when run by hand.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v8.2.0
+
+      - name: Build the site
+        run: uvx zensical build --clean --strict
+
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/deploy-pages@v5
+        id: deployment
