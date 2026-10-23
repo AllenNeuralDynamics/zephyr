@@ -210,6 +210,17 @@ class SummaryTests(unittest.TestCase):
             )
         with self.assertRaises(ValueError):
             CrossValidationRuns(folds=["cv_0"], method=[run, run])
+        other = run.model_copy(update={"label": "Zephyr, 30 Hz", "run": "cv-30"})
+        cv = CrossValidationRuns(folds=["cv_0"], method=[run], variant=[other])
+        self.assertEqual(cv.variant, [other])
+        with self.assertRaises(ValueError):
+            CrossValidationRuns(folds=["cv_0"], method=[run], variant=[run])
+        with self.assertRaises(ValueError):
+            CrossValidationRuns(
+                folds=["cv_0"],
+                method=[run],
+                variant=[other.model_copy(update={"fold": "x"})],
+            )
 
     def test_across_folds_gives_a_t_interval_and_none_for_one_fold(self):
         rows = pd.DataFrame(

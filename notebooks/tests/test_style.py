@@ -14,7 +14,7 @@ def test_every_entity_has_a_colour() -> None:
 
 def test_every_compared_method_has_its_own_colour() -> None:
     assert set(runs.METHODS) == set(style.METHODS)
-    assert set(runs.VARIANTS) == set(style.VARIANTS)
+    assert set(runs.VARIANTS) | set(runs.CV_VARIANTS) == set(style.VARIANTS)
     assert len(set(style.METHODS.values())) == len(style.METHODS)
 
 

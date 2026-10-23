@@ -158,3 +158,10 @@ label = "Pixel (SNR)"
 run = "pixel-facemap-cv-v3"
 kind = "pixel"
 variant = "snr/calibrated"
+
+# Zephyr fed 30-Hz video (select_fs = 30, every other frame of the 60-Hz cache), still
+# predicting on the 60-Hz grid (zephyr-compute-sandbox matrix full-gray-30hz-cv-v3).
+[[cross_validation.variant]]
+label = "Zephyr, 30-Hz input"
+run = "full-gray-30hz-cv-v3"
+head = true

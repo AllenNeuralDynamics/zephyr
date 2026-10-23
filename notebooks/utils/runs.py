@@ -62,16 +62,22 @@ def cv_name(label: str, fold: str) -> str:
     return f"{label} | {fold}"
 
 
+CV_VARIANTS: dict[str, ReportedRun] = (
+    {r.label: r for r in RESULTS.cross_validation.variant}
+    if RESULTS.cross_validation is not None
+    else {}
+)
+"""The first method trained differently on each cross-validation fold."""
 CV_RUNS: dict[str, ReportedRun] = (
     {
         cv_name(m.label, f): m.model_copy(update={"fold": f})
         for f in RESULTS.cross_validation.folds
-        for m in RESULTS.cross_validation.method
+        for m in (*RESULTS.cross_validation.method, *CV_VARIANTS.values())
     }
     if RESULTS.cross_validation is not None
     else {}
 )
-"""Each cross-validation method on each fold (:func:`cv_name`)."""
+"""Each cross-validation method and variant on each fold (:func:`cv_name`)."""
 RUNS = ALL | CV_RUNS
 """Every run by name: :data:`ALL` and :data:`CV_RUNS`."""
 REFERENCE = RESULTS.method[0].label
@@ -233,16 +239,17 @@ def scores(names=ALL, level: str = "clips") -> pd.DataFrame:
     return _scores([(name, name) for name in names], level)
 
 
-def cv_scores(level: str = "per_recording") -> pd.DataFrame:
-    """:func:`scores` of every cross-validation method on every fold of the manifest's
-    ``[cross_validation]``, with a ``fold`` column; the ``set`` is the fold's own."""
+def cv_scores(level: str = "per_recording", variants: bool = False) -> pd.DataFrame:
+    """:func:`scores` of every cross-validation method (or, with *variants*, every
+    variant) on every fold of the manifest's ``[cross_validation]``, with a ``fold``
+    column; the ``set`` is the fold's own."""
     cv = RESULTS.cross_validation
     if cv is None:
         return pd.DataFrame()
     frames = [
         _scores([(m.label, cv_name(m.label, f))], level).assign(fold=f)
         for f in cv.folds
-        for m in cv.method
+        for m in (cv.variant if variants else cv.method)
     ]
     frames = [f for f in frames if not f.empty]
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
@@ -389,7 +396,12 @@ def _saved(
     ``traces/``, the baselines' ``traces/``), downloaded; ``None`` if it saved none."""
     m = RUNS[name]
     if m.kind == "network":
-        path = _fetch(f"{folder(m)}/{seeds(folder(m))[0]}/{TRACES}/{trace_name(e)}")
+        traces = f"{folder(m)}/{seeds(folder(m))[0]}/{TRACES}"
+        path = _fetch(f"{traces}/{trace_name(e)}")
+        stem = Path(e.stem).name.rsplit("-", 1)[0]
+        if path is None and stem in _trace_files(traces):
+            # a run on another recipe (e.g. select_fs) names its traces by its own entry
+            path = _fetch(f"{traces}/{_trace_files(traces)[stem]}")
         if path is None:
             return None
         s = pd.read_parquet(path)
@@ -402,6 +414,23 @@ def _saved(
     method = m.variant.split("/")[0]
     path = _fetch(f"{folder(m)}/pixel/{method}/traces/{baselines.trace_key(e)}.npy")
     return None if path is None else (_calibrated(name, np.load(path)), None)
+
+
+@functools.cache
+def _trace_files(traces: str) -> dict[str, str]:
+    """Clip stem -> trace file name in a network run's *traces* folder (its
+    ``feat-<stem>-<key>.parquet``), listed once."""
+    try:
+        names = [
+            Path(p).name for p in _s3().ls(f"{S3_RUNS.removeprefix('s3://')}/{traces}")
+        ]
+    except FileNotFoundError:
+        names = [p.name for p in (LOCAL_RUNS / traces).glob("feat-*.parquet")]
+    return {
+        n.removeprefix("feat-").removesuffix(".parquet").rsplit("-", 1)[0]: n
+        for n in names
+        if n.startswith("feat-") and n.endswith(".parquet")
+    }
 
 
 def _calibrated(name: str, raw: np.ndarray) -> np.ndarray:

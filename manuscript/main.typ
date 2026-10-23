@@ -10,6 +10,7 @@
 #import "figures/fig4.typ": body as fig4
 #import "figures/fig5.typ": body as fig5
 #import "figures/figs1.typ": body as figs1
+#import "figures/figs2.typ": body as figs2
 
 // A figure assembled at its printed width (183 mm), scaled to the text width.
 #let fit(body) = layout(size => scale(reflow: true, size.width / 189mm * 100%, body))
@@ -790,3 +791,14 @@ batch, steps per epoch and learning rate are in @tab:nets #note[confirm how the 
     trace correlation (right), 30 bins shared by the two kinds; above, each kind's mean with a
     95% bootstrap interval resampling animals (#tbd[2,000] draws).],
 ) <fig:rigs>
+
+#figure(
+  fit(figs2),
+  caption: [*Our network on 30-Hz video.* The same network and training, fed every other
+    frame (30 Hz) and still predicting on the 60-Hz grid, retrained on each of the five
+    folds. *a*, The 30-Hz network minus the 60-Hz network on each test set, in trace
+    correlation, inhale F1 (onset head) and exhale F1: each fold's difference (gray) and
+    their mean with a 95% t-interval over the #tbd[5] folds. *b*, Inhale F1 on new animals
+    (test set A) by breathing rate, each fold's breaths pooled, mean over folds with its
+    95% interval; below, the share of breaths in each bin.],
+) <fig:input-rate>
