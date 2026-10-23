@@ -3,6 +3,7 @@ files), Boxes (:mod:`.boxes`) and Breathing (:mod:`.breathing`)."""
 
 import html
 import json
+import os
 import tempfile
 from pathlib import Path
 
@@ -507,7 +508,9 @@ class ClipsPage(Page):
     def check(self) -> None:
         if self.project is None or self.project.clip_list is None:
             return
-        report = Path(tempfile.mkstemp(suffix=".json")[1])
+        handle, name = tempfile.mkstemp(suffix=".json")
+        os.close(handle)  # Windows cannot remove a file still open
+        report = Path(name)
         self._pending = ("check", report)
         self.jobs.run(
             Job(

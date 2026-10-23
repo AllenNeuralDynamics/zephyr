@@ -1,6 +1,7 @@
 """The app's windows, offscreen (needs the ``ui`` extra): every key and control of the
 box window reaches the saved clip list as the Tk tool's did, and the pages open."""
 
+import json
 import os
 import tempfile
 import tomllib
@@ -667,6 +668,23 @@ class AppTests(unittest.TestCase):
         self.assertEqual(results.runs.item(0).text(), "e · seed 1")
         results.clips.selectRow(0)
         self.assertIn("No trace saved", results.trace.title.text())
+
+    def test_predict_shows_a_report_with_a_measure_without_a_value(self):
+        folder = self.root / "predictions" / "judged"
+        folder.mkdir(parents=True)
+        t = np.arange(0, 10, 1 / 60)
+        pd.DataFrame(
+            {"time": t, "signal": np.sin(t), "onset": 0.0, "inhale": False}
+        ).to_parquet(folder / "clip.prediction.parquet")
+        checks = {"expected_precision": None, "too_fast_frac": True}
+        summary = {"expected_precision": None, "too_fast_frac": 0.0, "checks": checks}
+        window = {"start": 0.0, "end": 10.0, "checks": {"too_fast_frac": False}}
+        report = {"summary": summary, "windows": [window]}
+        (folder / "clip.qc.json").write_text(json.dumps(report))
+        predict = self.go("Predict")
+        predict.fill_folders(folder)
+        self.assertIn("expected_precision</b> n/a n/a", predict.verdict.text())
+        self.assertIn("1 of 1 windows fail", predict.verdict.text())
 
     def test_breathing_auto_makes_the_default_the_lists(self):
         editor = self.go("Breathing").editor
