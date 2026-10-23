@@ -1,11 +1,9 @@
 name: Documentation
 
-# Builds the site in docs/ with Zensical on every pull request that touches it (a
-# check only), and publishes it to GitHub Pages when a release is published, from the
-# release's tag, so the site documents the released version.
+# Builds the site in docs/ with Zensical and publishes it to GitHub Pages: when a
+# release is published (from the release's tag, so the site documents the released
+# version), or when run by hand.
 on:
-  pull_request:
-    paths: ["docs/**", "overrides/**", "zensical.toml", ".github/workflows/docs.yml"]
   release:
     types: [published]
   workflow_dispatch:
@@ -25,12 +23,10 @@ jobs:
         run: uvx zensical build --clean --strict
 
       - uses: actions/upload-pages-artifact@v5
-        if: github.event_name != 'pull_request'
         with:
           path: site
 
   deploy:
-    if: github.event_name != 'pull_request'
     needs: build
     runs-on: ubuntu-latest
     permissions:

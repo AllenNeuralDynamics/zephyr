@@ -1,18 +1,22 @@
 # The documentation site of the zephyr package (https://zensical.org).
 #   uvx zensical serve    # preview at http://localhost:8000
 #   uvx zensical build    # into site/
-# Pages are in docs/; screenshots in docs/assets/screens/ come from the app itself.
+# Pages are in docs/ (the theme override in docs/overrides/ is not published);
+# screenshots in docs/assets/screens/ come from scripts/docs_screenshots.py.
 
 [project]
 site_name = "Zephyr"
 site_description = "Breathing from video: a CNN + TCN network that predicts a mouse's breathing trace from a face camera."
-site_author = "Allen Institute for Neural Dynamics"
+site_author = "Bruno Cruz"
 site_url = "https://allenneuraldynamics.github.io/zephyr/"
 repo_url = "https://github.com/AllenNeuralDynamics/zephyr"
 repo_name = "AllenNeuralDynamics/zephyr"
 edit_uri = "edit/main/docs/"
-copyright = "Copyright &copy; 2026 Allen Institute"
+copyright = "Copyright &copy; 2026 Allen Institute. Author: Bruno Cruz (<a href=\"mailto:bruno.cruz@alleninstitute.org\">bruno.cruz@alleninstitute.org</a>)"
 extra_css = ["stylesheets/allen.css"]
+exclude_docs = """
+overrides/
+"""
 
 nav = [
   { "Home" = "index.md" },
@@ -50,7 +54,7 @@ nav = [
 
 [project.theme]
 language = "en"
-custom_dir = "overrides"
+custom_dir = "docs/overrides"
 logo = "assets/logo.svg"
 favicon = "assets/logo.svg"
 features = [
@@ -97,6 +101,11 @@ primary = "custom"
 accent = "custom"
 toggle.icon = "lucide/moon"
 toggle.name = "Switch to system preference"
+
+[[project.extra.social]]
+icon = "fontawesome/solid/envelope"
+link = "mailto:bruno.cruz@alleninstitute.org"
+name = "Bruno Cruz (bruno.cruz@alleninstitute.org)"
 
 [[project.extra.social]]
 icon = "fontawesome/brands/github"
