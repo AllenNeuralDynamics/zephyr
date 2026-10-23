@@ -12,17 +12,26 @@ features_dir = "../data/features-example"
 
 [[fold]]
 name = "fold"
-# Example fold: train on recordings 1 and 2 of clips.toml, score recording 3.
-# A recording never goes to both sides; loading the fold refuses it if it does.
-# Every [train_params] key is optional (see TrainParams in zephyr.config).
+# Example fold: train on four animals of clips.toml, stop early on a fifth and score
+# a sixth, each one session (its group). A session never goes to two sides; loading
+# the fold refuses it if it does. Every [train_params] key is optional (see
+# TrainParams in zephyr.config).
 
 [[fold.train]]
 clips = "clips.toml"
-groups = ["1", "2"]               # optional: only these recordings
+groups = [                        # optional: only these sessions
+    "behavior_789903_2025-10-29_20-06-45",
+    "behavior_789907_2025-10-23_17-07-36",
+    "behavior_794591_2025-10-14_17-57-50",
+    "behavior_798279_2025-10-20_16-00-19",
+]
+
+[fold.val]                        # whole held-out clips choose best.pt and stop early
+clips = "clips.toml"
+groups = ["behavior_789917_2025-10-22_19-48-21"]
 
 [fold.test]                       # report group name -> clips to score
-held_out = { clips = "clips.toml", groups = ["3"] }
+new_animal = { clips = "clips.toml", groups = ["behavior_806527_2025-10-24_18-04-57"] }
 
 [fold.train_params]
-epochs = 20
-val_fraction = 0                  # no validation tail: train the full budget
+epochs = 40

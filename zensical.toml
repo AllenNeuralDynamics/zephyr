@@ -1,0 +1,131 @@
+# The documentation site of the zephyr package (https://zensical.org).
+#   uvx zensical serve    # preview at http://localhost:8000
+#   uvx zensical build    # into site/
+# Pages are in docs/; screenshots in docs/assets/screens/ come from the app itself.
+
+[project]
+site_name = "Zephyr"
+site_description = "Breathing from video: a CNN + TCN network that predicts a mouse's breathing trace from a face camera."
+site_author = "Allen Institute for Neural Dynamics"
+site_url = "https://allenneuraldynamics.github.io/zephyr/"
+repo_url = "https://github.com/AllenNeuralDynamics/zephyr"
+repo_name = "AllenNeuralDynamics/zephyr"
+edit_uri = "edit/main/docs/"
+copyright = "Copyright &copy; 2026 Allen Institute"
+extra_css = ["stylesheets/allen.css"]
+
+nav = [
+  { "Home" = "index.md" },
+  { "Installation" = "installation.md" },
+  { "Tutorial" = [
+    "tutorial/index.md",
+    { "1. Create a project" = "tutorial/project.md" },
+    { "2. List the clips" = "tutorial/clips.md" },
+    { "3. Place crop boxes" = "tutorial/boxes.md" },
+    { "4. Check the breathing labels" = "tutorial/breathing.md" },
+    { "5. Train a network" = "tutorial/train.md" },
+    { "6. Inspect the results" = "tutorial/results.md" },
+    { "7. Predict new videos" = "tutorial/predict.md" },
+  ] },
+  { "Guides" = [
+    { "Preparing your own data" = "guides/your-data.md" },
+    { "Designing experiments" = "guides/experiments.md" },
+    { "The command line" = "guides/command-line.md" },
+    { "Quality control" = "guides/quality-control.md" },
+    { "Working across machines" = "guides/machines.md" },
+  ] },
+  { "Reference" = [
+    { "The app" = "reference/app.md" },
+    { "Commands" = "reference/commands.md" },
+    { "Clip lists" = "reference/clip-lists.md" },
+    { "Experiments" = "reference/experiments.md" },
+    { "Output files" = "reference/outputs.md" },
+    { "Scoring" = "reference/scoring.md" },
+  ] },
+  { "Help" = [
+    { "Troubleshooting" = "help/troubleshooting.md" },
+    { "FAQ" = "help/faq.md" },
+  ] },
+]
+
+[project.theme]
+language = "en"
+logo = "assets/logo.svg"
+favicon = "assets/logo.svg"
+features = [
+  "content.action.edit",
+  "content.code.annotate",
+  "content.code.copy",
+  "content.tabs.link",
+  "content.tooltips",
+  "navigation.footer",
+  "navigation.indexes",
+  "navigation.instant",
+  "navigation.instant.prefetch",
+  "navigation.path",
+  "navigation.sections",
+  "navigation.tabs",
+  "navigation.top",
+  "navigation.tracking",
+  "search.highlight",
+  "toc.follow",
+]
+
+[project.theme.font]
+text = "Inter"
+code = "JetBrains Mono"
+
+[[project.theme.palette]]
+media = "(prefers-color-scheme)"
+toggle.icon = "lucide/sun-moon"
+toggle.name = "Switch to light mode"
+
+[[project.theme.palette]]
+media = "(prefers-color-scheme: light)"
+scheme = "default"
+primary = "custom"
+accent = "custom"
+toggle.icon = "lucide/sun"
+toggle.name = "Switch to dark mode"
+
+[[project.theme.palette]]
+media = "(prefers-color-scheme: dark)"
+scheme = "slate"
+primary = "custom"
+accent = "custom"
+toggle.icon = "lucide/moon"
+toggle.name = "Switch to system preference"
+
+[[project.extra.social]]
+icon = "fontawesome/brands/github"
+link = "https://github.com/AllenNeuralDynamics/zephyr"
+
+[[project.extra.social]]
+icon = "fontawesome/solid/globe"
+link = "https://alleninstitute.org/division/neural-dynamics/"
+
+[project.markdown_extensions]
+abbr = {}
+admonition = {}
+attr_list = {}
+def_list = {}
+footnotes = {}
+md_in_html = {}
+tables = {}
+toc.permalink = true
+pymdownx.betterem = {}
+pymdownx.details = {}
+pymdownx.emoji.emoji_generator = "zensical.extensions.emoji.to_svg"
+pymdownx.emoji.emoji_index = "zensical.extensions.emoji.twemoji"
+pymdownx.highlight.anchor_linenums = true
+pymdownx.highlight.line_spans = "__span"
+pymdownx.highlight.pygments_lang_class = true
+pymdownx.inlinehilite = {}
+pymdownx.keys = {}
+pymdownx.mark = {}
+pymdownx.smartsymbols = {}
+pymdownx.superfences.custom_fences = [
+  { name = "mermaid", class = "mermaid", format = "pymdownx.superfences.fence_code_format" },
+]
+pymdownx.tabbed.alternate_style = true
+pymdownx.tasklist.custom_checkbox = true
