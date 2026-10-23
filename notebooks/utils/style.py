@@ -46,6 +46,20 @@ ERRORS: dict[str, str] = {
 }
 """Event errors: a true inhale missed, a predicted inhale with no true one."""
 
+SITES: dict[str, str] = {
+    "Rewarded": "#e69f00",
+    "Unrewarded": "#7f7f7f",
+    "Skipped": "#cc79a7",
+}
+"""Odor sites of the foraging task: the animal stopped and was rewarded, stopped and
+was not, or ran past without stopping."""
+
+REWARD: str = "#d55e00"
+"""A reward delivery."""
+
+SPEED: str = "#7f7f7f"
+"""The animal's running speed."""
+
 ONSET: str = "#009e73"
 """The onset head's probability."""
 
