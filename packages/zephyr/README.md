@@ -12,7 +12,11 @@ summary, so see each module's docstring (e.g. `src/zephyr/run.py`) for its flags
 Benchmarks on our dataset, and the methods zephyr is compared against, live in
 the separate `zephyr-benchmarks` package of the same repository.
 
-**Your own recordings:** [docs/your-own-data.md](docs/your-own-data.md) explains what
+**Documentation:** <https://allenneuraldynamics.github.io/zephyr/>, with a tutorial of
+the app from videos to predictions.
+
+**Your own recordings:** [Preparing your own
+data](https://allenneuraldynamics.github.io/zephyr/guides/your-data/) explains what
 files zephyr needs, how to name them, and how to train and predict on them.
 
 ## How inputs are described
@@ -33,9 +37,9 @@ are relative to the file they are written in.
   the fold's to choose.
 
 `zephyr schema <dir>` writes JSON schemas of both for editor validation.
-The repository's `examples/` holds one of each, used below; they read the face
-clips of the AIND breathing challenge data (see `zephyr-benchmarks`' README for
-the download).
+The repository's `examples/` holds one of each, used below; they read six face clips
+of zephyr's dataset, one session per animal, downloaded into `data/vr-foraging/` as the
+[tutorial](https://allenneuraldynamics.github.io/zephyr/tutorial/) shows.
 
 ## The app
 
@@ -99,11 +103,15 @@ never saved.
    every derived file exists, so unlabelled clips need `--unlabelled`):
 
    ```bash
-   uv run zephyr clips scan data/train --glob 'video_face_*.mp4' -o my_clips.toml
+   uv run zephyr clips scan data/vr-foraging --glob '*_FaceCamera.mp4' -o my_clips.toml \
+       --pattern '(?P<group>.+)_span(?P<span>\d+)_FaceCamera$' \
+       --thermistor '{group}_span{span}_thermistor.parquet'
    ```
 
-   Files named otherwise are scanned with `--pattern`, `--timestamps` and
-   `--thermistor`, written as the list's `[derive]` (see "Clip lists" below). The
+   Files named other than the default (`video_<camera>_<session>_part_<n>.mp4`, its
+   `<stem>.parquet` and `thermistor_<session>_part_<n>.parquet`), as these are, are
+   scanned with `--pattern`, `--timestamps` and `--thermistor`, written as the list's
+   `[derive]` (see "Clip lists" below). The
    list's `[events]` starts as `adaptive_prominence` with the corpus's settings
    (`zephyr.clips.SCAN_EVENTS`); a list without `[events]` uses `peak_detection`.
    `zephyr clips check my_clips.toml` then reads every file the list names and reports,

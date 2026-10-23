@@ -34,6 +34,11 @@ VIDEO_LIST = "videos.toml"
 """The Videos tab's list, in the predictions folder it fills."""
 
 
+def _measure(value: float | None) -> str:
+    """A quality-control measure for the verdict line; ``n/a`` when it has none."""
+    return "n/a" if value is None else f"{value:.3g}"
+
+
 class PredictPage(Page):
     title = "Predict"
 
@@ -546,8 +551,9 @@ class PredictPage(Page):
                 if any(v is False for v in w["checks"].values())
             ]
             summary = report["summary"]
+            # A measure without a value (expected precision with no reference) is null.
             cells = [
-                f"<b>{name}</b> {summary.get(name, float('nan')):.3g} "
+                f"<b>{name}</b> {_measure(summary.get(name))} "
                 + ("pass" if ok else "fail" if ok is False else "n/a")
                 for name, ok in summary["checks"].items()
             ]

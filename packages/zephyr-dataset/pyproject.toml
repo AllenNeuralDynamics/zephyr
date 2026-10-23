@@ -2,7 +2,7 @@
 name = "zephyr-dataset"
 dynamic = ["version"]
 description = "Builds zephyr's corpus of VR-foraging sessions (Allen-internal)"
-authors = [{ name = "Allen Institute for Neural Dynamics" }]
+authors = [{ name = "Bruno Cruz", email = "bruno.cruz@alleninstitute.org" }]
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"

@@ -195,6 +195,18 @@ Whenever a change touches config models, the CLI, run layout, cache, package bou
 or a rule here, update this file (and the relevant README) in the same change; fix or
 remove a rule that became wrong rather than working around it.
 
+## The documentation site
+
+`docs/` is the user documentation of the `zephyr` package only (never benchmarks or the
+corpus build; the tutorial only uses a few of the corpus's clips), built with Zensical
+from `zensical.toml` (`uvx zensical serve`; the theme override is `docs/overrides/`,
+not published). CI builds it `--strict` and publishes it to GitHub Pages when a release
+is published (from its tag) or when run by hand. A change to the
+app, a command's flags, a config field or an output file updates its page in the same
+change. Screenshots in `docs/assets/screens/` come only from
+`scripts/docs_screenshots.py`, which drives the real app through the tutorial's project
+(never mock or hand-edit one); re-run it when a page they show changes.
+
 ## Hard rules
 
 - `data/` and `benchmarks/` are read-only. Write outputs to new directories. The one

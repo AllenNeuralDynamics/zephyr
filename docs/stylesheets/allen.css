@@ -1,0 +1,201 @@
+/* Allen Institute colours (alleninstitute.org): black and off-white, with purple,
+   teal and blue as accents. */
+
+:root {
+  --allen-black: #000000;
+  --allen-off-white: #f3f0e9;
+  --allen-purple: #8146e1;
+  --allen-purple-dark: #5c1ebe;
+  --allen-purple-light: #b48fed;
+  --allen-teal: #00a59a;
+  --allen-teal-light: #31fdf2;
+  --allen-blue: #6464ff;
+  --allen-crimson: #cd0f55;
+  --allen-orange: #ff6f00;
+  --allen-bone: #ded9d1;
+}
+
+[data-md-color-primary="custom"] {
+  --md-primary-fg-color: var(--allen-black);
+  --md-primary-fg-color--light: #262626;
+  --md-primary-fg-color--dark: #000000;
+  --md-primary-bg-color: #ffffff;
+  --md-primary-bg-color--light: rgba(255, 255, 255, 0.7);
+}
+
+[data-md-color-accent="custom"] {
+  --md-accent-fg-color: var(--allen-teal);
+  --md-accent-fg-color--transparent: rgba(0, 165, 154, 0.1);
+  --md-accent-bg-color: #ffffff;
+}
+
+[data-md-color-scheme="default"] {
+  --md-typeset-a-color: var(--allen-purple);
+  --md-default-bg-color: #ffffff;
+  --md-code-bg-color: var(--allen-off-white);
+}
+
+[data-md-color-scheme="slate"] {
+  --md-hue: 0;
+  --md-default-bg-color: #0c0c0c;
+  --md-default-bg-color--light: #1a1a1a;
+  --md-code-bg-color: #191612;
+  --md-typeset-a-color: var(--allen-purple-light);
+  --md-accent-fg-color: var(--allen-teal-light);
+}
+
+/* The header and tabs: black, as the Allen site's navigation. */
+.md-header,
+.md-tabs {
+  background-color: var(--allen-black);
+  color: #ffffff;
+}
+
+.md-tabs__link--active,
+.md-tabs__item--active .md-tabs__link {
+  color: #ffffff;
+  border-bottom: 3px solid var(--allen-teal);
+}
+
+.md-header__title {
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.md-typeset h1 {
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: var(--md-default-fg-color);
+}
+
+.md-typeset h2 {
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+/* Buttons. */
+.md-typeset .md-button {
+  border-radius: 999px;
+  border-color: var(--allen-purple);
+  color: var(--allen-purple);
+}
+
+.md-typeset .md-button--primary {
+  background-color: var(--allen-purple);
+  border-color: var(--allen-purple);
+  color: #ffffff;
+}
+
+.md-typeset .md-button:hover {
+  background-color: var(--allen-teal);
+  border-color: var(--allen-teal);
+  color: #ffffff;
+}
+
+/* The home page's hero. */
+.zephyr-hero {
+  background: var(--allen-off-white);
+  border-radius: 1rem;
+  padding: 2rem 2rem 1.5rem;
+  margin-bottom: 2rem;
+}
+
+[data-md-color-scheme="slate"] .zephyr-hero {
+  background: #191612;
+}
+
+.zephyr-hero h1 {
+  font-size: 2.6rem;
+  margin: 0 0 0.5rem;
+}
+
+.zephyr-hero p.lead {
+  font-size: 1.1rem;
+  max-width: 44rem;
+}
+
+/* Grid cards: a coloured top edge, cycling the accents. */
+.md-typeset .grid.cards > ul > li {
+  border-top: 4px solid var(--allen-purple);
+  border-radius: 0.5rem;
+}
+
+.md-typeset .grid.cards > ul > li:nth-child(4n + 2) {
+  border-top-color: var(--allen-teal);
+}
+
+.md-typeset .grid.cards > ul > li:nth-child(4n + 3) {
+  border-top-color: var(--allen-blue);
+}
+
+.md-typeset .grid.cards > ul > li:nth-child(4n + 4) {
+  border-top-color: var(--allen-crimson);
+}
+
+/* Screenshots: a thin frame and a soft shadow. */
+.md-typeset img.screen,
+.md-typeset figure img {
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-radius: 0.4rem;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.08);
+}
+
+.md-typeset figure figcaption {
+  font-size: 0.8rem;
+  color: var(--md-default-fg-color--light);
+}
+
+/* Admonitions in the brand colours. */
+.md-typeset .admonition.tip,
+.md-typeset details.tip {
+  border-color: var(--allen-teal);
+}
+
+.md-typeset .tip > .admonition-title,
+.md-typeset .tip > summary {
+  background-color: rgba(0, 165, 154, 0.1);
+}
+
+.md-typeset .admonition.note,
+.md-typeset details.note {
+  border-color: var(--allen-blue);
+}
+
+.md-typeset .note > .admonition-title,
+.md-typeset .note > summary {
+  background-color: rgba(100, 100, 255, 0.1);
+}
+
+.md-typeset .admonition.warning,
+.md-typeset details.warning {
+  border-color: var(--allen-orange);
+}
+
+.md-typeset .admonition.danger,
+.md-typeset details.danger {
+  border-color: var(--allen-crimson);
+}
+
+/* Step numbers in the tutorial. */
+.md-typeset .step {
+  display: inline-block;
+  min-width: 1.6em;
+  padding: 0 0.4em;
+  margin-right: 0.3em;
+  border-radius: 999px;
+  background: var(--allen-purple);
+  color: #ffffff;
+  font-weight: 700;
+  text-align: center;
+}
+
+/* The "under development" banner (overrides/main.html). */
+.md-banner {
+  background-color: var(--allen-orange);
+  color: var(--allen-black);
+}
+
+.md-banner a,
+.md-banner .md-banner__button {
+  color: var(--allen-black);
+}
