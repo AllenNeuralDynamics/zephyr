@@ -479,10 +479,6 @@ def _prediction_path(name: str, stem: str) -> Path:
     return PREDICTIONS / m.run / m.fold / kind / f"{stem}.npz"
 
 
-def cached(name: str, stem: str) -> bool:
-    return _prediction_path(name, stem).is_file()
-
-
 def truth(stem: str) -> dict:
     """:func:`zephyr.benchmarks.analysis.truth` of a test clip."""
     return analysis.truth(entry(stem))

@@ -1,8 +1,9 @@
-// Manuscript draft. Build: typst compile manuscript/main.typ
+// Manuscript draft, in the Allen Institute preprint template (the submodule template/:
+// `git submodule update --init`). Build from the repository root:
+//   typst compile --font-path manuscript/template/fonts manuscript/main.typ
 // Numbers in yellow are provisional; red notes are for the authors and are removed
 // before submission.
-
-#import "default-style.typ": *
+#import "template/preprint.typ": *
 #import "figures/fig1.typ": body as fig1
 #import "figures/fig2.typ": body as fig2
 #import "figures/fig3.typ": body as fig3
@@ -20,7 +21,10 @@
 #let fig(label, panel) = [#ref(label)#panel]
 // Placeholder for a figure that is not drawn yet; `source` says what will draw it.
 #let mock(panels, source) = rect(
-  width: 100%, inset: 10pt, fill: luma(246), stroke: (paint: luma(160), dash: "dashed"),
+  width: 100%,
+  inset: 10pt,
+  fill: luma(246),
+  stroke: (paint: luma(160), dash: "dashed"),
 )[
   #set text(size: 8.5pt, fill: luma(70))
   #set align(left)
@@ -126,7 +130,7 @@ them against held-out animals. We release the corpus, trained models and an eval
 Head-fixed mice performed an olfactory virtual-reality foraging task on a circular
 treadmill: they ran along a virtual corridor of odor-cued sites and could stop at a site
 to collect a probabilistic reward. Running, stopping and odor sampling alternate throughout a session, so breathing ranges from rest to fast sniffing (#fig(<fig:overview>, "b") and #fig(<fig:corpus>, "b")). While the mice performed the task, high-speed video was recorded from two angles (#fig(<fig:overview>, "a")). A snout-facing camera captured detailed movements of the nose and whiskers, while a side camera recorded the overall posture and locomotion. For all analysis in this study, we only used the face camera view, but we are including side-camera video for every session with the corpus for future work and benchmarks. All mice were additionally implanted with a small thermistor in the nasal cavity to record temperature changes as a proxy for breathing. The signal was conditioned and digitized using a custom, open-source, board #note[cite
-sniff-detector repo / RRID] at 250 Hz.
+  sniff-detector repo / RRID] at 250 Hz.
 As inhalation draws cool air, temperature in the thermistor drops, and it rises again during exhalation as the subject expells warm air. This periodic signal reflects the breathing cycle that can be readily extracted with simple digital-signal processing (DSP) peak detection algorithms (#fig(<fig:overview>, "c")\; Methods).
 
 We built the corpus from every recorded session of this task with a thermistor
@@ -153,7 +157,7 @@ models, and test sessions only for final scoring. We drew five such splits, the 
 a cross-validation in which each of the #tbd[48] animals outside the #tbd[359]-Hz group is
 a new animal once (Methods, @tab:split). Because sessions of one animal on one rig
 resemble each other, and moving an animal to another rig changed its scores about
-two-thirds as much as changing the animal on one rig (@supp:rigs), the unit of comparison
+two-thirds as much as changing the animal on one rig (@fig:rigs), the unit of comparison
 is an animal on one rig (an animal × rig unit): scores are averaged within each unit, then over the units of a fold, and reported
 as the mean over the five folds with its 95% interval (Methods, Statistics). Over the
 folds, test set A holds #tbd[107] units from #tbd[48] animals, and test set B #tbd[86]
@@ -162,22 +166,22 @@ control and example clips) use the published split, one of these draws.
 
 #figure(
   fit(fig1),
-  caption: [*Measuring breathing from face video.* *a*, The rig: a head-fixed mouse on a wheel facing the virtual-reality screens, the
-    cameras with example frames, and the odor delivery line. *b*, Task and
-    behaviour aligned to reward-site entry. *c*, Ground truth: the face frame with the crop
+  caption: [*Measuring breathing from face video.* *a,* The rig: a head-fixed mouse on a wheel facing the virtual-reality screens, the
+    cameras with example frames, and the odor delivery line. *b,* Task and
+    behaviour aligned to reward-site entry. *c,* Ground truth: the face frame with the crop
     the network sees (orange), the crop at three moments of one breath, and the thermistor
-    with its inhalations and exhalations (one breath of one clip). *d*, Network. *e*, Eight
+    with its inhalations and exhalations (one breath of one clip). *d,* Network. *e,* Eight
     seconds of one test-A clip as the animal starts sniffing: the predicted breathing over the thermistor, and the
     onset probability, with the thermistor's inhalations (black) and the network's (blue).],
 ) <fig:overview>
 
 #figure(
   fit(fig2),
-  caption: [*The corpus.* *a*, Selection: the recorded sessions, step by step, to the
+  caption: [*The corpus.* *a,* Selection: the recorded sessions, step by step, to the
     corpus; each loss is labelled with the first rule the session failed (rules and
-    thresholds in @tab:qc). *b*, Distribution of breathing rate (thermistor breaths,
+    thresholds in @tab:qc). *b,* Distribution of breathing rate (thermistor breaths,
     2–15 Hz) over the corpus (black; n = #tbd[1,630,355] breaths) and for each animal (grey;
-    n = #tbd[50]). *c*, Sessions per animal, by the number of rigs the animal was recorded
+    n = #tbd[50]). *c,* Sessions per animal, by the number of rigs the animal was recorded
     on (n = #tbd[50] animals, #tbd[560] sessions).],
 ) <fig:corpus>
 
@@ -217,7 +221,7 @@ correlation of #tbd[0.81] (#tbd[0.78–0.84]), against #tbd[0.79] for PhysNet (d
 were tied (#tbd[0.79] against #tbd[0.80]). PhysNet counted breathing rate as well as our
 network (@tab:benchmark). It also infers faster than PhysNet:
 a 5-min clip took #tbd[0.87] s on a consumer GPU (RTX 4060 Ti), against #tbd[1.58] s for
-PhysNet and #tbd[5.8–6.0] s for the two transformers (#fig(<fig:benchmark>, "b"); @supp:nets). The onset output contributed modestly: detecting inhalations as
+PhysNet and #tbd[5.8–6.0] s for the two transformers (#fig(<fig:benchmark>, "b"); @tab:nets). The onset output contributed modestly: detecting inhalations as
 peaks of the predicted trace gave F1 #tbd[0.94], against #tbd[0.96] from the onset
 probability. Exhalations, detected on the trace, were found less reliably (F1 #tbd[0.75]).
 
@@ -240,31 +244,30 @@ measures for every method, as reported for camera physiology in humans @liu2023t
 
 #figure(
   fit(fig3),
-  caption: [*Breathing from face video on animals held out from training.* *a*, Six
-    seconds of one test-A clip (the clip of Fig. 1e): the thermistor (top) and the
+  caption: [*Breathing from face video on animals held out from training.* *a,* Six
+    seconds of one test-A clip (the clip of #fig(<fig:overview>, "e")): the thermistor (top) and the
     trace of each method over it (grey), with each method's correlation on the whole
-    clip; vertical lines, thermistor inhalations. *b*, Inhalation F1 on new animals
+    clip; vertical lines, thermistor inhalations. *b,* Inhalation F1 on new animals
     against inference time per 5-min clip from the preprocessed crops (median of 8 clips):
     one dot per fold (mean over its animal × rig units), and the mean over the #tbd[5]
     folds with its 95% interval; RhythmFormer and PhysFormer, the published split only;
-    filled, networks on a consumer GPU; open, methods on a CPU. *c*, Inhalation F1 on new
+    filled, networks on a consumer GPU; open, methods on a CPU. *c,* Inhalation F1 on new
     animals by breathing rate for each network, mean over folds with its 95% interval (top;
     colours as in *b*), and the share of breaths at each rate (bottom); n =
     #tbd[1,519,650] thermistor breaths at 2–15 Hz over the folds (published split,
-    #tbd[221,626]). *d*, Our network's onset lag (predicted minus thermistor; every
+    #tbd[221,626]). *d,* Our network's onset lag (predicted minus thermistor; every
     thermistor inhalation with a prediction within 50 ms) against the breath's rate, every
     fold's new animals pooled: the share of each rate bin's lags (colour), with the median
     (solid) and interquartile range (dashed); dotted lines, the 25-ms tolerance; n =
-    #tbd[1,511,844] inhalations. *e*, Breathing rate in 10-s windows, every fold's new
+    #tbd[1,511,844] inhalations. *e,* Breathing rate in 10-s windows, every fold's new
     animals pooled: our network minus the thermistor against their mean (colour, number of
     windows), with the bias (solid) and 95% limits of agreement (dotted); n =
-    #tbd[31,136] windows. *a*, test set A of the published split; *b*–*e*, test set A of
+    #tbd[31,136] windows. *a,* test set A of the published split; *b–e,* test set A of
     the five folds, #tbd[1,038] clips from #tbd[519] sessions of #tbd[48] animals.],
 ) <fig:benchmark>
 
 #figure(
   kind: table,
-  supplement: [Table],
   {
     // Written by notebooks/manuscript_figures.py (new animals, over folds, seed 17).
     let rows = csv("tables/benchmark.csv").slice(1)
@@ -272,24 +275,25 @@ measures for every method, as reported for camera physiology in humans @liu2023t
     table(
       columns: 10,
       align: (left,) + (right,) * 9,
-      stroke: none,
-      inset: (x: 3pt, y: 2.5pt),
-      table.hline(),
+      fill: (_, y) => if y < 2 { colors.table-head } else { colors.table-row },
+      toprule,
       table.header(
         [], [], [], table.cell(colspan: 4, align: center)[*Breathing rate (10-s windows)*],
         table.cell(colspan: 3, align: center)[*Waveform and events*],
         [*Method*], [*Splits*], [*Inference (s)*], [*MAE ↓*], [*RMSE ↓*], [*MAPE (%) ↓*],
         [*r ↑*], [*Trace r ↑*], [*Inhale F1 ↑*], [*Exhale F1 ↑*],
       ),
-      table.hline(stroke: 0.5pt),
+      midrule,
       // "mean (low–high)": the interval goes on a smaller line under the mean.
-      ..rows.flatten().map(c => {
-        let m = c.match(regex("^(\S+) \((.+)\)$"))
-        if m == none { [#c] } else {
-          [#m.captures.at(0) \ #text(size: 5.5pt, fill: luma(90))[#m.captures.at(1)]]
-        }
-      }),
-      table.hline(),
+      ..rows
+        .flatten()
+        .map(c => {
+          let m = c.match(regex("^(\S+) \((.+)\)$"))
+          if m == none { [#c] } else {
+            [#m.captures.at(0) \ #text(size: 5.5pt, fill: luma(90))[#m.captures.at(1)]]
+          }
+        }),
+      bottomrule,
     )
   },
   caption: [*Benchmark on new animals.* Each score averaged within each animal × rig
@@ -320,13 +324,13 @@ three draws of #tbd[2] animals (#tbd[18–19] sessions), and scored each on the 
 (#fig(<fig:general>, "c")). On new animals (test set A), scores barely depended on the
 number of training animals: inhalation F1 was #tbd[0.93] with #tbd[4] animals and
 #tbd[0.94] with #tbd[32] (paired difference #tbd[0.02], 95% interval #tbd[−0.01 to
-0.04]), and the waveform correlation #tbd[0.77] against #tbd[0.79]. Keeping all #tbd[32]
+  0.04]), and the waveform correlation #tbd[0.77] against #tbd[0.79]. Keeping all #tbd[32]
 animals but a quarter of their sessions (#tbd[74]) gave much the same scores (F1
 #tbd[0.93], $r$ #tbd[0.77]). Below four animals the network depended on which animals
 it saw: the three 2-animal draws reached F1 #tbd[0.92], #tbd[0.85] and #tbd[0.71]. A
 network trained on a few animals thus generalizes to new ones about as well as one
 trained on all 32, but not one trained on only two #note[one seed per size; repeat with
-the other seeds, and with the cross-validation folds (full-gray-data-size-cv4-v3)].
+  the other seeds, and with the cross-validation folds (full-gray-data-size-cv4-v3)].
 
 To see where the
 network fails, we examined every missed (false negative, FN) and every false inhalation (false positive, FP) on new animals
@@ -348,30 +352,30 @@ poor and the onset output is far from certain.
 
 #figure(
   fit(fig4),
-  caption: [*Generalization and its limits.* *a*, Per method, on new animals (test set
+  caption: [*Generalization and its limits.* *a,* Per method, on new animals (test set
     A; n = #tbd[107] animal × rig units) and new sessions of known animals (test set B;
     n = #tbd[86]): mean over the #tbd[5] folds with its 95% interval (each fold, the mean
-    over its units). *b*, Inhalation F1 of each test-A animal × rig unit of the five folds
+    over its units). *b,* Inhalation F1 of each test-A animal × rig unit of the five folds
     (mean of its recordings; n = #tbd[107]), ranked by our network; inset, the same units
     by animal (#tbd[48] animals ranked by their mean), the units of one animal (its rigs)
-    joined. *c*, Inhalation F1 (top) and
+    joined. *c,* Inhalation F1 (top) and
     correlation (bottom) of our network retrained on nested subsets of the training
     animals, with all their sessions (filled, joined) or with all #tbd[32] animals and a
     quarter of their sessions (#tbd[74]\; open, drawn beside #tbd[32]), on new animals
     (test set A of the published split): mean over the same #tbd[21] units with 95%
     bootstrap interval; at
     #tbd[2] animals, three draws of the animals (dots; the line joins their mean); one
-    seed per run. *d*, Near misses: among the published split's test-A clips with a
+    seed per run. *d,* Near misses: among the published split's test-A clips with a
     correlation at least the median,
     the one with the most predictions 25–100 ms from a thermistor inhalation (r =
-    #tbd[0.92], F1 #tbd[0.91]), around its densest near misses. *e*, Our network's inhalation F1 on
+    #tbd[0.92], F1 #tbd[0.91]), around its densest near misses. *e,* Our network's inhalation F1 on
     new animals as the matching tolerance is relaxed (pairs within 100 ms; top) and the
     misses (FN) and false inhalations (FP) left, as a share of thermistor breaths
     (bottom), mean over the #tbd[5] folds with its 95% interval; F1 and errors left at
     12.5 ms, 25 ms (the tolerance used throughout), 50 ms (dotted lines) and 100 ms. A
     prediction just outside the tolerance counts as both a miss and a false inhalation,
     so the two shares nearly coincide; n = #tbd[1,519,650] thermistor breaths over the
-    folds. *f*, Inhalations found from an uncertain onset output: among the
+    folds. *f,* Inhalations found from an uncertain onset output: among the
     #tbd[16] test-A clips of the published split in the lowest tenth of correlation, the
     2-s stretch in which every inhalation is found (no error or excluded span, at least
     4 inhalations) with the lowest median onset probability at the network's events
@@ -413,37 +417,50 @@ intervals including zero), and doubling the crop to 192 × 192 pixels lowered it
 correlation #note[one seed per variant].
 
 #note[Application, if one is added: run on sessions or animals with no usable thermistor
-and show one analysis that needs inhalation times.]
+  and show one analysis that needs inhalation times.]
 
 #figure(
   fit(fig5),
-  caption: [*When to trust a prediction.* *a*, Our network's errors on new animals, mean
+  caption: [*When to trust a prediction.* *a,* Our network's errors on new animals, mean
     over the #tbd[5] folds with its 95% interval (#tbd[62,258] misses, FN; #tbd[78,273] false
     inhalations, FP): the share that are near misses (a prediction and a thermistor
     inhalation within 100 ms), and, among the other errors (#tbd[7,702] FN, #tbd[23,100]
     FP), the share in fast breathing (> 8 Hz), in face motion (top 10% of the clip) and on
     shallow breaths (bottom 25% of the clip); grey ticks, the share of all
-    #tbd[1,519,650] thermistor breaths with each property. *b*–*e*, the published split.
-    *b*,
+    #tbd[1,519,650] thermistor breaths with each property. *b–e,* the published split.
+    *b,*
     Spearman correlation with the true inhalation F1 of the five measures that rank the
     #tbd[156] test-A videos best, signed so that a positive value means the measure ranks
-    predictions correctly; colours, families of measures. *c*, Mean true inhalation F1 of
+    predictions correctly; colours, families of measures. *c,* Mean true inhalation F1 of
     the test-A windows kept (#tbd[1,560] 30-s windows), best-judged first, for the three
     measures that rank windows best and for the truth itself (oracle); star, the windows
-    that pass every check; dotted, all windows. *d*, Calibration of the onset output on the
+    that pass every check; dotted, all windows. *d,* Calibration of the onset output on the
     validation animals: the predicted probability that an inhalation is real against the
-    share matched to a thermistor inhalation. *e*, Our network trained differently, minus
+    share matched to a thermistor inhalation. *e,* Our network trained differently, minus
     our network, on test set A: inhalation F1 and correlation, mean over the #tbd[21]
     units with a paired 95% bootstrap interval; one seed each.],
 ) <fig:qc>
 
+#set par.line(numbering: none)
+
+= Data and code availability
+
+We release the code, trained weights, the corpus (face and side video, thermistor and
+timestamps) with its fixed split, and an evaluation that reproduces the scores reported
+here #note[repository URL, data DOI, licence; confirm the corpus can be released; usage:
+  `zephyr preprocess`, `zephyr evaluate`, `zephyr quality-control run`].
+
+#pagebreak()
+#references(bibliography("references.bib"))
+
+#pagebreak()
 = Methods
 
 == Data collection
 
 _Surgery._ All procedures were approved by the Allen Institute Institutional Animal Care
 and Use Committee #note[protocol number; mice: strain, sex, age at surgery, housing and
-light cycle; analgesia and post-operative care]. Thermistors were implanted over the
+  light cycle; analgesia and post-operative care]. Thermistors were implanted over the
 nasal epithelium as described @mcafee2016. Briefly, under isoflurane anaesthesia (1–5%), a
 0.5-mm burr hole was thinned through the nasal bone #tbd[3.1] mm anterior to the
 frontonasal suture and #tbd[0.5] mm right of the midline, and the thermistor tip was
@@ -469,30 +486,25 @@ cut only from stretches of at least 300 s in which every window passed. Detector
 and thresholds were set by eye on the electrophysiology sessions.
 
 #figure(
-  kind: table,
-  supplement: [Table],
   table(
     columns: (auto, 1fr, auto, auto),
     align: (left, left, left, right),
-    stroke: none,
-    inset: (x: 5pt, y: 3.5pt),
-    table.hline(),
+    toprule,
     table.header([*Stage*], [*Rule*], [*Threshold*], [*Removed*]),
-    table.hline(stroke: 0.5pt),
-    [Window (30 s)], [Signal amplitude (5th–95th percentile range)], [≥ #tbd[100] raw units], [#tbd[2,038]],
-    [], [Clipped samples], [#tbd[0]% at ≤ #tbd[20] or ≥ #tbd[4,090]], [—],
-    [], [Breaths outside #tbd[2–15] Hz], [≤ #tbd[10]%], [—],
-    [], [Repeated events (I→I or E→E)], [≤ #tbd[5]%], [—],
-    [Session], [Repeated events over the session], [≤ #tbd[0.3]%], [#tbd[257]],
-    [], [Longest run of good windows], [≥ #tbd[300] s], [#tbd[229]],
-    [], [Event amplitude within expected range], [robust $z <= #tbd[3]$], [#tbd[1]],
-    [], [Dead sensor (low SNR)], [modes ≥ #tbd[3] dB apart], [—],
-    [Clips], [Room for two clips in good stretches], [#tbd[2] × #tbd[300] s], [#tbd[73]],
-    [Cameras], [A camera missing], [], [#tbd[3]],
-    [], [Timestamp alignment issues], [], [#tbd[13]],
-    [], [Low exposure], [], [#tbd[6]],
-    [Manual review], [], [], [#tbd[4]],
-    table.hline(),
+    midrule, [Window (30 s)], [Signal amplitude (5th–95th percentile range)], [≥ #tbd[100] raw units],
+    [#tbd[2,038]], [], [Clipped samples], [#tbd[0]% at ≤ #tbd[20] or ≥ #tbd[4,090]],
+    [—], [], [Breaths outside #tbd[2–15] Hz], [≤ #tbd[10]%],
+    [—], [], [Repeated events (I→I or E→E)], [≤ #tbd[5]%],
+    [—], [Session], [Repeated events over the session], [≤ #tbd[0.3]%],
+    [#tbd[257]], [], [Longest run of good windows], [≥ #tbd[300] s],
+    [#tbd[229]], [], [Event amplitude within expected range], [robust $z <= #tbd[3]$],
+    [#tbd[1]], [], [Dead sensor (low SNR)], [modes ≥ #tbd[3] dB apart],
+    [—], [Clips], [Room for two clips in good stretches], [#tbd[2] × #tbd[300] s],
+    [#tbd[73]], [Cameras], [A camera missing], [],
+    [#tbd[3]], [], [Timestamp alignment issues], [],
+    [#tbd[13]], [], [Low exposure], [],
+    [#tbd[6]], [Manual review], [], [],
+    [#tbd[4]], bottomrule,
   ),
   caption: [*Corpus selection.* Rules in the order applied, with the number of sessions
     each removed. Of #tbd[4,120] recorded sessions, #tbd[1,591] passed the thermistor rules
@@ -523,7 +535,7 @@ In every split (@tab:split), test set A and validation held out whole animals an
 set B held out blocks of consecutive sessions of training animals. Held-out animals were
 the best of many seeded draws covering the corpus's rigs, months and breathing rates, and
 sessions per animal and rig were capped. Animals recorded at #tbd[359] Hz were split by
-session; their remaining #tbd[5] sessions form test set C (@supp:testc).
+session; their remaining #tbd[5] sessions form test set C (@tab:testc).
 Validation animals were used only for early stopping and model selection. The cross-validation folds are described in Supplementary Note 1.
 
 _Training-set size._ We retrained our network on parts of the published split's
@@ -536,27 +548,21 @@ Test-A units on a rig seen in training scored F1 #tbd[0.94] and #tbd[0.96], agai
 #tbd[0.91] for units on other rigs (#tbd[10] against #tbd[11] units with #tbd[4] animals,
 #tbd[15] against #tbd[6] with #tbd[8]). The groups hold different units, so the
 comparison is not paired #note[one seed; repeat with the other seeds and the
-cross-validation folds].
+  cross-validation folds].
 
 #figure(
-  kind: table,
-  supplement: [Table],
   table(
     columns: (auto, auto, auto, auto),
     align: (left, left, right, right),
-    stroke: none,
-    inset: (x: 6pt, y: 3.5pt),
-    table.hline(),
+    toprule,
     table.header([*Set*], [*Held out as*], [*Animals*], [*Sessions*]),
-    table.hline(stroke: 0.5pt),
-    [Train], [—], [#tbd[31–33]], [#tbd[213–295]],
-    [Validation], [whole animals], [#tbd[9]], [#tbd[67–144]],
-    [Test A], [whole animals], [#tbd[9–10]], [#tbd[75–128]],
-    [Test B], [sessions of training animals], [#tbd[26–30]], [#tbd[70–119]],
-    [Test C], [#tbd[359]-Hz sessions], [#tbd[2]], [#tbd[5]],
-    table.hline(stroke: 0.5pt),
-    [Total], [], [#tbd[50]], [#tbd[560]],
-    table.hline(),
+    midrule, [Train], [—], [#tbd[31–33]],
+    [#tbd[213–295]], [Validation], [whole animals], [#tbd[9]],
+    [#tbd[67–144]], [Test A], [whole animals], [#tbd[9–10]],
+    [#tbd[75–128]], [Test B], [sessions of training animals], [#tbd[26–30]],
+    [#tbd[70–119]], [Test C], [#tbd[359]-Hz sessions], [#tbd[2]],
+    [#tbd[5]], midrule, [Total], [],
+    [#tbd[50]], [#tbd[560]], bottomrule,
   ),
   caption: [*Split sizes.* Minimum and maximum over the #tbd[6] splits: the published
     split and the #tbd[5] cross-validation folds, in which each of the #tbd[48] animals
@@ -581,27 +587,22 @@ a non-causal temporal convolutional network (receptive field #tbd[4.2] s) output
 breathing trace and an onset logit at each step (#tbd[0.86] million parameters).
 
 #figure(
-  kind: table,
-  supplement: [Table],
   table(
     columns: (auto, auto, auto),
     align: (left, left, left),
-    stroke: none,
-    inset: (x: 6pt, y: 3pt),
-    table.hline(),
+    toprule,
     table.header([*Stage*], [*Layer*], [*Output*]),
-    table.hline(stroke: 0.5pt),
-    [Input], [gray crop, three consecutive frames], [3 × 96 × 96],
-    [Encoder], [Conv3D 3×5×5, stride (1, 2, 2), BN, GELU], [32 × 48 × 48],
-    [], [Conv 3×3, stride 2, BN, GELU], [64 × 24 × 24],
-    [], [Conv 3×3, stride 2, BN, GELU], [96 × 12 × 12],
-    [], [Conv 3×3, stride 2, BN, GELU], [128 × 6 × 6],
-    [], [average pool to 2×2, flatten, linear, GELU], [128 per frame],
-    [Resampling], [linear interpolation by frame timestamps], [128 at 60 Hz],
-    [Temporal], [Conv 1×1], [128],
-    [], [6 residual blocks of 2 × (Conv 3, dilation $d$, BN, GELU) and dropout; $d = 1, 2, …, 32$], [128],
-    [Heads], [Conv 1×1 (trace), Conv 1×1 (onset logit)], [1 + 1],
-    table.hline(),
+    midrule, [Input], [gray crop, three consecutive frames],
+    [3 × 96 × 96], [Encoder], [Conv3D 3×5×5, stride (1, 2, 2), BN, GELU],
+    [32 × 48 × 48], [], [Conv 3×3, stride 2, BN, GELU],
+    [64 × 24 × 24], [], [Conv 3×3, stride 2, BN, GELU],
+    [96 × 12 × 12], [], [Conv 3×3, stride 2, BN, GELU],
+    [128 × 6 × 6], [], [average pool to 2×2, flatten, linear, GELU],
+    [128 per frame], [Resampling], [linear interpolation by frame timestamps],
+    [128 at 60 Hz], [Temporal], [Conv 1×1],
+    [128], [], [6 residual blocks of 2 × (Conv 3, dilation $d$, BN, GELU) and dropout; $d = 1, 2, …, 32$],
+    [128], [Heads], [Conv 1×1 (trace), Conv 1×1 (onset logit)],
+    [1 + 1], bottomrule,
   ),
   caption: [*Network architecture.* BN, batch normalization.],
 ) <tab:arch>
@@ -618,28 +619,25 @@ comparison networks were trained the same way, each with the loss of its origina
 (Supplementary Note 2).
 
 #figure(
-  kind: table,
-  supplement: [Table],
   table(
     columns: (auto, auto),
     align: (left, left),
-    stroke: none,
-    inset: (x: 6pt, y: 3pt),
-    table.hline(),
+    toprule,
     table.header([*Setting*], [*Value*]),
-    table.hline(stroke: 0.5pt),
-    [Input], [gray, 96 × 96 crop, 60-Hz selection grid],
-    [Window, batch], [#tbd[512] samples (#tbd[8.5] s), #tbd[16]],
-    [Optimizer], [AdamW, learning rate #tbd[6 × 10#super[−4]], weight decay #tbd[10#super[−4]]],
-    [Schedule], [#tbd[200]-step linear warm-up, cosine decay to 1%],
-    [Regularization], [dropout #tbd[0.1] (temporal network), gradient clip #tbd[1], weight EMA #tbd[0.999]],
-    [Loss], [multi-scale $1 - r$ (scales 1, 4, 16) + #tbd[0.5] × onset BCE],
-    [Onset target], [Gaussians, s.d. #tbd[20] ms, per-batch positive weight],
-    [Augmentation], [frame jitter ±0.25 frame, shift ±#tbd[4] px, zoom ±#tbd[10]%, brightness ±#tbd[15]%, contrast ±#tbd[20]%, noise #tbd[2] grey levels],
-    [Selection], [mean correlation on validation animals, every #tbd[4] epochs],
-    [Stopping], [patience #tbd[12] scorings, #tbd[40]–#tbd[200] epochs of #tbd[100] steps],
-    [Precision], [bf16 mixed precision],
-    table.hline(),
+    midrule, [Input],
+    [gray, 96 × 96 crop, 60-Hz selection grid], [Window, batch],
+    [#tbd[512] samples (#tbd[8.5] s), #tbd[16]], [Optimizer],
+    [AdamW, learning rate #tbd[6 × 10#super[−4]], weight decay #tbd[10#super[−4]]], [Schedule],
+    [#tbd[200]-step linear warm-up, cosine decay to 1%], [Regularization],
+    [dropout #tbd[0.1] (temporal network), gradient clip #tbd[1], weight EMA #tbd[0.999]], [Loss],
+    [multi-scale $1 - r$ (scales 1, 4, 16) + #tbd[0.5] × onset BCE], [Onset target],
+    [Gaussians, s.d. #tbd[20] ms, per-batch positive weight], [Augmentation],
+    [frame jitter ±0.25 frame, shift ±#tbd[4] px, zoom ±#tbd[10]%, brightness ±#tbd[15]%, contrast ±#tbd[20]%, noise #tbd[2] grey levels],
+    [Selection],
+
+    [mean correlation on validation animals, every #tbd[4] epochs], [Stopping],
+    [patience #tbd[12] scorings, #tbd[40]–#tbd[200] epochs of #tbd[100] steps], [Precision],
+    [bf16 mixed precision], bottomrule,
   ),
   caption: [*Training settings* of the network reported in the main text.],
 ) <tab:train>
@@ -688,23 +686,13 @@ learning rate 3 × 10#super[−4]).
 
 The unit of analysis is an animal on one rig, whose sessions share the implant, camera
 position and lighting; two rigs of one animal differ in score about two-thirds as much as
-two animals on one rig (@supp:rigs). Scores were averaged over a unit's clips, then over a fold's units,
+two animals on one rig (@fig:rigs). Scores were averaged over a unit's clips, then over a fold's units,
 and reported as the mean over the #tbd[5] folds with a 95% t-interval; differences between
 methods are paired by fold. Analyses of the published split alone (#tbd[21] test-A units)
 use a percentile bootstrap over units (#tbd[2,000] draws). F1 by rate, F1 against
 tolerance and the error profile pool each fold's breaths before averaging over folds; the
 onset lag and rate agreement pool all folds and carry no interval. #note[units of one animal are not independent of each other; check intervals
-with a bootstrap that resamples animals and then units within them]
-
-== Data and code availability
-
-We release the code, trained weights, the corpus (face and side video, thermistor and
-timestamps) with its fixed split, and an evaluation that reproduces the scores reported
-here #note[repository URL, data DOI, licence; confirm the corpus can be released; usage:
-`zephyr preprocess`, `zephyr evaluate`, `zephyr quality-control run`].
-
-#pagebreak()
-#references(bibliography("refs.bib"))
+  with a bootstrap that resamples animals and then units within them]
 
 #pagebreak()
 #show: supplement
@@ -712,17 +700,14 @@ here #note[repository URL, data DOI, licence; confirm the corpus can be released
 
 #let csv-table(path, columns, header, align: auto) = {
   let rows = csv(path).slice(1)
-  set text(size: 7.5pt)
   table(
     columns: columns,
     align: if align == auto { (left,) + (right,) * (columns - 1) } else { align },
-    stroke: none,
-    inset: (x: 4pt, y: 2.5pt),
-    table.hline(),
+    toprule,
     table.header(..header.map(h => [*#h*])),
-    table.hline(stroke: 0.5pt),
+    midrule,
     ..rows.flatten(),
-    table.hline(),
+    bottomrule,
   )
 }
 
@@ -739,16 +724,15 @@ test set B, so each such session is in test set B once. The #tbd[359]-Hz animals
 their sets of the published split in every fold. Every set of every fold is within about
 #tbd[2] percentage points of the corpus's share of time at each breathing rate, and every
 fold passes the checks of the published split (no test or validation animal in training).
-@supp:folds gives the sets of each fold; each fold's runs were scored on exactly its
+@tab:folds gives the sets of each fold; each fold's runs were scored on exactly its
 test-A animals.
 
 #figure(
   kind: table,
-  supplement: [Supplementary Table],
   csv-table("tables/cv_folds.csv", 6, ([Set], [cv_0], [cv_1], [cv_2], [cv_3], [cv_4])),
   caption: [*Cross-validation folds.* Animals / sessions in each set of each fold. Test B
     animals also train, so animals do not add up across sets.],
-) <supp:folds>
+) <tab:folds>
 
 == Supplementary Note 2: Comparison networks
 
@@ -766,42 +750,37 @@ each window's spectrum (one bin per breath per minute over 1–15 Hz) against th
 thermistor's rate in that window: $0.1 r + b ("CE" + "KL")$, with $b$ rising from 1 to 5
 over training, for PhysFormer, and $0.2 r + "CE"$ for RhythmFormer. Their attention spans
 a whole window, so they were also run in windows of their training length. Window,
-batch, steps per epoch and learning rate are in @supp:nets #note[confirm how the learning
-rates were chosen: on the validation animals, or from the papers (PhysFormer 10#super[−4],
-RhythmFormer 9 × 10#super[−3])].
+batch, steps per epoch and learning rate are in @tab:nets #note[confirm how the learning
+  rates were chosen: on the validation animals, or from the papers (PhysFormer 10#super[−4],
+  RhythmFormer 9 × 10#super[−3])].
 
 #figure(
   kind: table,
-  supplement: [Supplementary Table],
   csv-table(
     "tables/comparison_nets.csv",
     9,
-    ([Network], [Window], [Batch], [Steps], [LR], [Inference window], [Scales],
-      [Params (M)], [GPU (s)]),
+    ([Network], [Window], [Batch], [Steps], [LR], [Inference window], [Scales], [Params (M)], [GPU (s)]),
   ),
   caption: [*Networks.* Training window and inference window (samples at 60 Hz), batch
     size (training windows per optimizer step), steps per epoch, peak learning rate, the time scales of the correlation loss
     (our network and PhysNet; the others use their own losses), the number of parameters,
     and the inference time per 5-min clip from the preprocessed crops (median of #tbd[8]
     clips) on a consumer GPU (NVIDIA RTX 4060 Ti, bf16).],
-) <supp:nets>
+) <tab:nets>
 
 #figure(
   kind: table,
-  supplement: [Supplementary Table],
   csv-table("tables/test_c.csv", 4, ([Method], [Trace r], [Inhale F1], [Exhale F1])),
   caption: [*Test set C.* The #tbd[5] sessions of the #tbd[2] animals recorded with the
     #tbd[359]-Hz camera that were held out (published split): each score averaged within
     each animal × rig unit, then over the #tbd[2] units; no interval.],
-) <supp:testc>
+) <tab:testc>
 
 #pagebreak()
 = Supplementary figures
 
 #figure(
   fit(figs1),
-  kind: image,
-  supplement: [Supplementary Fig.],
   caption: [*Rig and animal as sources of score differences.* Our network on new animals
     (test set A of the five folds, each animal new once). Pairs of units (an animal on one
     rig, its score averaged over its clips) that share the animal but not the rig
@@ -810,4 +789,4 @@ RhythmFormer 9 × 10#super[−3])].
     bin of absolute difference between the two units of a pair, in inhale F1 (left) and
     trace correlation (right), 30 bins shared by the two kinds; above, each kind's mean with a
     95% bootstrap interval resampling animals (#tbd[2,000] draws).],
-) <supp:rigs>
+) <fig:rigs>
