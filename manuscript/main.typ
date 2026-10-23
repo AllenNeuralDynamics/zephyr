@@ -221,7 +221,7 @@ control and example clips) use the published split, one of these draws.
   caption: [*The corpus.* *a,* Selection: the recorded sessions, step by step, to the
     corpus; each loss is labelled with the first rule the session failed (rules and
     thresholds in @tab:qc). *b,* Distribution of breathing rate (thermistor breaths,
-    2–15 Hz) over the corpus (black; n = #tbd[1,630,355] breaths) and for each animal (grey;
+    2–15 Hz) over the corpus (black; n = #tbd[1,614,211] breaths) and for each animal (grey;
     n = #tbd[50]). *c,* Sessions per animal, by the number of rigs the animal was recorded
     on (n = #tbd[50] animals, #tbd[560] sessions).],
 ) <fig:corpus>
@@ -278,7 +278,8 @@ the thermistor by a median of #tbd[1.7] ms (interquartile range #tbd[−6.2 to 8
 well within one breath at the fastest sniffing rates, and the lag hardly changed with
 breathing rate, from a median of #tbd[+2.5] ms at 2–3 Hz to #tbd[+0.5] ms at 11–12 Hz
 (#fig(<fig:benchmark>, "d")). Breathing rate, counted in 10-s windows, agreed with
-the thermistor with a mean absolute error of #tbd[4.8] breaths per minute and a bias of
+the thermistor with a mean absolute error of #tbd[4.8] breaths per minute (over all windows;
+#tbd[5.0] averaged within animal × rig units, @tab:benchmark) and a bias of
 #tbd[+3.1] (95% limits of agreement #tbd[−14.7] to #tbd[+20.9]\; #fig(<fig:benchmark>, "e")), the measures
 used for camera respiration in humans @villarroel2019. @tab:benchmark gives these rate
 measures for every method, as reported for camera physiology in humans @liu2023toolbox.
@@ -295,7 +296,7 @@ measures for every method, as reported for camera physiology in humans @liu2023t
     filled, networks on a consumer GPU; open, methods on a CPU. *c,* Inhalation F1 on new
     animals by breathing rate for each network, mean over folds with its 95% interval (top;
     colours as in *b*), and the share of breaths at each rate (bottom); n =
-    #tbd[1,519,650] thermistor breaths at 2–15 Hz over the folds (published split,
+    #tbd[1,503,469] thermistor breaths at 2–15 Hz over the folds (published split,
     #tbd[221,626]). *d,* Our network's onset lag (predicted minus thermistor; every
     thermistor inhalation with a prediction within 50 ms) against the breath's rate, every
     fold's new animals pooled: the share of each rate bin's lags (colour), with the median
@@ -329,7 +330,7 @@ of known animals (test set B) were higher than on new animals (test set A): our 
 correlation was #tbd[0.91] on B against #tbd[0.81] on A, and PhysNet's #tbd[0.89] against
 #tbd[0.79] (#fig(<fig:general>, "a")\; every measure in @tab:benchmark-b). A new recording day of a known animal costs
 little; most of the error comes from animals the network has never seen. Scores varied between the #tbd[107] animal × rig units of the five folds
-(#fig(<fig:general>, "b")) #note[range of per-unit F1; which units are worst and why]. In every fold, our network scored at least as high as PhysNet in inhalation F1 and correlation (in one fold the two were tied; @tab:benchmark).
+(#fig(<fig:general>, "b")) #note[range of per-unit F1; which units are worst and why]. In every fold, our network scored at least as high as PhysNet in inhalation F1 and correlation (in one fold the two were tied; #fig(<fig:benchmark>, "b")).
 
 
 To ask how much data is necessary to generalize to new held-out animals, we retrained our
@@ -337,11 +338,11 @@ network on nested subsets of #tbd[4], #tbd[8] and #tbd[16] of the #tbd[32] train
 animals, with all their sessions (#tbd[35], #tbd[74] and #tbd[148] of #tbd[295]), and on
 three draws of #tbd[2] animals (#tbd[18–19] sessions), and scored each on the same test sets
 (#fig(<fig:general>, "c")). On new animals (test set A), scores barely depended on the
-number of training animals: inhalation F1 was #tbd[0.93] with #tbd[4] animals and
-#tbd[0.94] with #tbd[32] (paired difference #tbd[0.02], 95% interval #tbd[−0.01 to
+number of training animals: inhalation F1 was #tbd[0.92] with #tbd[4] animals and
+#tbd[0.94] with #tbd[32] (paired difference #tbd[0.02], 95% interval #tbd[−0.00 to
   0.04]), and the waveform correlation #tbd[0.77] against #tbd[0.79]. Keeping all #tbd[32]
 animals but a quarter of their sessions (#tbd[74]) gave much the same scores (F1
-#tbd[0.93], $r$ #tbd[0.77]). Below four animals the network depended on which animals
+#tbd[0.92], $r$ #tbd[0.77]). Below four animals the network depended on which animals
 it saw: the three 2-animal draws reached F1 #tbd[0.92], #tbd[0.85] and #tbd[0.71]. A
 network trained on a few animals thus generalizes to new ones about as well as one
 trained on all 32, but not one trained on only two #note[one seed per size; repeat with
@@ -358,7 +359,7 @@ A low waveform correlation did not mean that the breaths were lost. Across the t
 clips of the published split,
 correlation and inhalation F1 were only loosely related (Spearman $rho = #tbd[0.41]$):
 in the #tbd[16] clips with the lowest tenth of correlations ($r < #tbd[0.61]$), median F1
-was still #tbd[0.76], and a quarter reached #tbd[0.9] or more. In the clip shown
+was still #tbd[0.76], and a quarter reached #tbd[0.89] or more. In the clip shown
 (correlation #tbd[0.48]), every inhalation over the 2 s shown was found although the
 onset output peaked at only #tbd[0.58–0.88] (median #tbd[0.70], against a threshold of
 0.5) and the trace departed from the thermistor in shape ($r = #tbd[0.50]$ over the
@@ -424,12 +425,13 @@ also calibrated: on validation animals, the probability the network gives a pred
 inhalation matched the share that were real (expected calibration error #tbd[0.002]\;
 #fig(<fig:qc>, "d")), so each inhalation can carry its own confidence.
 
-Finally, the network's accuracy did not hinge on its training recipe
-(#fig(<fig:qc>, "e")). Training with more augmentation, or with every breathing-rate bin
-weighted equally, changed inhalation F1 on test set A of the published split by less than #tbd[0.01] (paired
-intervals including zero), and doubling the crop to 192 × 192 pixels lowered it slightly
-(#tbd[−0.013], 95% interval #tbd[−0.021 to −0.006]); no variant changed the waveform
-correlation #note[one seed per variant].
+Finally, the network's accuracy did not hinge on how it was trained, but it did depend
+on the crop it sees (#fig(<fig:qc>, "e")). Training with more augmentation, or with every
+breathing-rate bin weighted equally, changed inhalation F1 and the waveform correlation on
+test set A of the published split by less than #tbd[0.01] (paired intervals including
+zero). Doubling the crop to 192 × 192 pixels lowered both: inhalation F1 by #tbd[0.055]
+(95% interval #tbd[0.030–0.083]) and the correlation by #tbd[0.078] (#tbd[0.026–0.122])
+#note[one seed per variant].
 
 #note[Application, if one is added: run on sessions or animals with no usable thermistor
   and show one analysis that needs inhalation times.]
