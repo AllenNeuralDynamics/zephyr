@@ -156,7 +156,7 @@ resumable steps; what each does and the folder layout are in its README.
   `folds.check`, which refuses a held-out animal in training. Keep the README's "Why these
   sessions" current with any change to the split.
 - Face crop boxes are made by `python -m zephyr.corpus.boxes` (template match, your
-  corrections on the app's Boxes page, `zephyr gui boxes/face.toml --page boxes`, then
+  corrections on the app's Boxes page, `zephyr gui boxes/face_camera_snout.toml --page boxes`, then
   `publish`) and live in `clips.toml`;
   `clips` keeps them, and lists the side camera as excluded (`[clips] exclude_cameras`). `python -m zephyr.corpus.rois` is a helper that writes only to a
   local folder, never the dataset or the spec; OWLv2 needs `--extra rois`.

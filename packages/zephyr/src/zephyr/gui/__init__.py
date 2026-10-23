@@ -11,7 +11,7 @@ CLI
     zephyr gui                        # choose or create a project
     zephyr gui my-project/            # a project folder
     zephyr gui my-project/clips.toml  # a project, on this clip list
-    zephyr gui boxes/face.toml --page boxes   # straight to a page (boxes, breathing, ...)
+    zephyr gui boxes/face_camera_snout.toml --page boxes   # straight to a page (boxes, breathing, ...)
 """
 
 import argparse

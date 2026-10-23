@@ -65,7 +65,9 @@ class BoxTests(unittest.TestCase):
 
     def test_match_then_hand_placed_then_published(self):
         boxes.prepare(self.spec, self.work, "FaceCamera", 96, 0.58)
-        face = load(ClipList, self.work / "face.toml", check_files=False).resolve()
+        face = load(
+            ClipList, self.work / "face_camera_snout.toml", check_files=False
+        ).resolve()
         self.assertEqual(len(face), 6)  # the face clips only
         self.assertTrue(all("FaceCamera" in c.video.name for c in face))
         by_session = {}
@@ -83,11 +85,15 @@ class BoxTests(unittest.TestCase):
                 np.load(frame_path(self.work / "frames", c.video)).shape, (540, 720)
             )
         # a box placed by hand in the UI, then published into the dataset's clips.toml
-        write = tomlkit.parse((self.work / "face.toml").read_text(encoding="utf-8"))
+        write = tomlkit.parse(
+            (self.work / "face_camera_snout.toml").read_text(encoding="utf-8")
+        )
         for e in write["clip"]:
             if e["group"] == "c":
                 e["box"] = [10, 20, 96, 96]
-        (self.work / "face.toml").write_text(tomlkit.dumps(write), encoding="utf-8")
+        (self.work / "face_camera_snout.toml").write_text(
+            tomlkit.dumps(write), encoding="utf-8"
+        )
         boxes.publish(self.spec, self.work, "FaceCamera")
         listed = tomlkit.parse(self.layout.clip_list.read_text(encoding="utf-8"))[
             "clip"
@@ -105,15 +111,32 @@ class BoxTests(unittest.TestCase):
 
     def test_a_published_box_is_not_overwritten_by_the_match(self):
         boxes.prepare(self.spec, self.work, "FaceCamera", 96, 0.58)
-        write = tomlkit.parse((self.work / "face.toml").read_text(encoding="utf-8"))
+        write = tomlkit.parse(
+            (self.work / "face_camera_snout.toml").read_text(encoding="utf-8")
+        )
         for e in write["clip"]:
             if e["group"] == "a":
                 e["box"] = [1, 2, 96, 96]
-        (self.work / "face.toml").write_text(tomlkit.dumps(write), encoding="utf-8")
+        (self.work / "face_camera_snout.toml").write_text(
+            tomlkit.dumps(write), encoding="utf-8"
+        )
         boxes.publish(self.spec, self.work, "FaceCamera")
         boxes.prepare(self.spec, self.work, "FaceCamera", 96, 0.58)  # a re-run
-        face = load(ClipList, self.work / "face.toml", check_files=False).resolve()
+        face = load(
+            ClipList, self.work / "face_camera_snout.toml", check_files=False
+        ).resolve()
         self.assertEqual({c.box for c in face if c.group == "a"}, {(1, 2, 96, 96)})
+
+
+class WorkListTests(unittest.TestCase):
+    def test_each_camera_has_its_own_work_list(self):
+        work = Path("boxes")
+        self.assertEqual(
+            boxes.work_list(work, "FaceCamera").name, "face_camera_snout.toml"
+        )
+        self.assertEqual(
+            boxes.work_list(work, "SideCamera").name, "side_camera_snout.toml"
+        )
 
 
 if __name__ == "__main__":

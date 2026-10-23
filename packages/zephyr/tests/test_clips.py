@@ -77,6 +77,15 @@ class ScanTests(_Tmp):
         self.assertIn("# kept", text)
         self.assertEqual(load(ClipList, path).resolve()[0].box, (1, 2, 32, 32))
 
+    def test_write_boxes_rereads_a_list_changed_since_it_wrote(self):
+        video = touch_clip(self.root / "d", 1, 1)
+        path = write_list(self.root / "l.toml", [video])
+        write_boxes(path, {video: (1, 2, 32, 32)})
+        path.write_text("# edited elsewhere\n" + path.read_text())
+        write_boxes(path, {video: (3, 4, 32, 32)})
+        self.assertIn("# edited elsewhere", path.read_text())
+        self.assertEqual(load(ClipList, path).resolve()[0].box, (3, 4, 32, 32))
+
 
 class AnnotateStateTests(_Tmp):
     def _state(self) -> BoxState:

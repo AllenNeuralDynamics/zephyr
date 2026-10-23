@@ -174,15 +174,15 @@ It holds only what later stages need:
 
 `clips` cuts only the sessions `folds.parquet` assigns, once it exists.
 
-### Crop boxes for the face clips
+### Crop boxes
 
 A script, not a build step and not in the spec; the work folder is local. `clips.toml`
-names clips that are not on your machine, so the face clips go in a local `face.toml` with
+names clips that are not on your machine, so one camera's clips go in a local `<camera>_snout.toml` (`face_camera_snout.toml`) with
 one frame per clip, the session's thumbnail:
 
 ```bash
 uv run python -m zephyr.corpus.boxes prepare <spec> --work boxes --profile IAmAnywhere
-uv run zephyr gui boxes/face.toml --page boxes   # on boxes/frames; the box size is prepare's
+uv run zephyr gui boxes/face_camera_snout.toml --page boxes   # on boxes/frames; the box size is prepare's
 uv run python -m zephyr.corpus.boxes publish <spec> --work boxes --profile IAmAnywhere
 ```
 
@@ -191,8 +191,10 @@ against each session's thumbnail and puts a 96x96 box (in the 360x270 frame, 192
 on the best match if it scores at least `--min-score` (0.58) and sits where a snout can;
 both spans of a session share the box. The rest have no box: place them in the UI, which
 is also where you correct the others (`auto.csv` lists the scores). `publish` writes the
-boxes into the dataset's `clips.toml` (face clips only), and `clips` keeps them when it
-rewrites the list. The match centres on the nose-tip pad; the nostrils are not resolvable
+boxes of `--camera` (default `FaceCamera`) into the dataset's `clips.toml`, and `clips`
+keeps them when it rewrites the list. The labelled snouts are face-camera ones: for another
+camera, place a few boxes by hand on the Boxes page and let its Auto (`a`) match them on
+the rest. The match centres on the nose-tip pad; the nostrils are not resolvable
 at 720x540, so a global offset is applied later if wanted. `python -m zephyr.corpus.rois`
 is the helper used to find this method (OWLv2 or template matching, with a preview image);
 it needs `--extra rois` for OWLv2.

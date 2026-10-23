@@ -1,16 +1,18 @@
-"""Crop boxes for the face clips: a template match first, then your corrections.
+"""Crop boxes for one camera's clips: a template match first, then your corrections.
 
-A script to run, not a build step; the work folder holds a local ``face.toml`` (the face
-clips of ``clips.toml``, whose files are not on this machine) and one frame per clip, the
-session's thumbnail. ``publish`` writes the boxes back into the dataset's ``clips.toml``.
+A script to run, not a build step; the work folder holds a local list per camera (e.g.
+``face_camera_snout.toml``: that camera's clips of ``clips.toml``, whose files are not on
+this machine) and one frame per clip, the session's thumbnail. ``publish`` writes the
+boxes back into the dataset's ``clips.toml``.
 
     uv run python -m zephyr.corpus.boxes prepare <spec.toml> --work boxes
-    uv run zephyr gui boxes/face.toml --page boxes   # frames from boxes/frames
+    uv run zephyr gui boxes/face_camera_snout.toml --page boxes   # frames: boxes/frames
     uv run python -m zephyr.corpus.boxes publish <spec.toml> --work boxes
 """
 
 import argparse
 import os
+import re
 from pathlib import Path
 
 import numpy as np
@@ -25,14 +27,19 @@ from .config import DatasetSpec, Layout
 from .lists import validate
 
 
-def face_entries(doc, camera: str) -> list:
+def camera_entries(doc, camera: str) -> list:
     return [e for e in doc["clip"] if str(e["video"]).endswith(f"_{camera}.mp4")]
+
+
+def work_list(work: Path, camera: str) -> Path:
+    """The work folder's list of *camera*'s clips: ``SideCamera`` -> ``side_camera_snout.toml``."""
+    return work / f"{re.sub(r'(?<!^)(?=[A-Z])', '_', camera).lower()}_snout.toml"
 
 
 def prepare(spec, work: Path, camera: str, box_size: int, min_score: float) -> None:
     layout = Layout(spec.root)
     doc = tomlkit.parse(layout.clip_list.read_text(encoding="utf-8"))
-    entries = face_entries(doc, camera)
+    entries = camera_entries(doc, camera)
     target = tuple(doc["preprocess"]["target_size"])
     crops = rois.example_crops(layout, camera)
     matcher = rois.Template(crops)
@@ -65,7 +72,7 @@ def prepare(spec, work: Path, camera: str, box_size: int, min_score: float) -> N
     out.add("clip", tomlkit.aot())
     for e in entries:
         out["clip"].append(e)
-    (work / "face.toml").write_text(tomlkit.dumps(out), encoding="utf-8")
+    work_list(work, camera).write_text(tomlkit.dumps(out), encoding="utf-8")
     pd.DataFrame(rows).to_csv(work / "auto.csv", index=False)
     done = sum(
         1 for sid in sessions if any("box" in e for e in entries if e["group"] == sid)
@@ -77,12 +84,13 @@ def prepare(spec, work: Path, camera: str, box_size: int, min_score: float) -> N
 
 def publish(spec, work: Path, camera: str) -> None:
     layout = Layout(spec.root)
-    face = tomlkit.parse((work / "face.toml").read_text(encoding="utf-8"))
+    path = work_list(work, camera)
+    face = tomlkit.parse(path.read_text(encoding="utf-8"))
     doc = tomlkit.parse(layout.clip_list.read_text(encoding="utf-8"))
     if list(doc["preprocess"]["target_size"]) != list(
         face["preprocess"]["target_size"]
     ):
-        raise SystemExit("boxes: face.toml changed the target size; set it back")
+        raise SystemExit(f"boxes: {path.name} changed the target size; set it back")
     boxes = {
         str(e["video"]): [int(v) for v in e["box"]] for e in face["clip"] if "box" in e
     }
@@ -91,7 +99,7 @@ def publish(spec, work: Path, camera: str) -> None:
             e["box"] = boxes[str(e["video"])]
     validate(doc, layout)
     storage.write_text(layout.clip_list, tomlkit.dumps(doc))
-    entries = face_entries(doc, camera)
+    entries = camera_entries(doc, camera)
     left = {str(e["group"]) for e in entries if "box" not in e}
     print(
         f"boxes: {len(boxes)} of {len(entries)} {camera} clips boxed; {len(left)} sessions without"

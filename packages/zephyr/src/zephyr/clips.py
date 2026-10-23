@@ -162,18 +162,45 @@ def write_boxes(
     the hand-edited file survive.  Videos are keyed by resolved path.
     """
     path = path.resolve()
-    doc = tomlkit.parse(path.read_text())
+    doc, videos = _boxed_list(path)
     if target_size is not None:
         doc["preprocess"]["target_size"] = list(target_size)
-    for entry in doc["clip"]:
-        if "video" not in entry:  # thermistor only: never boxed
-            continue
-        video = (path.parent / str(entry["video"])).resolve()
+    for entry, video in videos:
         if video in boxes:
             entry["box"] = list(boxes[video])
         elif video in clear and "box" in entry:
             del entry["box"]
-    path.write_text(tomlkit.dumps(doc))
+    try:
+        path.write_text(tomlkit.dumps(doc))
+    finally:
+        _BOXED.pop(path, None)
+    _BOXED[path] = (_stamp(path), doc, videos)
+
+
+_BOXED: dict[Path, tuple] = {}
+"""The list :func:`write_boxes` last wrote, parsed, with its file's stamp: the Boxes
+page saves after every key, and parsing a list of a thousand clips takes most of a
+second."""
+
+
+def _stamp(path: Path) -> tuple[int, int]:
+    stat = path.stat()
+    return stat.st_mtime_ns, stat.st_size
+
+
+def _boxed_list(path: Path) -> tuple:
+    """*path* parsed, with each boxable entry and its resolved video; re-read whenever
+    the file changed since :func:`write_boxes` wrote it."""
+    cached = _BOXED.get(path)
+    if cached is not None and cached[0] == _stamp(path):
+        return cached[1], cached[2]
+    doc = tomlkit.parse(path.read_text())
+    videos = [
+        (entry, (path.parent / str(entry["video"])).resolve())
+        for entry in doc["clip"]
+        if "video" in entry  # thermistor only: never boxed
+    ]
+    return doc, videos
 
 
 def update_clip_list(
