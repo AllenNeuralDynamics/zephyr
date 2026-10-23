@@ -118,6 +118,19 @@ def _fetch(key: str) -> Path | None:
     return local
 
 
+def dataset_file(name: str, url: str) -> Path:
+    """A file of the dataset (*url*: its root, the spec's ``root``): the local copy's
+    when it has one, else downloaded once into ``cache/dataset/``."""
+    local = root() / "dataset" / name
+    if local.is_file():
+        return local
+    cached = CACHE / "dataset" / name
+    if not cached.is_file():
+        cached.parent.mkdir(parents=True, exist_ok=True)
+        _s3().get(f"{url.removeprefix('s3://').rstrip('/')}/{name}", str(cached))
+    return cached
+
+
 def folder(m: ReportedRun) -> str:
     """A run's folder under the root: ``<run>/<fold>``."""
     return f"{m.run}/{m.fold or RESULTS.fold}"
@@ -376,9 +389,7 @@ def _saved(
     ``traces/``, the baselines' ``traces/``), downloaded; ``None`` if it saved none."""
     m = RUNS[name]
     if m.kind == "network":
-        path = _fetch(
-            f"{folder(m)}/{seeds(folder(m))[0]}/{TRACES}/{trace_name(e)}"
-        )
+        path = _fetch(f"{folder(m)}/{seeds(folder(m))[0]}/{TRACES}/{trace_name(e)}")
         if path is None:
             return None
         s = pd.read_parquet(path)
@@ -389,9 +400,7 @@ def _saved(
         )
         return None if path is None else (np.load(path), None)
     method = m.variant.split("/")[0]
-    path = _fetch(
-        f"{folder(m)}/pixel/{method}/traces/{baselines.trace_key(e)}.npy"
-    )
+    path = _fetch(f"{folder(m)}/pixel/{method}/traces/{baselines.trace_key(e)}.npy")
     return None if path is None else (_calibrated(name, np.load(path)), None)
 
 

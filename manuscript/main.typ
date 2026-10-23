@@ -1,31 +1,20 @@
 // Manuscript draft. Build: typst compile manuscript/main.typ
-// Numbers in yellow are provisional (corpus-v3, seed 17, pooled over sessions);
-// they become means over animal x rig units with bootstrap intervals, over 5 seeds.
-// Red notes are for the authors and are removed before submission.
+// Numbers in yellow are provisional; red notes are for the authors and are removed
+// before submission.
 
+#import "default-style.typ": *
 #import "figures/fig1.typ": body as fig1
 #import "figures/fig2.typ": body as fig2
 #import "figures/fig3.typ": body as fig3
 #import "figures/fig4.typ": body as fig4
 #import "figures/fig5.typ": body as fig5
+#import "figures/figs1.typ": body as figs1
 
 // A figure assembled at its printed width (183 mm), scaled to the text width.
 #let fit(body) = layout(size => scale(reflow: true, size.width / 189mm * 100%, body))
 
 #let tbd(body) = highlight(fill: rgb("#fff3b0"), body)
 #let note(body) = text(fill: rgb("#b42318"), size: 8.5pt)[\[#body\]]
-
-#set document(title: "Inferring mouse breathing from orofacial video")
-#set page(paper: "a4", margin: (x: 2.4cm, y: 2.4cm), numbering: "1")
-#set text(font: ("Libertinus Serif", "New Computer Modern"), size: 11pt, lang: "en")
-#set par(justify: true, leading: 0.75em, spacing: 1.2em)
-#set heading(numbering: none)
-#show heading.where(level: 2): set text(size: 11pt, style: "italic")
-#set figure(supplement: [Fig.])
-#set figure.caption(separator: [ | ])
-#show figure.caption: set text(size: 9pt)
-#show figure.caption: set align(left)
-#show figure.where(kind: table): set figure.caption(position: top)
 
 // Figure reference with a panel letter: #fig(<fig:corpus>, "b") gives "Fig. 2b".
 #let fig(label, panel) = [#ref(label)#panel]
@@ -39,31 +28,28 @@
   #v(2pt)
   _Source: #source _
 ]
-#show heading.where(level: 1): set text(size: 13pt)
 
-#align(center)[
-  #text(size: 16pt, weight: "bold")[
-    Inferring sniffing from orofacial video in mice]
-  #v(0.6em)
-  VrForaging Platform#super[1], #note[authors] \
-  #text(size: 9.5pt)[#super[1]Allen Institute for Neural Dynamics, Seattle, WA, USA]
-]
-
-#v(1em)
-
-= Abstract
-
-Rodents rely on olfaction to survive. Odors guide them to find food, avoid predators and recognize mates and
-kin. Mice sample odors actively by sniffing, so the timing of each breath shapes odor perception. Ground-truth methods for measuring sniffing in mice typically rely on sensors implanted in the nasal cavity which require invasive surgery and
-often fail to yield a usable signal.
-Here we show that the breathing waveform and the
-timing of each inhalation can be inferred from ordinary video. We assembled a
-corpus of #tbd[560] curated sessions from #tbd[50] head-fixed mice that pairs face video with a
-synchronized intranasal thermistor. On animals never seen in training (#tbd[48] animals,
-each held out once in a five-fold cross-validation), our network detected inhalation
-onsets with an F1 score of #tbd[0.96] (within 25 ms of the real onset) and recovered the
-waveform with an average correlation of #tbd[0.81]. Video can thus provide
-breath-by-breath timing in head-fixed mice without a nasal implant.
+#show: preprint.with(
+  title: [Inferring sniffing from orofacial video in mice],
+  short-title: [Sniffing from orofacial video],
+  authors: ((name: "VrForaging Platform", affiliations: ("aind",)),),
+  affiliations: (
+    aind: [Allen Institute for Neural Dynamics, Seattle, WA, USA #note[authors]],
+  ),
+  abstract: [
+    Rodents rely on olfaction to survive. Odors guide them to find food, avoid predators and recognize mates and
+    kin. Mice sample odors actively by sniffing, so the timing of each breath shapes odor perception. Ground-truth methods for measuring sniffing in mice typically rely on sensors implanted in the nasal cavity which require invasive surgery and
+    often fail to yield a usable signal.
+    Here we show that the breathing waveform and the
+    timing of each inhalation can be inferred from ordinary video. We assembled a
+    corpus of #tbd[560] curated sessions from #tbd[50] head-fixed mice that pairs face video with a
+    synchronized intranasal thermistor. On animals never seen in training (#tbd[48] animals,
+    each held out once in a five-fold cross-validation), our network detected inhalation
+    onsets with an F1 score of #tbd[0.96] (within 25 ms of the real onset) and recovered the
+    waveform with an average correlation of #tbd[0.81]. Video can thus provide
+    breath-by-breath timing in head-fixed mice without a nasal implant.
+  ],
+)
 
 = Introduction
 
@@ -166,8 +152,9 @@ new day of a known animal. Validation animals, held out whole, were used only to
 models, and test sessions only for final scoring. We drew five such splits, the folds of
 a cross-validation in which each of the #tbd[48] animals outside the #tbd[359]-Hz group is
 a new animal once (Methods, @tab:split). Because sessions of one animal on one rig
-resemble each other, the unit of comparison is an animal on one rig (an animal × rig
-unit): scores are averaged within each unit, then over the units of a fold, and reported
+resemble each other, and moving an animal to another rig changed its scores about
+two-thirds as much as changing the animal on one rig (@supp:rigs), the unit of comparison
+is an animal on one rig (an animal × rig unit): scores are averaged within each unit, then over the units of a fold, and reported
 as the mean over the five folds with its 95% interval (Methods, Statistics). Over the
 folds, test set A holds #tbd[107] units from #tbd[48] animals, and test set B #tbd[86]
 from #tbd[41]. Analyses of a single trained network (the training-set size, quality
@@ -230,9 +217,7 @@ correlation of #tbd[0.81] (#tbd[0.78–0.84]), against #tbd[0.79] for PhysNet (d
 were tied (#tbd[0.79] against #tbd[0.80]). PhysNet counted breathing rate as well as our
 network (@tab:benchmark). It also infers faster than PhysNet:
 a 5-min clip took #tbd[0.87] s on a consumer GPU (RTX 4060 Ti), against #tbd[1.58] s for
-PhysNet and #tbd[5.8–6.0] s for the two transformers (#fig(<fig:benchmark>, "b")), and
-#tbd[3.4] s on a CPU, against #tbd[19] s #note[re-time on CPU with the corpus-v3 models]
-(Supplementary Table #tbd[2]). The onset output contributed modestly: detecting inhalations as
+PhysNet and #tbd[5.8–6.0] s for the two transformers (#fig(<fig:benchmark>, "b"); @supp:nets). The onset output contributed modestly: detecting inhalations as
 peaks of the predicted trace gave F1 #tbd[0.94], against #tbd[0.96] from the onset
 probability. Exhalations, detected on the trace, were found less reliably (F1 #tbd[0.75]).
 
@@ -347,19 +332,19 @@ To see where the
 network fails, we examined every missed (false negative, FN) and every false inhalation (false positive, FP) on new animals
 (#fig(<fig:general>, "d")\; their causes are in #fig(<fig:qc>, "a")). Most of the failures, about three quarters, were small differences between the predicted and true inhalation times rather than gross misdetections (#fig(<fig:general>, "d")). Relaxing the tolerance from 25 to 100 ms raised inhalation F1 on
 new animals from #tbd[0.96] to #tbd[0.99] (mean over folds) and cut the errors left from
-#tbd[9.0%] to #tbd[2.0%] of breaths (#fig(<fig:general>, "e")).
+#tbd[9.0%] to #tbd[2.0%] of breaths; halving it to 12.5 ms lowered F1 to #tbd[0.72]
+(#fig(<fig:general>, "e")).
 
 A low waveform correlation did not mean that the breaths were lost. Across the test-A
 clips of the published split,
 correlation and inhalation F1 were only loosely related (Spearman $rho = #tbd[0.41]$):
 in the #tbd[16] clips with the lowest tenth of correlations ($r < #tbd[0.61]$), median F1
-was still #tbd[0.76], and a quarter reached #tbd[0.9] or more. In the clip shown,
-the waveform correlation was #tbd[0.48] yet every inhalation was found (F1
-#tbd[1.00]); over the 2 s shown, through fast sniffing and a pause, the predicted trace
-departs from the thermistor in shape and level ($r = #tbd[0.36]$, RMSE #tbd[1.7]
-s.d.), while each predicted onset falls on a thermistor inhalation
-(#fig(<fig:general>, "f")). Onset times can thus be used even where the waveform is
-poor.
+was still #tbd[0.76], and a quarter reached #tbd[0.9] or more. In the clip shown
+(correlation #tbd[0.48]), every inhalation over the 2 s shown was found although the
+onset output peaked at only #tbd[0.58–0.88] (median #tbd[0.70], against a threshold of
+0.5) and the trace departed from the thermistor in shape ($r = #tbd[0.50]$ over the
+2 s; #fig(<fig:general>, "f")). Onset times can thus be used even where the waveform is
+poor and the onset output is far from certain.
 
 #figure(
   fit(fig4),
@@ -367,7 +352,9 @@ poor.
     A; n = #tbd[107] animal × rig units) and new sessions of known animals (test set B;
     n = #tbd[86]): mean over the #tbd[5] folds with its 95% interval (each fold, the mean
     over its units). *b*, Inhalation F1 of each test-A animal × rig unit of the five folds
-    (mean of its recordings; n = #tbd[107]), ranked by our network. *c*, Inhalation F1 (top) and
+    (mean of its recordings; n = #tbd[107]), ranked by our network; inset, the same units
+    by animal (#tbd[48] animals ranked by their mean), the units of one animal (its rigs)
+    joined. *c*, Inhalation F1 (top) and
     correlation (bottom) of our network retrained on nested subsets of the training
     animals, with all their sessions (filled, joined) or with all #tbd[32] animals and a
     quarter of their sessions (#tbd[74]\; open, drawn beside #tbd[32]), on new animals
@@ -377,18 +364,18 @@ poor.
     seed per run. *d*, Near misses: among the published split's test-A clips with a
     correlation at least the median,
     the one with the most predictions 25–100 ms from a thermistor inhalation (r =
-    #tbd[0.92], F1 #tbd[0.91]), around its densest near misses. *e*, Inhalation F1 on new
-    animals as the matching tolerance is relaxed (pairs within 100 ms), mean over the
-    #tbd[5] folds with its 95% interval; for our network, F1 and errors left (misses and
-    false inhalations, as a share of breaths) at 25 ms (the tolerance used throughout),
-    50 ms (dotted lines) and 100 ms; n = #tbd[1,519,650] thermistor breaths per network over
-    the folds. *f*, A clip with low correlation whose inhalations are
-    all found: among the #tbd[16] test-A clips of the published split in the lowest
-    tenth of correlation, the
-    one with the highest inhalation F1 (r = #tbd[0.48], F1 #tbd[1.00]), around the 2-s
-    stretch with the largest difference between trace and thermistor (RMSE, both z-scored
-    over the clip) among stretches with no error or excluded span and at least 4
-    inhalations (r = #tbd[0.36], RMSE #tbd[1.7]). In *d* and *f* (one clip each):
+    #tbd[0.92], F1 #tbd[0.91]), around its densest near misses. *e*, Our network's inhalation F1 on
+    new animals as the matching tolerance is relaxed (pairs within 100 ms; top) and the
+    misses (FN) and false inhalations (FP) left, as a share of thermistor breaths
+    (bottom), mean over the #tbd[5] folds with its 95% interval; F1 and errors left at
+    12.5 ms, 25 ms (the tolerance used throughout), 50 ms (dotted lines) and 100 ms. A
+    prediction just outside the tolerance counts as both a miss and a false inhalation,
+    so the two shares nearly coincide; n = #tbd[1,519,650] thermistor breaths over the
+    folds. *f*, Inhalations found from an uncertain onset output: among the
+    #tbd[16] test-A clips of the published split in the lowest tenth of correlation, the
+    2-s stretch in which every inhalation is found (no error or excluded span, at least
+    4 inhalations) with the lowest median onset probability at the network's events
+    (clip r = #tbd[0.48]; over the 2 s, r = #tbd[0.50] and onset peaks #tbd[0.58–0.88]). In *d* and *f* (one clip each):
     crops (top), the thermistor and our trace with the thermistor's (black) and the
     network's (blue) inhalations, misses (FN) and false inhalations (FP) marked, and the
     onset probability.],
@@ -536,9 +523,8 @@ In every split (@tab:split), test set A and validation held out whole animals an
 set B held out blocks of consecutive sessions of training animals. Held-out animals were
 the best of many seeded draws covering the corpus's rigs, months and breathing rates, and
 sessions per animal and rig were capped. Animals recorded at #tbd[359] Hz were split by
-session; their remaining #tbd[5] sessions form test set C (Supplementary Table #tbd[X]).
-Validation animals were used only for early stopping and model selection
-#note[cross-validation folds: Supplementary Note 1].
+session; their remaining #tbd[5] sessions form test set C (@supp:testc).
+Validation animals were used only for early stopping and model selection. The cross-validation folds are described in Supplementary Note 1.
 
 _Training-set size._ We retrained our network on parts of the published split's
 training set (#fig(<fig:general>, "c")): nested subsets of #tbd[4], #tbd[8] and #tbd[16] of the #tbd[32] training animals with all
@@ -629,7 +615,7 @@ thermistor inhalations, with positives weighted by the inverse of their share in
 batch. Other settings are in @tab:train; the checkpoint with the highest mean
 correlation on the validation clips was kept #note[seeds, GPU, time per run]. The
 comparison networks were trained the same way, each with the loss of its original paper
-and a learning rate chosen on the validation animals (Supplementary Note #tbd[2]).
+(Supplementary Note 2).
 
 #figure(
   kind: table,
@@ -678,8 +664,7 @@ average weighted by power in the breathing band) were computed from the same cro
 one sign and lag fitted on the training clips. The Facemap-style readout was a ridge
 regression from lagged principal components of the crop's movie and motion energy
 @syeda2024. TS-CAN @liu2020, PhysNet @yu2019, PhysFormer @yu2022 and RhythmFormer
-@zou2025 were reimplemented from their papers #note[input sizes, windows and learning
-rates in Supplementary Note 2].
+@zou2025 were reimplemented from their papers (Supplementary Note 2).
 
 == Scoring
 
@@ -702,7 +687,8 @@ learning rate 3 × 10#super[−4]).
 == Statistics
 
 The unit of analysis is an animal on one rig, whose sessions share the implant, camera
-position and lighting. Scores were averaged over a unit's clips, then over a fold's units,
+position and lighting; two rigs of one animal differ in score about two-thirds as much as
+two animals on one rig (@supp:rigs). Scores were averaged over a unit's clips, then over a fold's units,
 and reported as the mean over the #tbd[5] folds with a 95% t-interval; differences between
 methods are paired by fold. Analyses of the published split alone (#tbd[21] test-A units)
 use a percentile bootstrap over units (#tbd[2,000] draws). F1 by rate, F1 against
@@ -717,4 +703,111 @@ timestamps) with its fixed split, and an evaluation that reproduces the scores r
 here #note[repository URL, data DOI, licence; confirm the corpus can be released; usage:
 `zephyr preprocess`, `zephyr evaluate`, `zephyr quality-control run`].
 
-#bibliography("refs.bib", style: "nature")
+#pagebreak()
+#references(bibliography("refs.bib"))
+
+#pagebreak()
+#show: supplement
+= Supplementary information
+
+#let csv-table(path, columns, header, align: auto) = {
+  let rows = csv(path).slice(1)
+  set text(size: 7.5pt)
+  table(
+    columns: columns,
+    align: if align == auto { (left,) + (right,) * (columns - 1) } else { align },
+    stroke: none,
+    inset: (x: 4pt, y: 2.5pt),
+    table.hline(),
+    table.header(..header.map(h => [*#h*])),
+    table.hline(stroke: 0.5pt),
+    ..rows.flatten(),
+    table.hline(),
+  )
+}
+
+== Supplementary Note 1: Cross-validation folds
+
+The five folds were drawn over the #tbd[560] sessions of the corpus, beside the
+published split and under the same rules (Methods, Data splits). The #tbd[48] animals
+outside the #tbd[359]-Hz group were divided into five test-A groups, the most balanced of
+#tbd[20,000] seeded draws judged by the worst group, and fold $k$ tests group $k$ whole,
+so that each animal is a new animal once. Each fold draws #tbd[8] whole validation animals
+from the animals it trains on. Every animal with at least #tbd[4] sessions is cut by date
+into one block of sessions for each fold it trains in, and that fold tests the block as
+test set B, so each such session is in test set B once. The #tbd[359]-Hz animals keep
+their sets of the published split in every fold. Every set of every fold is within about
+#tbd[2] percentage points of the corpus's share of time at each breathing rate, and every
+fold passes the checks of the published split (no test or validation animal in training).
+@supp:folds gives the sets of each fold; each fold's runs were scored on exactly its
+test-A animals.
+
+#figure(
+  kind: table,
+  supplement: [Supplementary Table],
+  csv-table("tables/cv_folds.csv", 6, ([Set], [cv_0], [cv_1], [cv_2], [cv_3], [cv_4])),
+  caption: [*Cross-validation folds.* Animals / sessions in each set of each fold. Test B
+    animals also train, so animals do not add up across sets.],
+) <supp:folds>
+
+== Supplementary Note 2: Comparison networks
+
+TS-CAN @liu2020, PhysNet @yu2019, PhysFormer @yu2022 and RhythmFormer @zou2025 were
+reimplemented from their papers and the authors' code, with their published layers, and
+trained through the same training loop as our network: the same gray 96 × 96 crops on the
+60-Hz grid, optimizer, warm-up and cosine schedule, weight averaging, augmentation
+(without the frame jitter of our network) and early stopping on the validation animals.
+Each was trained on the loss of its own paper. TS-CAN, whose input is resized to
+#tbd[36] × #tbd[36] pixels, is trained with the mean squared error against the
+standardized first difference of the target, and PhysNet with the negative Pearson
+correlation. PhysFormer and RhythmFormer read the crops upsampled to the 128 pixels they
+were built for and are trained with a negative Pearson term plus a cross-entropy over
+each window's spectrum (one bin per breath per minute over 1–15 Hz) against the
+thermistor's rate in that window: $0.1 r + b ("CE" + "KL")$, with $b$ rising from 1 to 5
+over training, for PhysFormer, and $0.2 r + "CE"$ for RhythmFormer. Their attention spans
+a whole window, so they were also run in windows of their training length. Window,
+batch, steps per epoch and learning rate are in @supp:nets #note[confirm how the learning
+rates were chosen: on the validation animals, or from the papers (PhysFormer 10#super[−4],
+RhythmFormer 9 × 10#super[−3])].
+
+#figure(
+  kind: table,
+  supplement: [Supplementary Table],
+  csv-table(
+    "tables/comparison_nets.csv",
+    9,
+    ([Network], [Window], [Batch], [Steps], [LR], [Inference window], [Scales],
+      [Params (M)], [GPU (s)]),
+  ),
+  caption: [*Networks.* Training window and inference window (samples at 60 Hz), batch
+    size (training windows per optimizer step), steps per epoch, peak learning rate, the time scales of the correlation loss
+    (our network and PhysNet; the others use their own losses), the number of parameters,
+    and the inference time per 5-min clip from the preprocessed crops (median of #tbd[8]
+    clips) on a consumer GPU (NVIDIA RTX 4060 Ti, bf16).],
+) <supp:nets>
+
+#figure(
+  kind: table,
+  supplement: [Supplementary Table],
+  csv-table("tables/test_c.csv", 4, ([Method], [Trace r], [Inhale F1], [Exhale F1])),
+  caption: [*Test set C.* The #tbd[5] sessions of the #tbd[2] animals recorded with the
+    #tbd[359]-Hz camera that were held out (published split): each score averaged within
+    each animal × rig unit, then over the #tbd[2] units; no interval.],
+) <supp:testc>
+
+#pagebreak()
+= Supplementary figures
+
+#figure(
+  fit(figs1),
+  kind: image,
+  supplement: [Supplementary Fig.],
+  caption: [*Rig and animal as sources of score differences.* Our network on new animals
+    (test set A of the five folds, each animal new once). Pairs of units (an animal on one
+    rig, its score averaged over its clips) that share the animal but not the rig
+    (#tbd[159] pairs, #tbd[22] animals recorded on more than one rig) or the rig but not
+    the animal (#tbd[520] pairs, #tbd[48] animals): the share of each kind's pairs in each
+    bin of absolute difference between the two units of a pair, in inhale F1 (left) and
+    trace correlation (right), 30 bins shared by the two kinds; above, each kind's mean with a
+    95% bootstrap interval resampling animals (#tbd[2,000] draws).],
+) <supp:rigs>

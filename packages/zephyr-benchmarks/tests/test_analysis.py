@@ -147,6 +147,39 @@ class SummaryTests(unittest.TestCase):
         self.assertEqual(int(ci["units"].iloc[0]), 3)
         self.assertAlmostEqual(ci["mean"].iloc[0], 0.5)
 
+    def test_rig_and_animal_pairs_differ_in_one_of_the_two(self):
+        # a on rigs 1 and 2 (0.2 apart), b on rig 1 (0.5 from a@1): the a@2-b@1 pair
+        # differs in both, so it is neither kind.
+        rows = pd.DataFrame(
+            {
+                "subject": ["a", "a", "a", "b"],
+                "rig": ["1", "1", "2", "1"],
+                "inhale": [0.4, 0.6, 0.7, 1.0],
+            }
+        )
+        pairs = analysis.rig_animal_pairs(rows, "inhale").set_index("kind")
+        self.assertEqual(len(pairs), 2)
+        self.assertAlmostEqual(pairs.loc[analysis.RIG_PAIR, "difference"], 0.2)
+        self.assertAlmostEqual(pairs.loc[analysis.ANIMAL_PAIR, "difference"], 0.5)
+
+    def test_rig_animal_bootstrap_resamples_animals(self):
+        # Every same-rig pair of animals is 0.3 apart and every animal's two rigs 0.1,
+        # so every resample's means, and their difference, are exact.
+        rows = pd.DataFrame(
+            [
+                {"subject": s, "rig": r, "inhale": base + (0.1 if r == "2" else 0.0)}
+                for s, base in zip("abc", (0.0, 0.3, 0.6), strict=True)
+                for r in ("1", "2")
+            ]
+        )
+        pairs = analysis.rig_animal_pairs(rows, "inhale")
+        ci = analysis.rig_animal_bootstrap(pairs, n=200).set_index("kind")
+        self.assertAlmostEqual(ci.loc[analysis.RIG_PAIR, "low"], 0.1)
+        self.assertAlmostEqual(ci.loc[analysis.RIG_PAIR, "high"], 0.1)
+        self.assertEqual(ci.loc[analysis.RIG_PAIR, "pairs"], 3)
+        self.assertGreater(ci.loc[analysis.ANIMAL_PAIR, "mean"], 0.3)
+        self.assertGreaterEqual(ci.loc["difference", "low"], 0.2 - 1e-9)
+
     def test_familiarity_tells_animal_and_rig_apart_per_method(self):
         rows = pd.DataFrame(
             {
@@ -218,6 +251,10 @@ class SummaryTests(unittest.TestCase):
         self.assertAlmostEqual(out.loc[25.0, "f1"], 2 / 6)
         self.assertAlmostEqual(out.loc[50.0, "f1"], 4 / 6)
         self.assertAlmostEqual(out.loc[50.0, "errors"], 2 / 3)
+        # at 25 ms: 2 of the 3 true breaths missed, 2 of the 3 predictions false
+        self.assertAlmostEqual(out.loc[25.0, "misses"], 2 / 3)
+        self.assertAlmostEqual(out.loc[25.0, "false"], 2 / 3)
+        self.assertAlmostEqual(out.loc[50.0, "misses"] + out.loc[50.0, "false"], 2 / 3)
 
     def test_error_profile_splits_near_misses_from_gross_errors(self):
         err = pd.DataFrame(

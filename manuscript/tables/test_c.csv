@@ -1,0 +1,10 @@
+method,trace_r,inhale_f1,exhale_f1
+Motion energy,0.06,0.37,0.30
+Pixel PCA,0.02,0.32,0.26
+Pixel SNR,0.01,0.25,0.24
+Facemap,0.59,0.49,0.61
+TS-CAN,0.78,0.96,0.94
+RhythmFormer,0.93,0.98,0.97
+PhysFormer,0.84,0.90,0.70
+PhysNet,0.93,0.99,0.99
+Zephyr,0.95,0.99,0.98

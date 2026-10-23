@@ -4,6 +4,7 @@ __generated_with = "0.25.1"
 app = marimo.App(width="medium")
 
 with app.setup:
+    import json
     import os
     import tomllib
     from pathlib import Path
@@ -497,11 +498,12 @@ def _(by_fold, test_a):
     fig4b = plots.animals_panel(
         *size("fig4", "b"),
         by_fold[by_fold["fold"] != "published"],
-        ["Zephyr", "PhysNet"],
+        ["Zephyr"],
         "inhale",
         test_a,
         unit="unit",
         unit_label="Animal × rig",
+        by_animal="subject",
     )
     plots.save_panel(fig4b, FIGURES / "fig4" / "b.svg")
     mo.hstack([fig4a, fig4b])
@@ -510,8 +512,9 @@ def _(by_fold, test_a):
 
 @app.cell
 def _(whole):
-    # e: F1 and errors left as the tolerance is relaxed, per fold, then over folds.
-    _nets = ["Zephyr", "PhysNet", "TS-CAN"]
+    # e: F1 and the errors left (misses and false inhalations) as the tolerance is
+    # relaxed, per fold, then over folds.
+    _nets = ["Zephyr"]
     _mine = {k: v[v["method"].isin(_nets)] for k, v in whole.items()}
     _curve = analysis.tolerance_curve(
         _mine["lags"],
@@ -519,12 +522,16 @@ def _(whole):
         _mine["false_positives"],
         np.arange(0, 100.1, 2.5),
     )
-    tolerance = analysis.across_folds(
-        _curve, "f1", by=["method", "tolerance_ms"]
-    ).merge(
-        _curve.groupby(["method", "tolerance_ms"])["errors"].mean().reset_index(),
-        on=["method", "tolerance_ms"],
+    _by = ["method", "tolerance_ms"]
+    tolerance = analysis.across_folds(_curve, "f1", by=_by).merge(
+        _curve.groupby(_by)["errors"].mean().reset_index(), on=_by
     )
+    # Misses and false inhalations apart, each over folds with its interval.
+    for _k in ("misses", "false"):
+        _apart = analysis.across_folds(_curve, _k, by=_by).rename(
+            columns={"mean": _k, "low": f"{_k} low", "high": f"{_k} high"}
+        )
+        tolerance = tolerance.merge(_apart.drop(columns="folds"), on=_by)
     fig4e = plots.tolerance_panel(*size("fig4", "e"), tolerance, _nets)
     plots.save_panel(fig4e, FIGURES / "fig4" / "e.svg")
     fig4e
@@ -605,9 +612,9 @@ def _(methods, test_a):
     # Two test-A clips, neither an outlier: among clips whose correlation is at least
     # the median, the one with most near misses (predictions 25-100 ms off; d), around
     # its densest near misses; and, among the lowest tenth of clips by correlation, the
-    # one with the highest inhale F1 (f), around the 2-s stretch in which every
-    # inhalation is found and the trace is furthest from the thermistor (RMSE, both
-    # z-scored over the clip).
+    # 2-s stretch in which every inhalation is found (no error, no excluded span, at
+    # least 4 true inhalations) from the least confident onset output: the lowest
+    # median onset probability at the head's events (f).
     _clips = (
         runs.scores(methods)
         .query("method == 'Zephyr' and set == @test_a")
@@ -623,7 +630,32 @@ def _(methods, test_a):
     _low = _clips[_clips["correlation"] <= _clips["correlation"].quantile(0.1)].drop(
         _near, errors="ignore"
     )
-    _upper = _low.index[-1]  # sorted by inhale F1
+
+    def _quiet(stem):
+        """A clip's fully found 2-s stretch with the lowest median onset probability at
+        the head's events: ``(median, centre, event probabilities, stretch r)``."""
+        p, t = runs.prediction("Zephyr", stem), runs.truth(stem)
+        err = runs.errors("Zephyr", stem)["time"].to_numpy()
+        ex = np.asarray(t["excluded"]).reshape(-1, 2)
+        pt = p["times"]
+        heights = p["onset"][np.searchsorted(pt, p["head"]).clip(0, len(pt) - 1)]
+        target = np.interp(pt, t["times"], t["signal"])
+        best = (np.inf, None, None, None)
+        for c in np.arange(pt[0] + 1.0, pt[-1] - 1.0, 0.25):
+            clean = (
+                not np.any(np.abs(err - c) < 1.0)
+                and not np.any((ex[:, 0] < c + 1) & (ex[:, 1] > c - 1))
+                and np.sum(np.abs(t["inhale"] - c) < 1.0) >= 4
+            )
+            h = heights[np.abs(p["head"] - c) < 1.0]
+            if clean and len(h) and np.median(h) < best[0]:
+                inside = (pt >= c - 1) & (pt < c + 1)
+                r = np.corrcoef(p["signal"][inside], target[inside])[0, 1]
+                best = (float(np.median(h)), float(c), h, float(r))
+        return best
+
+    _quietest = {s: _quiet(s) for s in _low.index}
+    _upper = min(_quietest, key=lambda s: _quietest[s][0])
     _cases = {"d": _clips.loc[_near], "f": _clips.loc[_upper]}
     low_r = {
         "clips": len(_low),
@@ -645,27 +677,7 @@ def _(methods, test_a):
             _t = _errors.loc[_errors["near_miss"], "time"].to_numpy()
             _at = float(_t[np.argmax([np.sum(np.abs(_t - x) < 1.5) for x in _t])])
         else:
-            # The 2-s stretch where the waveform is worst while every inhalation in
-            # it is found: no error, no excluded span, at least 4 true inhalations.
-            _pt = _p["times"]
-            _target = np.interp(_pt, _truth["times"], _truth["signal"])
-            _target = (_target - _target.mean()) / _target.std()
-            _err = _errors["time"].to_numpy()
-            _ex = np.asarray(_truth["excluded"]).reshape(-1, 2)
-            _best, _at = -np.inf, None
-            for _c in np.arange(_pt[0] + 1.0, _pt[-1] - 1.0, 0.25):
-                _in = (_pt >= _c - 1) & (_pt < _c + 1)
-                _clean = (
-                    not np.any(np.abs(_err - _c) < 1.0)
-                    and not np.any((_ex[:, 0] < _c + 1) & (_ex[:, 1] > _c - 1))
-                    and np.sum(np.abs(_truth["inhale"] - _c) < 1.0) >= 4
-                )
-                if _clean:
-                    _rmse = np.sqrt(np.mean((_p["signal"][_in] - _target[_in]) ** 2))
-                    if _rmse > _best:
-                        _best, _at = _rmse, float(_c)
-                        _r = np.corrcoef(_p["signal"][_in], _target[_in])[0, 1]
-            local_r, local_rmse = _r, _best
+            _median_p, _at, _peaks, local_r = _quietest[_stem]
         _frame_t, _frames = runs.gray(_stem)
         _picked = dict.fromkeys(
             min(int(np.searchsorted(_frame_t, _at + dt)), len(_frames) - 1)
@@ -693,7 +705,9 @@ def _(methods, test_a):
     mo.vstack(
         [
             mo.md(
-                f"Lowest tenth by correlation: {low_r}; f's stretch r {local_r:.2f}, RMSE {local_rmse:.2f}"
+                f"Lowest tenth by correlation: {low_r}; f's stretch r {local_r:.2f}, "
+                f"onset at its {len(_peaks)} events {_peaks.min():.2f}-{_peaks.max():.2f} "
+                f"(median {_median_p:.2f})"
             ),
             *_shown,
         ]
@@ -835,6 +849,149 @@ def _():
     plots.save_panel(fig5d, FIGURES / "fig5" / "d.svg")
     fig5d
     return
+
+
+@app.cell
+def _():
+    mo.md("""
+    ## Supplementary tables
+
+    Test set C (the 359-Hz animals), the sets of each cross-validation fold, the
+    comparison networks' settings (from each run's own `config.json`); written as CSV
+    for main.typ.
+    """)
+    return
+
+
+@app.cell
+def _(methods, recordings, spec):
+    # Test set C of the published split, per method: each score averaged within each
+    # animal x rig unit, then over the units (two animals: no interval).
+    _c = recordings[recordings["set"] == runs.SETS["test_c"]]
+    _rows = []
+    for _m in methods:
+        _u = (
+            _c[_c["method"] == _m]
+            .groupby("unit")[["correlation", "inhale", "exhale_f1"]]
+            .mean()
+        )
+        _rows.append(
+            {
+                "method": plots.DISPLAY.get(_m, _m),
+                "trace_r": f"{_u['correlation'].mean():.2f}",
+                "inhale_f1": f"{_u['inhale'].mean():.2f}",
+                "exhale_f1": f"{_u['exhale_f1'].mean():.2f}",
+            }
+        )
+    test_c = pd.DataFrame(_rows)
+    _tables = FIGURES.parent / "tables"
+    test_c.to_csv(_tables / "test_c.csv", index=False)
+    test_c_size = {
+        "animals": int(_c["subject"].nunique()),
+        "units": int(_c["unit"].nunique()),
+        "sessions": int(_c["session"].nunique()),
+    }
+
+    # The sets of each cross-validation fold (cross_validation.parquet), with a check
+    # that each fold's test A animals are those its runs were scored on.
+    _cv = pd.read_parquet(runs.dataset_file("cross_validation.parquet", spec.root))
+    _names = {
+        "train": "Training",
+        "val": "Validation",
+        "test_a": "Test A",
+        "test_b": "Test B",
+        "test_c": "Test C",
+    }
+    _rows, _checked = [], {}
+    _scored = runs.cv_scores("per_recording")
+    for _f in runs.RESULTS.cross_validation.folds:
+        _col = _cv[f"fold_{_f.split('_')[-1]}"]
+        for _set, _label in _names.items():
+            _in = _cv[_col == _set]
+            _rows.append(
+                {
+                    "fold": _f,
+                    "set": _label,
+                    "animals": _in["subject_id"].nunique(),
+                    "sessions": len(_in),
+                }
+            )
+        _a = _scored[
+            (_scored["fold"] == _f)
+            & (_scored["method"] == runs.REFERENCE)
+            & (_scored["set"] == runs.SETS["test_a"])
+        ]
+        _want = set(_cv.loc[_col == "test_a", "subject_id"].astype(str))
+        _checked[_f] = set(_a["subject"].astype(str)) == _want
+    fold_sizes = pd.DataFrame(_rows).pivot(
+        index="set", columns="fold", values=["animals", "sessions"]
+    )
+    _wide = pd.DataFrame(index=list(_names.values()))
+    for _f in runs.RESULTS.cross_validation.folds:
+        _wide[_f] = [
+            f"{fold_sizes.loc[_l, ('animals', _f)]} / {fold_sizes.loc[_l, ('sessions', _f)]}"
+            for _l in _wide.index
+        ]
+    _wide.rename_axis("set").reset_index().to_csv(_tables / "cv_folds.csv", index=False)
+
+    # The networks' settings, from each run's config.json, with their size and
+    # inference time per 5-min clip on the GPU.
+    _nets = ["Zephyr", "TS-CAN", "PhysNet", "PhysFormer", "RhythmFormer"]
+    _gpu = runs.wall_time(_nets).set_index("method")
+    _rows = []
+    for _m in _nets:
+        _run = runs.RUNS[_m]
+        _path = runs._fetch(
+            f"{runs.folder(_run)}/{runs.seeds(runs.folder(_run))[0]}/config.json"
+        )
+        _tp = json.loads(_path.read_text())["fold"]["train_params"]
+        _rows.append(
+            {
+                "method": _m,
+                "window": _tp["window"],
+                "batch": _tp["batch_size"],
+                "steps": _tp["steps_per_epoch"],
+                "lr": _tp["lr"],
+                "infer_window": _tp["infer_window"],
+                "scales": "/".join(map(str, _tp["scales"])),
+                "params_m": f"{_gpu.loc[_m, 'parameters (M)']:.2f}",
+                "gpu_s": f"{_gpu.loc[_m, 's per clip (median)']:.2f}",
+            }
+        )
+    comparison_nets = pd.DataFrame(_rows)
+    comparison_nets.to_csv(_tables / "comparison_nets.csv", index=False)
+    mo.vstack(
+        [
+            mo.md(f"Test C: {test_c_size}; folds match their runs: {_checked}"),
+            mo.ui.table(test_c, selection=None),
+            mo.ui.table(_wide.reset_index(), selection=None),
+            mo.ui.table(comparison_nets, selection=None),
+        ]
+    )
+    return comparison_nets, fold_sizes, test_c, test_c_size
+
+
+@app.cell
+def _(by_fold, test_a):
+    # Supplementary Fig. 1: why the unit is an animal on one rig. Our network on new
+    # animals (every fold's test A, each animal new once): how far apart two units
+    # score when they share the animal but not the rig, and when they share the rig
+    # but not the animal, with intervals from resampling animals.
+    _a = by_fold[(by_fold["set"] == test_a) & (by_fold["method"] == runs.REFERENCE)]
+    _a = _a[_a["fold"] != "published"]
+    _pairs = {m: analysis.rig_animal_pairs(_a, m) for m in ("inhale", "correlation")}
+    _summaries = {m: analysis.rig_animal_bootstrap(p) for m, p in _pairs.items()}
+    figs1a = plots.rig_animal_panel(
+        *size("figs1", "a"),
+        {m: (_pairs[m], _summaries[m]) for m in _pairs},
+        runs.REFERENCE,
+    )
+    plots.save_panel(figs1a, FIGURES / "figs1" / "a.svg")
+    rig_animal = pd.concat(
+        [v.assign(metric=k) for k, v in _summaries.items()], ignore_index=True
+    )
+    mo.vstack([figs1a, mo.ui.table(rig_animal.round(4), selection=None)])
+    return (rig_animal,)
 
 
 if __name__ == "__main__":
