@@ -1004,10 +1004,11 @@ def rate_band_panel(
     f1: pd.DataFrame,
     names: Sequence[str],
     legend: bool = True,
+    ylim: tuple[float, float] = (0.4, 1.02),
 ) -> Figure:
     """Inhale F1 per breathing-rate bin, one line per method (mean over folds, band its
     95% interval; *f1*: ``method``, ``bin``, ``mean``, ``low``, ``high``, ``share``),
-    over the share of breaths in each bin (bars)."""
+    over the share of breaths in each bin (bars); *ylim* bounds the F1 axis."""
     fig, ax = style.panel(
         width_mm, height_mm, [["f1"], ["share"]], sharex=True, height_ratios=[3, 1]
     )
@@ -1030,8 +1031,9 @@ def rate_band_panel(
     ax["share"].set_ylabel("Breaths (%)")
     ax["share"].set_xticks(x, [b.split("-")[0] for b in bins])
     ax["share"].set_xlabel("Breathing rate (Hz)")
-    ax["f1"].set_ylabel("Inhale F1 (new animals)")
-    ax["f1"].set_ylim(0.4, 1.02)
+    ax["f1"].set_ylabel("Inhale F1\n(new animals)")
+    ax["f1"].set_ylim(*ylim)
+    fig.align_ylabels([ax["f1"], ax["share"]])
     if legend:
         ax["f1"].legend(loc="lower center", fontsize=6, handlelength=1, ncol=3)
     return fig
@@ -1834,6 +1836,46 @@ def variants_panel(
         if m != reference
     ]
     first.set_yticks(range(len(names)), [n[0].upper() + n[1:] for n in names])
+    return fig
+
+
+def fold_difference_panel(
+    width_mm: float,
+    height_mm: float,
+    folds: pd.DataFrame,
+    summary: pd.DataFrame,
+    name: str,
+    reference: str = "Zephyr",
+) -> Figure:
+    """*name* minus *reference* per test set (rows) for each metric (side by side),
+    paired by cross-validation fold: each fold's difference (dots; *folds*: ``metric``,
+    ``set``, ``fold``, ``value``) and their mean with its 95% t-interval over folds
+    (*summary*: ``metric``, ``set``, ``mean``, ``low``, ``high``)."""
+    metrics = list(dict.fromkeys(summary["metric"]))
+    sets = list(dict.fromkeys(summary["set"]))
+    fig, ax = style.panel(width_mm, height_mm, [metrics], sharey=True)
+    color = style.color(name)
+    for metric in metrics:
+        a = ax[metric]
+        for i, set_name in enumerate(sets):
+            f = folds[(folds["metric"] == metric) & (folds["set"] == set_name)]
+            r = summary[(summary["metric"] == metric) & (summary["set"] == set_name)]
+            a.plot(f["value"], np.full(len(f), i + 0.22), "o", color="0.6", ms=1.6)
+            r = r.iloc[0]
+            a.plot([r["low"], r["high"]], [i, i], color=color, lw=1.0)
+            a.plot(r["mean"], i, "o", color=color, ms=3)
+        a.axvline(0, color="0.3", lw=0.6)
+        reach = np.ceil(
+            100 * np.nanmax(np.abs(folds[folds["metric"] == metric]["value"]))
+        )
+        reach = max(reach, 1) / 100
+        a.set_xlim(-1.15 * reach, 1.15 * reach)
+        a.set_xticks([-reach, 0, reach], [f"{-reach:g}", "0", f"{reach:g}"])
+        a.set_ylim(len(sets) - 0.4, -0.6)
+        a.set_title(METRIC_LABELS[metric], fontsize=7)
+        a.set_xlabel(f"Minus {reference}")
+        a.grid(axis="y", visible=False)
+    ax[metrics[0]].set_yticks(range(len(sets)), sets)
     return fig
 
 
