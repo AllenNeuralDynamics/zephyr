@@ -2,7 +2,10 @@
 name = "zephyr"
 dynamic = ["version"]
 description = "CNN and temporal network for breathing prediction from video"
-authors = [{ name = "Allen Institute for Neural Dynamics" }]
+authors = [
+    { name = "Bruno Cruz", email = "bruno.cruz@alleninstitute.org" },
+    { name = "Allen Institute for Neural Dynamics" },
+]
 keywords = ["breathing", "computer vision", "neural network", "pytorch"]
 classifiers = [
     "Development Status :: 3 - Alpha",
