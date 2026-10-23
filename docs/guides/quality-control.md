@@ -1,5 +1,11 @@
 # Quality control
 
+!!! warning "Experimental"
+    Quality control is under active development. Its measures, their pass bounds and
+    the report format may change, and they are not yet validated on enough held-out
+    animals to be relied on. Use its checks as a hint about where to look, not as a
+    verdict on a prediction.
+
 On a video without a breathing sensor nothing can be scored, yet you still want to know
 whether to trust a prediction. `zephyr quality-control` judges each prediction from the
 network's own output, its trace and onset probability, with label-free **measures**.

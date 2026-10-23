@@ -30,8 +30,8 @@ sensor.
 - **One desktop app.** The app walks a project from videos to predictions. Every step
   it takes is also a `zephyr` command you can script.
 - **Honest scores.** Video and sensor are compared by time, never by sample index.
-  Training clips can never be scored by mistake, and quality control judges
-  predictions on videos with no sensor.
+  Training clips can never be scored by mistake, and quality control (experimental)
+  judges predictions on videos with no sensor.
 
 <div class="grid cards" markdown>
 

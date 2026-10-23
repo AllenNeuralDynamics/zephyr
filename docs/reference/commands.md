@@ -162,6 +162,10 @@ on.
 
 ## quality-control run
 
+!!! warning "Experimental"
+    Quality control is under active development: its measures, bounds and report
+    format may change.
+
 ```text
 zephyr quality-control run --checkpoint <best.pt> --clips <list.toml>... --cache <dir> --out <dir> [options]
 ```

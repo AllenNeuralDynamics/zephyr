@@ -188,3 +188,14 @@
   font-weight: 700;
   text-align: center;
 }
+
+/* The "under development" banner (overrides/main.html). */
+.md-banner {
+  background-color: var(--allen-orange);
+  color: var(--allen-black);
+}
+
+.md-banner a,
+.md-banner .md-banner__button {
+  color: var(--allen-black);
+}

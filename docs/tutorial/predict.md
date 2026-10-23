@@ -75,6 +75,12 @@ again (after moving a crop, or with another checkpoint) or only the new ones.
 
 ## Judge the predictions
 
+!!! warning "Experimental"
+    Quality control (**judge them**) is under active development. Its measures, their
+    pass bounds and the report format may change, and they are not yet validated on
+    enough held-out animals to be relied on. Use its checks as a hint about where to look, not as a
+    verdict on a prediction.
+
 With no sensor, nothing can be scored, but **quality control** judges each prediction
 from the network's own output. On the **Clip list** tab, choose `clips.toml`, set
 **Groups** to `behavior_806527_2025-10-24_18-04-57` (the test animal's session) and **Into predictions/** to `held-out`,
