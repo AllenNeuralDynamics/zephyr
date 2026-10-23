@@ -2,6 +2,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 
+import numpy as np
 import pytest
 
 from utils import plots, runs, style
@@ -48,3 +49,12 @@ def test_panels_keep_their_printed_size(tmp_path) -> None:
     assert (round(width, 6), round(height, 6)) == (107, 45)
     svg = (tmp_path / "e.svg").read_text()
     assert 'width="303.307087pt"' in svg  # 107 mm, not cropped to the drawing
+
+
+def test_rate_bins_hold_whole_grid_intervals() -> None:
+    edges = plots.frame_rate_bins(60.0, 1.0, 11.0)
+    rates = 60.0 / np.arange(1, 120)
+    assert not np.isin(np.round(rates, 9), np.round(edges, 9)).any()
+    inside = rates[(rates > edges[0]) & (rates < edges[-1])]
+    counts, _ = np.histogram(inside, edges)
+    assert (counts >= 1).all()

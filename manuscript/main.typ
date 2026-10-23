@@ -130,9 +130,9 @@ them against held-out animals. We release the corpus, trained models and an eval
 
 Head-fixed mice performed an olfactory virtual-reality foraging task on a circular
 treadmill: they ran along a virtual corridor of odor-cued sites and could stop at a site
-to collect a probabilistic reward. Running, stopping and odor sampling alternate throughout a session, so breathing ranges from rest to fast sniffing (#fig(<fig:overview>, "b") and #fig(<fig:corpus>, "b")). While the mice performed the task, high-speed video was recorded from two angles (#fig(<fig:overview>, "a")). A snout-facing camera captured detailed movements of the nose and whiskers, while a side camera recorded the overall posture and locomotion. For all analysis in this study, we only used the face camera view, but we are including side-camera video for every session with the corpus for future work and benchmarks. All mice were additionally implanted with a small thermistor in the nasal cavity to record temperature changes as a proxy for breathing. The signal was conditioned and digitized using a custom, open-source, board #note[cite
+to collect a probabilistic reward. Running, stopping and odor sampling alternate throughout a session, so breathing ranges from rest to fast sniffing (#fig(<fig:overview>, "b,c") and #fig(<fig:corpus>, "b")). While the mice performed the task, high-speed video was recorded from two angles (#fig(<fig:overview>, "a")). A snout-facing camera captured detailed movements of the nose and whiskers, while a side camera recorded the overall posture and locomotion. For all analysis in this study, we only used the face camera view, but we are including side-camera video for every session with the corpus for future work and benchmarks. All mice were additionally implanted with a small thermistor in the nasal cavity to record temperature changes as a proxy for breathing. The signal was conditioned and digitized using a custom, open-source, board #note[cite
   sniff-detector repo / RRID] at 250 Hz.
-As inhalation draws cool air, temperature in the thermistor drops, and it rises again during exhalation as the subject expells warm air. This periodic signal reflects the breathing cycle that can be readily extracted with simple digital-signal processing (DSP) peak detection algorithms (#fig(<fig:overview>, "c")\; Methods).
+As inhalation draws cool air, temperature in the thermistor drops, and it rises again during exhalation as the subject expells warm air. This periodic signal reflects the breathing cycle that can be readily extracted with simple digital-signal processing (DSP) peak detection algorithms (#fig(<fig:overview>, "e")\; Methods).
 
 We built the corpus from every recorded session of this task with a thermistor
 (#tbd[4,120] sessions) by applying a uniform quality-control pipeline
@@ -168,12 +168,22 @@ control and example clips) use the published split, one of these draws.
 #figure(
   fit(fig1),
   caption: [*Measuring breathing from face video.* *a,* The rig: a head-fixed mouse on a wheel facing the virtual-reality screens, the
-    cameras with example frames, and the odor delivery line. *b,* Task and
-    behaviour aligned to reward-site entry. *c,* Ground truth: the face frame with the crop
-    the network sees (orange), the crop at three moments of one breath, and the thermistor
-    with its inhalations and exhalations (one breath of one clip). *d,* Network. *e,* Eight
-    seconds of one test-A clip as the animal starts sniffing: the predicted breathing over the thermistor, and the
-    onset probability, with the thermistor's inhalations (black) and the network's (blue).],
+    cameras with example frames, and the odor delivery line. *b,* Breathing during the
+    task, in one session of an animal the network never saw (both 300-s clips, predicted
+    by the cross-validation fold that holds the animal out): breathing rate (top) and
+    running speed (bottom) around odor onset at sites where the animal stopped and was
+    rewarded (n = #tbd[28]), stopped and was not (n = #tbd[38]) or ran past without
+    stopping (n = #tbd[14]), mean ± s.e.m. over sites, the rate from the network's
+    inhalations (coloured) and from the thermistor's (dotted); below, the network's
+    breathing rate against running speed over every 60-Hz sample (each speed bin's
+    distribution of rates; rate bins hold whole numbers of output frames). *c,* A
+    minute of the same session: running speed, and breathing rate (1 / each breath's
+    interval) from the network (blue) over the thermistor's (black), with licks (ticks),
+    reward deliveries (triangles) and odor sites shaded by kind as in *b*. *d,* Network. *e,* Eight seconds of one
+    test-A clip as the animal starts sniffing, beside the face frame with the crop the
+    network sees (orange): the predicted breathing over the thermistor, and the onset
+    probability, with the thermistor's inhalations (black) and exhalations (grey) and
+    the network's inhalations (blue).],
 ) <fig:overview>
 
 #figure(

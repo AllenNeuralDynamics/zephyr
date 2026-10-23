@@ -20,13 +20,13 @@ what = "Rig rendering: head-fixed mouse on the wheel, front, face and side camer
 kind = "data"
 width_mm = 67
 height_mm = 71.2
-what = "Task schematic; speed, sniff rate and licks aligned to site entry"
+what = "One session: breathing rate and speed around odor onset per kind of site; breathing rate against speed"
 
 [fig1.panels.c]
 kind = "data"
 width_mm = 183
-height_mm = 42
-what = "Face frame with crop; crops through one breath; thermistor with events"
+height_mm = 34
+what = "A minute of the same session: speed, breathing rate from video and thermistor, licks, odor sites"
 
 [fig1.panels.d]
 kind = "data"
@@ -37,8 +37,8 @@ what = "Network, read off the checkpoint: crops, frame encoder, resampling, TCN,
 [fig1.panels.e]
 kind = "data"
 width_mm = 183
-height_mm = 38
-what = "Predicted and measured sniffing on a test-A animal, onset probability"
+height_mm = 40
+what = "Face frame with crop; predicted and measured sniffing on a test-A animal with its events, onset probability"
 
 [fig2]
 width_mm = 183

@@ -29,6 +29,22 @@ def _clip(true_on, pred_on, seconds=60.0):
     return p, t
 
 
+class TaskEventTests(unittest.TestCase):
+    def test_breathing_rate_is_that_of_the_breath_each_time_falls_in(self):
+        inhales = np.array([0.0, 0.5, 1.0, 1.25])
+        rate = analysis.breathing_rate(inhales, np.array([-0.1, 0.2, 0.7, 1.1, 1.3]))
+        np.testing.assert_allclose(rate, [np.nan, 2.0, 2.0, 4.0, np.nan])
+
+    def test_event_aligned_rows_are_nan_outside_the_samples(self):
+        times = np.arange(0, 10, 0.5)
+        rows = analysis.event_aligned(
+            times, times * 2, np.array([1.0, 9.0]), np.array([-1.0, 0.0, 1.0])
+        )
+        np.testing.assert_allclose(rows, [[0.0, 2.0, 4.0], [16.0, 18.0, np.nan]])
+        empty = analysis.event_aligned(times, times, np.empty(0), np.zeros(3))
+        self.assertEqual(empty.shape, (0, 3))
+
+
 class EventTests(unittest.TestCase):
     def test_matches_within_the_scorers_tolerance(self):
         true_on = np.arange(1, 50, 1 / 3)
