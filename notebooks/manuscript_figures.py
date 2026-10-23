@@ -35,7 +35,7 @@ with app.setup:
 
 
 @app.cell
-def _():
+def intro():
     mo.md(f"""
     # Manuscript figure panels
 
@@ -57,7 +57,7 @@ def size(figure: str, name: str) -> tuple[float, float]:
 
 
 @app.cell
-def _():
+def example_clip():
     # The walkthrough's typical test-A clip: Zephyr's correlation on it is test A's
     # median (seed 17, 2026-10-19).
     stem = "behavior_828421_2025-11-21_17-41-34_span2_FaceCamera"
@@ -68,7 +68,7 @@ def _():
 
 
 @app.cell
-def _():
+def fig1bc_md():
     mo.md("""
     ## Fig. 1b, c: sniffing in the task
 
@@ -98,7 +98,7 @@ def task_window(
 
 
 @app.cell
-def _():
+def fig1bc_data():
     # Its correlation (0.855) and head inhale F1 (0.981) are nearest test A's medians
     # (0.850, 0.977) among sessions of dataset version 1.0 or later (cv folds, seed 17,
     # 2026-10-23); animal 863680 is new in cv_2.
@@ -173,7 +173,7 @@ def _():
 
 
 @app.cell
-def _(task_aligned, task_clips):
+def fig1b(task_aligned, task_clips):
     fig1b = plots.task_summary_panel(
         *size("fig1", "b"),
         task_aligned,
@@ -187,7 +187,7 @@ def _(task_aligned, task_clips):
 
 
 @app.cell
-def _(lick_times, odor_sites, task_clips):
+def fig1c(lick_times, odor_sites, task_clips):
     _window = 60.0
     # the clip whose best window holds the most kinds of site, then the most sites
     _found = []
@@ -212,7 +212,7 @@ def _(lick_times, odor_sites, task_clips):
 
 
 @app.cell
-def _():
+def fig1d_md():
     mo.md("""
     ## Fig. 1d: the network
 
@@ -223,7 +223,7 @@ def _():
 
 
 @app.cell
-def _(stem, truth):
+def fig1d(stem, truth):
     _frame_t, _frames = runs.gray(stem)
     _i = int(np.searchsorted(_frame_t, truth["inhale"][len(truth["inhale"]) // 2]))
     _net = runs.network("Zephyr")[0]
@@ -240,7 +240,7 @@ def _(stem, truth):
 
 
 @app.cell
-def _():
+def fig1e_md():
     mo.md("""
     ## Fig. 1e: an example prediction
 
@@ -269,7 +269,7 @@ def rate_change(truth: dict, origin: float, window: float) -> float:
 
 
 @app.cell
-def _(origin, stem, truth, zephyr):
+def fig1e(origin, stem, truth, zephyr):
     _window = 8.0
     _t0 = rate_change(truth, origin, _window)
     fig1e = plots.prediction_panel(
@@ -288,7 +288,7 @@ def _(origin, stem, truth, zephyr):
 
 
 @app.cell
-def _():
+def fig2_md():
     mo.md("""
     ## Fig. 2: the corpus
 
@@ -299,7 +299,7 @@ def _():
 
 
 @app.cell
-def _():
+def fig2_data():
     dataset = runs.root() / "dataset"
     spec = DatasetSpec.model_validate(
         tomllib.loads(
@@ -313,7 +313,7 @@ def _():
 
 
 @app.cell
-def _(dataset, spec):
+def fig2a(dataset, spec):
     # From the dataset version the corpus starts at, the hand-picked ephys sessions
     # joining it there.
     _steps = corpus_flow.shorten(corpus_flow.flow(dataset, spec)[1:], sets=False)
@@ -325,7 +325,7 @@ def _(dataset, spec):
 
 
 @app.cell
-def _(folds):
+def fig2b(folds):
     # Every thermistor breath's rate over the corpus, and per animal.
     fig2b = plots.corpus_rate_panel(
         *size("fig2", "b"), runs.animal_breath_rates(), step=0.5
@@ -336,7 +336,7 @@ def _(folds):
 
 
 @app.cell
-def _(folds):
+def fig2c(folds):
     fig2c = plots.corpus_animals_panel(*size("fig2", "c"), folds[folds["set"].notna()])
     plots.save_panel(fig2c, FIGURES / "fig2" / "c.svg")
     fig2c
@@ -344,7 +344,7 @@ def _(folds):
 
 
 @app.cell
-def _():
+def fig3_md():
     mo.md("""
     ## Fig. 3: the benchmark
 
@@ -355,7 +355,7 @@ def _():
 
 
 @app.cell
-def _():
+def fig3_methods():
     order = [
         "Pixel (motion)",
         "Pixel (PCA)",
@@ -385,7 +385,7 @@ def _():
 
 
 @app.cell
-def _(methods, recordings, with_unit):
+def fig3_folds(methods, recordings, with_unit):
     # Every summary is over folds (Methods, Statistics): the five cross-validation folds
     # for the methods retrained on them, the published split ("published", one split,
     # no interval) for the others.
@@ -415,7 +415,7 @@ def _(methods, recordings, with_unit):
 
 
 @app.cell
-def _(methods, origin, stem, truth):
+def fig3a(methods, origin, stem, truth):
     # The same clip as Fig. 1e, 10 s of it starting just before the rate change.
     _scores = (
         runs.scores(methods)
@@ -440,7 +440,7 @@ def _(methods, origin, stem, truth):
 
 
 @app.cell
-def _(by_fold, methods, test_a):
+def fig3b(by_fold, methods, test_a):
     # Inference time per clip (walkthrough harness): networks on this machine's GPU,
     # the pixel methods and Facemap in numpy on its CPU. Inhale F1 on new animals per
     # fold (dots) and its mean over folds with the 95% interval.
@@ -467,7 +467,7 @@ def _(by_fold, methods, test_a):
 
 
 @app.cell
-def _(fold_tables, test_a):
+def fig3cde(fold_tables, test_a):
     # The networks' clip-by-clip tables on new animals, per fold. c: F1 by rate, mean
     # over folds with its interval; d, e: every fold's new-animal breaths and windows
     # pooled (each animal is new in one fold only).
@@ -500,7 +500,7 @@ def _(fold_tables, test_a):
 
 
 @app.cell
-def _(by_fold, cv_methods, fold_tables, methods, on_cpu, test_a, timing):
+def table1(by_fold, cv_methods, fold_tables, methods, on_cpu, test_a, timing):
     # Table 1 (benchmark): per method on new animals, each score averaged within each
     # unit, then over the units of a fold, then over folds (mean and 95% interval;
     # methods without cross-validation runs, the published split alone). Rate metrics
@@ -573,7 +573,7 @@ def _(by_fold, cv_methods, fold_tables, methods, on_cpu, test_a, timing):
 
 
 @app.cell
-def _():
+def fig4_md():
     mo.md("""
     ## Fig. 4: generalization and its limits
 
@@ -585,7 +585,7 @@ def _():
 
 
 @app.cell
-def _(by_fold, test_a):
+def fig4ab(by_fold, test_a):
     # a: new animals against new sessions, mean over folds with its interval.
     # b: every new-animal unit of the five folds (each animal is new in one fold).
     _shown = ["Facemap", "TS-CAN", "RhythmFormer", "PhysFormer", "PhysNet", "Zephyr"]
@@ -618,7 +618,7 @@ def _(by_fold, test_a):
 
 
 @app.cell
-def _(whole):
+def fig4e(whole):
     # e: F1 and the errors left (misses and false inhalations) as the tolerance is
     # relaxed, per fold, then over folds.
     _nets = ["Zephyr"]
@@ -646,7 +646,7 @@ def _(whole):
 
 
 @app.cell
-def _(test_a, with_unit):
+def fig4c(test_a, with_unit):
     # Fig. 4c: Zephyr trained on fewer animals (all their sessions), and on fewer
     # sessions of all its animals (open), scored per unit on new animals (test A), the
     # same units for every run.
@@ -715,7 +715,7 @@ def _(test_a, with_unit):
 
 
 @app.cell
-def _(methods, test_a):
+def fig4df(methods, test_a):
     # Two test-A clips, neither an outlier: among clips whose correlation is at least
     # the median, the one with most near misses (predictions 25-100 ms off; d), around
     # its densest near misses; and, among the lowest tenth of clips by correlation, the
@@ -823,7 +823,7 @@ def _(methods, test_a):
 
 
 @app.cell
-def _():
+def fig5_md():
     mo.md(f"""
     ## Fig. 5: judging predictions without a thermistor
 
@@ -835,7 +835,7 @@ def _():
 
 
 @app.cell
-def _():
+def fig5_data():
     qc_videos, qc_windows = quality.tables(str(QC / "test"))
     mo.stop(qc_videos.empty, mo.md("No quality-control reports yet."))
     _sets = runs.clip_sets()
@@ -847,7 +847,7 @@ def _():
 
 
 @app.cell
-def _(test_a):
+def fig5a(test_a):
     # Fig. 5a: what our network's errors on new animals are, per fold, then over folds.
     # The share that are near misses, then, among the rest, the share in fast breathing,
     # face motion and on shallow breaths, against the share of all true breaths with
@@ -885,7 +885,7 @@ def _(test_a):
 
 
 @app.cell
-def _(judged, qc_videos, qc_windows, test_a, truth_f1):
+def fig5bc(judged, qc_videos, qc_windows, test_a, truth_f1):
     # Fig. 5b-c on new animals (test set A) only: the five measures that rank its
     # videos best, and the windows the three best at ranking windows keep.
     _videos = qc_videos[qc_videos["set"] == test_a]
@@ -931,7 +931,7 @@ def _(judged, qc_videos, qc_windows, test_a, truth_f1):
 
 
 @app.cell
-def _(test_a, with_unit):
+def fig5e(test_a, with_unit):
     # Fig. 5e: Zephyr trained differently, minus Zephyr, on new animals (test set A):
     # paired bootstrap over animal x rig units.
     _names = [runs.REFERENCE, *runs.available(runs.VARIANTS)]
@@ -949,7 +949,7 @@ def _(test_a, with_unit):
 
 
 @app.cell
-def _():
+def fig5d():
     _reference = quality.reference(str(QC / "reference.json"))
     mo.stop(_reference is None, mo.md("No reference yet."))
     fig5d = plots.calibration_panel(*size("fig5", "d"), _reference)
@@ -959,7 +959,7 @@ def _():
 
 
 @app.cell
-def _():
+def tables_md():
     mo.md("""
     ## Supplementary tables
 
@@ -971,7 +971,7 @@ def _():
 
 
 @app.cell
-def _(methods, recordings, spec):
+def supplementary_tables(methods, recordings, spec):
     # Test set C of the published split, per method: each score averaged within each
     # animal x rig unit, then over the units (two animals: no interval).
     _c = recordings[recordings["set"] == runs.SETS["test_c"]]
@@ -1079,7 +1079,7 @@ def _(methods, recordings, spec):
 
 
 @app.cell
-def _(by_fold, test_a):
+def figs1(by_fold, test_a):
     # Supplementary Fig. 1: why the unit is an animal on one rig. Our network on new
     # animals (every fold's test A, each animal new once): how far apart two units
     # score when they share the animal but not the rig, and when they share the rig
@@ -1102,7 +1102,7 @@ def _(by_fold, test_a):
 
 
 @app.cell
-def _(by_fold, test_a, with_unit):
+def figs2(by_fold, test_a, with_unit):
     # Supplementary Fig. 2: our network fed 30-Hz video (every other frame), still
     # predicting on the 60-Hz grid, against the same network on 60-Hz video, on every
     # fold. a: the difference per test set, paired by fold; b: inhale F1 on new animals
