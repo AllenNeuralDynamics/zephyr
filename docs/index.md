@@ -74,9 +74,10 @@ sensor.
 ```mermaid
 flowchart LR
     V[Face video] --> C[Crop box<br/>gray frames]
-    T[Frame<br/>timestamps] --> C
+    T[Frame<br/>timestamps] -- select frames<br/>at select_fs --> C
     C --> E[CNN encoder<br/>per frame]
     E --> R[Resample to<br/>60 Hz grid]
+    T -- frame times --> R
     R --> N[Dilated TCN]
     N --> S[Breathing trace]
     N --> O[Onset head<br/>inhale probability]
@@ -84,9 +85,10 @@ flowchart LR
     TH -. inhale events .-> O
 ```
 
-A **CNN** encodes each cropped gray frame into a vector, at the rate the frames were
-selected (`select_fs`, 60 Hz by default). The vectors are resampled onto a fixed 60 Hz
-grid using the real frame timestamps. A **dilated temporal convolutional network**
+Frames are picked from the camera's own frames at `select_fs` (60 Hz by default), by
+their timestamps. A **CNN** encodes each cropped gray frame into a vector. The vectors
+are then resampled onto a fixed 60 Hz grid, again using the real frame timestamps, so
+irregular frame intervals land at their true times. A **dilated temporal convolutional network**
 (TCN) then reads the whole sequence. It is non-causal, because inference runs offline
 on complete clips. Two heads read the TCN's output:
 
