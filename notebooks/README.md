@@ -20,8 +20,8 @@ uv run marimo export html notebooks/walkthrough.py -o walkthrough.html --no-incl
   another); the measures are `zephyr.benchmarks.analysis`. The runs come from
   `s3://aind-scratch-data/vr-foraging/zephyr-runs/` (read unsigned, no credentials: the bucket is public),
   downloaded once into `cache/runs/`; the clips
-  from a local copy of the dataset and its feature cache (`ZEPHYR_TEST_ROOT`, as for
-  `test_sets.py`, train and validation clips included for the rate distribution).
+  from a local copy of the dataset and its feature cache (`ZEPHYR_TEST_ROOT`, train and
+  validation clips included for the rate distribution).
   Scores are the runs' own `evaluation.json`; traces are the runs' own `traces/` (and
   the pixel methods'), downloaded, where a run saved them, else predicted here (GPU,
   inference only); either way cached in `cache/walkthrough/`. The clip-by-clip sections and the wall
@@ -34,20 +34,11 @@ uv run marimo export html notebooks/walkthrough.py -o walkthrough.html --no-incl
   corpus (not `folds`, which would draw a new split: `raw/folds.parquet` is the record).
   It writes only that new folder, and only when its Rebuild button is pressed
   (about an hour; the raw thermistors and camera timestamps come from S3).
-- `corpus_selection.py`: where the corpus' sessions go, from every packaged session to
-  the sets, as a flow: each step's losses peel off with their reason and count, each
-  session under the first rule it fails, with a table of the spec's rule behind each
-  (`utils/corpus_flow.py`). It reads a local copy of the dataset folder
-  (`ZEPHYR_DATASET_ROOT`: `raw/inventory.parquet`, `raw/qc.parquet`,
-  `raw/selection.json`, `raw/folds.parquet`) and the spec.
-- `test_sets.py`: networks scored on the split's test sets A, B and C, clip by clip:
-  scores per video and per animal, against what is known of each clip (thermistor
-  quality, image statistics, rig), and the time offset between each network's
-  prediction and the thermistor. It reads a local folder (`utils/test_sets.py`, `LAYOUT`;
-  `ZEPHYR_TEST_ROOT`) holding the test lists, their cache entries, the checkpoints and
-  one `zephyr evaluate` result per network, made with `ZEPHYR_PATH_MAP` pointing the
-  folder's dataset copy at `/data/zephyr-dataset`. Image statistics and lags (inference
-  on every clip, behind a button) are cached in `cache/`.
+- `manuscript_figures.py`: every data panel of the manuscript's figures
+  (`manuscript/figures/<figure>/<panel>.svg`, at the sizes in
+  `manuscript/figures/layout.toml`) and the tables it reads (`manuscript/tables/`),
+  from the same runs, clips and cache as `walkthrough.py`, and the quality-control
+  reports for Fig. 5 (`ZEPHYR_MANUSCRIPT_QC`).
 - `quality_control.py`: `zephyr quality-control` checked where the truth is known.
   Every measure of each video's report against its real inhale F1 (per video), how well
   each ranks videos and windows, how much keeping the best-judged videos raises the
