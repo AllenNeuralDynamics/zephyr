@@ -1,0 +1,3 @@
+[submodule "manuscript/template"]
+	path = manuscript/template
+	url = https://github.com/AllenNeuralDynamics/typst-template
