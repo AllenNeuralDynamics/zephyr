@@ -176,7 +176,6 @@ def setup() -> None:
     grab("boxes-placed")
     box.auto()
     spin(1.0)
-    grab("boxes-auto")
     box.select_key(key_of(box, SESSIONS["798279"]))
     grab("boxes-matched")
 

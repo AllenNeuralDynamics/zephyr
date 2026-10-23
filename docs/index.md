@@ -17,8 +17,6 @@ trained, scored network and its predictions on new animals.</p>
 
 </div>
 
-![The zephyr app placing a crop box on a mouse's face](assets/screens/boxes-auto.webp){ .screen }
-
 ## What zephyr does
 
 You train it on recordings that have a breathing sensor (a nasal thermistor, for
