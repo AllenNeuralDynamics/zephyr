@@ -82,13 +82,15 @@ class CrossValidationRuns(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     folds: list[str] = Field(min_length=1)
     method: list[ReportedRun] = Field(min_length=1)
+    variant: list[ReportedRun] = []
+    """The first method trained differently on each fold, compared with it alone."""
 
     @model_validator(mode="after")
     def _labels_are_distinct(self) -> "CrossValidationRuns":
-        labels = [r.label for r in self.method]
+        labels = [r.label for r in (*self.method, *self.variant)]
         if len(set(labels)) != len(labels):
             raise ValueError(f"repeated labels in {labels}")
-        if any(r.fold for r in self.method):
+        if any(r.fold for r in (*self.method, *self.variant)):
             raise ValueError("a cross-validation method takes its fold from folds")
         return self
 

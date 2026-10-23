@@ -187,3 +187,20 @@ kind = "data"
 width_mm = 89
 height_mm = 38
 what = "Our network on new animals: score difference between two rigs of one animal and between two animals on one rig (inhale F1, correlation), mean and bootstrap interval"
+
+[figs2]
+width_mm = 89
+gap_mm = 4
+rows = [["a"], ["b"]]
+
+[figs2.panels.a]
+kind = "data"
+width_mm = 89
+height_mm = 32
+what = "Our network on 30-Hz video minus on 60-Hz video, per test set (correlation, inhale F1, exhale F1): each fold's difference and their mean with a 95% t-interval"
+
+[figs2.panels.b]
+kind = "data"
+width_mm = 89
+height_mm = 45
+what = "Inhale F1 on new animals by breathing rate, 30-Hz and 60-Hz input, mean over folds with 95% interval, over the share of breaths in each bin"

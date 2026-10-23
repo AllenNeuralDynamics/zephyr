@@ -147,7 +147,9 @@ and the label each is shown under: a `root` (an `s3://` prefix or a folder), the
 `[[method]]` per method (`run` folder, `kind` `network`/`facemap`/`pixel`, the baseline's
 `variant`, `head = true` for a network with an onset head, and `fold` when its folder is
 not the manifest's `fold`), `[[variant]]`s of the first method and its
-`[[learning_curve]]`, the first method retrained on parts of its training set. `corpus-v3.toml` is the corpus benchmark that `notebooks/walkthrough.py`
+`[[learning_curve]]`, the first method retrained on parts of its training set, and a
+`[cross_validation]` of the `folds` each `[[cross_validation.method]]` and
+`[[cross_validation.variant]]` (the first method trained differently) was retrained on. `corpus-v3.toml` is the corpus benchmark that `notebooks/walkthrough.py`
 reports. To report other runs, copy it under a new name.
 
 `analysis.py` measures, clip by clip, what a run's own scores do not: every true inhale

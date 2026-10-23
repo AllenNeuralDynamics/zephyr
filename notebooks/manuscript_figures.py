@@ -994,5 +994,74 @@ def _(by_fold, test_a):
     return (rig_animal,)
 
 
+@app.cell
+def _(by_fold, test_a, with_unit):
+    # Supplementary Fig. 2: our network fed 30-Hz video (every other frame), still
+    # predicting on the 60-Hz grid, against the same network on 60-Hz video, on every
+    # fold. a: the difference per test set, paired by fold; b: inhale F1 on new animals
+    # by breathing rate (each fold's breaths pooled, then over folds).
+    _ref = by_fold[
+        (by_fold["method"] == runs.REFERENCE) & (by_fold["fold"] != "published")
+    ]
+    _recs = pd.concat(
+        [_ref, with_unit(runs.cv_scores(variants=True))], ignore_index=True
+    )
+    _name = next(iter(runs.CV_VARIANTS))
+    _folds, _summaries = [], []
+    for _m in ("correlation", "inhale", "exhale_f1"):
+        _f = analysis.per_fold(_recs, _m)
+        _p = _f[_f["method"] == _name].merge(
+            _f[_f["method"] == runs.REFERENCE],
+            on=["set", "fold"],
+            suffixes=("", "_ref"),
+        )
+        _p = _p.assign(value=_p["value"] - _p["value_ref"], metric=_m)
+        _folds.append(_p[["metric", "set", "fold", "value"]])
+        _summaries.append(
+            analysis.across_folds(_p, "value", by=["set"]).assign(metric=_m)
+        )
+    input_rate_folds = pd.concat(_folds, ignore_index=True)
+    input_rate = pd.concat(_summaries, ignore_index=True)
+    figs2a = plots.fold_difference_panel(
+        *size("figs2", "a"), input_rate_folds, input_rate, _name, runs.REFERENCE
+    )
+    plots.save_panel(figs2a, FIGURES / "figs2" / "a.svg")
+    _tables = {"breaths": [], "false_positives": []}
+    for _n in (runs.REFERENCE, _name):
+        for _f in runs.RESULTS.cross_validation.folds:
+            _t = runs.tables(runs.cv_name(_n, _f))
+            for _k, _parts in _tables.items():
+                _parts.append(_t[_k].query("set == @test_a").assign(method=_n, fold=_f))
+    _by_rate = analysis.f1_by_rate(
+        pd.concat(_tables["breaths"], ignore_index=True),
+        pd.concat(_tables["false_positives"], ignore_index=True),
+        analysis.RATE_BINS_HZ[1:],
+    )
+    input_rate_by_rate = analysis.across_folds(
+        _by_rate, "f1", by=["method", "bin"]
+    ).merge(
+        _by_rate.groupby(["method", "bin"], observed=True)["share"]
+        .mean()
+        .reset_index(),
+        on=["method", "bin"],
+    )
+    figs2b = plots.rate_band_panel(
+        *size("figs2", "b"),
+        input_rate_by_rate,
+        [runs.REFERENCE, _name],
+        ylim=(0.8, 1.0),
+    )
+    plots.save_panel(figs2b, FIGURES / "figs2" / "b.svg")
+    mo.vstack(
+        [
+            figs2a,
+            figs2b,
+            mo.ui.table(input_rate.round(4), selection=None),
+            mo.ui.table(input_rate_by_rate.round(3), selection=None),
+        ]
+    )
+    return input_rate, input_rate_by_rate
+
+
 if __name__ == "__main__":
     app.run()
