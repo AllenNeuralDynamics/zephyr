@@ -304,6 +304,85 @@ def bootstrap(
     return pd.DataFrame(rows)
 
 
+RIG_PAIR = "same animal, other rig"
+ANIMAL_PAIR = "same rig, other animal"
+
+
+def rig_animal_pairs(
+    recordings: pd.DataFrame, metric: str, animal: str = "subject", rig: str = "rig"
+) -> pd.DataFrame:
+    """Every pair of units (an animal on one rig, *metric* averaged over its rows) that
+    differ in exactly one of the two: the same animal on two rigs (``kind``
+    :data:`RIG_PAIR`) or two animals on one rig (:data:`ANIMAL_PAIR`), with the
+    absolute difference of their means (``difference``)."""
+    units = recordings.groupby([animal, rig])[metric].mean().dropna().reset_index()
+    a = units[animal].astype(str).to_numpy()
+    r = units[rig].astype(str).to_numpy()
+    v = units[metric].to_numpy()
+    i, j = np.triu_indices(len(units), k=1)
+    same_animal, same_rig = a[i] == a[j], r[i] == r[j]
+    keep = same_animal != same_rig
+    return pd.DataFrame(
+        {
+            "kind": np.where(same_animal[keep], RIG_PAIR, ANIMAL_PAIR),
+            "animal_1": a[i][keep],
+            "animal_2": a[j][keep],
+            "rig_1": r[i][keep],
+            "rig_2": r[j][keep],
+            "difference": np.abs(v[i] - v[j])[keep],
+        }
+    )
+
+
+def rig_animal_bootstrap(
+    pairs: pd.DataFrame, n: int = 2000, seed: int = 0, level: float = 0.95
+) -> pd.DataFrame:
+    """Mean absolute difference of each kind of pair (:func:`rig_animal_pairs`) with an
+    interval from resampling animals (a pair counts as often as the product of its two
+    animals' draws), and the between-animal mean minus the between-rig mean on the
+    same draws (``kind`` ``"difference"``)."""
+    animals = np.unique(pairs[["animal_1", "animal_2"]].to_numpy().ravel())
+    index = {name: k for k, name in enumerate(animals)}
+    first = pairs["animal_1"].map(index).to_numpy()
+    second = pairs["animal_2"].map(index).to_numpy()
+    d = pairs["difference"].to_numpy()
+    draws = np.random.default_rng(seed).integers(0, len(animals), (n, len(animals)))
+    counts = np.zeros((n, len(animals)))
+    np.add.at(counts, (np.arange(n)[:, None], draws), 1)
+    weight = counts[:, first] * counts[:, second]
+    tail = 100 * (1 - level) / 2
+    means, rows = {}, []
+    for kind in (RIG_PAIR, ANIMAL_PAIR):
+        mask = (pairs["kind"] == kind).to_numpy()
+        w = weight[:, mask]
+        with np.errstate(invalid="ignore"):
+            means[kind] = (w * d[mask]).sum(axis=1) / w.sum(axis=1)
+        rows.append(
+            {
+                "kind": kind,
+                "mean": d[mask].mean(),
+                "low": np.nanpercentile(means[kind], tail),
+                "high": np.nanpercentile(means[kind], 100 - tail),
+                "pairs": int(mask.sum()),
+                "animals": len(
+                    set(pairs.loc[mask, "animal_1"]) | set(pairs.loc[mask, "animal_2"])
+                ),
+            }
+        )
+    diff = means[ANIMAL_PAIR] - means[RIG_PAIR]
+    rows.append(
+        {
+            "kind": "difference",
+            "mean": rows[1]["mean"] - rows[0]["mean"],
+            "low": np.nanpercentile(diff, tail),
+            "high": np.nanpercentile(diff, 100 - tail),
+            "pairs": len(pairs),
+            "animals": len(animals),
+        }
+    )
+    return pd.DataFrame(rows)
+
+
 def familiarity(
     recordings: pd.DataFrame, trained: dict[str, pd.DataFrame]
 ) -> pd.DataFrame:
@@ -545,9 +624,10 @@ def tolerance_curve(
     tolerances_ms: Sequence[float],
 ) -> pd.DataFrame:
     """Inhale F1 and the errors left (misses plus false inhales, as a share of true
-    breaths) as the matching tolerance is relaxed, per method (and fold, when the tables
-    have one): a true inhale counts as found when a prediction lies within the
-    tolerance (pairs from the timing table, so up to :data:`LAG_WINDOW_S`)."""
+    breaths; also apart, ``misses`` and ``false``) as the matching tolerance is relaxed,
+    per method (and fold, when the tables have one): a true inhale counts as found when
+    a prediction lies within the tolerance (pairs from the timing table, so up to
+    :data:`LAG_WINDOW_S`)."""
     keys = ["method", *(["fold"] if "fold" in breaths else [])]
     rows = []
     n_false = false.groupby(keys).size()
@@ -569,6 +649,8 @@ def tolerance_curve(
                     "tolerance_ms": float(t),
                     "f1": 2 * hits / (n_true + n_pred),
                     "errors": (n_true + n_pred - 2 * hits) / n_true,
+                    "misses": (n_true - hits) / n_true,
+                    "false": (n_pred - hits) / n_true,
                 }
             )
     return pd.DataFrame(rows)

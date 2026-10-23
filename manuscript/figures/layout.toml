@@ -174,3 +174,16 @@ kind = "data"
 width_mm = 59
 height_mm = 48
 what = "Zephyr trained differently (more augmentation, rate balance, 192-px crops) minus Zephyr on test A: inhale F1 and correlation"
+
+# Supplementary figures.
+
+[figs1]
+width_mm = 89
+gap_mm = 4
+rows = [["a"]]
+
+[figs1.panels.a]
+kind = "data"
+width_mm = 89
+height_mm = 38
+what = "Our network on new animals: score difference between two rigs of one animal and between two animals on one rig (inhale F1, correlation), mean and bootstrap interval"
