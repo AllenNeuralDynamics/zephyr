@@ -10,7 +10,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Literal
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, ValidationInfo
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationInfo,
+    model_validator,
+)
 from upath import UPath
 
 from zephyr.config import EventsSource, PreprocessParams
@@ -188,6 +195,10 @@ class Review(_Model):
     selection: Literal["include", "exclude"] | None = None
     excluded: list[tuple[float, float]] | None = None
     included: list[tuple[float, float]] | None = None
+    drop_cameras: list[str] = []
+    """Optional cameras (``[source] optional_cameras``) left out of this session on review
+    (e.g. not on the animal): ``clips`` never cuts or lists them, ``--prune`` deletes
+    their files. Never read by ``qc``."""
 
 
 class DatasetSpec(_Model):
@@ -210,6 +221,22 @@ class DatasetSpec(_Model):
     """Cross-validation folds (``cross_validation`` refuses to run without)."""
     review: list[Review] = []
     """Reviews made by hand, so a rebuild from nothing gives the same corpus."""
+
+    @model_validator(mode="after")
+    def _drop_optional_only(self) -> "DatasetSpec":
+        for review in self.review:
+            required = set(review.drop_cameras) - set(self.source.optional_cameras)
+            if required:
+                raise ValueError(
+                    f"review of {review.session_id}: drop_cameras {sorted(required)} "
+                    "are not optional cameras (a required one drops the session: "
+                    'selection = "exclude")'
+                )
+        return self
+
+    def dropped_cameras(self) -> set[tuple[str, str]]:
+        """The (session, camera) pairs the reviews leave out."""
+        return {(r.session_id, c) for r in self.review for c in r.drop_cameras}
 
 
 class Layout:

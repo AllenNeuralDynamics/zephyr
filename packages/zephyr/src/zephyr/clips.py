@@ -154,9 +154,12 @@ def write_boxes(
     target_size: tuple[int, int] | None = None,
     *,
     clear: set[Path] = frozenset(),
+    exclude: set[Path] = frozenset(),
+    restore: set[Path] = frozenset(),
 ) -> None:
-    """Write ``box =`` entries (and optionally ``target_size``) back into *path*, and
-    remove the box of every *clear* video.
+    """Write ``box =`` entries (and optionally ``target_size``) back into *path*,
+    remove the box of every *clear* video, mark every *exclude* video
+    ``selection = "exclude"`` and take that mark off every *restore* video.
 
     Only those keys are touched, so comments, ordering and every other field of
     the hand-edited file survive.  Videos are keyed by resolved path.
@@ -170,6 +173,10 @@ def write_boxes(
             entry["box"] = list(boxes[video])
         elif video in clear and "box" in entry:
             del entry["box"]
+        if video in exclude:
+            entry["selection"] = "exclude"
+        elif video in restore and entry.get("selection") == "exclude":
+            del entry["selection"]
     try:
         path.write_text(tomlkit.dumps(doc))
     finally:

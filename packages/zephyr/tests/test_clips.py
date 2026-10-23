@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 
 import numpy as np
+import tomlkit
 from _clipfiles import touch_clip, write_list
 
 from zephyr import features
@@ -13,6 +14,7 @@ from zephyr.annotate import (
     frame_size,
     initial_state,
     recordings_of,
+    save_boxes,
 )
 from zephyr.clips import scan, write_boxes
 from zephyr.config import OUTPUT_FS, ClipList, dump, load
@@ -115,6 +117,29 @@ class AnnotateStateTests(_Tmp):
         self.assertNotEqual(boxes[first.video], boxes[second.video])
         state.toggle_override()
         self.assertEqual(state.clip_boxes()[first.video], boxes[second.video])
+
+    def test_exclude_keeps_a_clip_marked_elsewhere_and_place_undoes_it(self):
+        videos = [touch_clip(self.root / "d", g, p) for g in (1, 2) for p in (1, 2)]
+        path = write_list(self.root / "l.toml", videos)
+        doc = tomlkit.parse(path.read_text())
+        for entry in doc["clip"]:
+            del entry["box"]
+        doc["clip"][2]["selection"] = "exclude"  # the Breathing page, one clip only
+        path.write_text(tomlkit.dumps(doc))
+        clips = load(ClipList, path).resolve(include_excluded=True)
+        state = initial_state(clips, (200, 160), (100, 80), 32, frozenset([videos[2]]))
+        self.assertEqual(state.excluded, set())
+        state.toggle_exclude()
+        self.assertEqual(state.progress(), (0, 1))
+        save_boxes(path, state)
+        clips = {c.video.name: c for c in load(ClipList, path).clip}
+        selections = [clips[v.name].selection for v in videos]
+        self.assertEqual(selections, ["exclude", "exclude", "exclude", None])
+        state.place(50, 40)  # a box: used again
+        save_boxes(path, state)
+        clips = {c.video.name: c for c in load(ClipList, path).clip}
+        selections = [clips[v.name].selection for v in videos]
+        self.assertEqual(selections, [None, None, "exclude", None])
 
     def _scene(self, centre, rng) -> np.ndarray:
         """A native frame of noise with a bright blob (a snout) at target *centre*."""

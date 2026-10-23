@@ -15,7 +15,7 @@ it drops sessions whose camera timestamps are not clean, see
 progress and `build` runs them all. The required cameras (`[source] cameras`, face and
 side) decide the selection; an optional one (`[source] optional_cameras`, the front
 camera) is checked by `videos` and cut by `clips` where a session the folds assign has it
-clean, and never selects or drops a session.
+clean and no `[[review]]` drops it (`drop_cameras`), and never selects or drops a session.
 
 ## Why these sessions
 
@@ -127,8 +127,9 @@ and thermistors, plus about 1 TB of clips for the 560 sessions the folds use). E
 step reads and writes it directly, with the AWS profile given by `--profile` (or
 `AWS_PROFILE`); the source bucket, `aind-open-data`, is read anonymously. Writes never
 rename remote objects, and a file appears only once it is complete. The one deletion is
-`clips --prune`, which removes the clips of sessions `folds.parquet` does not assign; it
-needs a profile allowed to delete (your SSO login; `IAmAnywhere` may not delete).
+`clips --prune`, which removes the clips of sessions `folds.parquet` does not assign and
+of cameras a `[[review]]` drops (`--dry-run` lists them first); it needs a profile allowed
+to delete (your SSO login; `IAmAnywhere` may not delete).
 
 Two things need local files, because zephyr itself reads only local paths:
 
@@ -245,6 +246,13 @@ repaired camera comes back in automatically on the next `videos` + `select`.
 animals 841301 (12) and 828415 (2), 2026-02 and 03: six of test C's sessions and eight of
 their training and validation sessions. A front camera that is not clean is not cut, and
 the session keeps its face and side clips.
+
+Ten more have a front camera that is not on the animal, seen while placing boxes: pointed
+away or with no animal in view (animals 828423, 828425 and 794591, rigs 4C, 12C, 13A and
+EPHYS5) or black for the whole clip (`841303_2026-04-02_16-35-11`, rig 4D). Their front
+camera is dropped by a `[[review]]` (`drop_cameras`) and its clips and thumbnails removed by
+`clips --prune`; the sessions keep their face and side clips and their set (train 5,
+validation 4, test B 1), so 536 sessions have front clips.
 
 **Harp clocks** (`sync`): every Harp device answers the read dump that starts a session
 (its WRITE to `OperationControl`, register 10), and devices on one clock do so within a few

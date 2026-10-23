@@ -58,6 +58,7 @@ uv run zephyr gui my-project/clips.toml --page boxes   # straight to a page
 | ++o++ | give this clip its own box |
 | ++c++ | copy the previous recording's box |
 | ++r++ | re-centre (remove the box) |
+| ++x++ | exclude the recording (never used; again to use it) |
 | ++a++ | Auto |
 
 ## Breathing page keys

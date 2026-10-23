@@ -113,6 +113,10 @@ class BoxState:
     part_index: int = 0
     matched: dict[str, float] = field(default_factory=dict)
     """Recordings :meth:`auto` placed, with their match score, until moved by hand."""
+    excluded: set[str] = field(default_factory=set)
+    """Recordings never to use (``selection = "exclude"`` on their clips): no box."""
+    restored: set[str] = field(default_factory=set)
+    """Recordings excluded here and then used again: their clips lose ``selection``."""
     locked: bool = False
     """Box and frame size are a network's (``--checkpoint``): only the place moves."""
 
@@ -181,6 +185,9 @@ class BoxState:
             self.boxes[self.key] = box
         self.placed.add(self.key)
         self.matched.pop(self.key, None)
+        if self.key in self.excluded:
+            self.excluded.discard(self.key)
+            self.restored.add(self.key)
 
     def auto(self, frames, min_score: float = AUTO_MIN_SCORE) -> dict[str, float]:
         """Box every unplaced recording where the hand-placed boxes match its frame.
@@ -204,7 +211,7 @@ class BoxState:
         size = templates[0].shape[1]
         scores = {}
         for recording in self.recordings:
-            if self.is_placed(recording.key):
+            if self.is_placed(recording.key) or recording.key in self.excluded:
                 continue
             image = self._gray(frames(recording))
             if image is None:
@@ -281,6 +288,18 @@ class BoxState:
         self.placed.discard(self.key)
         self.matched.pop(self.key, None)
 
+    def toggle_exclude(self) -> None:
+        """Mark this recording never to be used (its box removed), or use it again."""
+        if self.key in self.excluded:
+            self.excluded.discard(self.key)
+            self.restored.add(self.key)
+            return
+        self.reset()
+        for clip in self.recording.clips:
+            self.overrides.pop(clip.video, None)
+        self.excluded.add(self.key)
+        self.restored.discard(self.key)
+
     def copy_previous(self) -> None:
         if self.index > 0:
             self.place(*box_centre(self.boxes[self.recordings[self.index - 1].key]))
@@ -299,7 +318,8 @@ class BoxState:
         self.part_index = int(np.clip(part_index, 0, max(0, n_parts - 1)))
 
     def progress(self) -> tuple[int, int]:
-        return len(self.placed), len(self.recordings)
+        """Recordings placed, of those not excluded."""
+        return len(self.placed), len(self.recordings) - len(self.excluded)
 
     def clip_boxes(self) -> dict[Path, Box]:
         """The box of every clip whose recording has been placed."""
@@ -316,9 +336,11 @@ def initial_state(
     native_size: tuple[int, int],
     target_size: tuple[int, int],
     box_size: int,
+    excluded: frozenset[Path] = frozenset(),
 ) -> BoxState:
     """State from a clip list's existing boxes: a recording's first box is its
-    own, and any clip whose box differs from that is an override."""
+    own, and any clip whose box differs from that is an override. A recording whose
+    clips are all *excluded* videos is excluded."""
     recordings = recordings_of(clips)
     boxes: dict[str, Box] = {}
     overrides: dict[Path, Box] = {}
@@ -341,6 +363,9 @@ def initial_state(
         overrides=overrides,
         placed=placed,
         box_size=box_size,
+        excluded={
+            r.key for r in recordings if all(c.video in excluded for c in r.clips)
+        },
     )
 
 
@@ -353,7 +378,15 @@ def save_boxes(path: Path, state: BoxState) -> None:
         if recording.key not in state.placed
         for clip in recording.clips
     }
-    write_boxes(path, state.clip_boxes(), state.target_size, clear=unplaced)
+    videos = {r.key: {c.video for c in r.clips} for r in state.recordings}
+    write_boxes(
+        path,
+        state.clip_boxes(),
+        state.target_size,
+        clear=unplaced,
+        exclude=set().union(*(videos[k] for k in state.excluded)),
+        restore=set().union(*(videos[k] for k in state.restored)),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -445,18 +478,22 @@ def open_state(
             raise SystemExit(f"{checkpoint} does not say one square crop size")
         width = height = None
         box_size = crop[0]
-    clips = clip_list.resolve()
+    clips = clip_list.resolve(include_excluded=True)  # shown, to be used again
+    excluded = frozenset(c.video for c in clips) - {
+        c.video for c in clip_list.resolve()
+    }
     try:
         require_videos(clips, "placing boxes")
     except ValueError as exc:
         raise SystemExit(f"{path}: {exc}") from None
-    native = frame_size(clips, frame_dir) if remote else probe_size(clips[0].video)
+    used = [c for c in clips if c.video not in excluded] or clips
+    native = frame_size(clips, frame_dir) if remote else probe_size(used[0].video)
     saved_target = clip_list.preprocess.target_size
     target = (width or saved_target[0], height or saved_target[1])
     # Start on the grid the boxes were saved on, then move to the requested
     # target, so existing placements are carried across rather than
     # reinterpreted as coordinates on a different-sized frame.
-    state = initial_state(clips, native, saved_target, box_size)
+    state = initial_state(clips, native, saved_target, box_size, excluded)
     if box_size != DEFAULT_BOX_SIZE or checkpoint is not None:
         state.resize(box_size - state.box_size)
     if state.target_size != target:
@@ -466,10 +503,11 @@ def open_state(
 
 
 def missing_frames(state: BoxState, frame_dir: Path) -> list[str]:
-    """Clips with no cached frame (they show blank)."""
+    """Clips with no cached frame (they show blank); excluded recordings need none."""
     return [
         clip.name
         for recording in state.recordings
+        if recording.key not in state.excluded
         for clip in recording.clips
         if not frame_path(frame_dir, clip.video).exists()
     ]

@@ -347,6 +347,8 @@ def write_list(spec: DatasetSpec, layout: Layout, table: pd.DataFrame) -> int:
     """``clips.toml``: the cut clips as a zephyr clip list, one group per session (the
     unit zephyr judges leakage on: test B holds out sessions of training animals)."""
     ok = table if table.empty else table[table["error"].isna()]
+    if not ok.empty:  # cameras a review drops, until --prune deletes them
+        ok = ok[~reviewed_out(spec, ok)]
     if ok.empty:
         if layout.clip_list.exists():  # every clip pruned: no list naming them
             storage.delete([layout.clip_list])
@@ -404,31 +406,66 @@ def add_thumbnails(layout: Layout, table: pd.DataFrame, workers: int) -> int:
     return len(missing)
 
 
-def prune(layout: Layout, table: pd.DataFrame, assigned: set[str]) -> pd.DataFrame:
-    """Delete the clips and thumbnails of sessions no set uses (also files a stopped
-    batch left unrecorded) and drop their rows; needs delete rights."""
-    clip_names = storage.names(layout.clip_dir)
-    thumb_names = storage.names(layout.thumbnail_dir, "*.png")
-    gone = [
+def reviewed_out(spec: DatasetSpec, table: pd.DataFrame) -> pd.Series:
+    """Which rows are of a camera a ``[[review]]`` drops from its session."""
+    dropped = spec.dropped_cameras()
+    return pd.Series(
+        [(r.session_id, r.camera) in dropped for r in table.itertuples()],
+        index=table.index,
+        dtype=bool,
+    )
+
+
+def prunable(spec: DatasetSpec, layout: Layout, assigned: set[str]) -> list:
+    """The clips and thumbnails of sessions no set uses (also files a stopped batch
+    left unrecorded) and of cameras a review drops."""
+    dropped = spec.dropped_cameras()
+
+    def gone(session: str, stem: str) -> bool:
+        return session not in assigned or (session, stem.rsplit("_", 1)[-1]) in dropped
+
+    return [
         layout.clip_dir / n
-        for n in clip_names
-        if n.rsplit("_span", 1)[0] not in assigned
+        for n in sorted(storage.names(layout.clip_dir))
+        if gone(n.rsplit("_span", 1)[0], n.rsplit(".", 1)[0])
     ] + [
         layout.thumbnail_dir / n
-        for n in thumb_names
-        if n.rsplit("_", 1)[0] not in assigned
+        for n in sorted(storage.names(layout.thumbnail_dir, "*.png"))
+        if gone(n.rsplit("_", 1)[0], n.rsplit(".", 1)[0])
     ]
+
+
+def prune(
+    spec: DatasetSpec,
+    layout: Layout,
+    table: pd.DataFrame,
+    assigned: set[str],
+    dry_run: bool = False,
+) -> pd.DataFrame:
+    """Delete :func:`prunable`'s files and drop their rows; needs delete rights. A dry
+    run prints the files and deletes nothing."""
+    gone = prunable(spec, layout, assigned)
+    if dry_run:
+        for path in gone:
+            print(path)
+        print(f"clips: --prune would delete {len(gone)} files (dry run)")
+        return table
     storage.delete(gone)
-    kept = table if table.empty else table[table["session_id"].isin(assigned)]
+    kept = (
+        table
+        if table.empty
+        else table[table["session_id"].isin(assigned) & ~reviewed_out(spec, table)]
+    )
     sessions = {
         p.name.rsplit("_span", 1)[0] for p in gone if p.parent == layout.clip_dir
     }
-    print(f"clips: pruned {len(gone)} files of {len(sessions)} unassigned sessions")
+    print(f"clips: pruned {len(gone)} files of {len(sessions)} sessions")
     return kept.reset_index(drop=True)
 
 
 def optional_folders(spec: DatasetSpec, layout: Layout) -> dict[str, dict[str, str]]:
-    """Each session's optional cameras that ``videos`` found clean, with their folders."""
+    """Each session's optional cameras that ``videos`` found clean and no review drops,
+    with their folders."""
     if not spec.source.optional_cameras or not layout.cameras.exists():
         return {}
     table = storage.read_parquet(layout.cameras)
@@ -438,8 +475,10 @@ def optional_folders(spec: DatasetSpec, layout: Layout) -> dict[str, dict[str, s
         & table["clean"].fillna(False).astype(bool)
     ]
     out: dict[str, dict[str, str]] = {}
+    dropped = spec.dropped_cameras()
     for r in table.itertuples():
-        out.setdefault(r.session_id, {})[r.camera] = r.folder
+        if (r.session_id, r.camera) not in dropped:
+            out.setdefault(r.session_id, {})[r.camera] = r.folder
     return out
 
 
@@ -449,6 +488,7 @@ def run(
     limit: int | None = None,
     url_of=None,
     prune_unassigned: bool = False,
+    dry_run: bool = False,
 ) -> pd.DataFrame:
     url_of = url_of or (lambda folder: f"{https(folder)}/video.mp4")
     layout = Layout(spec.root)
@@ -469,7 +509,9 @@ def run(
     if prune_unassigned:
         if assigned is None:
             raise SystemExit("clips: --prune needs folds.parquet (run folds first)")
-        table = prune(layout, table, assigned)
+        if dry_run:
+            return prune(spec, layout, table, assigned, dry_run=True)
+        table = prune(spec, layout, table, assigned)
         storage.write_frame(table, layout.clip_table)
         write_list(spec, layout, table)
     done = set()

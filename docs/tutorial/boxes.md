@@ -64,6 +64,7 @@ is off. A moved box reads **set**.
 | ++o++ | give this clip its own box, apart from its recording's |
 | ++c++ | copy the previous recording's box |
 | ++r++ | re-centre: remove this recording's box |
+| ++x++ | exclude: never use this recording (no animal in view, say); again to use it |
 | ++a++ | Auto: place the unplaced recordings from the placed ones |
 
 ??? example "The same from the command line"

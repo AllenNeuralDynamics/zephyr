@@ -149,7 +149,8 @@ resumable steps; what each does and the folder layout are in its README.
 - A required camera (`[source] cameras`) that is not clean is reported and its session
   dropped, never kept silently; keep the README's "Known data issues" current. An optional
   camera (`[source] optional_cameras`) never selects or drops a session and never changes
-  a clip's thermistor: it is cut only where it is clean. Likewise a session whose thermistor
+  a clip's thermistor: it is cut only where it is clean and no `[[review]]` drops it
+  (`drop_cameras`, whose files `clips --prune` deletes). Likewise a session whose thermistor
   device is off the reference Harp clock (`sync`, `[sync]`): `folds` takes it out after
   the draw.
 - The split (`folds`): test A and validation hold out **whole animals**; never weaken

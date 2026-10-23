@@ -5,7 +5,8 @@ Recordings on the left, the frame with its box on the right; every change is sav
 the clip list at once (only ``box`` and ``target_size``). The logic is
 :class:`zephyr.annotate.BoxState`. Keys: click place | arrows nudge (shift x10) |
 [ ] resize | n/p recording | 1/2/3 clip | o own box | c copy previous | r re-centre |
-a auto (the hand-placed boxes matched on the unplaced recordings).
+x exclude (never use the recording; again to use it) | a auto (the hand-placed boxes
+matched on the unplaced recordings).
 """
 
 from pathlib import Path
@@ -28,7 +29,7 @@ STEP = 8
 DIVISORS = (("native", 1), ("1/2", 2), ("1/3", 3), ("1/4", 4))
 HELP = (
     "click=place   arrows=nudge (shift x10)   [ ]=box size   n/p=recording   "
-    "1/2/3=clip   o=own box   c=copy prev   r=re-centre   a=auto"
+    "1/2/3=clip   o=own box   c=copy prev   r=re-centre   x=exclude   a=auto"
 )
 
 
@@ -236,13 +237,22 @@ class BoxWindow(QtWidgets.QMainWindow):
 
     def _refresh_row(self, key: str) -> None:
         placed = self.state.is_placed(key)
+        excluded = key in self.state.excluded
         item = self._items[key]
         score = self.state.matched.get(key)
         item.setText(
             2,
-            f"match {score:.2f}" if score is not None else "set" if placed else "",
+            "excluded"
+            if excluded
+            else f"match {score:.2f}"
+            if score is not None
+            else "set"
+            if placed
+            else "",
         )
-        colour = QtGui.QColor(THEME["placed" if placed else "auto"])
+        colour = QtGui.QColor(
+            THEME["bad" if excluded else "placed" if placed else "auto"]
+        )
         for column in range(3):
             item.setForeground(column, colour)
 
@@ -253,6 +263,8 @@ class BoxWindow(QtWidgets.QMainWindow):
             state.set_part(state.part_index)
             data = downsample(frames[state.part_index], state.target_size)
             suffix = "  (own box)" if state.has_override else ""
+            if state.key in state.excluded:
+                suffix = "  (excluded: never used)"
             self.part_label.setText(f"{state.clip.video.stem}{suffix}")
         else:
             data = np.zeros(state.target_size[::-1], dtype=np.uint8)
@@ -278,6 +290,8 @@ class BoxWindow(QtWidgets.QMainWindow):
         pen.setCosmetic(True)
         self.rect.setPen(pen)
         self.crosshair.setData([box_centre(box)[0]], [box_centre(box)[1]])
+        for item in (self.rect, self.crosshair):  # an excluded recording has no box
+            item.setVisible(state.key not in state.excluded)
 
         scale = state.scale_from_native
         fixed = " (the list's, set when it was made)" if self.frame_fixed else ""
@@ -287,7 +301,8 @@ class BoxWindow(QtWidgets.QMainWindow):
             f"{state.box_size * scale:.0f} native px   at {box[:2]}"
         )
         done, total = state.progress()
-        self.progress_label.setText(f"{done} / {total} placed")
+        excluded = f", {len(state.excluded)} excluded" if state.excluded else ""
+        self.progress_label.setText(f"{done} / {total} placed{excluded}")
         self.info.setText(
             f"clips: {', '.join(c.video.stem for c in state.recording.clips)}"
         )
@@ -402,6 +417,9 @@ class BoxWindow(QtWidgets.QMainWindow):
             self.commit()
         elif k == key.Key_R:
             state.reset()
+            self.commit()
+        elif k == key.Key_X:
+            state.toggle_exclude()
             self.commit()
         elif k == key.Key_A:
             self.auto()

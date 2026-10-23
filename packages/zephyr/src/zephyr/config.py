@@ -258,7 +258,8 @@ class Clip(_Model):
     events: "EventsSource | None" = None
     """This clip's own detector, overriding the list's ``[events]``."""
     selection: Literal["include", "exclude"] | None = None
-    """Curation mark set in the app's Breathing page.  ``"exclude"``: never use
+    """Curation mark set in the app's Breathing page (or, for a whole recording, ``x``
+    on its Boxes page).  ``"exclude"``: never use
     this video; it is left out of everything downstream (preprocessing, folds,
     training, scoring).  ``"include"`` is a note only; neither touches the clip's
     other settings."""

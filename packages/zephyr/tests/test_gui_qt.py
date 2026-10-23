@@ -173,6 +173,28 @@ class BoxWindowTests(unittest.TestCase):
         self.key(Key.Key_1)
         self.assertEqual(self.state.clip.video.stem, "video_face_1_part_1")
 
+    def test_x_excludes_the_recording_until_pressed_again(self):
+        self.click(50, 40)
+        self.key(Key.Key_X)
+        doc = tomllib.loads(self.list.read_text())
+        marks = {Path(c["video"]).stem: c.get("selection") for c in doc["clip"]}
+        self.assertEqual(marks["video_face_1_part_1"], "exclude")
+        self.assertEqual(marks["video_face_1_part_2"], "exclude")
+        self.assertIsNone(marks["video_face_2_part_1"])
+        self.assertIsNone(_boxes(self.list)["video_face_1_part_1"])
+        self.assertEqual(self.window.progress_label.text(), "0 / 2 placed, 1 excluded")
+        self.assertEqual(self.window._items[self.state.key].text(2), "excluded")
+        self.key(Key.Key_N)
+        self.click(30, 30)
+        self.key(Key.Key_A)  # Auto never boxes an excluded recording
+        self.assertIsNone(_boxes(self.list)["video_face_1_part_1"])
+        self.window.close()
+        self.open()  # an excluded recording is still shown, so it can be used again
+        self.assertIn(self.state.recordings[0].key, self.state.excluded)
+        self.key(Key.Key_X)
+        doc = tomllib.loads(self.list.read_text())
+        self.assertFalse(any("selection" in c for c in doc["clip"]))
+
     def test_r_recentres_and_unplaces(self):
         self.click(20, 20)
         self.key(Key.Key_R)

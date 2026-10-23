@@ -19,7 +19,8 @@ CLI
     zephyr-dataset status <spec.toml>
     zephyr-dataset build <spec.toml>       # all of the above
     zephyr-dataset clips <spec.toml> --profile IAmAnywhere   # AWS profile of an s3:// root
-    zephyr-dataset clips <spec.toml> --prune   # delete unassigned sessions' clips (delete rights)
+    zephyr-dataset clips <spec.toml> --prune   # delete unassigned sessions' and dropped cameras' clips (delete rights)
+    zephyr-dataset clips <spec.toml> --prune --dry-run   # list them, delete nothing
 """
 
 import argparse
@@ -87,6 +88,7 @@ def step(name: str, spec: DatasetSpec, args: argparse.Namespace) -> None:
             workers=args.workers or 8,
             limit=args.limit,
             prune_unassigned=args.prune,
+            dry_run=args.dry_run,
         )
     elif name == "status":
         from . import status
@@ -125,9 +127,16 @@ def run(argv: list[str] | None = None) -> None:
         "--prune",
         action="store_true",
         help="clips: first delete clips of sessions folds.parquet does not assign "
-        "(needs a profile allowed to delete)",
+        "and of cameras a [[review]] drops (needs a profile allowed to delete)",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="clips --prune: only list the files it would delete",
     )
     args = parser.parse_args(argv)
+    if args.dry_run and not args.prune:
+        parser.error("--dry-run goes with clips --prune")
     if args.profile:
         os.environ["AWS_PROFILE"] = args.profile
     spec = load(DatasetSpec, args.spec)

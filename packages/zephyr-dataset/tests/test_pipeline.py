@@ -528,6 +528,46 @@ class PipelineTests(unittest.TestCase):
             [c.video.name for c in listed.resolve()],
             [f"{sid}_span1_FaceCamera.mp4", f"{sid}_span2_FaceCamera.mp4"],
         )
+        # a review drops the front camera: unlisted at once, deleted by --prune
+        data = spec.model_dump()
+        data["review"] = [{"session_id": sid, "drop_cameras": ["FrontCamera"]}]
+        spec = DatasetSpec.model_validate(data)
+        names = sorted(p.name for p in self.layout.clip_dir.iterdir())
+        clips.run(spec, workers=2, url_of=lambda folder: 1 / 0)  # nothing to cut
+        self.assertEqual(sorted(p.name for p in self.layout.clip_dir.iterdir()), names)
+        self.assertEqual(len(load(ClipList, self.layout.clip_list).clip), 4)
+        pd.DataFrame({"session_id": [sid], "set": ["train"]}).to_parquet(
+            self.layout.folds
+        )
+        out = io.StringIO()
+        with redirect_stdout(out):
+            clips.run(
+                spec, workers=2, url_of=url_of, prune_unassigned=True, dry_run=True
+            )
+        front = [
+            n for n in names if n.endswith(("_FrontCamera.mp4", "_FrontCamera.parquet"))
+        ]
+        self.assertEqual(len(front), 4)
+        for name in [*front, f"{sid}_FrontCamera.png"]:
+            self.assertIn(name, out.getvalue())
+        self.assertIn("would delete 5 files", out.getvalue())
+        self.assertEqual(sorted(p.name for p in self.layout.clip_dir.iterdir()), names)
+        kept = clips.run(spec, workers=2, url_of=url_of, prune_unassigned=True)
+        self.assertNotIn("FrontCamera", set(kept["camera"]))
+        pd.testing.assert_frame_equal(kept, old)  # the other cameras untouched
+        self.assertEqual(
+            sorted(p.name for p in self.layout.clip_dir.iterdir()),
+            [n for n in names if n not in front],
+        )
+        self.assertFalse(self.layout.thumbnail(sid, "FrontCamera").exists())
+        self.assertTrue(self.layout.thumbnail(sid, "FaceCamera").exists())
+        self.assertEqual(len(load(ClipList, self.layout.clip_list).clip), 4)
+
+    def test_a_review_drops_only_optional_cameras(self):
+        data = self.with_front().model_dump()
+        data["review"] = [{"session_id": "x", "drop_cameras": ["SideCamera"]}]
+        with self.assertRaisesRegex(ValueError, "not optional cameras"):
+            DatasetSpec.model_validate(data)
 
     def test_the_list_groups_by_subject(self):
         self.build()
@@ -556,13 +596,17 @@ class PipelineTests(unittest.TestCase):
 
     def test_reviews_in_the_spec_are_written_in_and_kept_by_qc(self):
         review = Review(session_id="103_2026-01-04_10-00-00", selection="exclude")
-        self.spec = self.spec.model_copy(update={"review": [review]})
+        front = Review(
+            session_id="100_2026-01-01_10-00-00", drop_cameras=["FrontCamera"]
+        )
+        self.spec = self.with_front().model_copy(update={"review": [review, front]})
         results = self.build()
         self.assertEqual(results["selected"], ["100_2026-01-01_10-00-00"])
         by_id = {s["session_id"]: s for s in results["sessions"]}
         self.assertTrue(by_id["103_2026-01-04_10-00-00"]["reviewed"])
         self.assertEqual(by_id["103_2026-01-04_10-00-00"]["suggested"], "include")
         self.assertTrue(by_id["103_2026-01-04_10-00-00"]["included"])  # QC's spans kept
+        self.assertFalse(by_id["100_2026-01-01_10-00-00"]["reviewed"])  # clips' review
 
     def test_the_saved_query_and_until_fix_the_inventory(self):
         table = inventory.build(self.spec, workers=2, fs=self.fs)

@@ -152,3 +152,45 @@ selection = "exclude"
 [[review]]
 session_id = "behavior_798279_2025-10-28_15-41-29"
 selection = "exclude"
+
+# front cameras not on the animal (pointed away, no animal in view, or black), seen on
+# the Boxes page: the sessions keep their face and side clips
+[[review]]
+session_id = "behavior_794591_2025-11-04_20-19-41"
+drop_cameras = ["FrontCamera"]
+
+[[review]]
+session_id = "behavior_828423_2026-01-08_22-21-55"
+drop_cameras = ["FrontCamera"]
+
+[[review]]
+session_id = "behavior_828423_2026-01-13_22-06-22"
+drop_cameras = ["FrontCamera"]
+
+[[review]]
+session_id = "behavior_828425_2026-01-07_16-31-57"
+drop_cameras = ["FrontCamera"]
+
+[[review]]
+session_id = "behavior_828425_2026-01-08_16-54-50"
+drop_cameras = ["FrontCamera"]
+
+[[review]]
+session_id = "behavior_828425_2026-01-15_16-53-24"
+drop_cameras = ["FrontCamera"]
+
+[[review]]
+session_id = "828425_2026-02-04_22-03-50"
+drop_cameras = ["FrontCamera"]
+
+[[review]]
+session_id = "828423_2026-02-09_20-40-20"
+drop_cameras = ["FrontCamera"]
+
+[[review]]
+session_id = "828423_2026-02-11_20-40-58"
+drop_cameras = ["FrontCamera"]
+
+[[review]]
+session_id = "841303_2026-04-02_16-35-11"
+drop_cameras = ["FrontCamera"]

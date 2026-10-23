@@ -39,10 +39,15 @@ def apply_reviews(spec: DatasetSpec, state: TuneState) -> None:
     """Write the spec's ``[[review]]`` decisions over the suggestions, reviewed: the
     fields a review leaves out keep what QC wrote (on the first run) or had."""
     entries = {session_of(e.clip.source): e for e in state.entries}
-    missing = [r.session_id for r in spec.review if r.session_id not in entries]
+    reviews = [  # one that only drops a camera is for ``clips``
+        r
+        for r in spec.review
+        if (r.selection, r.excluded, r.included) != (None, None, None)
+    ]
+    missing = [r.session_id for r in reviews if r.session_id not in entries]
     if missing:
         raise SystemExit(f"qc: reviewed sessions not in the list: {missing}")
-    for review in spec.review:
+    for review in reviews:
         entry = entries[review.session_id]
         if review.selection is not None:
             entry.selection = review.selection
