@@ -1,9 +1,9 @@
 """What a benchmark reports beyond each run's ``evaluation.json``, clip by clip.
 
-From one clip's prediction and truth: event matches, breathing rate in windows, onset
-timing, band-limited correlation and the errors behind a bad clip; then summaries over
-clips: rate agreement, F1 by breathing rate, a bootstrap over animals and how alike two
-methods' per-clip scores are (:func:`score_agreement`). Events are
+From one clip's prediction and truth: event matches, breathing rate in windows and
+around task events (:func:`event_aligned`), onset timing, band-limited correlation and
+the errors behind a bad clip; over clips: rate agreement, F1 by breathing rate, a
+bootstrap over animals and how alike two methods' per-clip scores are. Events are
 matched as the scorer matches them (:func:`zephyr.evaluation.match_events`); inhales
 of a network with an onset head come from the head, the rest from the clip's own event
 detector run on the trace, as the scorer does (:func:`score_prediction`). A prediction
@@ -128,6 +128,27 @@ def _local_rate(at: np.ndarray, true_on: np.ndarray, rate: np.ndarray) -> np.nda
         return np.full(len(at), np.nan)
     i = np.clip(np.searchsorted(true_on, at) - 1, 0, len(true_on) - 2)
     return rate[i]
+
+
+def breathing_rate(inhales: np.ndarray, at: np.ndarray) -> np.ndarray:
+    """Instantaneous breathing rate (Hz) at times *at*: 1 / the interval of the breath
+    each falls in; NaN before the first inhale and from the last."""
+    out = np.full(len(at), np.nan)
+    if len(inhales) < 2:
+        return out
+    i = np.searchsorted(inhales, at, side="right") - 1
+    inside = (i >= 0) & (i < len(inhales) - 1)
+    out[inside] = 1.0 / np.diff(inhales)[i[inside]]
+    return out
+
+
+def event_aligned(
+    times: np.ndarray, values: np.ndarray, at: np.ndarray, lags: np.ndarray
+) -> np.ndarray:
+    """*values* (sampled at *times*) around each event in *at*, at *lags* (s) from it:
+    one row per event, NaN where a lag falls outside *times*."""
+    rows = [np.interp(t + lags, times, values, left=np.nan, right=np.nan) for t in at]
+    return np.array(rows, float).reshape(len(at), len(lags))
 
 
 def band_correlations(a: np.ndarray, b: np.ndarray, fs: float) -> dict[str, float]:

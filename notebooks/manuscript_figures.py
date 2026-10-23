@@ -70,42 +70,141 @@ def _():
 @app.cell
 def _():
     mo.md("""
-    ## Fig. 1c: the ground truth
+    ## Fig. 1b, c: sniffing in the task
 
-    The crop at three moments of one breath (inhalation onset, halfway to exhalation,
-    exhalation onset) above the thermistor, the moments marked.
+    One session of a new animal, predicted by the fold that holds the animal out.
+    b: both clips' breathing rate and speed around odor onset, apart for sites where
+    the animal stopped and was rewarded, stopped and was not (unrewarded), or ran past
+    (skipped: the task saw no stop), and breathing rate against speed; c: a minute of
+    it, with licks, rewards and odor sites. The behaviour comes from the session's processed
+    asset (the same clock as the thermistor).
     """)
     return
 
 
+@app.function
+def task_window(
+    sites: pd.DataFrame, t0: float, t1: float, window: float
+) -> tuple[tuple[int, int], float]:
+    """``(score, start)`` of the *window* in ``[t0, t1]`` holding the most kinds of
+    whole odor sites, then the most sites (the earliest such, of equals)."""
+
+    def score(start: float) -> tuple[int, int]:
+        whole = sites[(sites["odor"] >= start) & (sites["leave"] <= start + window)]
+        return whole["kind"].nunique(), len(whole)
+
+    start = max(np.arange(t0, t1 - window, 0.5), key=score)
+    return score(start), float(start)
+
+
 @app.cell
-def _(origin, stem, truth):
-    # The clip's slowest breath, so its phases are far enough apart to see.
-    _inhales = truth["inhale"]
-    _longest = int(np.argmax(np.diff(_inhales)))
-    _onset, _next = float(_inhales[_longest]), float(_inhales[_longest + 1])
-    _exhale = float(truth["exhale"][truth["exhale"] > _onset][0])
-    _moments = [_onset, (_onset + _exhale) / 2, _exhale]
-    _frame_t, _frames = runs.gray(stem)
-    _picked = [
-        min(int(np.searchsorted(_frame_t, t)), len(_frames) - 1) for t in _moments
+def _():
+    # Its correlation (0.855) and head inhale F1 (0.981) are nearest test A's medians
+    # (0.850, 0.977) among sessions of dataset version 1.0 or later (cv folds, seed 17,
+    # 2026-10-23); animal 863680 is new in cv_2.
+    _asset = "863680_2026-09-08_19-35-38_processed_2026-09-23_03-47-07"
+    _session = _asset.split("_processed")[0]
+    _name = runs.cv_name(runs.REFERENCE, "cv_2")
+
+    def _table(name: str) -> pd.DataFrame:
+        return pd.read_parquet(
+            runs.dataset_file(f"{_asset}/{name}.parquet", "s3://aind-open-data")
+        )
+
+    _speed = _table("position_velocity")["velocity"]
+    _licks = _table("licks")
+    lick_times = _licks.index[_licks["is_lick_onset"]].to_numpy()
+    _all = _table("sites")
+    _all = _all[(_all["site_label"] == "RewardSite") & _all["odor_onset_time"].notna()]
+    odor_sites = pd.DataFrame(
+        {
+            "odor": _all["odor_onset_time"],
+            "leave": _all["stop_time"],
+            "kind": [
+                plots.site_kind(bool(c), bool(r))
+                for c, r in zip(_all["has_choice"], _all["has_reward"], strict=True)
+            ],
+            "reward": _all["reward_onset_time"],
+        }
+    )
+    _lags = np.arange(-2.0, 5.0 + 1e-9, 1 / 60)
+    task_clips, _rows = [], {}
+    for _span in (1, 2):
+        _stem = f"{_session}_span{_span}_FaceCamera"
+        _p, _t = runs.prediction(_name, _stem), runs.truth(_stem)
+        _g = _p["times"]
+        _clip = pd.DataFrame(
+            {
+                "time": _g,
+                "speed": np.interp(_g, _speed.index.to_numpy(), _speed.to_numpy()),
+                "video": analysis.breathing_rate(_p["head"], _g),
+                "thermistor": analysis.breathing_rate(_t["inhale"], _g),
+            }
+        )
+        task_clips.append(_clip)
+        # odor onsets with the whole window inside the clip
+        _inside = odor_sites[
+            odor_sites["odor"].between(_g[0] - _lags[0], _g[-1] - _lags[-1])
+        ]
+        for _kind, _group in _inside.groupby("kind"):
+            for _signal in ("video", "thermistor", "speed"):
+                _rows.setdefault((_kind, _signal), []).append(
+                    analysis.event_aligned(
+                        _g, _clip[_signal].to_numpy(), _group["odor"].to_numpy(), _lags
+                    )
+                )
+    _parts = []
+    for (_site, _signal), _blocks in _rows.items():
+        _x = np.concatenate(_blocks)
+        _parts.append(
+            pd.DataFrame(
+                {
+                    "site": _site,
+                    "signal": _signal,
+                    "lag": _lags,
+                    "mean": np.nanmean(_x, 0),
+                    "sem": np.nanstd(_x, 0) / np.sqrt(len(_x)),
+                    "n": len(_x),
+                }
+            )
+        )
+    task_aligned = pd.concat(_parts, ignore_index=True)
+    return lick_times, odor_sites, task_aligned, task_clips
+
+
+@app.cell
+def _(task_aligned, task_clips):
+    fig1b = plots.task_summary_panel(
+        *size("fig1", "b"),
+        task_aligned,
+        pd.concat(task_clips, ignore_index=True),
+        1 / float(np.median(np.diff(task_clips[0]["time"]))),
+    )
+    plots.save_panel(fig1b, FIGURES / "fig1" / "b.svg")
+    _counts = task_aligned.groupby(["site", "signal"])["n"].first()
+    mo.vstack([fig1b, mo.ui.table(_counts.reset_index(), selection=None)])
+    return
+
+
+@app.cell
+def _(lick_times, odor_sites, task_clips):
+    _window = 60.0
+    # the clip whose best window holds the most kinds of site, then the most sites
+    _found = []
+    for _c in task_clips:
+        _t = _c["time"]
+        _found.append((*task_window(odor_sites, _t.iloc[0], _t.iloc[-1], _window), _c))
+    _, _start, _clip = max(_found, key=lambda found: found[0])
+    _ex = _clip[(_clip["time"] >= _start) & (_clip["time"] <= _start + _window)]
+    _sites = odor_sites[
+        (odor_sites["leave"] > _start) & (odor_sites["odor"] < _start + _window)
     ]
-    _crops = [np.asarray(_frames[i, 0]) for i in _picked]
-    # Number each crop by its frame in the clip's own video (the network sees a
-    # subset of the camera's frames, on the recipe's selection grid).
-    _native = pd.read_parquet(runs.clips()[stem][0].timestamps)["Time"].to_numpy()
-    _numbers = [int(np.argmin(np.abs(_native - _frame_t[i]))) for i in _picked]
-    fig1c = plots.breath_phases_panel(
+    fig1c = plots.task_stretch_panel(
         *size("fig1", "c"),
-        runs.thumbnail(stem),
-        runs.box(stem),
-        _crops,
-        [f"Frame {n:,}" for n in _numbers],
-        truth,
-        origin,
-        _onset - origin - 0.5,
-        max(2.0, _next - _onset + 1.0),
-        [t - origin for t in _moments],
+        _ex.assign(time=_ex["time"] - _start),
+        _sites.assign(odor=_sites["odor"] - _start, leave=_sites["leave"] - _start),
+        lick_times - _start,
+        odor_sites["reward"].dropna().to_numpy() - _start,
     )
     plots.save_panel(fig1c, FIGURES / "fig1" / "c.svg")
     fig1c
@@ -145,9 +244,10 @@ def _():
     mo.md("""
     ## Fig. 1e: an example prediction
 
-    Eight seconds of the same test-A clip around its largest change in breathing rate:
-    the network's trace over the thermistor and its onset probability, with the
-    thermistor's inhales (black) and the head's (blue).
+    The clip's face frame with the crop the network sees, then eight seconds of the
+    same test-A clip around its largest change in breathing rate: the network's trace
+    over the thermistor and its onset probability, with the thermistor's inhales
+    (black) and exhales (grey) and the head's inhales (blue).
     """)
     return
 
@@ -169,11 +269,18 @@ def rate_change(truth: dict, origin: float, window: float) -> float:
 
 
 @app.cell
-def _(origin, truth, zephyr):
+def _(origin, stem, truth, zephyr):
     _window = 8.0
     _t0 = rate_change(truth, origin, _window)
     fig1e = plots.prediction_panel(
-        *size("fig1", "e"), truth, zephyr, origin, _t0, _window
+        *size("fig1", "e"),
+        truth,
+        zephyr,
+        origin,
+        _t0,
+        _window,
+        runs.thumbnail(stem),
+        runs.box(stem),
     )
     plots.save_panel(fig1e, FIGURES / "fig1" / "e.svg")
     fig1e
