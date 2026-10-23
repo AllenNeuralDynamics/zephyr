@@ -15,6 +15,36 @@
 // A figure assembled at its printed width (183 mm), scaled to the text width.
 #let fit(body) = layout(size => scale(reflow: true, size.width / 189mm * 100%, body))
 
+// The benchmark table (Table 1 and its test-B twin), from a CSV the figure notebook
+// writes: "mean (low–high)" cells put the interval on a smaller line under the mean.
+#let benchmark-table(path) = {
+  let rows = csv(path).slice(1)
+  set text(size: 7pt)
+  table(
+    columns: 10,
+    align: (left,) + (right,) * 9,
+    fill: (_, y) => if y < 2 { colors.table-head } else { colors.table-row },
+    toprule,
+    table.header(
+      [], [], [], table.cell(colspan: 4, align: center)[*Breathing rate (10-s windows)*],
+      table.cell(colspan: 3, align: center)[*Waveform and events*],
+      [*Method*], [*Splits*], [*Inference (s)*], [*MAE ↓*], [*RMSE ↓*], [*MAPE (%) ↓*],
+      [*r ↑*], [*Trace r ↑*], [*Inhale F1 ↑*], [*Exhale F1 ↑*],
+    ),
+    midrule,
+    // "mean (low–high)": the interval goes on a smaller line under the mean.
+    ..rows
+      .flatten()
+      .map(c => {
+        let m = c.match(regex("^(\S+) \((.+)\)$"))
+        if m == none { [#c] } else {
+          [#m.captures.at(0) \ #text(size: 5.5pt, fill: luma(90))[#m.captures.at(1)]]
+        }
+      }),
+    bottomrule,
+  )
+}
+
 #let tbd(body) = highlight(fill: rgb("#fff3b0"), body)
 #let note(body) = text(fill: rgb("#b42318"), size: 8.5pt)[\[#body\]]
 
@@ -279,34 +309,8 @@ measures for every method, as reported for camera physiology in humans @liu2023t
 
 #figure(
   kind: table,
-  {
-    // Written by notebooks/manuscript_figures.py (new animals, over folds, seed 17).
-    let rows = csv("tables/benchmark.csv").slice(1)
-    set text(size: 7pt)
-    table(
-      columns: 10,
-      align: (left,) + (right,) * 9,
-      fill: (_, y) => if y < 2 { colors.table-head } else { colors.table-row },
-      toprule,
-      table.header(
-        [], [], [], table.cell(colspan: 4, align: center)[*Breathing rate (10-s windows)*],
-        table.cell(colspan: 3, align: center)[*Waveform and events*],
-        [*Method*], [*Splits*], [*Inference (s)*], [*MAE ↓*], [*RMSE ↓*], [*MAPE (%) ↓*],
-        [*r ↑*], [*Trace r ↑*], [*Inhale F1 ↑*], [*Exhale F1 ↑*],
-      ),
-      midrule,
-      // "mean (low–high)": the interval goes on a smaller line under the mean.
-      ..rows
-        .flatten()
-        .map(c => {
-          let m = c.match(regex("^(\S+) \((.+)\)$"))
-          if m == none { [#c] } else {
-            [#m.captures.at(0) \ #text(size: 5.5pt, fill: luma(90))[#m.captures.at(1)]]
-          }
-        }),
-      bottomrule,
-    )
-  },
+  // Written by notebooks/manuscript_figures.py (new animals, over folds, seed 17).
+  benchmark-table("tables/benchmark.csv"),
   caption: [*Benchmark on new animals.* Each score averaged within each animal × rig
     unit, then over the new-animal units of a split, then over splits: mean with its 95%
     interval over the #tbd[5] cross-validation folds (#tbd[107] units of #tbd[48] animals,
@@ -323,7 +327,7 @@ measures for every method, as reported for camera physiology in humans @liu2023t
 The two protocols separate two kinds of generalization. For every network, scores on new sessions
 of known animals (test set B) were higher than on new animals (test set A): our network's
 correlation was #tbd[0.91] on B against #tbd[0.81] on A, and PhysNet's #tbd[0.89] against
-#tbd[0.79] (#fig(<fig:general>, "a")). A new recording day of a known animal costs
+#tbd[0.79] (#fig(<fig:general>, "a")\; every measure in @tab:benchmark-b). A new recording day of a known animal costs
 little; most of the error comes from animals the network has never seen. Scores varied between the #tbd[107] animal × rig units of the five folds
 (#fig(<fig:general>, "b")) #note[range of per-unit F1; which units are worst and why]. In every fold, our network scored at least as high as PhysNet in inhalation F1 and correlation (in one fold the two were tied; @tab:benchmark).
 
@@ -786,6 +790,18 @@ batch, steps per epoch and learning rate are in @tab:nets #note[confirm how the 
     #tbd[359]-Hz camera that were held out (published split): each score averaged within
     each animal × rig unit, then over the #tbd[2] units; no interval.],
 ) <tab:testc>
+
+#figure(
+  kind: table,
+  // Written by notebooks/manuscript_figures.py (test set B, over folds, seed 17).
+  benchmark-table("tables/benchmark_b.csv"),
+  caption: [*Benchmark on new sessions of known animals (test set B).* As @tab:benchmark,
+    on the held-out sessions of training animals: each score averaged within each animal
+    × rig unit, then over the test-B units of a split, then over splits: mean with its
+    95% interval over the #tbd[5] cross-validation folds (#tbd[86] units of #tbd[41]
+    animals), or, for the methods with one split, the published split alone. Inference
+    as in @tab:benchmark.],
+) <tab:benchmark-b>
 
 #pagebreak()
 = Supplementary figures
