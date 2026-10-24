@@ -13,7 +13,7 @@ with app.setup:
     import numpy as np
     import pandas as pd
 
-    from utils import architecture, corpus_flow, plots, quality, runs, style
+    from utils import architecture, corpus_flow, plots, quality, runs, style, values
     from zephyr.benchmarks import analysis
     from zephyr.corpus.config import DatasetSpec
 
@@ -182,8 +182,11 @@ def fig1b(task_aligned, task_clips):
     )
     plots.save_panel(fig1b, FIGURES / "fig1" / "b.svg")
     _counts = task_aligned.groupby(["site", "signal"])["n"].first()
+    v_fig1 = {
+        f"sites_{s.lower()}": values.count(_counts[(s, "video")]) for s in style.SITES
+    }
     mo.vstack([fig1b, mo.ui.table(_counts.reset_index(), selection=None)])
-    return
+    return (v_fig1,)
 
 
 @app.cell
@@ -320,27 +323,64 @@ def fig2a(dataset, spec):
     _steps[0]["name"] = "recorded"
     fig2a = corpus_flow.flow_panel(*size("fig2", "a"), _steps)
     plots.save_panel(fig2a, FIGURES / "fig2" / "a.svg")
+    # recorded, passed the thermistor rules, passed the clip and camera rules, corpus
+    v_selection = {
+        k: values.count(s["sessions"])
+        for k, s in zip(
+            ("recorded", "thermistor", "clips", "corpus"), _steps, strict=True
+        )
+    }
     fig2a
-    return
+    return (v_selection,)
 
 
 @app.cell
 def fig2b(folds):
     # Every thermistor breath's rate over the corpus, and per animal.
-    fig2b = plots.corpus_rate_panel(
-        *size("fig2", "b"), runs.animal_breath_rates(), step=0.5
-    )
+    _rates = runs.animal_breath_rates()
+    fig2b = plots.corpus_rate_panel(*size("fig2", "b"), _rates, step=0.5)
     plots.save_panel(fig2b, FIGURES / "fig2" / "b.svg")
+    _r = np.concatenate([np.asarray(r) for r in _rates.values()])
+    _r = _r[(_r >= 2) & (_r <= 15)]
+    v_rates = {
+        "breaths": values.count(len(_r)),
+        "animals": values.count(len(_rates)),
+        "slow": values.pct((_r < 4).mean()),
+        "medium": values.pct(((_r >= 4) & (_r < 8)).mean()),
+        "fast": values.pct((_r >= 8).mean()),
+    }
     fig2b
-    return
+    return (v_rates,)
 
 
 @app.cell
 def fig2c(folds):
-    fig2c = plots.corpus_animals_panel(*size("fig2", "c"), folds[folds["set"].notna()])
+    _used = folds[folds["set"].notna()]
+    fig2c = plots.corpus_animals_panel(*size("fig2", "c"), _used)
     plots.save_panel(fig2c, FIGURES / "fig2" / "c.svg")
+    _dates = pd.to_datetime(_used["date"])
+    _per = (
+        _used.assign(date=_dates)
+        .groupby("subject_id")
+        .agg(
+            sessions=("session_id", "nunique"),
+            days=("date", lambda d: (d.max() - d.min()).days),
+            rigs=("rig", "nunique"),
+        )
+    )
+    _clip_s = 600  # two 300-s clips per session
+    v_corpus = {
+        "sessions": values.count(_used["session_id"].nunique()),
+        "animals": values.count(_used["subject_id"].nunique()),
+        "rigs": values.count(_used["rig"].nunique()),
+        "months": values.count(_used["month"].nunique()),
+        "hours": values.count(_used["session_id"].nunique() * _clip_s / 3600),
+        "median_sessions": f"{_per['sessions'].median():g}",
+        "median_days": f"{_per['days'].median():g}",
+        "multi_rig": values.count((_per["rigs"] > 1).sum()),
+    }
     fig2c
-    return
+    return (v_corpus,)
 
 
 @app.cell
@@ -495,12 +535,58 @@ def fig3cde(fold_tables, test_a):
     plots.save_panel(fig3d, FIGURES / "fig3" / "d.svg")
     fig3e = plots.bland_altman_panel(*size("fig3", "e"), _cv["windows"], "Zephyr")
     plots.save_panel(fig3e, FIGURES / "fig3" / "e.svg")
+
+    _f1 = _rate.set_index(["method", "bin"])["mean"]
+    _breaths = _cv["breaths"][_cv["breaths"]["method"] == "Zephyr"]
+    _in_band = _breaths["rate_hz"].between(2, 15, inclusive="left")
+    _pub = whole["breaths"][
+        (whole["breaths"]["fold"] == "published")
+        & (whole["breaths"]["method"] == "PhysFormer")
+    ]
+    _ms = 1000 * _zephyr["lag_s"]
+
+    def _lag_at(low: float, high: float) -> str:
+        return values.signed(
+            _ms[_zephyr["rate_hz"].between(low, high, "left")].median()
+        )
+
+    _w = _cv["windows"][_cv["windows"]["method"] == "Zephyr"]
+    _d = 60 * (_w["pred_hz"] - _w["true_hz"])  # breaths per minute
+    _clips = runs.cv_scores("clips").query("method == 'Zephyr' and set == @test_a")
+    _middle = _f1.loc["Zephyr"].loc[["6-8", "8-10", "10-12"]]
+    v_rate = {
+        "f1_slow": values.num(_f1.loc[("Zephyr", "2-3")]),
+        "f1_middle": values.span(_middle.min(), _middle.max()),
+        "f1_fast": values.num(_f1.loc[("Zephyr", "12-15")]),
+        "physnet_f1_slow": values.num(_f1.loc[("PhysNet", "2-3")]),
+        "physnet_f1_fast": values.num(_f1.loc[("PhysNet", "12-15")]),
+        "physformer_f1_slow": values.num(_f1.loc[("PhysFormer", "2-3")]),
+        "breaths": values.count(_in_band.sum()),
+        "breaths_published": values.count(
+            _pub["rate_hz"].between(2, 15, inclusive="left").sum()
+        ),
+        "lags": values.count(len(_zephyr)),
+        "lag": values.num(_ms.median(), 1),
+        "lag_iqr": values.span(_ms.quantile(0.25), _ms.quantile(0.75), 1),
+        "lag_slow": _lag_at(2, 3),
+        "lag_fast": _lag_at(11, 12),
+        "windows": values.count(len(_w)),
+        "mae": values.num(_d.abs().mean(), 1),
+        "bias": values.signed(_d.mean()),
+        "limits_low": values.signed(_d.mean() - 1.96 * _d.std()),
+        "limits_high": values.signed(_d.mean() + 1.96 * _d.std()),
+        "clips": values.count(len(_clips)),
+        "sessions": values.count(_clips["session"].nunique()),
+        "animals": values.count(_clips["subject"].nunique()),
+    }
     mo.vstack([fig3c, fig3d, fig3e, mo.ui.table(_rate.round(3), selection=None)])
-    return nets, whole
+    return nets, v_rate, whole
 
 
 @app.cell
-def table1(by_fold, cv_methods, fold_tables, methods, on_cpu, test_a, timing):
+def table1(
+    by_fold, cv_methods, fold_tables, methods, on_cpu, recordings, test_a, timing
+):
     # Table 1 (benchmark, new animals) and Supplementary Table (new sessions of known
     # animals, test set B): per method, each score averaged within each unit, then over
     # the units of a fold, then over folds (mean and 95% interval; methods without
@@ -579,6 +665,69 @@ def table1(by_fold, cv_methods, fold_tables, methods, on_cpu, test_a, timing):
 
     cv_counts = {**_counts(_a), "cv methods": cv_methods}
     cv_counts_b = _counts(_b)
+
+    def _ours_minus(summary: pd.DataFrame, other: str, digits: int) -> tuple[str, str]:
+        """The reference minus *other* on the same resamples, and its interval."""
+        row = summary.loc[other]
+        return values.num(-row["minus ref"], digits), values.span(
+            -row["diff high"], -row["diff low"], digits
+        )
+
+    _ref, _f1, _r = runs.REFERENCE, _summary["inhale"], _summary["correlation"]
+    _pixels = ["Pixel (motion)", "Pixel (PCA)", "Pixel (SNR)"]
+    _others = ["TS-CAN", "RhythmFormer", "PhysFormer"]
+    _dsp = analysis.fold_scores(_a, "inhale_f1", by=["method"]).set_index("method")
+    _published = analysis.fold_scores(
+        recordings[recordings["set"] == test_a].assign(fold="published"),
+        "correlation",
+        by=["method"],
+    ).set_index("method")
+    _pub_a = recordings[(recordings["set"] == test_a) & (recordings["method"] == _ref)]
+    v_fig3 = {
+        "folds": values.count(cv_counts["folds"]),
+        "published_units": values.count(_pub_a["unit"].nunique()),
+        "published_animals": values.count(_pub_a["subject"].nunique()),
+        "units_a": values.count(cv_counts["units"]),
+        "animals_a": values.count(cv_counts["animals"]),
+        "units_b": values.count(cv_counts_b["units"]),
+        "animals_b": values.count(cv_counts_b["animals"]),
+        "motion_r": values.num(_r.loc["Pixel (motion)", "mean"]),
+        "pixel_r_max": values.num(_r.loc[["Pixel (PCA)", "Pixel (SNR)"], "mean"].max()),
+        "pixel_f1": values.span(
+            _f1.loc[_pixels, "mean"].min(), _f1.loc[_pixels, "mean"].max()
+        ),
+        "facemap_r": values.num(_r.loc["Facemap", "mean"]),
+        "facemap_f1": values.num(_f1.loc["Facemap", "mean"]),
+        "f1": values.num(_f1.loc[_ref, "mean"]),
+        "f1_ci": values.span(_f1.loc[_ref, "low"], _f1.loc[_ref, "high"]),
+        "physnet_f1": values.num(_f1.loc["PhysNet", "mean"]),
+        "r": values.num(_r.loc[_ref, "mean"]),
+        "r_ci": values.span(_r.loc[_ref, "low"], _r.loc[_ref, "high"]),
+        "physnet_r": values.num(_r.loc["PhysNet", "mean"]),
+        "others_r": values.span(
+            _r.loc[_others, "mean"].min(), _r.loc[_others, "mean"].max()
+        ),
+        "published_r": values.num(_published.loc[_ref, "mean"]),
+        "published_physnet_r": values.num(_published.loc["PhysNet", "mean"]),
+        "dsp_f1": values.num(_dsp.loc[_ref, "mean"]),
+        "exhale_f1": values.num(_summary["exhale_f1"].loc[_ref, "mean"]),
+        "mae_units": values.num(_summary["MAE (Hz)"].loc[_ref, "mean"], 1),
+        "seconds": values.num(timing.loc[_ref, "s per clip (median)"]),
+        "physnet_seconds": values.num(timing.loc["PhysNet", "s per clip (median)"]),
+        "transformer_seconds": values.span(
+            timing.loc[["PhysFormer", "RhythmFormer"], "s per clip (median)"].min(),
+            timing.loc[["PhysFormer", "RhythmFormer"], "s per clip (median)"].max(),
+            1,
+        ),
+        "r_b": values.num(_summary_b["correlation"].loc[_ref, "mean"]),
+        "physnet_r_b": values.num(_summary_b["correlation"].loc["PhysNet", "mean"]),
+    }
+    v_fig3["physnet_f1_diff"], v_fig3["physnet_f1_diff_ci"] = _ours_minus(
+        _f1, "PhysNet", 3
+    )
+    v_fig3["physnet_r_diff"], v_fig3["physnet_r_diff_ci"] = _ours_minus(
+        _r, "PhysNet", 2
+    )
     mo.vstack(
         [
             mo.md(f"Test A: {cv_counts}"),
@@ -589,7 +738,7 @@ def table1(by_fold, cv_methods, fold_tables, methods, on_cpu, test_a, timing):
             *(mo.ui.table(v.round(3).reset_index()) for v in benchmark_b_diff.values()),
         ]
     )
-    return benchmark_b_diff, benchmark_diff, cv_counts, cv_counts_b
+    return benchmark_b_diff, benchmark_diff, cv_counts, cv_counts_b, v_fig3
 
 
 @app.cell
@@ -661,8 +810,17 @@ def fig4e(whole):
         tolerance = tolerance.merge(_apart.drop(columns="folds"), on=_by)
     fig4e = plots.tolerance_panel(*size("fig4", "e"), tolerance, _nets)
     plots.save_panel(fig4e, FIGURES / "fig4" / "e.svg")
+    _at = tolerance.set_index("tolerance_ms")
+    v_tolerance = {
+        "f1_12": values.num(_at.loc[12.5, "mean"]),
+        "f1_25": values.num(_at.loc[25.0, "mean"]),
+        "f1_100": values.num(_at.loc[100.0, "mean"]),
+        "errors_25": values.pct(_at.loc[25.0, "errors"], 1),
+        "errors_100": values.pct(_at.loc[100.0, "errors"], 1),
+        "breaths": values.count(len(_mine["breaths"])),
+    }
     fig4e
-    return (tolerance,)
+    return tolerance, v_tolerance
 
 
 @app.cell
@@ -704,6 +862,54 @@ def fig4c(test_a, with_unit):
                     }
                 )
     learning = pd.DataFrame(_rows)
+    # The text's numbers: runs found by what they trained on, not by their labels.
+    _f1 = learning[learning["metric"] == "inhale"].set_index("method")
+    _r = learning[learning["metric"] == "correlation"].set_index("method")
+    _full = _f1[_f1["full"]].sort_values("animals")
+    _smallest = _full[_full["animals"] > 2].index[0]  # fewest animals, one draw
+    _draws = _full[_full["animals"] == 2].index.sort_values()
+    _partial = _f1[~_f1["full"]].index[0]  # all animals, a part of their sessions
+    _ref = runs.REFERENCE
+    # The fewest animals against all, paired on the units both were scored on.
+    _pair = _recs[(_recs["set"] == test_a) & _recs["method"].isin([_ref, _smallest])]
+    _shared = set.intersection(
+        *(set(_pair.loc[_pair["method"] == n, "unit"]) for n in (_ref, _smallest))
+    )
+    _diff = (
+        analysis.bootstrap(
+            _pair[_pair["unit"].isin(_shared)], "inhale", reference=_ref, unit="unit"
+        )
+        .set_index("method")
+        .loc[_smallest]
+    )
+    _nested = _full[(_full["animals"] > 2) & (_full.index != _ref)]
+    v_size = {
+        "animals": ", ".join(values.count(n) for n in _nested["animals"].iloc[:-1])
+        + " and "
+        + values.count(_nested["animals"].iloc[-1]),
+        "sessions": ", ".join(values.count(n) for n in _nested["sessions"].iloc[:-1])
+        + " and "
+        + values.count(_nested["sessions"].iloc[-1]),
+        "all_animals": values.count(_f1.loc[_ref, "animals"]),
+        "all_sessions": values.count(_f1.loc[_ref, "sessions"]),
+        "fewest": values.count(_f1.loc[_smallest, "animals"]),
+        "fewest_f1": values.num(_f1.loc[_smallest, "mean"]),
+        "fewest_r": values.num(_r.loc[_smallest, "mean"]),
+        "f1": values.num(_f1.loc[_ref, "mean"]),
+        "r": values.num(_r.loc[_ref, "mean"]),
+        "diff": values.num(_diff[f"{_ref} minus"]),
+        "diff_ci": values.span(_diff["diff low"], _diff["diff high"]),
+        "partial_sessions": values.count(_f1.loc[_partial, "sessions"]),
+        "partial_f1": values.num(_f1.loc[_partial, "mean"]),
+        "partial_r": values.num(_r.loc[_partial, "mean"]),
+        "draw_sessions": values.span(
+            _f1.loc[_draws, "sessions"].min(), _f1.loc[_draws, "sessions"].max(), 0
+        ),
+        "draws_f1": ", ".join(values.num(_f1.loc[d, "mean"]) for d in _draws[:-1])
+        + " and "
+        + values.num(_f1.loc[_draws[-1], "mean"]),
+        "units": values.count(_f1.loc[_ref, "units"]),
+    }
     # Rig coverage (Methods): new animals (test A) by whether the run trained on their
     # rig. Unpaired: the units in each group differ.
     _tested = _recs[_recs["set"] == test_a]
@@ -731,7 +937,7 @@ def fig4c(test_a, with_unit):
             mo.ui.table(rig_coverage.round(3), selection=None),
         ]
     )
-    return
+    return (v_size,)
 
 
 @app.cell
@@ -829,6 +1035,21 @@ def fig4df(methods, test_a):
             ),
             _fig,
         ]
+    v_clips = {
+        "clips": values.count(len(_clips)),
+        "spearman": values.num(low_r["spearman r, F1"]),
+        "low_clips": values.count(low_r["clips"]),
+        "low_r": values.num(low_r["below r"]),
+        "low_f1": values.num(low_r["median F1"]),
+        "low_f1_quartile": values.num(_low["inhale"].quantile(0.75)),
+        "near_r": values.num(_cases["d"]["correlation"]),
+        "near_f1": values.num(_cases["d"]["inhale"]),
+        "quiet_r": values.num(_cases["f"]["correlation"]),
+        "quiet_stretch_r": values.num(local_r),
+        "quiet_peaks": values.span(_peaks.min(), _peaks.max()),
+        "quiet_peak": values.num(_median_p),
+        "threshold": values.num(runs.head_threshold("Zephyr")),
+    }
     mo.vstack(
         [
             mo.md(
@@ -839,7 +1060,7 @@ def fig4df(methods, test_a):
             *_shown,
         ]
     )
-    return
+    return (v_clips,)
 
 
 @app.cell
@@ -894,6 +1115,30 @@ def fig5a(test_a):
     }
     fig5a = plots.error_profile_panel(*size("fig5", "a"), error_profile, _baseline)
     plots.save_panel(fig5a, FIGURES / "fig5" / "a.svg")
+    _p = error_profile.set_index(["kind", "row"])
+    _kinds = {"misses": "missed (FN)", "false": "false (FP)"}
+    _near, _fast = "near miss", "fast breathing (> 8 Hz)"
+    _motion, _shallow = "face motion (top 10%)", "shallow breath (bottom 25%)"
+
+    def _range(row: str) -> str:
+        shares = [100 * _p.loc[(k, row), "mean"] for k in _kinds.values()]
+        return values.span(min(shares), max(shares), 0)
+
+    v_errors = {
+        **{k: values.count(_p.loc[(v, _near), "n"]) for k, v in _kinds.items()},
+        **{
+            f"{k}_near": values.pct(_p.loc[(v, _near), "mean"])
+            for k, v in _kinds.items()
+        },
+        **{
+            f"{k}_gross": values.count(_p.loc[(v, _fast), "n"])
+            for k, v in _kinds.items()
+        },
+        "fast_misses": values.pct(_p.loc[(_kinds["misses"], _fast), "mean"]),
+        "fast_breaths": values.pct(_baseline[_fast]),
+        "motion": _range(_motion),
+        "shallow": _range(_shallow),
+    }
     mo.vstack(
         [
             fig5a,
@@ -901,7 +1146,7 @@ def fig5a(test_a):
             mo.md(f"Baselines: {_baseline}"),
         ]
     )
-    return (error_profile,)
+    return error_profile, v_errors
 
 
 @app.cell
@@ -939,6 +1184,15 @@ def fig5bc(judged, qc_videos, qc_windows, test_a, truth_f1):
         "F1 passing": float(_pass[truth_f1].mean()),
         "F1 failing": float(_w.drop(_pass.index)[truth_f1].mean()),
     }
+    v_qc = {
+        "videos": values.count(len(_videos)),
+        "spearman": values.span(_top["oriented"].min(), _top["oriented"].max()),
+        "windows": values.count(qc_kept["windows"]),
+        "pass": values.pct(qc_kept["pass every check"]),
+        "f1_pass": values.num(qc_kept["F1 passing"]),
+        "f1_fail": values.num(qc_kept["F1 failing"]),
+        "f1_all": values.num(qc_kept["F1 all"]),
+    }
     mo.vstack(
         [
             mo.hstack([fig5b, fig5c]),
@@ -947,7 +1201,7 @@ def fig5bc(judged, qc_videos, qc_windows, test_a, truth_f1):
             mo.ui.table(qc_ranks["Windows"].round(3), selection=None),
         ]
     )
-    return
+    return (v_qc,)
 
 
 @app.cell
@@ -962,10 +1216,27 @@ def fig5e(test_a, with_unit):
     }
     fig5e = plots.variants_panel(*size("fig5", "e"), variants)
     plots.save_panel(fig5e, FIGURES / "fig5" / "e.svg")
+    # The reference minus the larger crop, with its interval.
+    _gap = {m: t.set_index("method") for m, t in variants.items()}
+    _minus = f"{runs.REFERENCE} minus"
+    _crop = next(n for n in _names if "192" in n)
+    v_variants = {
+        "units": values.count(_gap["inhale"].loc[runs.REFERENCE, "units"]),
+        **{
+            f"crop_{k}": values.num(_gap[m].loc[_crop, _minus], 3)
+            for k, m in (("f1", "inhale"), ("r", "correlation"))
+        },
+        **{
+            f"crop_{k}_ci": values.span(
+                _gap[m].loc[_crop, "diff low"], _gap[m].loc[_crop, "diff high"], 3
+            )
+            for k, m in (("f1", "inhale"), ("r", "correlation"))
+        },
+    }
     mo.vstack(
         [fig5e, *(mo.ui.table(v.round(3), selection=None) for v in variants.values())]
     )
-    return
+    return (v_variants,)
 
 
 @app.cell
@@ -974,8 +1245,9 @@ def fig5d():
     mo.stop(_reference is None, mo.md("No reference yet."))
     fig5d = plots.calibration_panel(*size("fig5", "d"), _reference)
     plots.save_panel(fig5d, FIGURES / "fig5" / "d.svg")
+    v_calibration = {"ece": values.num(_reference["onset_calibration"]["ece"], 3)}
     fig5d
-    return
+    return (v_calibration,)
 
 
 @app.cell
@@ -1188,6 +1460,61 @@ def figs2(by_fold, test_a, with_unit):
         ]
     )
     return input_rate, input_rate_by_rate
+
+
+@app.cell
+def manuscript_values(
+    v_calibration,
+    v_clips,
+    v_corpus,
+    v_errors,
+    v_fig1,
+    v_fig3,
+    v_qc,
+    v_rate,
+    v_rates,
+    v_selection,
+    v_size,
+    v_tolerance,
+    v_variants,
+):
+    # Every number the text cites, as printed, for main.typ (#v("section.key")).
+    _cv = [
+        runs.head_threshold(runs.cv_name(runs.REFERENCE, f))
+        for f in runs.RESULTS.cross_validation.folds
+    ]
+    v_threshold = {
+        "folds": values.span(min(_cv), max(_cv)),
+        "published": values.num(runs.head_threshold(runs.REFERENCE)),
+    }
+    manuscript = {
+        "benchmark": v_fig3,
+        "calibration": v_calibration,
+        "clips": v_clips,
+        "corpus": v_corpus,
+        "errors": v_errors,
+        "qc": v_qc,
+        "rate": v_rate,
+        "rates": v_rates,
+        "selection": v_selection,
+        "size": v_size,
+        "task": v_fig1,
+        "threshold": v_threshold,
+        "tolerance": v_tolerance,
+        "variants": v_variants,
+    }
+    values.write(
+        FIGURES.parent / "values.toml", manuscript, "notebooks/manuscript_figures.py"
+    )
+    mo.ui.table(
+        [
+            {"value": f"{s}.{k}", "printed": v}
+            for s, keys in manuscript.items()
+            for k, v in keys.items()
+        ],
+        selection=None,
+    )
+    return
 
 
 if __name__ == "__main__":
