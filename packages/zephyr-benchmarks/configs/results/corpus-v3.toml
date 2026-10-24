@@ -56,3 +56,126 @@ variant = "snr/calibrated"
 label = "Zephyr, more augmentation"
 run = "full-gray-sched-v3-geo-blur"
 head = true
+
+# Zephyr trained with each breathing-rate bin weighted equally (rate_balance = 1)
+[[variant]]
+label = "Zephyr, rate-balanced"
+run = "full-gray-sched-v3-rate-balance"
+head = true
+
+# Zephyr on 192x192 crops (batch 4, 400 steps per epoch, lr 3e-4)
+[[variant]]
+label = "Zephyr, 192-px crops"
+run = "full-gray-192-v3"
+head = true
+
+# Zephyr trained on fewer animals (all of their training sessions), and on as many
+# sessions as 8 animals give but spread over all training animals; same validation and
+# test sets (zephyr-compute-sandbox matrix full-gray-data-size-v3).
+[[learning_curve]]
+label = "Zephyr, 4 animals"
+run = "full-gray-data-size-v3"
+fold = "animals-4"
+head = true
+
+[[learning_curve]]
+label = "Zephyr, 8 animals"
+run = "full-gray-data-size-v3"
+fold = "animals-8"
+head = true
+
+[[learning_curve]]
+label = "Zephyr, 16 animals"
+run = "full-gray-data-size-v3"
+fold = "animals-16"
+head = true
+
+[[learning_curve]]
+label = "Zephyr, sessions of 8 animals from all"
+run = "full-gray-data-size-v3"
+fold = "sessions-like-animals-8"
+head = true
+
+# Zephyr trained on 2 animals, three draws of the animals (full-gray-data-size-small-v3)
+[[learning_curve]]
+label = "Zephyr, 2 animals"
+run = "full-gray-data-size-small-v3"
+fold = "animals-2"
+head = true
+
+[[learning_curve]]
+label = "Zephyr, 2 animals (draw 2)"
+run = "full-gray-data-size-small-v3"
+fold = "animals-2-draw-2"
+head = true
+
+[[learning_curve]]
+label = "Zephyr, 2 animals (draw 3)"
+run = "full-gray-data-size-small-v3"
+fold = "animals-2-draw-3"
+head = true
+
+# Five-fold cross-validation: each method retrained on every fold of
+# cross_validation.parquet, each of the 48 animals outside the 359-Hz group a test-A
+# animal once (zephyr-compute-sandbox matrices full-gray-cv-v3, physnet-cv-v3,
+# tscan-cv-v3, pixel-facemap-cv-v3), seed 17.
+[cross_validation]
+folds = ["cv_0", "cv_1", "cv_2", "cv_3", "cv_4"]
+
+[[cross_validation.method]]
+label = "Zephyr"
+run = "full-gray-cv-v3"
+head = true
+
+[[cross_validation.method]]
+label = "PhysNet"
+run = "physnet-cv-v3"
+
+[[cross_validation.method]]
+label = "TS-CAN"
+run = "tscan-cv-v3"
+
+[[cross_validation.method]]
+label = "Facemap"
+run = "pixel-facemap-cv-v3"
+kind = "facemap"
+variant = "both"
+
+[[cross_validation.method]]
+label = "Pixel (motion)"
+run = "pixel-facemap-cv-v3"
+kind = "pixel"
+variant = "motion/calibrated"
+
+[[cross_validation.method]]
+label = "Pixel (PCA)"
+run = "pixel-facemap-cv-v3"
+kind = "pixel"
+variant = "pca/calibrated"
+
+[[cross_validation.method]]
+label = "Pixel (SNR)"
+run = "pixel-facemap-cv-v3"
+kind = "pixel"
+variant = "snr/calibrated"
+
+# Zephyr fed 30-Hz video (select_fs = 30, every other frame of the 60-Hz cache), still
+# predicting on the 60-Hz grid (zephyr-compute-sandbox matrix full-gray-30hz-cv-v3).
+[[cross_validation.variant]]
+label = "Zephyr, 30-Hz input"
+run = "full-gray-30hz-cv-v3"
+head = true
+
+# Zephyr on the other two cameras, the same recipe on their own boxed crops: the side
+# camera (zephyr-compute-sandbox matrix full-gray-side-cv-v3) and the front camera
+# (full-gray-front-cv-v3); cv_0 so far. Their clips are those of the same session spans
+# where that camera is clean, scored against the same thermistor.
+[[cross_validation.variant]]
+label = "Zephyr, side camera"
+run = "full-gray-side-cv-v3"
+head = true
+
+[[cross_validation.variant]]
+label = "Zephyr, front camera"
+run = "full-gray-front-cv-v3"
+head = true

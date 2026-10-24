@@ -27,7 +27,7 @@ from scipy.signal import find_peaks
 
 from zephyr.model import BreathingNet
 
-from . import features
+from . import events, features
 from .config import ClipList, ResolvedClip, canonical, load, require_videos
 from .evaluation import Score, event_f1, frame_tolerance_s, score_clip
 from .events import Events, in_spans
@@ -172,18 +172,37 @@ def score_entry(entry: ClipEntry, predicted: pd.DataFrame, **kwargs) -> Score:
     """Score a prediction against the clip's thermistor and its event set.
 
     Truth events and excluded spans come from the cache, so a clip is scored
-    on the same events its target was built from.  *kwargs* go to
-    :func:`~zephyr.evaluation.score_clip` (e.g. the predicted events).
+    on the same events its target was built from, and predicted events not given
+    in *kwargs* come from the same detector run on the predicted trace
+    (:func:`predicted_events`).  *kwargs* go to
+    :func:`~zephyr.evaluation.score_clip` (e.g. the onset head's inhales).
     """
     found = truth_events(entry)
+    truth = truth_frame(entry)
+    if entry.detector is not None:
+        dsp = predicted_events(entry, predicted, truth)
+        kwargs.setdefault("predicted_onset_times_s", dsp.inhale)
+        kwargs.setdefault("predicted_offset_times_s", dsp.exhale)
     return score_clip(
-        truth_frame(entry),
+        truth,
         predicted,
         truth_onset_times_s=found.inhale,
         truth_offset_times_s=found.exhale,
         excluded_s=found.excluded,
         **kwargs,
     )
+
+
+def predicted_events(
+    entry: ClipEntry, predicted: pd.DataFrame, truth: pd.DataFrame | None = None
+) -> Events:
+    """The clip's event detector run on a predicted trace, over the span it shares
+    with the thermistor (*truth*, read from the entry when not given)."""
+    truth = truth_frame(entry) if truth is None else truth
+    start = max(truth[TIME_COLUMN].iloc[0], predicted[TIME_COLUMN].iloc[0])
+    stop = min(truth[TIME_COLUMN].iloc[-1], predicted[TIME_COLUMN].iloc[-1])
+    d = entry.detector
+    return events.detect(d.method, predicted, (start, stop), d.params)
 
 
 def head_event_indices(

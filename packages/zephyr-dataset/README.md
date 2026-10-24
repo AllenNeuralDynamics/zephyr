@@ -28,7 +28,8 @@ plus 15 hand-reviewed ephys sessions) → 1,591 pass thermistor QC (see
 have both cameras → **1,506** with clean camera timestamps (see
 [Known data issues](#known-data-issues)). They come from 50 animals on 15 rigs (names of
 one physical rig merged, `FRG.4-B` = `4B`), 2025-10 to 2026-10.
-`notebooks/corpus_selection.py` draws where every session goes and why.
+Fig. 2a of the manuscript (`notebooks/manuscript_figures.py`, with
+`notebooks/utils/corpus_flow.py`) draws where every session goes and why.
 
 **The first draw** (`folds`, written to `raw/folds.parquet`) picks the sessions the corpus
 uses and group C's sets. Results are reported on the cross-validation folds drawn from it

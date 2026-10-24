@@ -14,7 +14,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .config import PreprocessParams, ResolvedClip, canonical, dump
+from .config import EventsSource, PreprocessParams, ResolvedClip, canonical, dump
 
 
 @dataclass(frozen=True)
@@ -25,7 +25,8 @@ class ClipEntry:
     *n_output* on the output grid (``times``/``target``).  *clip_id* is a
     human label (folder and file stem); *recording* is the leakage identity,
     see :attr:`zephyr.config.ResolvedClip.recording_id`.  *thermistor* is the raw
-    ground-truth trace scoring uses, ``None`` for an unlabelled clip.
+    ground-truth trace scoring uses, ``None`` for an unlabelled clip.  *detector* is
+    the clip's event detector, which scoring also runs on a predicted trace.
     """
 
     clip_id: str
@@ -41,6 +42,7 @@ class ClipEntry:
     events: Path | None
     thermistor: Path | None = None
     video: Path | None = None
+    detector: EventsSource | None = None
 
     @property
     def has_target(self) -> bool:
@@ -130,6 +132,7 @@ def lookup(
         events=files["events"] if wanted else None,
         thermistor=clip.thermistor,
         video=clip.video,
+        detector=clip.events if wanted else None,
     )
 
 

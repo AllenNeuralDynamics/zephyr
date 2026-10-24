@@ -27,6 +27,14 @@ SETS = {
     "test_b": "test B (new sessions)",
     "test_c": "test C (359 Hz)",
 }
+SET_COLOURS = {
+    "train": "Train",
+    "val": "Validation",
+    "test_a": "A: new animals",
+    "test_b": "B: new sessions",
+    "test_c": "C: 359 Hz",
+}
+"""Each set's name in :data:`utils.style.SETS`, which gives its colour."""
 LOSS = "#c8c8c8"
 KEPT = "#9bb7d4"
 
@@ -86,6 +94,7 @@ def flow(root: Path, spec: DatasetSpec) -> list[dict]:
 
     q, sel = spec.query, spec.select
     old = len(inventory) - len(kept)
+    ephys = int(kept["session_id"].isin(q.include_sessions).sum())
     steps = [
         {
             "name": "packaged",
@@ -106,6 +115,11 @@ def flow(root: Path, spec: DatasetSpec) -> list[dict]:
                     f"min_dataset_version = {q.min_dataset_version}",
                     old,
                 )
+            ],
+            # What the step is made of, for a flow drawn from here on.
+            "joined": [
+                ("behaviour sessions", len(kept) - ephys),
+                ("electrophysiology sessions", ephys),
             ],
         },
     ]
@@ -132,7 +146,7 @@ def flow(root: Path, spec: DatasetSpec) -> list[dict]:
         ),
         ("a camera missing", "require_cameras = true", no_cams),
         (
-            "camera timestamps not clean",
+            "timestamps not clean",
             "cameras.parquet",
             counts["dropped_for_cameras"],
         ),
@@ -237,11 +251,105 @@ def flow_figure(steps: list[dict]):
     """The sessions as a band that narrows step by step; each loss peels off below,
     labelled with its reason and count, and the last step splits into the sets."""
     fig, ax = style.figure("double", 0.62)
+    draw_flow(ax, steps)
+    return fig
+
+
+def flow_panel(width_mm: float, height_mm: float, steps: list[dict], size: float = 7):
+    """:func:`flow_figure` as a manuscript panel of its printed size, text at `size`;
+    the inputs are labelled vertically along the left edge, to save width."""
+    fig, ax = style.panel(width_mm, height_mm, [["flow"]])
+    draw_flow(ax["flow"], steps, size, size, vertical_inputs=True)
+    return fig
+
+
+SHORT = {
+    "dead sensor": "dead sensor",
+    "weak signal": "weak signal",
+    "events fail to alternate": "irregular events",
+    "inconsistent events": "irregular events",
+    "no strong, unclipped": "clipped signal",
+    "no strong, clean": "no clean stretch",
+    "excluded by review": "excluded on review",
+    "taken out after the draw": "excluded on review",
+    "a camera missing": "camera missing",
+    "timestamps not clean": "camera timing",
+    "training animals": "per-animal caps",
+    "validation animals": "per-animal caps",
+    "test A animals": "per-animal caps",
+    "group C animals": "per-animal caps",
+}
+"""Brief names for the losses, for a printed panel (:func:`shorten`)."""
+
+
+def shorten(steps: list[dict], sets: bool = True) -> list[dict]:
+    """The steps with each loss under a brief name (:data:`SHORT`), losses that share
+    one merged; the full reasons and rules stay in :func:`table`. Without *sets*, the
+    last step is the corpus as a whole, not split into the sets of one draw."""
+    out = []
+    for s in steps:
+        lost: dict[str, int] = {}
+        for label, _rule, k in s["lost"]:
+            name = next((v for key, v in SHORT.items() if label.startswith(key)), None)
+            if name is None and "do not fit" in label:
+                name = "too short for clips"
+            name = name or label
+            lost[name] = lost.get(name, 0) + k
+        brief = {**s, "lost": [(name, "", k) for name, k in lost.items()]}
+        if "sets" in s and not sets:
+            brief.pop("sets")
+            brief["name"] = "corpus"
+        elif "sets" in s:
+            brief["sets"] = [
+                (f"{SET_COLOURS[key]}: {k}", k, a)
+                for key, (_name, k, a) in zip(SETS, s["sets"], strict=True)
+            ]
+        out.append(brief)
+    return out
+
+
+def draw_flow(
+    ax,
+    steps: list[dict],
+    head_size: float = 6.5,
+    label_size: float = 5.5,
+    vertical_inputs: bool = False,
+) -> None:
+    """Draw the flow of :func:`flow_figure` into *ax*; if the first step has a
+    ``joined`` list, its parts flow into it from the left."""
     total = steps[0]["sessions"]
     gap = 0.012 * total
-    row = 0.032 * total  # the height of one label
+    row = 0.05 * total * label_size / 5.5  # the height of one label
     width = 1.0
     y_low = 0.0
+    left = -0.3
+    if steps[0].get("joined"):
+        y, source = 0.0, 0.0
+        for label, k in steps[0]["joined"]:
+            _band(ax, -0.55 * width, source, source - k, -0.04, y, y - k, KEPT)
+            if vertical_inputs:  # along the left edge, reading upwards
+                ax.text(
+                    -0.6 * width,
+                    source - k / 2,
+                    f"{label.removesuffix(' sessions')}: {k:,}",
+                    ha="right",
+                    va="center",
+                    rotation=90,
+                    fontsize=label_size,
+                )
+            else:
+                ax.text(
+                    -0.58 * width,
+                    source - k / 2,
+                    f"{label}: {k:,}",
+                    ha="right",
+                    va="center",
+                    fontsize=label_size,
+                )
+            y -= k
+            source -= max(k, row) + gap
+        y_low = min(y_low, source)
+        left = (-0.72 if vertical_inputs else -1.25) * width
     for i, s in enumerate(steps):
         x = i * width
         n = s["sessions"]
@@ -252,7 +360,7 @@ def flow_figure(steps: list[dict]):
             f"{s['name']}\n{n:,} sessions\n{s['animals']} animals",
             ha="center",
             va="bottom",
-            fontsize=6.5,
+            fontsize=head_size,
         )
         if i + 1 == len(steps):
             break
@@ -268,7 +376,10 @@ def flow_figure(steps: list[dict]):
             KEPT,
         )
         y = -nxt["sessions"]
-        sink = -n - 3 * gap
+        sink = -nxt["sessions"] - 3 * gap  # beside the bar, under the kept band
+        if i + 2 == len(steps) and nxt.get("sets"):  # clear the sets beside the last
+            depth = sum(max(k, row) + 0.5 * gap for _, k, _ in nxt["sets"])
+            sink = min(sink, -depth - 2 * gap)
         for label, _rule, k in nxt["lost"]:
             _band(ax, x + 0.04, y, y - k, x + 0.62 * width, sink, sink - k, LOSS)
             ax.add_patch(
@@ -281,7 +392,7 @@ def flow_figure(steps: list[dict]):
                 sink - k / 2,
                 f"{label}: {k:,}",
                 va="center",
-                fontsize=5.5,
+                fontsize=label_size,
             )
             y -= k
             sink -= max(k, row) + gap
@@ -289,8 +400,8 @@ def flow_figure(steps: list[dict]):
     last = steps[-1]
     x = (len(steps) - 1) * width
     y, sink = 0.0, 0.0
-    colours = style.series(len(last["sets"]))
-    for (name, k, a), colour in zip(last["sets"], colours, strict=True):
+    colours = [style.color(SET_COLOURS[k]) for k in SETS]
+    for (name, k, a), colour in zip(last.get("sets", []), colours, strict=False):
         _band(ax, x + 0.04, y, y - k, x + 0.55 * width, sink, sink - k, colour, 0.8)
         ax.add_patch(
             mpatches.Rectangle(
@@ -300,13 +411,12 @@ def flow_figure(steps: list[dict]):
         ax.text(
             x + 0.6 * width,
             sink - k / 2,
-            f"{name}: {k} sessions, {a} animals",
+            name if ":" in name else f"{name}: {k} sessions, {a} animals",
             va="center",
-            fontsize=5.5,
+            fontsize=label_size,
         )
         y -= k
         sink -= max(k, row) + 0.5 * gap
-    ax.set_xlim(-0.3, len(steps) - 1 + 1.25)
+    ax.set_xlim(left, len(steps) - 1 + (1.25 if last.get("sets") else 0.95))
     ax.set_ylim(y_low - gap, 0.16 * total)
     ax.set_axis_off()
-    return fig

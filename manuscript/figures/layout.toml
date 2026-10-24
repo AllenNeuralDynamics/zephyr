@@ -1,0 +1,246 @@
+# Printed size of every panel, read by the figure notebook (to draw each panel at this
+# size) and by the figure's .typ file (to place it). Change a size here, re-run the
+# notebook, re-compile the figure.
+#
+# kind = "data": drawn by notebooks/manuscript_figures.py into <figure>/<panel>.svg
+# kind = "schematic": drawn by hand (Inkscape) at this size, saved as <figure>/<panel>.svg
+
+[fig1]
+width_mm = 183
+gap_mm = 4
+rows = [["a", "b"], ["c"], ["d"], ["e"]]
+
+[fig1.panels.a]
+kind = "schematic"
+width_mm = 112
+height_mm = 71.2
+what = "Rig rendering: head-fixed mouse on the wheel, front, face and side cameras, odor line (3d-vr-foraging FIG1_overview.svg)"
+
+[fig1.panels.b]
+kind = "data"
+width_mm = 67
+height_mm = 71.2
+what = "One session: breathing rate and speed around odor onset per kind of site; breathing rate against speed"
+
+[fig1.panels.c]
+kind = "data"
+width_mm = 183
+height_mm = 34
+what = "A minute of the same session: speed, breathing rate from video and thermistor, licks, odor sites"
+
+[fig1.panels.d]
+kind = "data"
+width_mm = 183
+height_mm = 36
+what = "Network, read off the checkpoint: crops, frame encoder, resampling, TCN, heads"
+
+[fig1.panels.e]
+kind = "data"
+width_mm = 183
+height_mm = 40
+what = "Face frame with crop; predicted and measured sniffing on a test-A animal with its events, onset probability"
+
+[fig2]
+width_mm = 183
+gap_mm = 4
+# A list inside a row is a column of panels stacked top to bottom.
+rows = [["a", ["b", "c"]]]
+
+[fig2.panels.a]
+kind = "data"
+width_mm = 120
+height_mm = 92
+what = "Selection: every recorded session to the sets, each loss with its reason"
+
+[fig2.panels.b]
+kind = "data"
+width_mm = 59
+height_mm = 44
+what = "Distribution of breathing rate per set"
+
+[fig2.panels.c]
+kind = "data"
+width_mm = 59
+height_mm = 44
+what = "The split: animals by date, sessions coloured by set"
+
+[fig3]
+width_mm = 183
+gap_mm = 4
+rows = [["a", "b"], ["c", "d", "e"]]
+
+[fig3.panels.a]
+kind = "data"
+width_mm = 120
+height_mm = 50
+what = "One test-A clip: the thermistor and every method's trace, with its correlation"
+
+[fig3.panels.b]
+kind = "data"
+width_mm = 59
+height_mm = 50
+what = "Inhale F1 against inference time per method: animals, mean and 95% interval"
+
+[fig3.panels.c]
+kind = "data"
+width_mm = 62
+height_mm = 46
+what = "Inhale F1 by breathing rate for every network, with the share of breaths per rate"
+
+[fig3.panels.d]
+kind = "data"
+width_mm = 62
+height_mm = 46
+what = "Zephyr's onset lag by breathing rate, test A"
+
+[fig3.panels.e]
+kind = "data"
+width_mm = 51
+height_mm = 46
+what = "Bland-Altman of breathing rate in 10 s windows, Zephyr, test A"
+
+[fig4]
+width_mm = 183
+gap_mm = 4
+rows = [["a", "b", "c"], ["d", "e", "f"]]
+
+[fig4.panels.a]
+kind = "data"
+width_mm = 82
+height_mm = 44
+what = "Test A against test B per method: correlation and inhale F1"
+
+[fig4.panels.b]
+kind = "data"
+width_mm = 48
+height_mm = 44
+what = "Per-animal inhale F1 on test A, ranked"
+
+[fig4.panels.c]
+kind = "data"
+width_mm = 45
+height_mm = 46
+what = "Test-A correlation and inhale F1 against the number of training animals (4, 8, 16, 32)"
+
+[fig4.panels.d]
+kind = "data"
+width_mm = 66
+height_mm = 46
+what = "Near misses: a well-correlated test-A clip with many predictions 25-100 ms off"
+
+[fig4.panels.e]
+kind = "data"
+width_mm = 43
+height_mm = 44
+what = "Inhale F1 and errors left as the onset tolerance is relaxed (25 to 100 ms)"
+
+[fig4.panels.f]
+kind = "data"
+width_mm = 66
+height_mm = 46
+what = "A low-correlation test-A clip whose inhalations are still found"
+
+[fig5]
+width_mm = 183
+gap_mm = 4
+rows = [["a", "b"], ["c", "d", "e"]]
+
+[fig5.panels.a]
+kind = "data"
+width_mm = 95
+height_mm = 42
+what = "Our network's errors on test A: share near misses; gross errors in fast breathing, face motion, shallow breaths, against all breaths"
+
+[fig5.panels.b]
+kind = "data"
+width_mm = 84
+height_mm = 42
+what = "The five measures that rank test-A videos best: Spearman correlation with true inhale F1"
+
+[fig5.panels.c]
+kind = "data"
+width_mm = 68
+height_mm = 48
+what = "Test-A windows: mean true F1 against the share kept; oracle; windows passing every check"
+
+[fig5.panels.d]
+kind = "data"
+width_mm = 48
+height_mm = 48
+what = "Calibration of the onset output on validation animals"
+
+[fig5.panels.e]
+kind = "data"
+width_mm = 59
+height_mm = 48
+what = "Zephyr trained differently (more augmentation, rate balance, 192-px crops) minus Zephyr on test A: inhale F1 and correlation"
+
+# Supplementary figures.
+
+[figs1]
+width_mm = 89
+gap_mm = 4
+rows = [["a"]]
+
+[figs1.panels.a]
+kind = "data"
+width_mm = 89
+height_mm = 38
+what = "Our network on new animals: score difference between two rigs of one animal and between two animals on one rig (inhale F1, correlation), mean and bootstrap interval"
+
+[figs2]
+width_mm = 89
+gap_mm = 4
+rows = [["a"], ["b"]]
+
+[figs2.panels.a]
+kind = "data"
+width_mm = 89
+height_mm = 32
+what = "Our network on 30-Hz video minus on 60-Hz video, per test set (correlation, inhale F1, exhale F1): each fold's difference and their mean with a 95% t-interval"
+
+[figs2.panels.b]
+kind = "data"
+width_mm = 89
+height_mm = 45
+what = "Inhale F1 on new animals by breathing rate, 30-Hz and 60-Hz input, mean over folds with 95% interval, over the share of breaths in each bin"
+
+[figs3]
+width_mm = 183
+gap_mm = 4
+rows = [["a", "b"], ["c", "d"]]
+
+[figs3.panels.a]
+kind = "data"
+width_mm = 100
+height_mm = 50
+what = "Our network on each camera, new animals against new sessions: correlation and inhale F1, mean over units with a 95% bootstrap interval"
+
+[figs3.panels.b]
+kind = "data"
+width_mm = 79
+height_mm = 50
+what = "Inhale F1 of each new-animal unit for each camera, ranked by the face camera"
+
+[figs3.panels.c]
+kind = "data"
+width_mm = 100
+height_mm = 50
+what = "Inhale F1 on new animals by breathing rate for each camera, over the share of breaths in each bin"
+
+[figs3.panels.d]
+kind = "data"
+width_mm = 79
+height_mm = 50
+what = "Inhale F1 of every new-animal clip: side and front cameras against the face camera"
+
+[figs4]
+width_mm = 183
+gap_mm = 4
+rows = [["a"]]
+
+[figs4.panels.a]
+kind = "data"
+width_mm = 183
+height_mm = 212.5
+what = "A representative subset of sessions: each session's face, side and front camera frames side by side, with each network's crop box"
