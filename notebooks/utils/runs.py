@@ -25,8 +25,16 @@ from zephyr import features
 from zephyr.benchmarks import analysis, baselines, common, timing
 from zephyr.benchmarks.config import ReportedRun, ResultsManifest
 from zephyr.benchmarks.runner import load_checkpoint
-from zephyr.config import ClipList, load
-from zephyr.evaluate import TRACES, aggregate_recordings, head_event_indices, trace_name
+from zephyr.config import ClipList, TrainParams, load
+from zephyr.evaluate import (
+    HEAD_THRESHOLD,
+    TRACES,
+    aggregate_recordings,
+    choose_head_threshold,
+    head_event_indices,
+    head_inhale_counts,
+    trace_name,
+)
 from zephyr.infer import predict_clip
 
 from . import test_sets
@@ -46,6 +54,14 @@ S3_RUNS = RESULTS.root.rstrip("/")
 """Where the manifest's runs were uploaded."""
 LOCAL_RUNS = CACHE / "runs"
 PREDICTIONS = CACHE / "walkthrough"
+HEAD_ENV = "ZEPHYR_HEAD_THRESHOLD"
+HEAD_MODE = os.environ.get(HEAD_ENV, "validation")
+"""``validation`` (the default, what the manuscript reports): each run's onset threshold
+is chosen on its own validation clips (:func:`head_threshold`), as training now does;
+any other value (e.g. ``default``) keeps the scorer's 0.5."""
+DERIVED = PREDICTIONS / "head-validation" if HEAD_MODE == "validation" else PREDICTIONS
+"""Where the scores, tables and errors of a run whose onset threshold was chosen on
+validation are cached, apart from those at the scorer's (:func:`_derived`)."""
 DEFAULT_ROOT = Path("C:/Data/zephyr-local-v2")
 """The local copy of the dataset and its cache, unless ``ZEPHYR_TEST_ROOT`` names one."""
 METHODS: dict[str, ReportedRun] = {r.label: r for r in RESULTS.method}
@@ -183,7 +199,7 @@ def training(name: str) -> pd.DataFrame:
     path = _fetch(f"{folder(m)}/{seeds(folder(m))[0]}/train_videos.json")
     stems = [Path(v).stem for v in json.loads(path.read_text())]
     sessions = sorted({stem.rsplit("_span", 1)[0] for stem in stems})
-    folds = pd.read_parquet(root() / "dataset" / "folds.parquet").set_index(
+    folds = pd.read_parquet(root() / "dataset" / "raw" / "folds.parquet").set_index(
         "session_id"
     )
     return pd.DataFrame(
@@ -255,19 +271,42 @@ def cv_scores(level: str = "per_recording", variants: bool = False) -> pd.DataFr
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
 
-def _scores_path(name: str) -> Path:
+def _derived(name: str) -> Path:
+    """Where run *name*'s scores and tables are cached: :data:`DERIVED` when its onset
+    threshold is not the scorer's, else with every other run's."""
+    return DERIVED if head_threshold(name) != HEAD_THRESHOLD else PREDICTIONS
+
+
+def _scores_path(name: str, folder: Path | None = None) -> Path:
     tag = re.sub(r"[^A-Za-z0-9_.-]+", "_", name).strip("_")
-    return PREDICTIONS / f"scores-{tag}.parquet"
+    return (folder or _derived(name)) / f"scores-{tag}.parquet"
 
 
 def rescored(name: str) -> pd.DataFrame:
     """Per-clip scores of run *name* on the test clips its ``evaluation.json`` lists
     (its ``clip_id``, ``recording`` and ``group``), scored again from the cached
     predictions by zephyr's scorer (:func:`zephyr.benchmarks.analysis.score_prediction`),
-    so that every run is scored by the current rule whenever it was trained; cached."""
+    so that every run is scored by the current rule whenever it was trained; cached. At
+    another onset threshold than the scorer's, the scores made at it are kept and only
+    the head's inhale F1 is scored again (:func:`zephyr.evaluate.head_inhale_counts`)."""
     path = _scores_path(name)
     if path.is_file():
         return pd.read_parquet(path)
+    base = _scores_path(name, PREDICTIONS)
+    if path != base and base.is_file():
+        out = pd.read_parquet(base)
+        threshold = head_threshold(name)
+        f1 = []
+        for clip_id in out["clip_id"]:
+            stem = clip_id.split("/")[-1]
+            p = prediction(name, stem)
+            f1.append(
+                head_inhale_counts(entry(stem), p["times"], p["onset"], threshold)["f1"]
+            )
+        out["head_inhale_f1"] = f1
+        path.parent.mkdir(parents=True, exist_ok=True)
+        out.to_parquet(path)
+        return out
     rows = []
     for c in evaluation(name)["clips"]:
         if c["group"] not in SETS:
@@ -279,7 +318,7 @@ def rescored(name: str) -> pd.DataFrame:
         keys = {k: c[k] for k in ("clip_id", "recording", "group")}
         rows.append(keys | score)
     out = pd.DataFrame(rows)
-    PREDICTIONS.mkdir(parents=True, exist_ok=True)
+    path.parent.mkdir(parents=True, exist_ok=True)
     out.to_parquet(path)
     return out
 
@@ -498,8 +537,86 @@ def prediction(name: str, stem: str) -> dict:
         elif path.is_file():
             path.unlink()  # a local prediction the run's own trace replaces
     if m.head:
-        out["head"] = out["times"][head_event_indices(out["onset"], out["times"])]
+        out["threshold"] = head_threshold(name)
+        peaks = head_event_indices(out["onset"], out["times"], out["threshold"])
+        out["head"] = out["times"][peaks]
     return out
+
+
+def _run_dir(m: ReportedRun) -> str:
+    return f"{folder(m)}/{seeds(folder(m))[0]}"
+
+
+def _validation_recipe_is_local(name: str) -> bool:
+    """Whether run *name* read its validation clips with the local copy's recipe, so
+    they can be predicted from its feature cache."""
+    config = json.loads(_fetch(f"{_run_dir(RUNS[name])}/config.json").read_text())
+    theirs = config.get("val_clip_list", {}).get("preprocess", {})
+    ours = load(
+        ClipList, root() / "dataset" / "clips.toml", check_files=False
+    ).preprocess
+    ours = json.loads(ours.model_dump_json())
+    return bool(theirs) and all(
+        ours.get(k) == v for k, v in theirs.items() if k in ours
+    )
+
+
+def validation_prediction(name: str, stem: str) -> dict:
+    """Run *name*'s trace and onset probability on one of its validation clips,
+    predicted here (inference only) and cached."""
+    m = RUNS[name]
+    path = PREDICTIONS / "validation" / m.run / (m.fold or "published") / f"{stem}.npz"
+    if not path.is_file():
+        e = entry(stem)
+        signal, onset = _predicted(name, e)
+        times = np.load(e.times)
+        n = min(len(times), len(signal))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        part = path.with_suffix(".tmp.npz")
+        np.savez(part, times=times[:n], signal=signal[:n], onset=onset[:n])
+        part.replace(path)
+    with np.load(path) as p:
+        return {k: p[k] for k in p.files}
+
+
+def head_thresholds() -> dict[str, dict]:
+    """Every onset threshold chosen so far (:func:`head_threshold`), by run."""
+    path = DERIVED / "head-thresholds.json"
+    return json.loads(path.read_text()) if path.is_file() else {}
+
+
+@functools.cache
+def head_threshold(name: str) -> float:
+    """The onset threshold of run *name*: the scorer's, unless :data:`HEAD_MODE` is
+    ``validation``, then the one training would have chosen on the run's own
+    validation clips (:func:`zephyr.evaluate.choose_head_threshold` over
+    :data:`zephyr.benchmarks.analysis.HEAD_THRESHOLDS`); cached with its sweep. A run
+    whose validation clips used another recipe than the local copy keeps the
+    scorer's, and says so."""
+    if HEAD_MODE != "validation" or not RUNS[name].head:
+        return HEAD_THRESHOLD
+    chosen = head_thresholds()
+    if name not in chosen:
+        if not _validation_recipe_is_local(name):
+            chosen[name] = {
+                "value": HEAD_THRESHOLD,
+                "chosen_on": None,
+                "rule": "the default: validation recipe not local",
+            }
+        else:
+            run = _run_dir(RUNS[name])
+            clips = json.loads(_fetch(f"{run}/best_per_clip.json").read_text())
+            stems = [c["clip_id"].split("/")[-1] for c in clips]
+            on_val = []
+            for s in stems:
+                p = validation_prediction(name, s)
+                on_val.append((entry(s), p["times"], p["onset"]))
+            chosen[name] = choose_head_threshold(
+                on_val, analysis.HEAD_THRESHOLDS, TrainParams().head_threshold_f1_tie
+            )
+        DERIVED.mkdir(parents=True, exist_ok=True)
+        (DERIVED / "head-thresholds.json").write_text(json.dumps(chosen, indent=1))
+    return float(chosen[name]["value"])
 
 
 def _prediction_path(name: str, stem: str) -> Path:
@@ -628,7 +745,7 @@ def wall_time(names, n_clips: int = 8) -> pd.DataFrame:
 
 def _tables_paths(name: str) -> dict[str, Path]:
     tag = re.sub(r"[^A-Za-z0-9_.-]+", "_", name).strip("_")
-    return {k: PREDICTIONS / f"analysis-{tag}-{k}.parquet" for k in analysis.TABLES}
+    return {k: _derived(name) / f"analysis-{tag}-{k}.parquet" for k in analysis.TABLES}
 
 
 def done(name: str) -> bool:
@@ -668,7 +785,7 @@ def tables(
         for k, v in found.items():
             parts[k].append(v.assign(**label))
     out = {k: pd.concat(v, ignore_index=True) for k, v in parts.items()}
-    PREDICTIONS.mkdir(parents=True, exist_ok=True)
+    _derived(name).mkdir(parents=True, exist_ok=True)
     for k, v in out.items():
         v.to_parquet(paths[k])
     return out
@@ -688,7 +805,7 @@ def set_errors(name: str, set_name: str) -> pd.DataFrame:
     ``cache/walkthrough``; delete the file to recompute."""
     m = RUNS[name]
     tag = f"{m.run}-{m.fold or RESULTS.fold}-{m.variant.replace('/', '-') or 'net'}"
-    path = PREDICTIONS / f"errors-{tag}-{set_name.split(':')[0]}.parquet"
+    path = _derived(name) / f"errors-{tag}-{set_name.split(':')[0]}.parquet"
     if path.is_file():
         return pd.read_parquet(path)
     stems = sorted(s for s, v in test_clips(name).items() if v == set_name)
@@ -754,7 +871,7 @@ def breath_rates() -> dict[str, np.ndarray]:
 def animal_breath_rates() -> dict[str, np.ndarray]:
     """Every thermistor breath's rate (Hz) per animal, over the clips of every session
     the corpus assigns to a set, from each clip's cached events."""
-    folds = pd.read_parquet(root() / "dataset" / "folds.parquet")
+    folds = pd.read_parquet(root() / "dataset" / "raw" / "folds.parquet")
     used = folds[folds["set"].notna()]
     subject = dict(zip(used["session_id"], used["subject_id"].astype(str), strict=True))
     out: dict[str, list[np.ndarray]] = {}

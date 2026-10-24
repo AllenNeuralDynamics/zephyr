@@ -308,7 +308,7 @@ def fig2_data():
             ).read_text(encoding="utf8")
         )
     )
-    folds = pd.read_parquet(dataset / "folds.parquet")
+    folds = pd.read_parquet(dataset / "raw" / "folds.parquet")
     return dataset, folds, spec
 
 
@@ -370,7 +370,7 @@ def fig3_methods():
     methods = runs.available(order)
     # The unit of comparison is an animal on one rig (Methods, Statistics): every
     # score is averaged within a unit, and units are what is counted and resampled.
-    _folds = pd.read_parquet(runs.root() / "dataset" / "folds.parquet")
+    _folds = pd.read_parquet(runs.root() / "dataset" / "raw" / "folds.parquet")
     _rig = dict(zip(_folds["session_id"], _folds["rig"], strict=True))
 
     def with_unit(table: pd.DataFrame) -> pd.DataFrame:

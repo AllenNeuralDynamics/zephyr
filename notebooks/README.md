@@ -24,7 +24,10 @@ uv run marimo export html notebooks/walkthrough.py -o walkthrough.html --no-incl
   validation clips included for the rate distribution).
   Scores are the runs' own `evaluation.json`; traces are the runs' own `traces/` (and
   the pixel methods'), downloaded, where a run saved them, else predicted here (GPU,
-  inference only); either way cached in `cache/walkthrough/`. The clip-by-clip sections and the wall
+  inference only); either way cached in `cache/walkthrough/`. A network's inhales come
+  from its onset head at a threshold chosen on its own validation clips, as training now
+  chooses one (`ZEPHYR_HEAD_THRESHOLD=default` keeps 0.5); what is chosen, and why, is
+  in `cache/walkthrough/head-validation/head-thresholds.json`. The clip-by-clip sections and the wall
   times read only that cache: the notebook never predicts a whole test set or times a
   method, so a method missing from the cache is left out of them (the traces on the
   shown clip are still predicted, one clip each).
