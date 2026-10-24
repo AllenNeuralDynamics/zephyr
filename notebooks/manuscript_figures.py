@@ -1463,8 +1463,249 @@ def figs2(by_fold, test_a, with_unit):
 
 
 @app.cell
+def figs3(test_a, with_unit):
+    # Supplementary Fig. 3 and Table S5: our network trained on each camera's video, on
+    # the cross-validation folds every camera has so far, scored on the recording spans
+    # every camera has, all against the same thermistor events (the face clips').
+    _runs = {
+        "Face camera": runs.REFERENCE,
+        "Side camera": "Zephyr, side camera",
+        "Front camera": "Zephyr, front camera",
+    }
+    _cameras = list(_runs)
+    _folds = [
+        f
+        for f in runs.RESULTS.cross_validation.folds
+        if all(runs.evaluation(runs.cv_name(r, f)) is not None for r in _runs.values())
+    ]
+    _sets = [test_a, runs.SETS["test_b"]]
+    _clips = pd.concat(
+        [runs.cv_scores("clips"), runs.cv_scores("clips", variants=True)],
+        ignore_index=True,
+    )
+    _clips = _clips[
+        _clips["fold"].isin(_folds)
+        & _clips["set"].isin(_sets)
+        & _clips["method"].isin(_runs.values())
+    ]
+    _clips = with_unit(
+        _clips.assign(
+            method=_clips["method"].map({r: c for c, r in _runs.items()}),
+            span=_clips["stem"].map(runs._span),
+        )
+    )
+    # Only the spans every camera has, in each fold.
+    _n = _clips.groupby(["fold", "span"])["method"].nunique()
+    _shared = set(_n[_n == len(_cameras)].index)
+    camera_clips = _clips[
+        [k in _shared for k in zip(_clips["fold"], _clips["span"], strict=True)]
+    ]
+    # a: each camera on new animals and new sessions; table: every score per set.
+    _ci = {
+        m: analysis.bootstrap(camera_clips, m, reference=_cameras[0], unit="unit")
+        for m in ("correlation", "inhale", "exhale_f1")
+    }
+    figs3a = plots.sets_panel(
+        *size("figs3", "a"),
+        pd.concat(_ci[m].assign(metric=m) for m in ("correlation", "inhale")),
+        _cameras,
+        ["correlation", "inhale"],
+        _sets,
+        ylabel="Mean over units",
+    )
+    plots.save_panel(figs3a, FIGURES / "figs3" / "a.svg")
+    # b: each new-animal unit, ranked by the face camera, as Fig. 4b.
+    figs3b = plots.animals_panel(
+        *size("figs3", "b"),
+        camera_clips,
+        _cameras,
+        "inhale",
+        test_a,
+        unit="unit",
+        unit_label="Animal × rig",
+    )
+    plots.save_panel(figs3b, FIGURES / "figs3" / "b.svg")
+    # c: inhale F1 on new animals by breathing rate, over the shared spans.
+    _tables = {k: [] for k in ("breaths", "false_positives", "windows")}
+    for _camera, _run in _runs.items():
+        for _f in _folds:
+            _t = runs.tables(runs.cv_name(_run, _f))
+            for _k, _parts in _tables.items():
+                _x = _t[_k].assign(method=_camera, fold=_f)
+                _keep = [(_f, runs._span(s)) in _shared for s in _x["stem"].astype(str)]
+                _parts.append(_x[_keep])
+    _tables = {k: pd.concat(v, ignore_index=True) for k, v in _tables.items()}
+    _by_rate = analysis.f1_by_rate(
+        _tables["breaths"].query("set == @test_a"),
+        _tables["false_positives"].query("set == @test_a"),
+        analysis.RATE_BINS_HZ[1:],
+    )
+    camera_by_rate = analysis.across_folds(_by_rate, "f1", by=["method", "bin"]).merge(
+        _by_rate.groupby(["method", "bin"], observed=True)["share"]
+        .mean()
+        .reset_index(),
+        on=["method", "bin"],
+    )
+    figs3c = plots.rate_band_panel(*size("figs3", "c"), camera_by_rate, _cameras)
+    plots.save_panel(figs3c, FIGURES / "figs3" / "c.svg")
+    # d: every new-animal clip, each other camera against the face camera.
+    _wide = (
+        camera_clips[camera_clips["set"] == test_a]
+        .pivot_table(index=["fold", "span"], columns="method", values="inhale")
+        .reset_index()
+    )
+    figs3d = plots.paired_scatter_panel(
+        *size("figs3", "d"), _wide, _cameras[0], _cameras[1:], "inhale"
+    )
+    plots.save_panel(figs3d, FIGURES / "figs3" / "d.svg")
+    # Table S5: per set and camera, every score over units (mean, 95% bootstrap
+    # interval), with the breathing-rate MAE of 10-s windows (breaths per minute).
+    _w = _tables["windows"]
+    _unit = camera_clips.drop_duplicates("stem").set_index("stem")["unit"]
+    _w = _w.assign(unit=_w["stem"].map(_unit)).dropna(subset=["unit"])
+    _mae = analysis.rate_agreement(_w, by=["method", "set", "unit"]).reset_index()
+    _mae["mae"] = 60 * _mae["MAE (Hz)"]
+    _ci["mae"] = analysis.bootstrap(_mae, "mae", reference=_cameras[0], unit="unit")
+
+    def _cell(row, digits: int) -> str:
+        return (
+            f"{values.num(row['mean'], digits)} "
+            f"({values.span(row['low'], row['high'], digits)})"
+        )
+
+    _rows = []
+    for _set in _sets:
+        for _camera in _cameras:
+            _r = {
+                m: t.set_index(["set", "method"]).loc[(_set, _camera)]
+                for m, t in _ci.items()
+            }
+            _rows.append(
+                {
+                    "set": _set.split(":")[0],
+                    "camera": _camera.split()[0],
+                    "units": values.count(_r["inhale"]["units"]),
+                    "trace_r": _cell(_r["correlation"], 2),
+                    "inhale_f1": _cell(_r["inhale"], 2),
+                    "exhale_f1": _cell(_r["exhale_f1"], 2),
+                    "mae": _cell(_r["mae"], 1),
+                }
+            )
+    cameras_table = pd.DataFrame(_rows)
+    cameras_table.to_csv(FIGURES.parent / "tables" / "cameras.csv", index=False)
+    _a = camera_clips[camera_clips["set"] == test_a]
+    _b = camera_clips[camera_clips["set"] == runs.SETS["test_b"]]
+    _on_a = {m: t.set_index(["set", "method"]) for m, t in _ci.items()}
+    v_cameras = {
+        **{
+            f"{k}_{c.split()[0].lower()}": values.num(_on_a[m].loc[(test_a, c), "mean"])
+            for k, m in (("f1", "inhale"), ("r", "correlation"))
+            for c in _cameras
+        },
+        "folds": values.count(len(_folds)),
+        "clips_a": values.count(len(_a) / len(_cameras)),
+        "clips_b": values.count(len(_b) / len(_cameras)),
+        "units_a": values.count(_a["unit"].nunique()),
+        "units_b": values.count(_b["unit"].nunique()),
+        "animals_a": values.count(_a["subject"].nunique()),
+        "breaths": values.count(
+            (_tables["breaths"].query("set == @test_a")["method"] == _cameras[0]).sum()
+        ),
+    }
+    mo.vstack(
+        [
+            mo.hstack([figs3a, figs3b]),
+            mo.hstack([figs3c, figs3d]),
+            mo.ui.table(cameras_table, selection=None),
+            mo.md(f"{v_cameras}"),
+        ]
+    )
+    return (v_cameras,)
+
+
+@app.cell
+def figs4():
+    # Supplementary Fig. 4: what the three cameras see, in a representative subset of
+    # sessions, its three cameras side by side with the crop box each network reads.
+    # Face: the dataset's thumbnails and clip list; side and front: the first frames and
+    # boxes their box lists were placed on.
+    from PIL import Image
+
+    from zephyr.config import ClipList, load
+
+    _shown = [
+        "behavior_810750_2025-11-05_20-47-56",
+        "behavior_828418_2025-11-12_23-52-42",
+        "behavior_811026_2025-11-25_21-25-01",
+        "behavior_815104_2025-11-26_22-46-47",
+        "behavior_828425_2025-11-28_22-26-13",
+        "behavior_828425_2025-12-19_16-43-15",
+        "behavior_806527_2026-01-23_19-16-56",
+        "807093_2026-02-10_17-02-30",
+        "841310_2026-02-19_21-04-00",
+        "828424_2026-02-21_00-33-08",
+        "828415_2026-02-28_00-20-42",
+        "823993_2026-03-02_21-02-53",
+        "863680_2026-06-26_16-20-33",
+        "863698_2026-07-22_16-58-02",
+        "864848_2026-09-18_19-51-33",
+        "879294_2026-09-29_20-38-40",
+    ]
+    _lists = {
+        "Face camera": (runs.root() / "dataset" / "clips.toml", None),
+        "Side camera": (
+            runs.root() / "boxes-side" / "side_camera_snout.toml",
+            runs.root() / "boxes-side" / "frames",
+        ),
+        "Front camera": (
+            runs.root() / "boxes-front" / "front_camera_snout.toml",
+            runs.root() / "boxes-front" / "frames",
+        ),
+    }
+
+    def _boxes(path):
+        """First span's box of each session, in the list's preprocessed frame."""
+        _list = load(ClipList, path, check_files=False)
+        _out = {}
+        for _c in _list.resolve():
+            _session, _span = _c.source.stem.rsplit("_span", 1)
+            if _span.startswith("1_") and _c.box is not None:
+                _out[_session] = (_c.source.stem, _c.box)
+        return _out, _list.preprocess.target_size[0]
+
+    _found = {camera: _boxes(path) for camera, (path, _) in _lists.items()}
+
+    def _image(camera, session):
+        _stem, _ = _found[camera][0][session]
+        _frames = _lists[camera][1]
+        if _frames is None:
+            _path = runs.root() / "dataset" / "thumbnails" / f"{session}_FaceCamera.png"
+            return np.asarray(Image.open(_path).convert("L"))
+        return np.load(next(_frames.glob(f"frame_{_stem}-*.npy")))
+
+    _sessions = []
+    for _session in _shown:
+        _views = {}
+        for _camera in _lists:
+            _img = _image(_camera, _session)
+            _, (_x, _y, _w, _h) = _found[_camera][0][_session]
+            _scale = _img.shape[1] / _found[_camera][1] / 2  # shown at half size
+            _views[_camera] = (
+                _img[::2, ::2],
+                (_x * _scale, _y * _scale, _w * _scale, _h * _scale),
+            )
+        _sessions.append({"label": _session, "views": _views})
+    figs4a = plots.camera_views_panel(LAYOUT["figs4"]["width_mm"], _sessions)
+    plots.save_panel(figs4a, FIGURES / "figs4" / "a.svg")
+    v_views = {"sessions": values.count(len(_sessions))}
+    figs4a
+    return (v_views,)
+
+
+@app.cell
 def manuscript_values(
     v_calibration,
+    v_cameras,
     v_clips,
     v_corpus,
     v_errors,
@@ -1477,6 +1718,7 @@ def manuscript_values(
     v_size,
     v_tolerance,
     v_variants,
+    v_views,
 ):
     # Every number the text cites, as printed, for main.typ (#v("section.key")).
     _cv = [
@@ -1490,6 +1732,7 @@ def manuscript_values(
     manuscript = {
         "benchmark": v_fig3,
         "calibration": v_calibration,
+        "cameras": v_cameras,
         "clips": v_clips,
         "corpus": v_corpus,
         "errors": v_errors,
@@ -1502,6 +1745,7 @@ def manuscript_values(
         "threshold": v_threshold,
         "tolerance": v_tolerance,
         "variants": v_variants,
+        "views": v_views,
     }
     values.write(
         FIGURES.parent / "values.toml", manuscript, "notebooks/manuscript_figures.py"

@@ -38,6 +38,21 @@ units_b = "86"
 [calibration]
 ece = "0.002"
 
+[cameras]
+animals_a = "10"
+breaths = "354,058"
+clips_a = "238"
+clips_b = "206"
+f1_face = "0.95"
+f1_front = "0.91"
+f1_side = "0.90"
+folds = "1"
+r_face = "0.80"
+r_front = "0.74"
+r_side = "0.73"
+units_a = "28"
+units_b = "37"
+
 [clips]
 clips = "156"
 low_clips = "16"
@@ -162,3 +177,6 @@ crop_f1_ci = "0.029–0.083"
 crop_r = "0.078"
 crop_r_ci = "0.026–0.122"
 units = "21"
+
+[views]
+sessions = "16"
