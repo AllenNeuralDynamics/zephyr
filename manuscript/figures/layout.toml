@@ -204,3 +204,43 @@ kind = "data"
 width_mm = 89
 height_mm = 45
 what = "Inhale F1 on new animals by breathing rate, 30-Hz and 60-Hz input, mean over folds with 95% interval, over the share of breaths in each bin"
+
+[figs3]
+width_mm = 183
+gap_mm = 4
+rows = [["a", "b"], ["c", "d"]]
+
+[figs3.panels.a]
+kind = "data"
+width_mm = 100
+height_mm = 50
+what = "Our network on each camera, new animals against new sessions: correlation and inhale F1, mean over units with a 95% bootstrap interval"
+
+[figs3.panels.b]
+kind = "data"
+width_mm = 79
+height_mm = 50
+what = "Inhale F1 of each new-animal unit for each camera, ranked by the face camera"
+
+[figs3.panels.c]
+kind = "data"
+width_mm = 100
+height_mm = 50
+what = "Inhale F1 on new animals by breathing rate for each camera, over the share of breaths in each bin"
+
+[figs3.panels.d]
+kind = "data"
+width_mm = 79
+height_mm = 50
+what = "Inhale F1 of every new-animal clip: side and front cameras against the face camera"
+
+[figs4]
+width_mm = 183
+gap_mm = 4
+rows = [["a"]]
+
+[figs4.panels.a]
+kind = "data"
+width_mm = 183
+height_mm = 212.5
+what = "A representative subset of sessions: each session's face, side and front camera frames side by side, with each network's crop box"

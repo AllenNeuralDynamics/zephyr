@@ -13,6 +13,8 @@
 #import "figures/fig5.typ": body as fig5
 #import "figures/figs1.typ": body as figs1
 #import "figures/figs2.typ": body as figs2
+#import "figures/figs3.typ": body as figs3
+#import "figures/figs4.typ": body as figs4
 
 // A figure assembled at its printed width (183 mm), scaled to the text width.
 #let fit(body) = layout(size => scale(reflow: true, size.width / 189mm * 100%, body))
@@ -432,6 +434,12 @@ test set A of the published split by less than #tbd[0.01] (paired intervals incl
 zero). Doubling the crop to 192 × 192 pixels lowered both: inhalation F1 by #v("variants.crop_f1")
 (95% interval #v("variants.crop_f1_ci")) and the correlation by #v("variants.crop_r") (#v("variants.crop_r_ci"))
 #note[one seed per variant].
+The face camera was also the best of the three the rig records (@fig:views). Trained the same way on
+the side or the front camera, the network recovered breathing on new animals, but less
+well: on the recording spans all three cameras share, inhalation F1 was
+#v("cameras.f1_side") (side) and #v("cameras.f1_front") (front) against #v("cameras.f1_face") (face), and the
+correlation #v("cameras.r_side") and #v("cameras.r_front") against #v("cameras.r_face") (@fig:cameras, @tab:cameras) #note[one fold so far; extend
+  to the five folds].
 
 #note[Application, if one is added: run on sessions or animals with no usable thermistor
   and show one analysis that needs inhalation times.]
@@ -849,6 +857,25 @@ batch, steps per epoch and learning rate are in @tab:nets #note[confirm how the 
     as in @tab:benchmark.],
 ) <tab:benchmark-b>
 
+#figure(
+  kind: table,
+  // Written by notebooks/manuscript_figures.py (the folds every camera has, seed 17).
+  csv-table(
+    "tables/cameras.csv",
+    7,
+    ([Set], [Camera], [Units], [Trace r], [Inhale F1], [Exhale F1], [Rate MAE]),
+  ),
+  caption: [*Our network on each camera.* The same network and training on the face,
+    side and front cameras' video, on the recording spans all three have, scored
+    against the same thermistor events: test set A (new animals, #v("cameras.clips_a")
+    clips) and B (new sessions, #v("cameras.clips_b") clips) of #v("cameras.folds")
+    cross-validation fold(s). Each score averaged within each animal × rig unit,
+    then over units: mean with its 95% bootstrap interval over units. Rate MAE, breathing
+    rate in 10-s windows, breaths per minute. Inhalations from the onset head at the
+    face network's onset threshold (chosen on its validation animals) and at 0.5 for
+    the side and front networks, which have none yet.],
+) <tab:cameras>
+
 #pagebreak()
 = Supplementary figures
 
@@ -874,3 +901,30 @@ batch, steps per epoch and learning rate are in @tab:nets #note[confirm how the 
     (test set A) by breathing rate, each fold's breaths pooled, mean over folds with its
     95% interval; below, the share of breaths in each bin.],
 ) <fig:input-rate>
+
+#figure(
+  fit(figs3),
+  caption: [*Our network on the side and front cameras.* The same network and training
+    on each camera's video, on #v("cameras.folds") cross-validation fold(s) so far, scored
+    on the recording spans all three cameras have (test set A, #v("cameras.clips_a")
+    clips, #v("cameras.units_a") units of #v("cameras.animals_a") animals; test set B,
+    #v("cameras.clips_b") clips, #v("cameras.units_b") units) against the same
+    thermistor events; every score in @tab:cameras. *a,* Correlation and inhalation F1
+    on new animals (A) and new sessions (B), mean over animal × rig units with a 95%
+    bootstrap interval. *b,* Inhalation F1 of each new-animal unit, ranked by the face
+    camera (as @fig:general b). *c,* Inhalation F1 on new animals by breathing rate
+    (#v("cameras.breaths") thermistor breaths); below, the share of breaths in each bin.
+    *d,* Inhalation F1 of each new-animal clip, the side and front cameras against the
+    face camera; dotted, equality; in the legend, the share of clips scored higher than
+    by the face camera. Inhalations from the onset head at the face network's threshold
+    and at 0.5 for the others (@tab:cameras).],
+) <fig:cameras>
+
+#figure(
+  fit(figs4),
+  caption: [*What each camera sees.* A representative subset of #v("views.sessions")
+    sessions, labelled by session: the first frame of the face, side and front cameras,
+    side by side, with the crop box the network on that camera reads (outlined). Boxes
+    are placed once per recording (Methods); the cameras' angle, zoom, lighting, the
+    implant and the animal's posture differ between rigs and days.],
+) <fig:views>

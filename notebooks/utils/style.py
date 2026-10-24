@@ -28,6 +28,8 @@ VARIANTS: dict[str, str] = {
     "Zephyr, rate-balanced": "#c2a5cf",
     "Zephyr, 192-px crops": "#a6611a",
     "Zephyr, 30-Hz input": "#56b4e9",
+    "Zephyr, side camera": "#cc6677",
+    "Zephyr, front camera": "#117733",
 }
 """Zephyr trained differently, compared with Zephyr directly."""
 
@@ -130,9 +132,17 @@ def figure(
     return plt.subplots(figsize=(w, w * aspect), layout="constrained", **kwargs)
 
 
+CAMERAS: dict[str, str] = {
+    "Face camera": METHODS["Zephyr"],
+    "Side camera": VARIANTS["Zephyr, side camera"],
+    "Front camera": VARIANTS["Zephyr, front camera"],
+}
+"""Our network trained on each camera's video (the face camera's is the reference)."""
+
+
 def color(name: str) -> str:
-    """The colour of a method, a variant, a set of clips, or ``"Truth"``."""
-    return {**METHODS, **VARIANTS, **SETS, "Truth": TRUTH}[name]
+    """The colour of a method, a variant, a camera, a set of clips, or ``"Truth"``."""
+    return {**METHODS, **VARIANTS, **CAMERAS, **SETS, "Truth": TRUTH}[name]
 
 
 def mosaic(
