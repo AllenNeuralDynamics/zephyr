@@ -995,10 +995,12 @@ def sets_panel(
     names: Sequence[str],
     metrics: Sequence[str],
     sets: Sequence[str],
+    ylabel: str = "Mean over folds",
 ) -> Figure:
-    """Per metric (side by side), each method's mean over folds on each set with its
-    95% interval (*summary*: ``metric``, ``set``, ``method``, ``mean``, ``low``,
-    ``high``), joined by a line, the method named at the last set."""
+    """Per metric (side by side), each method's mean (over folds, unless *ylabel* says
+    otherwise) on each set with its 95% interval (*summary*: ``metric``, ``set``,
+    ``method``, ``mean``, ``low``, ``high``), joined by a line, the method named at the
+    last set."""
     fig, ax = style.panel(width_mm, height_mm, [list(metrics)], sharey=True)
     for metric in metrics:
         a = ax[metric]
@@ -1042,7 +1044,110 @@ def sets_panel(
         a.set_xlim(-0.25, len(sets) - 1 + 0.9)
         a.set_xlabel("Test set")
         a.set_title(METRIC_LABELS[metric], fontsize=7)
-    ax[metrics[0]].set_ylabel("Mean over folds")
+    ax[metrics[0]].set_ylabel(ylabel)
+    return fig
+
+
+def camera_views_panel(
+    width_mm: float,
+    sessions: Sequence[dict],
+    per_row: int = 2,
+    gap_mm: float = 1.0,
+    block_gap_mm: float = 5.0,
+    label_mm: float = 3.5,
+) -> Figure:
+    """One block per session (*sessions*: ``label`` and ``views``, camera -> ``(image,
+    box)`` with the box ``(x, y, w, h)`` in the image's pixels), its cameras side by
+    side, *per_row* blocks to a row; each camera's crop box outlined in its colour, the
+    camera named over the first row's blocks. Its height follows from *width_mm*."""
+    cameras = list(sessions[0]["views"])
+    first = sessions[0]["views"][cameras[0]][0]
+    aspect = first.shape[0] / first.shape[1]
+    columns = per_row * len(cameras)
+    image_w = (
+        width_mm - (per_row - 1) * block_gap_mm - per_row * (len(cameras) - 1) * gap_mm
+    ) / columns
+    image_h = image_w * aspect
+    rows = -(-len(sessions) // per_row)
+    height_mm = label_mm + rows * (label_mm + image_h) + (rows - 1) * gap_mm
+    fig = Figure(figsize=(width_mm / 25.4, height_mm / 25.4))
+    for k, session in enumerate(sessions):
+        row, block = divmod(k, per_row)
+        top = label_mm + row * (label_mm + image_h + gap_mm) + label_mm
+        for c, camera in enumerate(cameras):
+            left = block * (len(cameras) * (image_w + gap_mm) - gap_mm + block_gap_mm)
+            left += c * (image_w + gap_mm)
+            a = fig.add_axes(
+                (
+                    left / width_mm,
+                    1 - (top + image_h) / height_mm,
+                    image_w / width_mm,
+                    image_h / height_mm,
+                )
+            )
+            image, (x, y, w, h) = session["views"][camera]
+            a.imshow(image, cmap="gray", vmin=0, vmax=255, interpolation="lanczos")
+            a.add_patch(
+                Rectangle((x, y), w, h, fill=False, lw=0.8, ec=style.color(camera))
+            )
+            a.set_axis_off()
+            if row == 0:
+                fig.text(
+                    (left + image_w / 2) / width_mm,
+                    1 - (label_mm * 0.55) / height_mm,
+                    camera.split()[0],
+                    ha="center",
+                    va="center",
+                    fontsize=6.5,
+                    color=style.color(camera),
+                )
+            if c == 0:
+                fig.text(
+                    left / width_mm,
+                    1 - (top - label_mm * 0.35) / height_mm,
+                    session["label"],
+                    ha="left",
+                    va="center",
+                    fontsize=6,
+                )
+    return fig
+
+
+def paired_scatter_panel(
+    width_mm: float,
+    height_mm: float,
+    wide: pd.DataFrame,
+    reference: str,
+    names: Sequence[str],
+    metric: str,
+) -> Figure:
+    """Each row of *wide* (one clip; a column per method) as a dot: each of *names*
+    against *reference* on *metric*, one colour per method, with the identity line; the
+    share of clips each method scores higher than the reference in the legend."""
+    fig, ax = style.panel(width_mm, height_mm, [["pairs"]])
+    a = ax["pairs"]
+    low = float(np.nanmin(wide[[reference, *names]].to_numpy()))
+    lim = (max(0.0, low - 0.02), 1.0)
+    a.plot(lim, lim, color="0.6", lw=0.6, ls=":", zorder=0)
+    for name in names:
+        both = wide[[reference, name]].dropna()
+        above = float((both[name] > both[reference]).mean())
+        a.plot(
+            both[reference],
+            both[name],
+            "o",
+            ms=1.8,
+            mew=0,
+            alpha=0.6,
+            color=style.color(name),
+            label=f"{_shown(name)} (higher in {100 * above:.0f}%)",
+        )
+    a.set_xlim(*lim)
+    a.set_ylim(*lim)
+    a.set_aspect("equal", adjustable="box")
+    a.set_xlabel(f"{METRIC_LABELS[metric]}, {_shown(reference).lower()}")
+    a.set_ylabel(f"{METRIC_LABELS[metric]}, other camera")
+    a.legend(loc="lower right", fontsize=5.5, handletextpad=0.1, markerscale=1.5)
     return fig
 
 

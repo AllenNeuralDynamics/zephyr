@@ -165,3 +165,17 @@ variant = "snr/calibrated"
 label = "Zephyr, 30-Hz input"
 run = "full-gray-30hz-cv-v3"
 head = true
+
+# Zephyr on the other two cameras, the same recipe on their own boxed crops: the side
+# camera (zephyr-compute-sandbox matrix full-gray-side-cv-v3) and the front camera
+# (full-gray-front-cv-v3); cv_0 so far. Their clips are those of the same session spans
+# where that camera is clean, scored against the same thermistor.
+[[cross_validation.variant]]
+label = "Zephyr, side camera"
+run = "full-gray-side-cv-v3"
+head = true
+
+[[cross_validation.variant]]
+label = "Zephyr, front camera"
+run = "full-gray-front-cv-v3"
+head = true

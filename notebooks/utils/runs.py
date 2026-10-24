@@ -301,7 +301,9 @@ def rescored(name: str) -> pd.DataFrame:
             stem = clip_id.split("/")[-1]
             p = prediction(name, stem)
             f1.append(
-                head_inhale_counts(entry(stem), p["times"], p["onset"], threshold)["f1"]
+                head_inhale_counts(
+                    truth_entry(stem), p["times"], p["onset"], threshold
+                )["f1"]
             )
         out["head_inhale_f1"] = f1
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -313,7 +315,7 @@ def rescored(name: str) -> pd.DataFrame:
             continue
         stem = c["clip_id"].split("/")[-1]
         score = analysis.score_prediction(
-            entry(stem), prediction(name, stem), RUNS[name].head
+            truth_entry(stem), prediction(name, stem), RUNS[name].head
         )
         keys = {k: c[k] for k in ("clip_id", "recording", "group")}
         rows.append(keys | score)
@@ -390,6 +392,34 @@ def clip_sets() -> dict[str, str]:
     return out
 
 
+def _span(stem: str) -> str:
+    """A clip's recording span (``<session>_span<k>``): its stem without the camera."""
+    return stem.rsplit("_", 1)[0]
+
+
+@functools.cache
+def _spans() -> dict[str, str]:
+    """Recording span -> the stem of the dataset copy's clip of it."""
+    return {_span(s): s for s in _all_entries()}
+
+
+def is_local(stem: str) -> bool:
+    """Whether the dataset copy holds clip *stem* itself (its frames, not only its span)."""
+    return stem in clips() or stem in _all_entries()
+
+
+def truth_entry(stem: str) -> features.ClipEntry:
+    """The entry that holds clip *stem*'s truth: its own, or, for a clip of another
+    camera than the copy's, the copy's clip of the same recording span (the same
+    thermistor, events and clock; never its frames)."""
+    if is_local(stem):
+        return entry(stem)
+    local = _spans().get(_span(stem))
+    if local is None:
+        raise KeyError(f"no clip of {_span(stem)} in the dataset copy")
+    return entry(local)
+
+
 def entry(stem: str) -> features.ClipEntry:
     """The cache entry of any clip: a test clip of the published split, else any clip of
     the dataset copy (the cross-validation folds test others)."""
@@ -429,22 +459,32 @@ def network(name: str) -> tuple:
 
 
 def _saved(
-    name: str, e: features.ClipEntry
+    name: str, e: features.ClipEntry, stem: str | None = None
 ) -> tuple[np.ndarray, np.ndarray | None] | None:
     """``(trace, onset)`` as the run saved it when it scored *e* (a network's
-    ``traces/``, the baselines' ``traces/``), downloaded; ``None`` if it saved none."""
+    ``traces/``, the baselines' ``traces/``), downloaded; ``None`` if it saved none.
+    A network's trace of clip *stem* (another camera's clip of *e*'s span) is put on
+    *e*'s output grid by its own times."""
     m = RUNS[name]
     if m.kind == "network":
         traces = f"{folder(m)}/{seeds(folder(m))[0]}/{TRACES}"
         path = _fetch(f"{traces}/{trace_name(e)}")
-        stem = Path(e.stem).name.rsplit("-", 1)[0]
-        if path is None and stem in _trace_files(traces):
-            # a run on another recipe (e.g. select_fs) names its traces by its own entry
-            path = _fetch(f"{traces}/{_trace_files(traces)[stem]}")
+        for own in (stem, Path(e.stem).name.rsplit("-", 1)[0]):
+            if path is None and own in _trace_files(traces):
+                # a run on another recipe (e.g. select_fs) or camera names its traces
+                # by its own entry
+                path = _fetch(f"{traces}/{_trace_files(traces)[own]}")
         if path is None:
             return None
         s = pd.read_parquet(path)
-        return s["signal"].to_numpy(), (s["onset"].to_numpy() if "onset" in s else None)
+        signal = s["signal"].to_numpy()
+        onset = s["onset"].to_numpy() if "onset" in s else None
+        times = np.load(e.times)
+        if "time" in s and not np.array_equal(s["time"].to_numpy(), times[: len(s)]):
+            at = s["time"].to_numpy()
+            signal = np.interp(times, at, signal)
+            onset = None if onset is None else np.interp(times, at, onset)
+        return signal, onset
     if m.kind == "facemap":
         path = _fetch(
             f"{folder(m)}/facemap/{m.variant}/traces/{baselines.trace_key(e)}.npy"
@@ -511,11 +551,15 @@ def prediction(name: str, stem: str) -> dict:
     onset probability (zeros without a head) and the target. The trace the run saved
     is read from its download (:func:`_fetch`), never copied; only a trace predicted
     here, for a run that saved none, is cached (``cache/walkthrough/``), and a saved
-    one always wins over it."""
-    e = entry(stem)
+    one always wins over it. A clip of another camera than the copy's has only the
+    run's saved trace (on the grid of the copy's clip of its span); it is never
+    predicted here, from frames of another camera."""
+    e = truth_entry(stem)
     m = RUNS[name]
     path = _prediction_path(name, stem)
-    found = _saved(name, e)
+    found = _saved(name, e, stem)
+    if found is None and not is_local(stem):
+        raise FileNotFoundError(f"{name}: no saved trace for {stem}")
     if found is None and path.is_file():
         with np.load(path) as p:
             out = {k: p[k] for k in p.files}
@@ -548,17 +592,20 @@ def _run_dir(m: ReportedRun) -> str:
 
 
 def _validation_recipe_is_local(name: str) -> bool:
-    """Whether run *name* read its validation clips with the local copy's recipe, so
-    they can be predicted from its feature cache."""
-    config = json.loads(_fetch(f"{_run_dir(RUNS[name])}/config.json").read_text())
+    """Whether run *name* read its validation clips with the local copy's recipe, and
+    the copy holds those clips (not another camera's), so they can be predicted from
+    its feature cache."""
+    run = _run_dir(RUNS[name])
+    config = json.loads(_fetch(f"{run}/config.json").read_text())
     theirs = config.get("val_clip_list", {}).get("preprocess", {})
     ours = load(
         ClipList, root() / "dataset" / "clips.toml", check_files=False
     ).preprocess
     ours = json.loads(ours.model_dump_json())
-    return bool(theirs) and all(
-        ours.get(k) == v for k, v in theirs.items() if k in ours
-    )
+    if not theirs or any(ours.get(k) != v for k, v in theirs.items() if k in ours):
+        return False
+    clips_ = json.loads(_fetch(f"{run}/best_per_clip.json").read_text())
+    return all(is_local(c["clip_id"].split("/")[-1]) for c in clips_)
 
 
 def validation_prediction(name: str, stem: str) -> dict:
@@ -601,7 +648,7 @@ def head_threshold(name: str) -> float:
             chosen[name] = {
                 "value": HEAD_THRESHOLD,
                 "chosen_on": None,
-                "rule": "the default: validation recipe not local",
+                "rule": "the default: its validation clips are not in the dataset copy",
             }
         else:
             run = _run_dir(RUNS[name])
@@ -627,7 +674,7 @@ def _prediction_path(name: str, stem: str) -> Path:
 
 def truth(stem: str) -> dict:
     """:func:`zephyr.benchmarks.analysis.truth` of a test clip."""
-    return analysis.truth(entry(stem))
+    return analysis.truth(truth_entry(stem))
 
 
 def gray(stem: str) -> tuple[np.ndarray, np.ndarray]:
