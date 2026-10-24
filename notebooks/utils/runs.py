@@ -156,7 +156,7 @@ def runs_table(names=ALL) -> pd.DataFrame:
 
 
 def _subjects() -> dict[str, str]:
-    folds = pd.read_parquet(root() / "dataset" / "folds.parquet")
+    folds = pd.read_parquet(root() / "dataset" / "raw" / "folds.parquet")
     return dict(zip(folds["session_id"], folds["subject_id"], strict=True))
 
 
@@ -521,7 +521,7 @@ def _all_entries() -> dict[str, features.ClipEntry]:
 
 def split_stems() -> dict[str, list[str]]:
     """Clip stems of the training and validation sets and of each test set."""
-    folds = pd.read_parquet(root() / "dataset" / "folds.parquet")
+    folds = pd.read_parquet(root() / "dataset" / "raw" / "folds.parquet")
     sets = dict(zip(folds["session_id"], folds["set"], strict=True))
     names = {"train": "Train", "val": "Validation"}
     out: dict[str, list[str]] = {"Train": [], "Validation": []}

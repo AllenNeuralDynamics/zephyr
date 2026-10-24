@@ -1,8 +1,9 @@
 """Where the corpus' sessions go: every packaged session, step by step, to a set.
 
 Reads a dataset folder (local) and its spec: ``inventory.parquet``, ``qc.parquet``,
-``results.json`` and ``folds.parquet``. A session left out is counted under the first
-rule it fails, in the order the steps apply them (``qc`` names one reason per session).
+``selection.json`` and ``folds.parquet`` of its ``raw/``. A session left out is counted
+under the first rule it fails, in the order the steps apply them (``qc`` names one
+reason per session).
 """
 
 import json
@@ -70,13 +71,13 @@ def _qc_reason(row, spec: DatasetSpec) -> tuple[str, str]:
 def flow(root: Path, spec: DatasetSpec) -> list[dict]:
     """The steps from the packaged sessions to the sets: per step its name, the
     sessions and animals it keeps, and what it drops as ``(label, rule, sessions)``."""
-    inventory = pd.read_parquet(root / "inventory.parquet")
+    inventory = pd.read_parquet(root / "raw" / "inventory.parquet")
     kept = wanted(spec, inventory)
-    qc = pd.read_parquet(root / "qc.parquet").set_index("session_id")
-    results = json.loads((root / "results.json").read_text(encoding="utf-8"))
+    qc = pd.read_parquet(root / "raw" / "qc.parquet").set_index("session_id")
+    results = json.loads((root / "raw" / "selection.json").read_text(encoding="utf-8"))
     sessions = pd.DataFrame(results["sessions"]).set_index("session_id")
     sessions = sessions.join(qc[["amplitude", "rail_frac"]])
-    folds = pd.read_parquet(root / "folds.parquet").set_index("session_id")
+    folds = pd.read_parquet(root / "raw" / "folds.parquet").set_index("session_id")
     subject = inventory.set_index("session_id")["subject_id"].astype(str)
     counts = results["counts"]
 

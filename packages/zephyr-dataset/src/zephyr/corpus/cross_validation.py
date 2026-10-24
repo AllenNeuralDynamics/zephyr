@@ -5,7 +5,8 @@ the one whose worst group is best balanced kept). Fold k tests group k whole (te
 early-stops on ``val_animals`` drawn from the others, and tests one date block of every
 other animal with ``test_b_min_sessions`` (test B): its sessions, by date, are cut into a
 block for each fold it trains in. Group C sessions keep their ``folds.parquet`` set in
-every fold. Writes ``cross_validation.parquet``; ``folds.parquet`` is only read.
+every fold. Writes ``sessions.parquet``: the assigned sessions' columns of
+``folds.parquet`` (which it only reads) without its first draw, and the folds.
 """
 
 import numpy as np
@@ -14,6 +15,9 @@ import pandas as pd
 from . import storage
 from .config import CrossValidation, DatasetSpec, Layout
 from .folds import Draw, check, report
+
+FIRST_DRAW = ["set", "role", "small"]
+"""``folds.parquet``'s columns of its own draw, left out of ``sessions.parquet``."""
 
 ALL = 10**6
 """A cap no animal reaches: :class:`folds.Draw` scores every session of an animal."""
@@ -120,9 +124,8 @@ def run(spec: DatasetSpec) -> pd.DataFrame:
         raise SystemExit("cross_validation: no folds.parquet (run folds first)")
     out = assign(storage.read_parquet(layout.folds), s)
     check_all(out, s.n_folds)
-    keep = ["session_id", "subject_id", "cv_group", "cv_b_fold"]
     storage.write_frame(
-        out[keep + [column(k) for k in range(s.n_folds)]], layout.cross_validation
+        out.drop(columns=FIRST_DRAW, errors="ignore"), layout.session_table
     )
     for k in range(s.n_folds):
         print(f"fold {k}:")

@@ -96,7 +96,7 @@ def run(
     fs = fs or filesystem()
     frames = frames or camera.video_frames
     layout = Layout(spec.root)
-    results = json.loads(layout.results.read_text(encoding="utf-8"))
+    results = json.loads(layout.selection.read_text(encoding="utf-8"))
     by_id = {s["session_id"]: s for s in results["sessions"]}
     done = storage.read_parquet(layout.cameras) if layout.cameras.exists() else None
     finished = set()

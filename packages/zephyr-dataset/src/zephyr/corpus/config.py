@@ -244,21 +244,25 @@ class Layout:
 
     def __init__(self, root) -> None:
         self.root = storage.root(root)
-        self.docdb = self.root / "docdb.json.gz"
-        self.inventory = self.root / "inventory.parquet"
-        self.thermistor_dir = self.root / "thermistor"
-        self.session_list = self.root / "sessions.toml"
-        self.qc = self.root / "qc.parquet"
-        self.results = self.root / "results.json"
-        self.video_dir = self.root / "videos"
-        self.cameras = self.root / "cameras.parquet"
-        self.sync = self.root / "sync.parquet"
+        self.raw = self.root / "raw"  # what the build reads and records
+        self.docdb = self.raw / "docdb.json.gz"
+        self.inventory = self.raw / "inventory.parquet"
+        self.thermistor_dir = self.raw / "thermistor"
+        self.session_list = self.raw / "sessions.toml"
+        self.qc = self.raw / "qc.parquet"
+        self.selection = self.raw / "selection.json"
+        self.video_dir = self.raw / "videos"
+        self.camera_metadata_dir = self.raw / "camera_metadata"
+        self.cameras = self.raw / "cameras.parquet"
+        self.sync = self.raw / "sync.parquet"
+        self.clip_table = self.raw / "clips.parquet"
+        self.folds = self.raw / "folds.parquet"
+        self.raw_readme = self.raw / "README.md"
+        self.readme = self.root / "README.md"  # what users read
         self.clip_dir = self.root / "clips"
-        self.clip_table = self.root / "clips.parquet"
         self.clip_list = self.root / "clips.toml"
         self.thumbnail_dir = self.root / "thumbnails"
-        self.folds = self.root / "folds.parquet"
-        self.cross_validation = self.root / "cross_validation.parquet"
+        self.session_table = self.root / "sessions.parquet"
 
     @property
     def local(self) -> bool:
@@ -274,7 +278,7 @@ class Layout:
 
     def camera_metadata(self, session_id: str, camera: str) -> UPath:
         """A camera's ``metadata.csv`` as on S3, unmodified (a cache)."""
-        return self.root / "camera_metadata" / f"{session_id}_{camera}.parquet"
+        return self.camera_metadata_dir / f"{session_id}_{camera}.parquet"
 
     def clip(self, session_id: str, span: str, part: str, suffix: str) -> UPath:
         """A clip's file: *part* is a camera or ``thermistor``."""

@@ -126,8 +126,8 @@ group_c = { "841301" = [6, 2, 4], "828415" = [1, 0, 1] }   # (train, val, test) 
 "ND_Ephys.5" = "EPHYS5"
 "322-EPHYS5" = "EPHYS5"
 
-# Cross-validation beside the published split (cross_validation.parquet; folds.parquet is
-# only read): every animal outside group C is test A in one fold.
+# Cross-validation, the published split (sessions.parquet; raw/folds.parquet is only
+# read): every animal outside group C is test A in one fold.
 [cross_validation]
 seed = 2026
 n_folds = 5

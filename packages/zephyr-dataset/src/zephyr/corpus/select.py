@@ -1,4 +1,4 @@
-"""``select``: the final rule, written with everything else to ``results.json``.
+"""``select``: the final rule, written with everything else to ``raw/selection.json``.
 
 The clip list is the source of truth: a session passes when its mark is ``include``,
 and its clips come from its ``included`` spans (the QC's, or a reviewer's). Each
@@ -141,7 +141,7 @@ def run(spec: DatasetSpec, workers: int = 32, fs=None) -> dict:
     layout = Layout(spec.root)
     rule = spec.select
     text = layout.session_list.read_text(encoding="utf-8")
-    entries = validate(tomlkit.parse(text), layout)
+    entries = validate(tomlkit.parse(text), layout.session_list)
     qc = storage.read_parquet(layout.qc).set_index("session_id")
     inventory = storage.read_parquet(layout.inventory).set_index("session_id")
     sessions = []
@@ -221,7 +221,7 @@ def run(spec: DatasetSpec, workers: int = 32, fs=None) -> dict:
         "selected": [s["session_id"] for s in selected],
         "sessions": sessions,
     }
-    storage.write_text(layout.results, json.dumps(results, indent=1, default=_clean))
+    storage.write_text(layout.selection, json.dumps(results, indent=1, default=_clean))
     print(
         f"select: {len(passed)} passed, {len(fits)} fit {rule.clips_per_session} "
         f"clips of {rule.clip_s:g} s, {results['counts']['dropped_for_cameras']} "

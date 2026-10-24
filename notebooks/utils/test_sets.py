@@ -135,9 +135,9 @@ def clip_info(root: Path) -> pd.DataFrame:
         )
     info = pd.DataFrame(rows)
     info["session"] = info["stem"].str.rsplit("_span", n=1).str[0]
-    folds = pd.read_parquet(root / "dataset/folds.parquet")
+    folds = pd.read_parquet(root / "dataset/raw/folds.parquet")
     folds = folds[["session_id", "subject_id", "rig", "date"]]
-    qc = pd.read_parquet(root / "dataset/qc.parquet")
+    qc = pd.read_parquet(root / "dataset/raw/qc.parquet")
     qc = qc[["session_id", "snr_db", "break_frac", "good_frac", "rate_cv"]]
     info = info.merge(folds, left_on="session", right_on="session_id", how="left")
     info = info.merge(qc, on="session_id", how="left").drop(columns="session_id")
@@ -192,8 +192,8 @@ def missing(root: Path) -> list[str]:
     """What the folder lacks of ``LAYOUT``, empty when it is complete."""
     wanted = [root / "dataset" / f"full_test_{s}.toml" for s in "abc"]
     wanted += [
-        root / "dataset/folds.parquet",
-        root / "dataset/qc.parquet",
+        root / "dataset/raw/folds.parquet",
+        root / "dataset/raw/qc.parquet",
         root / "cache" / RECIPE,
     ]
     absent = [str(p) for p in wanted if not p.exists()]
@@ -517,7 +517,7 @@ def clip_qc(root: Path) -> pd.DataFrame:
 
 def qc_table(root: Path, m: pd.DataFrame) -> pd.DataFrame:
     """*m* (:func:`clip_table`) with the :data:`QC` metrics."""
-    qc = pd.read_parquet(root / "dataset/qc.parquet").drop_duplicates("session_id")
+    qc = pd.read_parquet(root / "dataset/raw/qc.parquet").drop_duplicates("session_id")
     qc = qc.set_index("session_id")
     m = m.drop(
         columns=["snr_db", "break_frac", "rate_cv", "good_frac"], errors="ignore"
@@ -557,7 +557,7 @@ SPLIT = {
     "test_b": GROUPS["full_test_b"],
     "test_c": GROUPS["full_test_c"],
 }
-"""``folds.parquet``'s sets, named as the scores name them."""
+"""``raw/folds.parquet``'s sets, named as the scores name them."""
 SPLIT_COLOURS = {
     "train": "0.6",
     "validation": "#cc79a7",
@@ -692,7 +692,7 @@ def nearest_train(root: Path, view: str, m: pd.DataFrame) -> pd.DataFrame:
     similarity to the most alike training session (``nearest``, which, its animal), to
     the most alike of its own animal (``nearest_same``) and of another
     (``nearest_other``); a training session is not its own neighbour."""
-    folds = pd.read_parquet(root / "dataset/folds.parquet").dropna(subset=["set"])
+    folds = pd.read_parquet(root / "dataset/raw/folds.parquet").dropna(subset=["set"])
     folds = folds.set_index("session_id")
     e = embeddings(root, view).loc[folds.index].to_numpy()
     sim = e @ e.T

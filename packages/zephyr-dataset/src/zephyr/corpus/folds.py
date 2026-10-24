@@ -1,4 +1,4 @@
-"""``folds``: which selected sessions train, validate and test (``folds.parquet``).
+"""``folds``: which selected sessions train, validate and test (``raw/folds.parquet``).
 
 Test A and validation hold out whole animals, drawn (``[folds] tries`` seeded draws, the
 best kept) to cover rigs and months and match the corpus' breathing-rate bands; test B
@@ -53,7 +53,7 @@ def session_rates(spec: DatasetSpec, layout: Layout, s: dict) -> dict:
 def table(spec: DatasetSpec, layout: Layout, workers: int) -> pd.DataFrame:
     """One row per selected session: subject, rig family, date, camera rate, bands."""
     s = spec.folds
-    results = json.loads(layout.results.read_text(encoding="utf-8"))
+    results = json.loads(layout.selection.read_text(encoding="utf-8"))
     chosen = set(results["selected"])
     sessions = [x for x in results["sessions"] if x["session_id"] in chosen]
     frame = pd.DataFrame(

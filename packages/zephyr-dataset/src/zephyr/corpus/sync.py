@@ -64,7 +64,7 @@ def run(spec: DatasetSpec, workers: int = 32, fs=None, limit: int | None = None)
         raise SystemExit("sync: the spec has no [sync]")
     fs = fs or filesystem()
     layout = Layout(spec.root)
-    results = json.loads(layout.results.read_text(encoding="utf-8"))
+    results = json.loads(layout.selection.read_text(encoding="utf-8"))
     by_id = {s["session_id"]: s for s in results["sessions"]}
     done = storage.read_parquet(layout.sync) if layout.sync.exists() else pd.DataFrame()
     have = set(done.loc[done["error"].isna(), "session_id"]) if len(done) else set()

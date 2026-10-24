@@ -42,7 +42,12 @@ def _():
 @app.cell
 def _(root_text):
     root = Path(root_text.value)
-    needed = ["inventory.parquet", "qc.parquet", "results.json", "folds.parquet"]
+    needed = [
+        "raw/inventory.parquet",
+        "raw/qc.parquet",
+        "raw/selection.json",
+        "raw/folds.parquet",
+    ]
     absent = [n for n in needed if not (root / n).is_file()]
     mo.stop(bool(absent), mo.md("Missing from the folder: " + ", ".join(absent)))
     with SPEC.open("rb") as handle:

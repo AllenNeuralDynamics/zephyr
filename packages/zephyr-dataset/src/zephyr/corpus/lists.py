@@ -44,13 +44,13 @@ def subjects(layout: Layout) -> dict[str, str]:
     return dict(zip(inventory["session_id"], inventory["subject_id"].astype(str)))
 
 
-def validate(doc, layout: Layout) -> list[Clip]:
-    """The clips of *doc*, a list at the root of *layout*. A local list is checked whole
-    by zephyr (its files must exist); a remote one header and entry by entry, as zephyr
-    cannot see remote files."""
+def validate(doc, path) -> list[Clip]:
+    """The clips of *doc*, the list at *path*. A local list is checked whole by zephyr
+    (its files must exist); a remote one header and entry by entry, as zephyr cannot see
+    remote files."""
     data = doc.unwrap()
-    if layout.local:
-        return ClipList.model_validate(data, context={"base": Path(layout.root)}).clip
+    if storage.is_local(path):
+        return ClipList.model_validate(data, context={"base": Path(path.parent)}).clip
     PreprocessParams.model_validate(data.get("preprocess", {}))
     EventsSource.model_validate(data.get("events", {}))
     context = {"base": Path.cwd()}  # names only: never opened
@@ -97,7 +97,7 @@ def run(spec: DatasetSpec) -> int:
             entry["group"] = subject[session_id]
     if unknown:
         raise SystemExit(f"lists: no subject in the inventory for {sorted(unknown)}")
-    validate(doc, layout)
+    validate(doc, layout.session_list)
     storage.write_text(path, tomlkit.dumps(doc))
     print(f"lists: {len(doc['clip'])} sessions ({added} added) in {path.name}")
     return added

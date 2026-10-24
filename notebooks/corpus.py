@@ -39,7 +39,7 @@ def _():
     copied from that corpus (`docdb.json.gz`) and the spec's `until` drops later
     assets, so the rebuild reads the same metadata; the spec's `[[review]]` entries
     restore the decisions made by hand. Not `folds`, which would draw a new split (the
-    corpus's `folds.parquet` is the record), nor `clips`, which copies terabytes.
+    corpus's `raw/folds.parquet` is the record), nor `clips`, which copies terabytes.
     """)
     return
 
@@ -108,7 +108,7 @@ def _(rebuilt, reference, run, workers):
 
 @app.cell
 def _(rebuilt, reference, results):
-    ref = json.loads(Layout(reference.root).results.read_text(encoding="utf-8"))
+    ref = json.loads(Layout(reference.root).selection.read_text(encoding="utf-8"))
 
     def by_session(found):
         return {s["session_id"]: s for s in found["sessions"]}

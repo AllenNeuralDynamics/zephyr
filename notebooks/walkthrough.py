@@ -41,7 +41,7 @@ def _():
 def _():
     _root = runs.root()
     _wanted = [
-        _root / "dataset" / "folds.parquet",
+        _root / "dataset" / "raw" / "folds.parquet",
         _root / "dataset" / "clips.toml",
         _root / "cache" / runs.test_sets.RECIPE,
     ]

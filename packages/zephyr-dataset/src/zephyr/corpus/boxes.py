@@ -97,7 +97,7 @@ def publish(spec, work: Path, camera: str) -> None:
     for e in doc["clip"]:
         if str(e["video"]) in boxes:
             e["box"] = boxes[str(e["video"])]
-    validate(doc, layout)
+    validate(doc, layout.clip_list)
     storage.write_text(layout.clip_list, tomlkit.dumps(doc))
     entries = camera_entries(doc, camera)
     left = {str(e["group"]) for e in entries if "box" not in e}

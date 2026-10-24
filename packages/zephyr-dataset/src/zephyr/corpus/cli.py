@@ -6,16 +6,17 @@ is in the spec.
 
 CLI
 ---
-    zephyr-dataset inventory <spec.toml> [--refresh]   # DocDB -> docdb.json.gz, inventory.parquet
-    zephyr-dataset fetch <spec.toml> [--workers 16] [--limit N]
-    zephyr-dataset lists <spec.toml>       # sessions.toml
-    zephyr-dataset qc <spec.toml>          # marks/spans of unreviewed clips, qc.parquet (local root)
-    zephyr-dataset select <spec.toml>      # results.json
-    zephyr-dataset videos <spec.toml> [--workers 16] [--limit N]   # videos/, cameras.parquet
-    zephyr-dataset sync <spec.toml> [--workers 32]   # sync.parquet: Harp read-dump times
-    zephyr-dataset folds <spec.toml>       # folds.parquet: train / val / test A, B, C (after select)
-    zephyr-dataset clips <spec.toml> [--workers 8] [--limit N]     # clips/, clips.parquet, clips.toml
-    zephyr-dataset cross_validation <spec.toml>   # cross_validation.parquet (after folds)
+    zephyr-dataset inventory <spec.toml> [--refresh]   # DocDB -> raw/docdb.json.gz, raw/inventory.parquet
+    zephyr-dataset fetch <spec.toml> [--workers 16] [--limit N]   # raw/thermistor/
+    zephyr-dataset lists <spec.toml>       # raw/sessions.toml
+    zephyr-dataset qc <spec.toml>          # marks/spans of unreviewed clips, raw/qc.parquet (local root)
+    zephyr-dataset select <spec.toml>      # raw/selection.json
+    zephyr-dataset videos <spec.toml> [--workers 16] [--limit N]   # raw/videos/, raw/cameras.parquet
+    zephyr-dataset sync <spec.toml> [--workers 32]   # raw/sync.parquet: Harp read-dump times
+    zephyr-dataset folds <spec.toml>       # raw/folds.parquet: the sessions used (after select)
+    zephyr-dataset clips <spec.toml> [--workers 8] [--limit N]     # clips/, clips.toml, raw/clips.parquet
+    zephyr-dataset cross_validation <spec.toml>   # sessions.parquet: the folds (after folds)
+    zephyr-dataset readme <spec.toml>      # README.md, raw/README.md (after cross_validation)
     zephyr-dataset status <spec.toml>
     zephyr-dataset build <spec.toml>       # all of the above
     zephyr-dataset clips <spec.toml> --profile IAmAnywhere   # AWS profile of an s3:// root
@@ -43,7 +44,7 @@ STEPS = [
     "clips",
     "status",
 ]
-OPTIONAL = ["cross_validation"]
+OPTIONAL = ["cross_validation", "readme"]
 """Steps ``build`` leaves out: they read the published split and write beside it."""
 
 
@@ -98,6 +99,10 @@ def step(name: str, spec: DatasetSpec, args: argparse.Namespace) -> None:
         from . import cross_validation
 
         cross_validation.run(spec)
+    elif name == "readme":
+        from . import readme
+
+        readme.run(spec)
 
 
 def run(argv: list[str] | None = None) -> None:
@@ -126,7 +131,7 @@ def run(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "--prune",
         action="store_true",
-        help="clips: first delete clips of sessions folds.parquet does not assign "
+        help="clips: first delete clips of sessions raw/folds.parquet does not assign "
         "and of cameras a [[review]] drops (needs a profile allowed to delete)",
     )
     parser.add_argument(

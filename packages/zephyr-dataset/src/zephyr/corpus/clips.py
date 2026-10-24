@@ -1,13 +1,13 @@
 """``clips``: each selected span cut from its session's videos, without re-encoding.
 
-Per span of a session ``folds.parquet`` assigns (once it exists) and camera, the frames
+Per span of a session ``raw/folds.parquet`` assigns (once it exists) and camera, the frames
 from the keyframe at or before the span's start to the keyframe at or after its end are
 stream-copied into a fragmented MP4 (so ffmpeg can write it to a pipe), checked (one
 packet per frame, evenly spaced) and written to ``clips/<session_id>_<span>_<camera>.mp4``
 with those frames' ``Time`` beside it as ``.parquet``. ``..._thermistor.parquet`` spans
 the required cameras' clips ± ``[clips] thermistor_pad_s`` (a clean optional camera is cut
 inside it); ``thumbnails/<session_id>_<camera>.png`` is the session's first frame.
-``clips.parquet`` lists them; ``clips.toml`` (group = session, no boxes). Resumable.
+``raw/clips.parquet`` lists them; ``clips.toml`` (group = session, boxes kept). Resumable.
 """
 
 import json
@@ -32,10 +32,11 @@ WINDOW_S = 4.0  # first keyframe search window either side (doubled until found)
 KEY = ["session_id", "span", "camera"]
 HEADER = [
     "Clips cut from the selected spans of a zephyr-dataset folder: one entry per span",
-    "and camera, written by `zephyr-dataset clips` (never edit by hand). `box` is the",
-    "face crop, put there by `python -m zephyr.corpus.boxes publish`, kept by `clips`.",
-    "`group` is the session (zephyr's recording); which sessions train and test,",
-    "and each one's subject, are in folds.parquet.",
+    "and camera, written by `zephyr-dataset clips` (never edit by hand). `box` is each",
+    "camera's crop, put there by `python -m zephyr.corpus.boxes publish`, kept by",
+    '`clips`; cameras other than the face are `selection = "exclude"`, so zephyr uses',
+    "the face only unless a fold selects them. `group` is the session (zephyr's",
+    "recording); each session's subject and its set in every fold are in sessions.parquet.",
 ]
 
 
@@ -373,7 +374,7 @@ def write_list(spec: DatasetSpec, layout: Layout, table: pd.DataFrame) -> int:
             entry.add("box", boxes[clip.video])
         entries.append(entry)
     doc.add("clip", entries)
-    validate(doc, layout)
+    validate(doc, layout.clip_list)
     storage.write_text(layout.clip_list, tomlkit.dumps(doc))
     return len(ok)
 
@@ -492,7 +493,7 @@ def run(
 ) -> pd.DataFrame:
     url_of = url_of or (lambda folder: f"{https(folder)}/video.mp4")
     layout = Layout(spec.root)
-    results = json.loads(layout.results.read_text(encoding="utf-8"))
+    results = json.loads(layout.selection.read_text(encoding="utf-8"))
     by_id = {s["session_id"]: s for s in results["sessions"]}
     wanted = results["selected"]
     assigned = None
@@ -508,7 +509,7 @@ def run(
     )
     if prune_unassigned:
         if assigned is None:
-            raise SystemExit("clips: --prune needs folds.parquet (run folds first)")
+            raise SystemExit("clips: --prune needs raw/folds.parquet (run folds first)")
         if dry_run:
             return prune(spec, layout, table, assigned, dry_run=True)
         table = prune(spec, layout, table, assigned)

@@ -206,7 +206,7 @@ class PipelineTests(unittest.TestCase):
             context={"base": Path(self.tmp.name)},
         )
         self.layout = Layout(self.spec.root)
-        self.layout.root.mkdir()
+        self.layout.raw.mkdir(parents=True)
         with gzip.open(self.layout.docdb, "wt", encoding="utf-8") as handle:
             json.dump(
                 {"queried": "2026-02-02T00:00:00+00:00", "records": docdb}, handle
@@ -231,7 +231,8 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(list(raw.columns), ["Time", "Signal"])
         self.assertEqual(len(raw), 40 * FS_HZ)
         self.assertTrue(raw["Time"].is_monotonic_increasing)
-        files = {p.name for p in self.layout.root.iterdir()}
+        self.assertEqual([p.name for p in self.layout.root.iterdir()], ["raw"])
+        files = {p.name for p in self.layout.raw.iterdir()}
         self.assertEqual(
             files,
             {
@@ -240,7 +241,7 @@ class PipelineTests(unittest.TestCase):
                 "thermistor",
                 "sessions.toml",
                 "qc.parquet",
-                "results.json",
+                "selection.json",
             },
         )
         by_id = {s["session_id"]: s for s in results["sessions"]}
@@ -258,7 +259,7 @@ class PipelineTests(unittest.TestCase):
         lonely = by_id["behavior_101_2026-01-02_10-00-00"]
         self.assertEqual(list(lonely["cameras"]), ["FaceCamera"])
         self.assertIsNone(lonely["clips"])
-        self.assertEqual(json.loads(self.layout.results.read_text()), results)
+        self.assertEqual(json.loads(self.layout.selection.read_text()), results)
 
     def test_videos_repairs_rollbacks_and_reports_what_stays_broken(self):
         self.build()
@@ -334,9 +335,9 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(layout.sessions(), self.layout.sessions())
         with self.assertRaises(SystemExit):  # zephyr reads local files only
             qc.run(spec)
-        for name in ("sessions.toml", "qc.parquet"):  # qc's output, made locally
+        for name in ("session_list", "qc"):  # qc's output, made locally
             storage.write_bytes(
-                layout.root / name, (self.layout.root / name).read_bytes()
+                getattr(layout, name), getattr(self.layout, name).read_bytes()
             )
         results = select.run(spec, workers=2, fs=self.fs)
         self.assertEqual(results["selected"], local["selected"])
@@ -350,14 +351,14 @@ class PipelineTests(unittest.TestCase):
         videos.run(self.spec, workers=2, fs=self.fs, frames=video_frames)
         select.run(self.spec, workers=2, fs=self.fs)  # only 103 keeps clean cameras
         sid = "103_2026-01-04_10-00-00"
-        results = json.loads(self.layout.results.read_text())
+        results = json.loads(self.layout.selection.read_text())
         for s in results["sessions"]:  # spans inside the cameras' 10 s; the second
             if s["session_id"] == sid:  # ends in the last GOP of both videos
                 s["clips"] = {
                     "span1": {"start": 5001.3, "end": 5003.3},
                     "span2": {"start": 5005.0, "end": 5009.9},
                 }
-        self.layout.results.write_text(json.dumps(results))
+        self.layout.selection.write_text(json.dumps(results))
         sources = {}
         for name, frames, hz in (("FaceCamera", 2400, 240), ("SideCamera", 600, 60)):
             sources[name] = Path(self.tmp.name) / f"{name}.mp4"
@@ -457,7 +458,7 @@ class PipelineTests(unittest.TestCase):
         dirty = camera_frame(drop=100).to_csv(index=False).encode()
         self.fs.pipe(f"{folder}/metadata.csv", dirty)
         self.layout.cameras.unlink()
-        shutil.rmtree(self.layout.root / "camera_metadata")
+        shutil.rmtree(self.layout.camera_metadata_dir)
         table = videos.run(spec, workers=2, fs=self.fs, frames=video_frames)
         row = table.set_index(["session_id", "camera"])
         self.assertFalse(row.loc[("103_2026-01-04_10-00-00", "FrontCamera"), "clean"])
@@ -475,14 +476,14 @@ class PipelineTests(unittest.TestCase):
         videos.run(self.spec, workers=2, fs=self.fs, frames=video_frames)
         select.run(self.spec, workers=2, fs=self.fs)  # only 103 keeps clean cameras
         sid = "103_2026-01-04_10-00-00"
-        results = json.loads(self.layout.results.read_text())
+        results = json.loads(self.layout.selection.read_text())
         for s in results["sessions"]:
             if s["session_id"] == sid:
                 s["clips"] = {
                     "span1": {"start": 5001.3, "end": 5003.3},
                     "span2": {"start": 5005.0, "end": 5009.9},
                 }
-        self.layout.results.write_text(json.dumps(results))
+        self.layout.selection.write_text(json.dumps(results))
         sources = {}
         for name, frames, hz in (
             ("FaceCamera", 2400, 240),

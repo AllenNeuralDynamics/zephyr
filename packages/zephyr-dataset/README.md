@@ -12,7 +12,8 @@ uv run zephyr-dataset <step> packages/zephyr-dataset/configs/vr-foraging-sniff.t
 Steps, in order: `inventory`, `fetch`, `lists`, `qc`, `select`, `videos`, `select` (again:
 it drops sessions whose camera timestamps are not clean, see
 [Known data issues](#known-data-issues)), `sync`, `folds`, `clips`; `status` reports
-progress and `build` runs them all. The required cameras (`[source] cameras`, face and
+progress and `build` runs them all. `cross_validation` and then `readme` write what is
+published beside the clips (`sessions.parquet`, `README.md`, `raw/README.md`). The required cameras (`[source] cameras`, face and
 side) decide the selection; an optional one (`[source] optional_cameras`, the front
 camera) is checked by `videos` and cut by `clips` where a session the folds assign has it
 clean and no `[[review]]` drops it (`drop_cameras`), and never selects or drops a session.
@@ -29,7 +30,9 @@ have both cameras → **1,506** with clean camera timestamps (see
 one physical rig merged, `FRG.4-B` = `4B`), 2025-10 to 2026-10.
 `notebooks/corpus_selection.py` draws where every session goes and why.
 
-**The split** (`folds`, written to `folds.parquet`, the record of the split):
+**The first draw** (`folds`, written to `raw/folds.parquet`) picks the sessions the corpus
+uses and group C's sets. Results are reported on the cross-validation folds drawn from it
+(`sessions.parquet`, see [Cross-validation](#cross-validation)), never on this draw:
 
 | set | question | held out as | animals | sessions |
 | --- | --- | --- | --- | --- |
@@ -60,8 +63,8 @@ one physical rig merged, `FRG.4-B` = `4B`), 2025-10 to 2026-10.
   10 animals with a bootstrap interval over animals; more precision means more animals,
   not more sessions.
 - **Set aside:** a temporal holdout (new animals is what matters), leaving a rig out (rigs
-  are similar and animals move between them). Cross-validation over animals is drawn
-  beside this split, never in place of it: see [Cross-validation](#cross-validation).
+  are similar and animals move between them). The folds over animals are drawn from this
+  draw's sessions: see [Cross-validation](#cross-validation).
 
 Test A animals: 806527, 808728, 815103, 828421, 841306, 841312, 849495, 863704, 864846,
 879295. Validation animals: 789917, 828417, 828423, 841299, 846441, 864847, 866061, 866063.
@@ -96,9 +99,10 @@ whole sessions, whatever marks the list holds, so re-running it never changes a 
 
 One split scores 10 test animals, so a few hard animals move test A. `zephyr-dataset
 cross_validation <spec>` (`[cross_validation]`) draws folds over the same 560 sessions so
-that every animal is a test animal once; it writes `cross_validation.parquet` and only
-reads `folds.parquet`, which stays the record of the published split. `build` does not
-run it.
+that every animal is a test animal once. It only reads `raw/folds.parquet` (the record of
+which sessions are used) and writes `sessions.parquet`: those sessions' columns of it
+without the first draw's `set` and `role`, and the folds. These folds are the published
+split. `build` does not run it.
 
 - **Test A:** the 48 animals outside group C in 5 groups (the best balanced of seeded
   draws, judged by its worst group); fold k tests group k whole, so each animal is scored
@@ -108,13 +112,13 @@ run it.
   fold it trains in, and that fold tests the block. Blocks rather than random sessions,
   because sessions days apart look alike: a held-out session should not have its
   neighbours in training. Each such session is test B once.
-- **Group C** keeps its sets from `folds.parquet` in every fold.
+- **Group C** keeps its sets from `raw/folds.parquet` in every fold.
 - **Sizes** per fold: 75-128 test A, 70-119 test B, 87-144 validation and 213-268
   training sessions; every set of every fold is within about 2 points of the corpus' rate
   mix.
-- **Columns:** `session_id`, `subject_id`, `cv_group` (the animal's test A fold, -1 for
-  group C), `cv_b_fold` (the session's test B fold, -1 for none) and `fold_<k>` (its set in
-  fold k). Every fold passes `folds.check`.
+- **Columns** added to the session's: `cv_group` (the animal's test A fold, -1 for group
+  C), `cv_b_fold` (the session's test B fold, -1 for none) and `fold_<k>` (its set in fold
+  k). Every fold passes `folds.check`.
 
 Report a method by pooling its test A scores of all folds, averaged within each animal,
 with a bootstrap over animals; one seed per fold is enough when seeds vary less than folds.
@@ -123,13 +127,14 @@ with a bootstrap over animals; one seed per fold is enough when seeds vary less 
 
 `root` in the spec is a local folder or a URL; the corpus is at
 `s3://aind-scratch-data/vr-foraging/zephyr-dataset` (about 40 GB of metadata, timestamps
-and thermistors, plus about 1 TB of clips for the 560 sessions the folds use). Every
+and thermistors in `raw/`, plus about 1 TB of clips for the 560 sessions the folds use). Every
 step reads and writes it directly, with the AWS profile given by `--profile` (or
 `AWS_PROFILE`); the source bucket, `aind-open-data`, is read anonymously. Writes never
 rename remote objects, and a file appears only once it is complete. The one deletion is
-`clips --prune`, which removes the clips of sessions `folds.parquet` does not assign and
-of cameras a `[[review]]` drops (`--dry-run` lists them first); it needs a profile allowed
-to delete (your SSO login; `IAmAnywhere` may not delete).
+`clips --prune`, which removes the clips of sessions `raw/folds.parquet` does not assign
+and of cameras a `[[review]]` drops (`--dry-run` lists them first); it needs a profile
+allowed to delete (your SSO login; `IAmAnywhere` may not delete). A change of layout is
+moved once by a throwaway script (copy, check, then delete the old objects).
 
 Two things need local files, because zephyr itself reads only local paths:
 
@@ -137,43 +142,47 @@ Two things need local files, because zephyr itself reads only local paths:
   the copy and upload its two outputs:
 
   ```bash
-  aws s3 sync s3://aind-scratch-data/vr-foraging/zephyr-dataset <copy> --exclude "clips/*" --exclude "videos/*" --exclude "camera_metadata/*"
+  aws s3 sync s3://aind-scratch-data/vr-foraging/zephyr-dataset/raw <copy>/raw --exclude "videos/*" --exclude "camera_metadata/*"
   # a spec with root = "<copy>", then: zephyr-dataset qc <that spec>
-  aws s3 cp <copy>/sessions.toml s3://aind-scratch-data/vr-foraging/zephyr-dataset/
-  aws s3 cp <copy>/qc.parquet s3://aind-scratch-data/vr-foraging/zephyr-dataset/
+  aws s3 cp <copy>/raw/sessions.toml s3://aind-scratch-data/vr-foraging/zephyr-dataset/raw/
+  aws s3 cp <copy>/raw/qc.parquet s3://aind-scratch-data/vr-foraging/zephyr-dataset/raw/
   ```
 
-- Reviewing (`zephyr gui <copy>/sessions.toml --page breathing`) and preprocessing
+- Reviewing (`zephyr gui <copy>/raw/sessions.toml --page breathing`) and preprocessing
   (`clips.toml`) work on such a copy. Every path in the lists is relative, so a copy
   anywhere works; sync `clips/` only for the clips you need. Decisions made by hand go
   in the spec's `[[review]]`, so `qc` writes them back on every run.
 
 ## The dataset folder
 
-It holds only what later stages need:
+What is published is at the top: the clips, their list, `sessions.parquet`, thumbnails
+and a `README.md`. What the build reads and records is in `raw/` (with its own
+`README.md`); training and evaluation never read it. Both READMEs are written by `readme`
+from `zephyr/corpus/templates/`.
 
 | path | what |
 | --- | --- |
-| `docdb.json.gz` | the saved DocDB return the inventory is built from (reused unless `--refresh`) |
-| `inventory.parquet` | every packaged session found (asset, source, subject, rig, date, version) |
-| `thermistor/<session_id>.parquet` | the whole session's raw `RawVoltage` (`Time`, `Signal`) |
-| `sessions.toml` | the clip list, one thermistor-only entry per session: detector, marks, spans, reviewed flags (source of truth); `group` is the subject from the metadata |
-| `qc.parquet` | each session's QC metrics and suggestion |
-| `camera_metadata/<session_id>_<camera>.parquet` | each selected camera's `metadata.csv`, unmodified (a cache; the video's frame count in its metadata); an optional camera's only for the sessions the folds assign |
-| `videos/<session_id>_<camera>.parquet` | the repaired camera timestamps (`ReferenceTime`, `CameraFrameNumber`, `CameraFrameTime`) |
-| `cameras.parquet` | each camera's checks before and after the repair, whether it is clean, and its source `folder` |
-| `sync.parquet` | each selected session's read-dump times (the WRITE to `OperationControl`) of the SniffDetector and of `[sync] reference`, and their difference (`offset_s`), or the error that stopped the check |
-| `results.json` | the selection: per session metadata, metrics, marks, spans, clips, camera folders, and `dropped` (why) for sessions left out for their cameras |
-| `folds.parquet` | the split: per selected session its subject, rig, date, camera rate, rate bands, the animal's `role` and the session's `set` (`train`, `val`, `test_a`, `test_b`, `test_c`, or none); see [Why these sessions](#why-these-sessions) |
+| `README.md`, `raw/README.md` | what the folder holds and how to read it, with its counts (`readme`) |
+| `raw/docdb.json.gz` | the saved DocDB return the inventory is built from (reused unless `--refresh`) |
+| `raw/inventory.parquet` | every packaged session found (asset, source, subject, rig, date, version) |
+| `raw/thermistor/<session_id>.parquet` | the whole session's raw `RawVoltage` (`Time`, `Signal`) |
+| `raw/sessions.toml` | the clip list, one thermistor-only entry per session: detector, marks, spans, reviewed flags (source of truth); `group` is the subject from the metadata |
+| `raw/qc.parquet` | each session's QC metrics and suggestion |
+| `raw/camera_metadata/<session_id>_<camera>.parquet` | each selected camera's `metadata.csv`, unmodified (a cache; the video's frame count in its metadata); an optional camera's only for the sessions the folds assign |
+| `raw/videos/<session_id>_<camera>.parquet` | the repaired camera timestamps (`ReferenceTime`, `CameraFrameNumber`, `CameraFrameTime`) |
+| `raw/cameras.parquet` | each camera's checks before and after the repair, whether it is clean, and its source `folder` |
+| `raw/sync.parquet` | each selected session's read-dump times (the WRITE to `OperationControl`) of the SniffDetector and of `[sync] reference`, and their difference (`offset_s`), or the error that stopped the check |
+| `raw/selection.json` | the selection: per session metadata, metrics, marks, spans, clips, camera folders, and `dropped` (why) for sessions left out for their cameras |
+| `raw/folds.parquet` | the first draw: per selected session its subject, rig, date, camera rate, rate bands, the animal's `role` and the session's `set` (`train`, `val`, `test_a`, `test_b`, `test_c`, or none: the sessions with a set are the ones used); see [Why these sessions](#why-these-sessions) |
 | `clips/<session_id>_<span>_<camera>.mp4` | the span cut from the camera's video: whole GOPs, stream-copied (never re-encoded) as fragmented MP4, at the camera's native rate |
 | `clips/<session_id>_<span>_<camera>.parquet` | that clip's frame times, one `Time` column (repaired `ReferenceTime`, Harp seconds), one row per frame |
 | `clips/<session_id>_<span>_thermistor.parquet` | the thermistor over the required cameras' clips ± `[clips] thermistor_pad_s` (Harp seconds); an optional camera's clip lies inside it and never changes it |
 | `thumbnails/<session_id>_<camera>.png` | the camera at full resolution, losslessly: the first frame of the session's first clip |
-| `clips.parquet` | every clip: frames, first frame, span, start and end, rate, bytes, or the error that stopped it |
-| `cross_validation.parquet` | per assigned session its animal's test A fold, its test B fold and its set in each fold (see [Cross-validation](#cross-validation)) |
-| `clips.toml` | the clips as a zephyr clip list (`group` = session, so folds can pick sessions and test B and C can hold out sessions of training animals; face clips carry their `box`; `[clips] exclude_cameras` lists the side and front cameras as `selection = "exclude"`, so zephyr uses the face camera only and their files stay in the folder) |
+| `raw/clips.parquet` | every clip: frames, first frame, span, start and end, rate, bytes, or the error that stopped it |
+| `sessions.parquet` | per used session its columns of `raw/folds.parquet` (without `set`, `role`), its animal's test A fold, its test B fold and its set in each fold: the published split (see [Cross-validation](#cross-validation)) |
+| `clips.toml` | the clips as a zephyr clip list (`group` = session, so folds can pick sessions and test B and C can hold out sessions of training animals; each clip carries its camera's `box`; `[clips] exclude_cameras` lists the side and front cameras as `selection = "exclude"`, so zephyr uses the face camera unless a fold selects them) |
 
-`clips` cuts only the sessions `folds.parquet` assigns, once it exists.
+`clips` cuts only the sessions `raw/folds.parquet` assigns, once it exists.
 
 ### Crop boxes
 
@@ -214,12 +223,12 @@ repair. Of the 1,515 sessions that pass QC, fit two clips and have both cameras
 | lasting `ReferenceTime` step (0.62 s back, never recovers; the thermistor shows no step) | 1 | **dropped** |
 | the video has fewer frames than its timestamps (6-154; metadata complete) | 5 | **dropped** |
 
-The 9 dropped sessions are listed with their reason in `results.json` (`dropped`). All five
+The 9 dropped sessions are listed with their reason in `raw/selection.json` (`dropped`). All five
 short videos were recorded on 2026-06-01/02, which suggests an acquisition problem on
 those days.
 
 They could be recovered, in theory, which is why the raw `metadata.csv` is kept in
-`camera_metadata/` (a re-repair never reads the source bucket again):
+`raw/camera_metadata/` (a re-repair never reads the source bucket again):
 
 - **3 ms dip**: generalise the repair to use the camera clock as the reference: blank any
   row whose `ReferenceTime` step disagrees with the `CameraFrameTime` step by more than

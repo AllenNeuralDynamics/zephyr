@@ -25,8 +25,8 @@ def run(spec: DatasetSpec) -> dict:
         table = storage.read_parquet(layout.clip_table, columns=["error"])
         counts["clips"] = int(table["error"].isna().sum())
     rigs = None
-    if layout.results.exists():
-        results = json.loads(layout.results.read_text(encoding="utf-8"))
+    if layout.selection.exists():
+        results = json.loads(layout.selection.read_text(encoding="utf-8"))
         counts["passed"] = len(results["passed"])
         counts["selected"] = len(results["selected"])
         frame = pd.DataFrame(results["sessions"])

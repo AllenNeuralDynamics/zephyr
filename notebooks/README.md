@@ -31,15 +31,15 @@ uv run marimo export html notebooks/walkthrough.py -o walkthrough.html --no-incl
 - `corpus.py`: reruns the default `zephyr-dataset` pipeline
   (`packages/zephyr-dataset/configs/vr-foraging-sniff.toml`) up to `select` into a new
   folder, from the corpus's saved DocDB return, and compares the selection with the
-  corpus (not `folds`, which would draw a new split: `folds.parquet` is the record).
+  corpus (not `folds`, which would draw a new split: `raw/folds.parquet` is the record).
   It writes only that new folder, and only when its Rebuild button is pressed
   (about an hour; the raw thermistors and camera timestamps come from S3).
 - `corpus_selection.py`: where the corpus' sessions go, from every packaged session to
   the sets, as a flow: each step's losses peel off with their reason and count, each
   session under the first rule it fails, with a table of the spec's rule behind each
   (`utils/corpus_flow.py`). It reads a local copy of the dataset folder
-  (`ZEPHYR_DATASET_ROOT`: `inventory.parquet`, `qc.parquet`, `results.json`,
-  `folds.parquet`) and the spec.
+  (`ZEPHYR_DATASET_ROOT`: `raw/inventory.parquet`, `raw/qc.parquet`,
+  `raw/selection.json`, `raw/folds.parquet`) and the spec.
 - `test_sets.py`: networks scored on the split's test sets A, B and C, clip by clip:
   scores per video and per animal, against what is known of each clip (thermistor
   quality, image statistics, rig), and the time offset between each network's

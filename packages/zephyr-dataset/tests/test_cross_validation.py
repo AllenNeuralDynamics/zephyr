@@ -1,13 +1,17 @@
-"""``cross_validation.assign``: animals tested once, date blocks for test B, group C kept."""
+"""``cross_validation``: animals tested once, date blocks for test B, group C kept;
+``sessions.parquet`` and the READMEs it is published with."""
 
+import json
+import tempfile
 import unittest
+from pathlib import Path
 
 import pandas as pd
 from test_folds import SETTINGS, sessions
 
 from zephyr.corpus import cross_validation as cv
-from zephyr.corpus import folds
-from zephyr.corpus.config import CrossValidation
+from zephyr.corpus import folds, readme, storage
+from zephyr.corpus.config import CrossValidation, DatasetSpec, Layout
 
 CV = CrossValidation(seed=3, n_folds=4, val_animals=2, test_b_min_sessions=3, tries=20)
 
@@ -80,6 +84,65 @@ class CrossValidationTests(unittest.TestCase):
         leaked.loc[other.idxmax(), "fold_0"] = "train"
         with self.assertRaises(ValueError):
             cv.check_all(leaked, CV.n_folds)
+
+
+class PublishTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.spec = DatasetSpec.model_construct(root=self.tmp.name, cross_validation=CV)
+        self.layout = Layout(self.tmp.name)
+        self.layout.raw.mkdir()
+        storage.write_frame(published().assign(small=False), self.layout.folds)
+
+    def test_sessions_parquet_holds_the_folds_but_not_the_first_draw(self):
+        cv.run(self.spec)
+        table = pd.read_parquet(self.layout.session_table)
+        base = published()
+        self.assertEqual(len(table), base["set"].notna().sum())
+        self.assertFalse({"set", "role", "small"} & set(table.columns))
+        self.assertTrue({"subject_id", "camera_hz", "q50", "cv_group"} <= set(table))
+        self.assertEqual(
+            [c for c in table if c.startswith("fold_")],
+            [cv.column(k) for k in range(CV.n_folds)],
+        )
+        self.assertFalse(Path(self.tmp.name, "cross_validation.parquet").exists())
+
+    def test_readme_fills_every_count(self):
+        cv.run(self.spec)
+        table = pd.read_parquet(self.layout.session_table)
+        counts = {
+            "sessions": 40,
+            "passed": 30,
+            "clips_fit": 25,
+            "dropped_for_cameras": 2,
+            "selected": 20,
+        }
+        storage.write_text(self.layout.selection, json.dumps({"counts": counts}))
+        storage.write_frame(
+            pd.DataFrame({"session_id": [f"s{i}" for i in range(50)]}),
+            self.layout.inventory,
+        )
+        clip = '[[clip]]\nvideo = "clips/{s}_span1_{c}.mp4"\ngroup = "{s}"\n'
+        self.layout.clip_list.write_text(
+            "".join(
+                clip.format(s=s, c=c)
+                for s in table.session_id
+                for c in ("FaceCamera", "SideCamera")
+            )
+        )
+        with self.assertRaises(SystemExit):  # the step that writes it comes first
+            readme.run(self.spec.model_copy(update={"cross_validation": None}))
+        readme.run(self.spec)
+        top = self.layout.readme.read_text(encoding="utf-8")
+        raw = self.layout.raw_readme.read_text(encoding="utf-8")
+        for text in (top, raw):
+            self.assertNotIn("{", text)
+        self.assertIn(f"{len(table)} sessions", top)
+        self.assertIn(f"| SideCamera | {len(table)} | {len(table)} |", top)
+        self.assertIn(f"`fold_{CV.n_folds - 1}`", top)
+        self.assertIn("3 sessions without a face or side video", raw)  # 25 - 20 - 2
+        self.assertRegex(raw, r"50 +packaged sessions found")
 
 
 if __name__ == "__main__":

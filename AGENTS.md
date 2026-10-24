@@ -64,8 +64,8 @@ Clip lists and experiments:
   refuses, **fix the config, never the check**.
 - Comparison networks (`arch` other than `zephyr`) run only through `zephyr-benchmarks`.
 - Published results (reports, figures, papers) come from the cross-validation folds
-  (`cv_<k>`, from `cross_validation.parquet`) for every method, once those runs exist; the
-  published split's `dev` fold (`folds.parquet`) is for work in progress only.
+  (`cv_<k>`, from the dataset's `sessions.parquet`) for every method; the first draw
+  (`raw/folds.parquet`) is never a fold, only the record of which sessions are used.
 - **Always smoke-run** (`--smoke`) before a full run; use a new `output_dir` for a new
   experiment rather than deleting results.
 - Never compare scores made before and after a scoring rule changed (time alignment,
@@ -145,9 +145,9 @@ resumable steps; what each does and the folder layout are in its README.
 
 - **Every setting is in the spec**; `[qc]` writes out every threshold, none defaulted.
   Hand decisions go in `[[review]]`, so a rebuild gives the same QC and selection rules.
-  The published split is `folds.parquet` (with the clips in `results.json`): it is the
-  record, and re-running `select` or `folds` draws a new one, so never re-run them on the
-  published corpus.
+  Which sessions are used is `raw/folds.parquet` (with the clips in `raw/selection.json`):
+  it is the record, and re-running `select` or `folds` draws a new one, so never re-run
+  them on the published corpus.
 - `qc` scores whole sessions, whatever marks the list holds, so re-running it never
   changes a metric.
 - **The subject always comes from session metadata**, never from a session name.
@@ -167,18 +167,24 @@ resumable steps; what each does and the folder layout are in its README.
 - Face crop boxes are made by `python -m zephyr.corpus.boxes` (template match, your
   corrections on the app's Boxes page, `zephyr gui boxes/face_camera_snout.toml --page boxes`, then
   `publish`) and live in `clips.toml`;
-  `clips` keeps them, and lists the side camera as excluded (`[clips] exclude_cameras`). `python -m zephyr.corpus.rois` is a helper that writes only to a
+  `clips` keeps them, and lists the side and front cameras as excluded (`[clips] exclude_cameras`). `python -m zephyr.corpus.rois` is a helper that writes only to a
   local folder, never the dataset or the spec; OWLv2 needs `--extra rois`.
-- Cross-validation (`[cross_validation]`, `cross_validation.parquet`) is drawn beside the
-  published split and only reads `folds.parquet`; never write folds into
-  `folds.parquet`, and never weaken `cross_validation.check_all` (each fold passes
-  `folds.check`). `build` does not run it.
-- In `clips.toml` the `group` is the session; the animal split lives in `folds.parquet`.
+- Cross-validation (`[cross_validation]`) is the published split: it only reads
+  `raw/folds.parquet` and writes `sessions.parquet` (the used sessions' columns of it,
+  without the first draw's `set` and `role`, and the folds); never write into
+  `raw/folds.parquet`, and never weaken `cross_validation.check_all` (each fold passes
+  `folds.check`). `build` does not run it, nor `readme`, which writes `README.md` and
+  `raw/README.md` from `templates/` (keep them current with the folder).
+- The dataset folder publishes `clips/`, `clips.toml`, `thumbnails/`, `sessions.parquet`
+  and the READMEs at its top; everything the build reads or records is in `raw/`, which
+  training and evaluation never read.
+- In `clips.toml` the `group` is the session; the animal split lives in `sessions.parquet`.
 - The root may be remote (`s3://...`, through `storage.py`). Zephyr core reads only
   local files and must not learn about remote paths: `qc`, the app's Breathing page and
   `preprocess` run on a local copy (the Boxes page needs only the cached frames, not the
   clips). Never rename remote objects; delete only with
-  `clips --prune`.
+  `clips --prune`, or when a change of layout is converted once by a throwaway script
+  (copy, check the copy, then delete the old objects, after the user agrees).
 - Paths that identify a clip (cache keys, sidecars, `train_videos`, recordings) go
   through `config.canonical`, never `str()` or a raw comparison; a local copy of a
   dataset is named as the original with `ZEPHYR_PATH_MAP` (zephyr README), never by
