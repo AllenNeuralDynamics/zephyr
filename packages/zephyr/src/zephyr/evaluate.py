@@ -2,12 +2,12 @@
 
 Truth is the raw thermistor trace and the clip's cached event set (the events its
 target was built from, see :mod:`.events`), scored by :func:`score_entry`. ``zephyr
-evaluate`` and the evaluation after :mod:`zephyr.run` share :func:`evaluate_groups`:
-named groups of clips in, one result out. Clips whose video is in a
-checkpoint's recorded training set are refused (older checkpoints only warn). Zephyr
-checkpoints trained with the onset head also report its inhale F1. Several checkpoints
-are z-scored then averaged; ``--plot`` (one checkpoint) writes :mod:`.plot_diagnosis`
-figures and *traces_dir* the traces scored. Other networks than zephyr bring their own loader.
+evaluate`` and :mod:`zephyr.run` share :func:`evaluate_groups`. Clips a checkpoint
+trained on are refused (older checkpoints only warn). Zephyr checkpoints with the onset
+head also report its inhale F1, at the checkpoint's own onset threshold
+(:func:`head_threshold`). Several checkpoints are z-scored then averaged; ``--plot``
+(one checkpoint) writes :mod:`.plot_diagnosis` figures and *traces_dir* the traces
+scored. Other networks than zephyr bring their own loader.
 
 CLI
 ---
@@ -29,19 +29,22 @@ from zephyr.model import BreathingNet
 
 from . import features
 from .config import ClipList, ResolvedClip, canonical, load, require_videos
-from .evaluation import Score, score_clip
-from .events import Events
+from .evaluation import Score, event_f1, frame_tolerance_s, score_clip
+from .events import Events, in_spans
 from .features import ClipEntry
 from .infer import predict_clip
 from .plot_diagnosis import ClipPrediction, rate_breakdown, reserved_grid
 from .signal import BREATHING_SIGNAL_COLUMN, TIME_COLUMN
 
+NAN = float("nan")
 TRACES = "traces"
 """The folder of a run's predicted traces, beside its ``evaluation.json``."""
 HEAD_THRESHOLD = 0.5
+"""The onset threshold of a checkpoint that carries none (trained before thresholds
+were chosen, or without validation clips)."""
 HEAD_MIN_DISTANCE_S = 0.05
-"""Onset-head detector: local maxima of the probability above a fixed
-threshold, at least this far apart.  Fixed a priori; never tuned on holdout data."""
+"""Onset-head detector: local maxima of the probability above the threshold, at
+least this far apart (fixed: 65 ms changed nothing)."""
 
 
 def load_checkpoint(
@@ -183,16 +186,110 @@ def score_entry(entry: ClipEntry, predicted: pd.DataFrame, **kwargs) -> Score:
     )
 
 
-def head_event_indices(probability: np.ndarray, times: np.ndarray) -> np.ndarray:
-    """Inhale events the onset head asserts: thresholded local maxima."""
+def head_event_indices(
+    probability: np.ndarray, times: np.ndarray, threshold: float = HEAD_THRESHOLD
+) -> np.ndarray:
+    """Inhale events the onset head asserts: local maxima above *threshold*."""
     if len(probability) != len(times):
         raise ValueError("onset probability and time arrays have different lengths")
     if len(times) < 2:
         return np.empty(0, dtype=int)
     sampling_rate = 1.0 / float(np.median(np.diff(times)))
     distance = max(1, round(HEAD_MIN_DISTANCE_S * sampling_rate))
-    peaks, _ = find_peaks(probability, height=HEAD_THRESHOLD, distance=distance)
+    peaks, _ = find_peaks(probability, height=threshold, distance=distance)
     return peaks.astype(int)
+
+
+def checkpoint_head_threshold(state: dict) -> float:
+    """The onset threshold *state* (a checkpoint) was given when training ended, or
+    :data:`HEAD_THRESHOLD` for one that carries none."""
+    chosen = state.get("head_threshold") or {}
+    return float(chosen.get("value", HEAD_THRESHOLD))
+
+
+def head_threshold(state: dict, override: float | None = None) -> dict:
+    """The onset threshold to score *state* with, and where it came from: *override*
+    (a ``--head-threshold`` flag), else the checkpoint's own, else the default."""
+    if override is not None:
+        if not 0 < override < 1:
+            raise SystemExit(f"--head-threshold {override} is not in (0, 1)")
+        return {"value": float(override), "source": "flag"}
+    if (state.get("head_threshold") or {}).get("value") is not None:
+        return {"value": checkpoint_head_threshold(state), "source": "checkpoint"}
+    return {"value": HEAD_THRESHOLD, "source": "default"}
+
+
+def head_inhale_counts(
+    entry: ClipEntry, times: np.ndarray, onset: np.ndarray, threshold: float
+) -> dict:
+    """The head's inhale F1 on *entry* at *threshold* (as :func:`score_entry` scores
+    it), and the inhales it and the truth count outside excluded spans, over the
+    minutes scored."""
+    found = truth_events(entry)
+    spans = np.asarray(found.excluded, float).reshape(-1, 2)
+    asserted = times[head_event_indices(onset, times, threshold)]
+    asserted = asserted[~in_spans(asserted, spans)]
+    truth = np.asarray(found.inhale, float)
+    truth = truth[~in_spans(truth, spans)]
+    lo, hi = float(times[0]), float(times[-1])
+    excluded = np.clip(spans, lo, hi)
+    minutes = (hi - lo - float(np.sum(excluded[:, 1] - excluded[:, 0]))) / 60.0
+    return {
+        "f1": event_f1(truth, asserted, frame_tolerance_s(times)),
+        "n_head": len(asserted),
+        "n_truth": len(truth),
+        "minutes": minutes,
+    }
+
+
+def choose_head_threshold(
+    clips: list[tuple[ClipEntry, np.ndarray, np.ndarray]],
+    grid: tuple[float, ...],
+    f1_tie: float,
+) -> dict:
+    """The onset threshold of *grid* with the best mean inhale F1 over *clips* (each
+    entry, its output times and onset probability); thresholds within *f1_tie* of
+    it tie, and the one whose inhales per minute are closest to the truth's wins."""
+    sweep = []
+    for threshold in grid:
+        counts = [head_inhale_counts(e, t, o, threshold) for e, t, o in clips]
+        f1 = np.array([c["f1"] for c in counts], float)
+        over = [
+            (c["n_head"] - c["n_truth"]) / c["minutes"]
+            for c in counts
+            if c["minutes"] > 0
+        ]
+        sweep.append(
+            {
+                "threshold": float(threshold),
+                "inhale_f1": float(np.nanmean(f1)) if np.isfinite(f1).any() else NAN,
+                "overcount_per_min": float(np.mean(over)) if over else NAN,
+            }
+        )
+    scored = [r for r in sweep if np.isfinite(r["inhale_f1"])]
+    if not scored:
+        raise ValueError("no validation clip gives an inhale F1 at any threshold")
+    best = max(r["inhale_f1"] for r in scored)
+    tied = [r for r in scored if r["inhale_f1"] >= best - f1_tie]
+    pick = min(
+        tied,
+        key=lambda r: (
+            abs(r["overcount_per_min"])
+            if np.isfinite(r["overcount_per_min"])
+            else np.inf,
+            -r["inhale_f1"],
+        ),
+    )
+    return {
+        "value": pick["threshold"],
+        "chosen_on": "validation",
+        "rule": f"best mean inhale F1, ties within {f1_tie} to the smallest "
+        "|over-count| per minute",
+        "val_inhale_f1": pick["inhale_f1"],
+        "val_overcount_per_min": pick["overcount_per_min"],
+        "val_clips": len(clips),
+        "sweep": sweep,
+    }
 
 
 METRIC_FIELDS = ("correlation", "inhale_f1", "exhale_f1", "kl_ibi")
@@ -287,11 +384,13 @@ def score_entries(
     frame_chunk: int,
     amp_dtype: torch.dtype | None,
     head: bool = False,
+    threshold: float = HEAD_THRESHOLD,
     plot_data: list[ClipPrediction] | None = None,
     traces_dir: Path | None = None,
 ) -> list[dict]:
-    """Score each labelled entry: one row of metrics per clip, printed as it goes; the
-    traces scored are also written to *traces_dir* when given (:func:`write_trace`)."""
+    """Score each labelled entry: one row of metrics per clip, printed as it goes (with
+    *head*, the onset head's inhales at *threshold* too); the traces scored are also
+    written to *traces_dir* when given (:func:`write_trace`)."""
     header = f"{'clip':40s}{'corr':>8s}{'inh_f1':>8s}{'exh_f1':>8s}{'kl_ibi':>8s}" + (
         f"{'head_f1':>8s}" if head else ""
     )
@@ -328,7 +427,7 @@ def score_entries(
             f"{score.inhale_f1:8.3f}{score.exhale_f1:8.3f}{score.kl_ibi:8.3f}"
         )
         if head:
-            head_indices = head_event_indices(onset[:n], times)
+            head_indices = head_event_indices(onset[:n], times, threshold)
             head_score = score_entry(
                 entry, predicted, predicted_onset_times_s=times[head_indices]
             )
@@ -395,11 +494,14 @@ def evaluate_groups(
     plot_options: dict | None = None,
     loader: Loader = load_checkpoint,
     traces_dir: Path | None = None,
+    threshold: float | None = None,
 ) -> dict:
     """Score *checkpoints* on named groups of clips; the one evaluation path.
 
     Unlabelled clips (no thermistor) are skipped: there is nothing to score them
-    against.  Returns the :func:`build_result` dict, also written to *out*.
+    against.  The onset head's inhales are found at *threshold* when given, else
+    at the checkpoint's own (:func:`head_threshold`); the result records which.
+    Returns the :func:`build_result` dict, also written to *out*.
     """
     torch_device = torch.device(device)
     amp_dtype = {"bf16": torch.bfloat16, "fp16": torch.float16, "off": None}[amp]
@@ -422,6 +524,9 @@ def evaluate_groups(
     refuse_leaked(states, [c for clips in labelled.values() for c in clips])
 
     head = has_onset_head(states)
+    chosen = head_threshold(states[0], threshold) if head else None
+    if chosen is not None:
+        print(f"onset threshold {chosen['value']:.2f} ({chosen['source']})")
     plot_data: list[ClipPrediction] | None = [] if plot_dir is not None else None
     rows_by_group: dict[str, list[dict]] = {}
     for name, clips in labelled.items():
@@ -439,6 +544,7 @@ def evaluate_groups(
             frame_chunk=frame_chunk,
             amp_dtype=amp_dtype,
             head=head,
+            threshold=chosen["value"] if chosen else HEAD_THRESHOLD,
             plot_data=plot_data,
             traces_dir=traces_dir,
         )
@@ -456,7 +562,10 @@ def evaluate_groups(
         print(line)
     print(f"\ncomposite (0.5/0.2/0.2/0.1): {result['composite']:.4f}")
 
-    result = {"checkpoints": [str(p) for p in checkpoints]} | result
+    result = {
+        "checkpoints": [str(p) for p in checkpoints],
+        "head_threshold": chosen,
+    } | result
     if out is not None:
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps(result, indent=2))
@@ -522,6 +631,12 @@ def main(argv: list[str] | None = None, *, loader: Loader = load_checkpoint) -> 
     )
     parser.add_argument("--amp", default="bf16", choices=["bf16", "fp16", "off"])
     parser.add_argument("--out", type=Path, help="Write the full result as JSON.")
+    parser.add_argument(
+        "--head-threshold",
+        type=float,
+        help="Onset threshold for the head's inhales (default: the checkpoint's "
+        f"own, else {HEAD_THRESHOLD}); the result records the value used.",
+    )
     parser.add_argument(
         "--plot",
         action="store_true",
@@ -602,6 +717,7 @@ def main(argv: list[str] | None = None, *, loader: Loader = load_checkpoint) -> 
             "null_shifts": args.null_shifts,
         },
         loader=loader,
+        threshold=args.head_threshold,
     )
 
 

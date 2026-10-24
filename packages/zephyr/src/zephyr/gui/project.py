@@ -118,7 +118,16 @@ def preview_scan(folder: Path, glob: str, derive: Derive) -> list[Found]:
     return found
 
 
-def _scored(path: Path, entry) -> dict | None:
+def _evaluated_threshold(run: Path) -> float | None:
+    """The onset threshold *run*'s ``evaluation.json`` scored the head at, if any."""
+    try:
+        recorded = json.loads((run / "evaluation.json").read_text())["head_threshold"]
+    except (OSError, ValueError, KeyError):
+        return None
+    return recorded["value"] if recorded else None
+
+
+def _scored(path: Path, entry, threshold: float) -> dict | None:
     from ..evaluate import truth_events
     from ..quality_control.metrics import find_events
 
@@ -131,8 +140,9 @@ def _scored(path: Path, entry) -> dict | None:
     out = {
         "time": time,
         "signal": signal,
-        "inhale": time[find_events(time, signal, onset).inhale],
+        "inhale": time[find_events(time, signal, onset, threshold).inhale],
         "onset": onset,
+        "threshold": threshold,
         "entry": entry,
         "truth": None,
         "truth_inhale": None,
@@ -356,9 +366,10 @@ class Project:
     def scored_trace(self, run: Path, clip_id: str) -> dict | None:
         """What *run* was scored on for its test clip *clip_id*, to draw: the trace
         it saved (``traces/``, with ``--save-traces``), the sensor's, both sets of
-        inhales and the clip's cache entry; None for a run of no experiment here, a
-        clip not cached, or no trace saved."""
-        from ..evaluate import TRACES, trace_name  # imports torch: only when drawn
+        inhales (the head's at the onset threshold its ``evaluation.json`` records)
+        and the clip's cache entry; None for a run of no experiment here, a clip not
+        cached, or no trace saved."""
+        from ..evaluate import HEAD_THRESHOLD, TRACES, trace_name  # imports torch
 
         found = self.run_of(run)
         if found is None:
@@ -377,7 +388,11 @@ class Project:
                     clip, clip_list.preprocess, experiment.features_dir
                 )
                 if entry is not None and entry.clip_id == clip_id:
-                    return _scored(Path(run) / TRACES / trace_name(entry), entry)
+                    return _scored(
+                        Path(run) / TRACES / trace_name(entry),
+                        entry,
+                        _evaluated_threshold(Path(run)) or HEAD_THRESHOLD,
+                    )
         return None
 
     def steps(self) -> dict[str, Step]:

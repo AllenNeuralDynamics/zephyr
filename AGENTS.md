@@ -31,8 +31,14 @@ the app and its windows):
 - Gray frames are the only input, and only zephyr has an onset head: never add a channel
   selection, or an onset head to a comparison network.
 - Inhale events of a network with an onset head come from the head
-  (`head_events`), never from DSP on its trace. DSP is for the thermistor, headless
+  (`head_event_indices`), never from DSP on its trace. DSP is for the thermistor, headless
   methods (labelled "DSP") and exhale F1, or an explicitly labelled comparison.
+- The head's onset threshold belongs to the checkpoint (`head_threshold` in its state,
+  chosen on `[fold.val]` clips by `train_params.head_thresholds`; 0.5 without). Read it
+  with `evaluate.head_threshold` / `checkpoint_head_threshold`, never the constant;
+  only `--head-threshold` on `evaluate`/`predict` overrides it, and every output
+  records the value and its source. Never choose it on a test set. The 50-ms peak
+  spacing stays fixed.
 
 ## Experiments
 
@@ -63,7 +69,7 @@ Clip lists and experiments:
 - **Always smoke-run** (`--smoke`) before a full run; use a new `output_dir` for a new
   experiment rather than deleting results.
 - Never compare scores made before and after a scoring rule changed (time alignment,
-  event tolerance; see the zephyr README, "Scoring").
+  event tolerance, the onset threshold; see the zephyr README, "Scoring").
 
 ## The app (zephyr.gui)
 
@@ -113,7 +119,9 @@ scores thermistor sessions). Both steps take flags, like `zephyr evaluate`.
 - A measure reads only the network's ordinary output (trace, onset probability);
   never add one that needs more network passes or the video (dropout draws, shifted
   crops, other checkpoints, embeddings and image statistics were tried and dropped).
-- A reference belongs to one checkpoint (SHA-256; a run refuses another's). Its
+- A reference belongs to one checkpoint (SHA-256; a run refuses another's) and is
+  calibrated at its onset threshold, which measures use too (a run refuses a reference
+  made at another). Its
   `calibration` clips must be labelled and held out by the checkpoint (refused
   otherwise); never calibrate on a test set the measures are then checked on. Training
   does not write one.

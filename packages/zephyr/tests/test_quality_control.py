@@ -94,6 +94,21 @@ class MeasureTests(unittest.TestCase):
             self.assertTrue(np.isnan(m[name]), name)
         self.assertAlmostEqual(m["rate_hz"], 4.0, places=1)  # DSP inhales instead
 
+    def test_peaks_are_ambiguous_below_the_checkpoints_threshold(self):
+        times, signal, onset = _breathing(rate=2.0)
+        half = 0.6 * np.exp(-((((2.0 * times) % 1.0 - 0.75) / 0.04) ** 2))
+        onset = np.maximum(onset, half)
+        for threshold, inhales, ambiguous in ((0.5, 160, 0.0), (0.8, 80, 0.5)):
+            video = Video(
+                times=times,
+                signal=signal,
+                onset=onset,
+                events=find_events(times, signal, onset, threshold),
+            )
+            m = _measure(video)
+            self.assertEqual(m["n_inhales"], inhales)
+            self.assertAlmostEqual(m["ambiguous_peak_frac"], ambiguous, places=2)
+
     def test_expected_precision_needs_a_calibration(self):
         times, signal, onset = _breathing()
         self.assertTrue(
@@ -244,12 +259,13 @@ class RunTests(unittest.TestCase):
         )
         self.checkpoint = self._save("best.pt", w_onset=0.5)
 
-    def _save(self, name: str, w_onset: float) -> Path:
+    def _save(self, name: str, w_onset: float, **extra) -> Path:
         torch.manual_seed(0)
         model = BreathingNet(**NET)
         path = self.root / name
         torch.save(
-            {
+            extra
+            | {
                 "model": model.state_dict(),
                 "arch_kwargs": NET,
                 "mean": 128.0,
@@ -339,6 +355,29 @@ class RunTests(unittest.TestCase):
         self.assertEqual(
             summary["expected_precision"] is None, summary["peak_prob"] is None
         )
+
+    def test_reports_find_inhales_at_the_checkpoints_threshold(self):
+        (report,) = run(self._config(), "cpu", "off")
+        self.assertEqual(json.loads(report.read_text())["head_threshold"], 0.5)
+        self._save("best.pt", w_onset=0.5, head_threshold={"value": 0.8})
+        config = self._config().model_copy(update={"output_dir": self.root / "qc2"})
+        (report,) = run(config, "cpu", "off")
+        self.assertEqual(json.loads(report.read_text())["head_threshold"], 0.8)
+
+    def test_a_reference_calibrated_at_another_threshold_is_refused(self):
+        reference = self.root / "qc-reference.json"
+        reference.write_text(
+            json.dumps(
+                {
+                    "checkpoint_sha256": checkpoint_hash(self.checkpoint),
+                    "onset_calibration": None,
+                    "head_threshold": 0.7,
+                }
+            )
+        )
+        config = self._config().model_copy(update={"reference": reference})
+        with self.assertRaisesRegex(SystemExit, "onset threshold 0.7"):
+            run(config, "cpu", "off")
 
     def test_a_reference_of_another_checkpoint_is_refused(self):
         other = self.root / "other.json"

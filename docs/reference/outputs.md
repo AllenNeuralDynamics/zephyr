@@ -49,9 +49,14 @@ is all `evaluate` and `predict` need.
   },
   "summary": { ... },
   "summary_by_recording": { ... },
-  "composite": 0.83
+  "composite": 0.83,
+  "head_threshold": {"value": 0.75, "source": "checkpoint"}
 }
 ```
+
+`head_threshold` is the onset threshold the head's inhales were found at, and where it
+came from: `flag` (`--head-threshold`), `checkpoint` (chosen when it trained) or
+`default` (0.5); `null` for a network without an onset head.
 
 A metric that cannot be computed (no inhales, for example) is `null`. See
 [Scoring](scoring.md) for what each metric means.
@@ -76,7 +81,7 @@ clip:
 | `time` | seconds, on the video's clock, on a 60 Hz grid |
 | `signal` | the z-scored predicted breathing trace (inhale up) |
 | `onset` | the onset head's inhale probability, 0 to 1 |
-| `inhale` | true where the onset head found an inhale |
+| `inhale` | true where the onset head found an inhale, at the threshold in the folder's `predictions.json` |
 
 ```python
 import pandas as pd

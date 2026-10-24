@@ -4,13 +4,15 @@ Each clip of the lists (boxed like any other) is preprocessed, into ``--cache`` 
 temporary folder removed afterwards, and predicted end to end. ``<out>/<video
 stem>.prediction.parquet`` holds one row per output sample: ``time``, the z-scored
 ``signal``, the onset head's ``onset`` probability and ``inhale`` (an inhale found
-there, by the head). The lists' ``[preprocess]`` must be the checkpoint's recipe, and
-every box the size it trained on (``clips scan --checkpoint`` writes such a list).
+there, by the head, at the checkpoint's onset threshold unless ``--head-threshold``).
+The lists' ``[preprocess]`` must be the checkpoint's recipe, and every box the size it
+trained on (``clips scan --checkpoint`` writes such a list).
 
 CLI
 ---
     zephyr predict --checkpoint best.pt --clips <list.toml>... --out predictions/
         [--cache <dir>] [--groups <g>...] [--restart] [--device cpu] [--amp off]
+        [--head-threshold 0.6]
 """
 
 import argparse
@@ -23,7 +25,13 @@ import pandas as pd
 import torch
 
 from .config import ClipList, PreprocessParams, ResolvedClip, canonical, dump, load
-from .evaluate import has_onset_head, load_checkpoint, zscore
+from .evaluate import (
+    HEAD_THRESHOLD,
+    has_onset_head,
+    head_threshold,
+    load_checkpoint,
+    zscore,
+)
 from .infer import predict_clip
 from .preprocess import preprocess_clips
 from .quality_control.metrics import find_events
@@ -105,15 +113,26 @@ def select_clips(lists: list[ClipList], groups: list[str] | None) -> list[Resolv
     ]
 
 
-def _settings(out: Path, checkpoint: Path, sha: str) -> None:
-    """Record the checkpoint; refuse a folder of another checkpoint's predictions."""
-    settings = {"checkpoint": canonical(checkpoint), "checkpoint_sha256": sha}
+def _settings(out: Path, checkpoint: Path, sha: str, threshold: dict | None) -> None:
+    """Record the checkpoint and the onset threshold its inhales were found at; refuse
+    a folder of another checkpoint's predictions, or of another threshold's."""
+    settings = {
+        "checkpoint": canonical(checkpoint),
+        "checkpoint_sha256": sha,
+        "head_threshold": threshold,
+    }
     path = out / SETTINGS
     if path.is_file():
-        if json.loads(path.read_text())["checkpoint_sha256"] != sha:
+        before = json.loads(path.read_text())
+        if before["checkpoint_sha256"] != sha:
             raise SystemExit(
                 f"{out} holds predictions of another checkpoint ({path}); use a new "
                 "--out"
+            )
+        if before.get("head_threshold") != threshold:
+            raise SystemExit(
+                f"{out} holds inhales found at another onset threshold ({path}); use "
+                "a new --out, or --restart"
             )
         return
     out.mkdir(parents=True, exist_ok=True)
@@ -133,10 +152,12 @@ def predict(
     frame_chunk: int = 256,
     workers: int = 8,
     restart: bool = False,
+    threshold: float | None = None,
 ) -> list[Path]:
     """Write one prediction per clip that has none yet into *out* (with *restart*,
     first removing the ones there and the checkpoint they came from, so new crops,
-    a new list or another checkpoint are predicted again); return them all."""
+    a new list or another checkpoint are predicted again); return them all. The
+    head's inhales are found at *threshold*, else the checkpoint's own."""
     torch_device = torch.device(device)
     model, mean, std, state = load_checkpoint(checkpoint, torch_device)
     differs = recipe_mismatch(state, recipe)
@@ -152,11 +173,12 @@ def predict(
             f"boxes are another size: {wrong}"
         )
     head = has_onset_head([state])
+    chosen = head_threshold(state, threshold) if head else None
     if restart:  # the folder's predictions, and whose they were
         for old in [*out.glob(f"*{SUFFIX}"), out / SETTINGS]:
             old.unlink(missing_ok=True)
         print(f"{out}: earlier predictions removed", flush=True)
-    _settings(out, checkpoint, checkpoint_hash(checkpoint))
+    _settings(out, checkpoint, checkpoint_hash(checkpoint), chosen)
     todo = [c for c in clips if not (out / f"{c.video.stem}{SUFFIX}").is_file()]
     print(f"{len(clips)} clip(s), {len(clips) - len(todo)} already predicted")
     with tempfile.TemporaryDirectory(prefix="zephyr-predict-") as scratch:
@@ -176,7 +198,12 @@ def predict(
                 amp_dtype=AMP[amp],
             )
             signal, times = zscore(signal), np.load(entry.times)
-            found = find_events(times, signal, onset if head else None)
+            found = find_events(
+                times,
+                signal,
+                onset if head else None,
+                chosen["value"] if chosen else HEAD_THRESHOLD,
+            )
             inhale = np.zeros(len(times), bool)
             inhale[found.inhale] = True
             path = out / f"{clip.video.stem}{SUFFIX}"
@@ -213,6 +240,12 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--infer-window", type=int, default=1024)
     parser.add_argument("--frame-chunk", type=int, default=256)
     parser.add_argument("--workers", type=int, default=8)
+    parser.add_argument(
+        "--head-threshold",
+        type=float,
+        help="Onset threshold for the head's inhales (default: the checkpoint's "
+        f"own, else {HEAD_THRESHOLD}); predictions.json records the value used.",
+    )
     args = parser.parse_args(argv)
 
     lists = [load(ClipList, path, check_files=False) for path in args.clips]
@@ -231,6 +264,7 @@ def main(argv: list[str] | None = None) -> None:
         frame_chunk=args.frame_chunk,
         workers=args.workers,
         restart=args.restart,
+        threshold=args.head_threshold,
     )
     print(f"{len(written)} prediction(s) in {args.out}")
 

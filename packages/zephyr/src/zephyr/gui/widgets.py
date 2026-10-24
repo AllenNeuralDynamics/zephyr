@@ -430,10 +430,12 @@ class TraceView(QtWidgets.QWidget):
         entry: ClipEntry | None = None,
         bad_spans: list[tuple[float, float]] = (),
         onset: np.ndarray | None = None,
+        threshold: float | None = None,
     ) -> None:
         """Show one trace; *entry* (its cache entry) gives the crop frames, *onset*
-        the onset head's probability (drawn below, with its threshold). Times (any
-        clock) are shown in seconds from the trace's start."""
+        the onset head's probability (drawn below, with the *threshold* its inhales
+        were found at; default the scorer's). Times (any clock) are shown in seconds
+        from the trace's start."""
         self.play.setChecked(False)
         self.title.setText(title)
         time = np.asarray(time, float)
@@ -480,14 +482,16 @@ class TraceView(QtWidgets.QWidget):
                 name="predicted inhale",
             )
         plot.addItem(self.cursor)
-        self._show_onset(onset)
+        self._show_onset(onset, threshold)
         if len(self._t):
             self.cursor.setValue(self._t[0])
             self.plot.setXRange(self._t[0], min(self._t[-1], self._t[0] + TRACE_S))
         self._load_frames(entry)
         self.show_frame(self.cursor.value())
 
-    def _show_onset(self, onset: np.ndarray | None) -> None:
+    def _show_onset(
+        self, onset: np.ndarray | None, threshold: float | None = None
+    ) -> None:
         """The onset head's probability under the trace, or nothing for a network
         without the head (no output, or one that never moves)."""
         self.onset_plot.clear()
@@ -495,7 +499,8 @@ class TraceView(QtWidgets.QWidget):
         if onset is None or not len(onset) or np.nanstd(onset) == 0:
             self.onset_plot.hide()
             return
-        from ..evaluate import HEAD_THRESHOLD  # the scorer's own: same inhales
+        if threshold is None:
+            from ..evaluate import HEAD_THRESHOLD as threshold  # the scorer's default
 
         self.onset_plot.plot(
             self._t[: len(onset)],
@@ -506,7 +511,7 @@ class TraceView(QtWidgets.QWidget):
         )
         self.onset_plot.addItem(
             pg.InfiniteLine(
-                HEAD_THRESHOLD,
+                threshold,
                 angle=0,
                 pen=pg.mkPen(THEME["muted"], style=QtCore.Qt.PenStyle.DashLine),
             )

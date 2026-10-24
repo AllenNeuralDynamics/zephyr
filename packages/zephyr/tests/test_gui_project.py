@@ -247,11 +247,12 @@ class RunTests(unittest.TestCase):
         events = self.root / "events.npz"
         np.savez(events, onset_times=[101.0, 101.5], offset_times=[101.2, 101.7])
         entry = SimpleNamespace(target=target, events=events)
-        found = _scored(trace, entry)
+        found = _scored(trace, entry, 0.5)
         self.assertEqual(len(found["time"]), len(t) - 10)  # cut to the sensor's
+        self.assertEqual(found["threshold"], 0.5)
         self.assertEqual(list(found["truth_inhale"]), [101.0, 101.5])
         self.assertGreater(len(found["inhale"]), 30)  # about 2 Hz, from DSP
-        self.assertIsNone(_scored(self.root / "none.parquet", entry))
+        self.assertIsNone(_scored(self.root / "none.parquet", entry, 0.5))
         self.assertIsNone(self.project.scored_trace(self.root / "runs" / "x", "c"))
 
 

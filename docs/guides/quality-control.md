@@ -66,7 +66,7 @@ columns.
 | rhythm | `flat_breath_frac` | the trace swings less than `flat_ratio` of the clip's median breath between two inhales |
 | head | `head_trace_f1` | the onset head's inhales disagree with peaks on its own trace |
 | head | `peak_prob` | the head's inhale peaks are low (unsure) |
-| head | `ambiguous_peak_frac` | many peaks sit between `ambiguous_floor` and 0.5 |
+| head | `ambiguous_peak_frac` | many peaks sit between `ambiguous_floor` and the checkpoint's onset threshold |
 | head | `onset_background` | the probability between inhales is high |
 | head | `expected_precision` | the calibrated chance that the asserted inhales are real is low (needs a reference) |
 | head | `inhale_phase_spread` | the head puts inhales at a wandering point of the breathing cycle |
@@ -98,7 +98,8 @@ uv run zephyr quality-control reference --checkpoint best.pt --clips clips.toml 
 ```
 
 The reference is tied to its checkpoint by SHA-256, and a run with another checkpoint
-refuses it. Ship it beside `best.pt`. `--max-clips` predicts fewer clips.
+refuses it. It finds the head's inhales at the checkpoint's own onset threshold, as
+every measure does. Ship it beside `best.pt`. `--max-clips` predicts fewer clips.
 
 ## Labelled clips
 

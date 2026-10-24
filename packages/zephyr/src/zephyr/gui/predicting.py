@@ -14,7 +14,7 @@ from .. import features
 from ..annotate import open_state
 from ..clips import update_clip_list
 from ..config import Derive
-from ..predict import SUFFIX
+from ..predict import SETTINGS, SUFFIX
 from .boxes import BoxWindow
 from .jobs import Job
 from .pages import Page
@@ -32,6 +32,16 @@ from .widgets import (
 QC_SUFFIX = ".qc.json"
 VIDEO_LIST = "videos.toml"
 """The Videos tab's list, in the predictions folder it fills."""
+
+
+def _threshold(settings: Path) -> float | None:
+    """The onset threshold a folder's inhales were found at (its ``predictions.json``),
+    or None when it does not say."""
+    try:
+        recorded = json.loads(settings.read_text()).get("head_threshold")
+    except (OSError, ValueError):
+        return None
+    return recorded["value"] if recorded else None
 
 
 def _measure(value: float | None) -> str:
@@ -572,4 +582,5 @@ class PredictPage(Page):
             entry=self._entry(stem),
             bad_spans=bad,
             onset=table["onset"].to_numpy() if "onset" in table else None,
+            threshold=_threshold(path.parent / SETTINGS),
         )

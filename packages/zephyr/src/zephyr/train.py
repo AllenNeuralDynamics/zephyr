@@ -3,7 +3,8 @@
 With validation (``[fold.val]``, scored whole, or ``val_fraction > 0`` of every training
 clip) each epoch reports ``val loss/corr`` (windowed, like the training loss) and, every
 ``score_every`` epochs, ``xcorr``/``f1`` from full-clip predictions, which select the
-checkpoint and stop the run early. Everything that shapes
+checkpoint and stop the run early; ``head_thresholds`` then picks ``best.pt``'s onset
+threshold on the ``val`` clips. Everything that shapes
 a run comes from a :class:`~zephyr.config.Fold`; the seed and machine are the caller's
 (see :mod:`zephyr.run`). The network is :data:`ZEPHYR` unless a caller passes another
 :class:`Architecture`.
@@ -34,7 +35,12 @@ from .dataset import (
     frame_stats,
     stats_path,
 )
-from .evaluate import checkpoint_stats
+from .evaluate import (
+    HEAD_THRESHOLD,
+    checkpoint_stats,
+    choose_head_threshold,
+    load_checkpoint,
+)
 from .evaluation import EVENT_TOLERANCE_FRAMES
 from .features import ClipEntry
 from .infer import predict_clip
@@ -264,6 +270,49 @@ def score_full_clips(
         "exhale_f1": _mean(rows, "exhale_f1"),
     }
     return summary, rows
+
+
+def settle_head_threshold(
+    path: Path,
+    entries: list[ClipEntry] | None,
+    params: TrainParams,
+    device: torch.device,
+    amp_dtype: torch.dtype | None,
+) -> dict:
+    """Choose the onset threshold of the checkpoint at *path* on its validation clips
+    *entries* (``None``: the fold has none, so it keeps :data:`HEAD_THRESHOLD`) over
+    ``params.head_thresholds``, and store it in the checkpoint as ``head_threshold``."""
+    model, mean, std, state = load_checkpoint(path, device)
+    if entries is None:
+        chosen = {
+            "value": HEAD_THRESHOLD,
+            "chosen_on": None,
+            "rule": "the default: the fold has no validation clips",
+        }
+    else:
+        clips = []
+        for entry in entries:
+            _, onset = predict_clip(
+                model,
+                entry,
+                mean,
+                std,
+                window=params.infer_window,
+                device=device,
+                frame_chunk=params.frame_chunk,
+                amp_dtype=amp_dtype,
+            )
+            times = np.load(entry.times)
+            n = min(len(times), len(onset))
+            clips.append((entry, times[:n], onset[:n]))
+        chosen = choose_head_threshold(
+            clips, params.head_thresholds, params.head_threshold_f1_tie
+        )
+    state["head_threshold"] = chosen
+    temporary = path.with_suffix(f"{path.suffix}.tmp")
+    torch.save(state, temporary)
+    temporary.replace(path)
+    return chosen
 
 
 def cosine_schedule(step: int, total: int, warmup: int) -> float:
@@ -751,5 +800,23 @@ def train_fold(
     else:
         print(
             f"best held-out correlation {selection.best:+.4f} -> {run_dir / 'best.pt'}"
+        )
+    if params.head_thresholds and architecture.name == "zephyr" and params.w_onset > 0:
+        chosen = settle_head_threshold(
+            run_dir / "best.pt",
+            val_entries if fold.val is not None else None,
+            params,
+            device,
+            amp_dtype,
+        )
+        print(
+            f"onset threshold {chosen['value']:.2f} "
+            + (
+                f"(validation inhale F1 {chosen['val_inhale_f1']:.3f}, over-count "
+                f"{chosen['val_overcount_per_min']:+.2f}/min)"
+                if chosen["chosen_on"]
+                else "(default: no validation clips)"
+            ),
+            flush=True,
         )
     return run_dir / "best.pt"

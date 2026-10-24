@@ -8,12 +8,14 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import torch
 from _synthetic import HAS_FFMPEG, make_dataset, write_experiment
 
 from zephyr import run
 from zephyr.annotate import open_state, prepare_frames, save_boxes
 from zephyr.clips import main as scan_main
-from zephyr.config import ClipList, load
+from zephyr.config import ClipList, TrainParams, load
+from zephyr.evaluate import evaluate_groups
 from zephyr.gui.worker import snippets
 from zephyr.predict import (
     SETTINGS,
@@ -24,6 +26,7 @@ from zephyr.predict import (
     select_clips,
 )
 from zephyr.preprocess import main as preprocess
+from zephyr.train import settle_head_threshold
 
 RUN = Path("runs/experiment/fold/seed-1")
 
@@ -244,6 +247,98 @@ class TrainedRunTests(unittest.TestCase):
             moved.with_suffix(".away").rename(moved)
         with self.assertRaisesRegex(SystemExit, "in none of the clip lists"):
             select_clips([clip_list], ["9"])
+
+
+@unittest.skipUnless(HAS_FFMPEG, "needs ffmpeg")
+class HeadThresholdTests(unittest.TestCase):
+    """A run that sweeps the onset threshold on its validation clips, and the commands
+    that read it back."""
+
+    GRID = "head_thresholds = [0.05, 0.3, 0.6]\n"
+
+    @classmethod
+    def setUpClass(cls):
+        cls._tmp = tempfile.TemporaryDirectory()
+        cls.root = Path(cls._tmp.name)
+        cls.list = make_dataset(cls.root)
+        preprocess(
+            [str(cls.list), "--cache", str(cls.root / "cache"), "--workers", "1"]
+        )
+        plain = write_experiment(cls.root, cls.list, name="plain")
+        swept = write_experiment(cls.root, cls.list, name="swept")
+        swept.write_text(swept.read_text() + cls.GRID)
+        for experiment in (plain, swept):
+            run.main([str(experiment)])
+        cls.plain = cls.root / "runs" / "plain" / "fold" / "seed-1"
+        cls.swept = cls.root / "runs" / "swept" / "fold" / "seed-1"
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._tmp.cleanup()
+
+    def _evaluation(self, run_dir: Path) -> dict:
+        return json.loads((run_dir / "evaluation.json").read_text())
+
+    def test_without_a_grid_nothing_is_chosen_and_the_default_scores(self):
+        self.assertNotIn("head_threshold", read_checkpoint(self.plain / "best.pt"))
+        self.assertEqual(
+            self._evaluation(self.plain)["head_threshold"],
+            {"value": 0.5, "source": "default"},
+        )
+
+    def test_the_checkpoint_keeps_the_threshold_chosen_on_validation(self):
+        chosen = read_checkpoint(self.swept / "best.pt")["head_threshold"]
+        self.assertIn(chosen["value"], (0.05, 0.3, 0.6))
+        self.assertEqual(chosen["chosen_on"], "validation")
+        self.assertEqual(chosen["val_clips"], 1)
+        self.assertEqual(len(chosen["sweep"]), 3)
+        self.assertEqual(
+            self._evaluation(self.swept)["head_threshold"],
+            {"value": chosen["value"], "source": "checkpoint"},
+        )
+
+    def test_a_fold_without_validation_clips_keeps_the_default(self):
+        path = self.root / "no-val.pt"
+        path.write_bytes((self.swept / "best.pt").read_bytes())
+        chosen = settle_head_threshold(
+            path,
+            None,
+            TrainParams(head_thresholds=(0.3,)),
+            torch.device("cpu"),
+            None,
+        )
+        self.assertEqual((chosen["value"], chosen["chosen_on"]), (0.5, None))
+        self.assertEqual(read_checkpoint(path)["head_threshold"], chosen)
+
+    def test_a_flag_overrides_the_checkpoint_and_says_so(self):
+        clip_list = load(ClipList, self.list, check_files=False)
+        held_out = [c for c in clip_list.resolve() if c.group == "3"]
+        result = evaluate_groups(
+            [self.swept / "best.pt"],
+            {"held_out": held_out},
+            self.root / "cache",
+            clip_list.preprocess,
+            device="cpu",
+            amp="off",
+            window=512,
+            frame_chunk=64,
+            threshold=0.9,
+        )
+        self.assertEqual(result["head_threshold"], {"value": 0.9, "source": "flag"})
+
+    def test_predict_records_the_threshold_and_refuses_another_in_its_folder(self):
+        out = self.root / "predictions" / "swept"
+        argv = ["--checkpoint", str(self.swept / "best.pt"), "--clips", str(self.list)]
+        argv += ["--out", str(out), "--device", "cpu", "--amp", "off"]
+        argv += ["--workers", "1", "--groups", "3"]
+        main(argv)
+        own = read_checkpoint(self.swept / "best.pt")["head_threshold"]["value"]
+        self.assertEqual(
+            json.loads((out / SETTINGS).read_text())["head_threshold"],
+            {"value": own, "source": "checkpoint"},
+        )
+        with self.assertRaisesRegex(SystemExit, "another onset threshold"):
+            main([*argv, "--head-threshold", "0.9"])
 
 
 if __name__ == "__main__":
