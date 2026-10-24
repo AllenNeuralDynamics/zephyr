@@ -137,6 +137,7 @@ zephyr evaluate --checkpoint <best.pt>... --clips <list.toml>... --cache <dir> [
 | `--cache` | the feature cache |
 | `--out` | write the full result as JSON |
 | `--plot`, `--plot-dir` | also write diagnostic plots (one checkpoint), by default into `diagnosis/` beside it |
+| `--head-threshold T` | score the onset head's inhales at `T` instead of the checkpoint's own threshold ([Scoring](scoring.md#the-onset-threshold)); `evaluation.json` records the value and its source |
 | `--device`, `--amp` | machine settings |
 | `--infer-window`, `--frame-chunk` | inference window and frame batch sizes |
 
@@ -154,6 +155,7 @@ zephyr predict --checkpoint <best.pt> --clips <list.toml>... --out <dir> [option
 | `--cache` | keep the preprocessed frames here and reuse them (default: a temporary folder, removed) |
 | `--groups G...` | only these groups |
 | `--restart` | remove the predictions in `--out` first and predict every clip |
+| `--head-threshold T` | find the onset head's inhales at `T` instead of the checkpoint's own threshold; `predictions.json` records it, and a folder holds one threshold's predictions |
 | `--device`, `--amp`, `--workers` | machine settings |
 | `--infer-window`, `--frame-chunk` | inference window and frame batch sizes |
 

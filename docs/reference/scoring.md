@@ -45,7 +45,7 @@ How `zephyr run` and `zephyr evaluate` score a prediction against the breathing 
 
 !!! warning "Compare like with like"
     Scores made before and after a scoring rule changed (time alignment, event
-    tolerance) are not comparable. Re-score old checkpoints before you compare them.
+    tolerance, the onset threshold) are not comparable. Re-score old checkpoints before you compare them.
 
 ## Groups and summaries
 
@@ -53,6 +53,21 @@ How `zephyr run` and `zephyr evaluate` score a prediction against the breathing 
 and each named test group, plus `all`. Group summaries average over recordings, with
 the standard deviation (`_sd`) and the count (`_n`) of each metric. See [Output
 files](outputs.md#evaluationjson).
+
+## The onset threshold
+
+The onset head's inhales are the local maxima of its probability above a threshold, at
+least 50 ms apart. Each checkpoint carries its own threshold. With
+`head_thresholds` in `[fold.train_params]`, training predicts the fold's `[fold.val]`
+clips again once `best.pt` is fixed and keeps the threshold with the best mean inhale
+F1; thresholds within `head_threshold_f1_tie` (0.002) of it tie, and the one whose
+inhales per minute come closest to the truth's wins. A higher threshold trades missed
+inhales for fewer false ones. Without `head_thresholds`, without `[fold.val]` clips, and
+for checkpoints trained before, the threshold is 0.5.
+
+`evaluate`, `predict`, quality control and the app use the checkpoint's threshold;
+`--head-threshold` on `evaluate` and `predict` overrides it. Every output records the
+value used and its source, so an overridden score never passes as the checkpoint's own.
 
 ## The onset head's target
 

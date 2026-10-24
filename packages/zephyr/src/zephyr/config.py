@@ -528,6 +528,13 @@ class TrainParams(_Model):
     or both concatenated. ``pooled`` and ``both`` need ``signal_pool > 1``."""
     w_corr: float = Field(1.0, ge=0)
     w_onset: float = Field(0.5, ge=0)
+    head_thresholds: tuple[float, ...] = ()
+    """Onset thresholds swept on the fold's ``val`` clips once ``best.pt`` is fixed;
+    the checkpoint keeps the one with the best mean inhale F1 (thresholds within
+    ``head_threshold_f1_tie`` of it tie, and the smallest over-count per minute wins),
+    and every command scores with it. Empty keeps 0.5, as does a fold without ``val``
+    clips (the checkpoint records that)."""
+    head_threshold_f1_tie: float = Field(0.002, ge=0)
     scales: tuple[PositiveInt, ...] = (1, 4, 16)
     val_fraction: float = Field(0.25, ge=0, lt=1)
     """Time-tail of every training clip held back for early stopping; 0
@@ -551,6 +558,13 @@ class TrainParams(_Model):
                 f"rate_bins_hz {list(value)} needs two or more increasing edges > 0"
             )
         return value
+
+    @field_validator("head_thresholds")
+    @classmethod
+    def _thresholds_in_range(cls, value: tuple[float, ...]) -> tuple[float, ...]:
+        if any(not 0 < t < 1 for t in value):
+            raise ValueError(f"head_thresholds {list(value)} must be in (0, 1)")
+        return tuple(sorted(set(value)))
 
     @field_validator("temporal_kernel")
     @classmethod

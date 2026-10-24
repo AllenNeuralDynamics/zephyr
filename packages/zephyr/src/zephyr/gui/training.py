@@ -782,6 +782,7 @@ class ResultsPage(Page):
             truth_inhale=found["truth_inhale"],
             entry=found["entry"],
             onset=found["onset"],
+            threshold=found["threshold"],
         )
 
     def score_own(self) -> None:

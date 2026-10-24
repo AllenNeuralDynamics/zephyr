@@ -184,7 +184,8 @@ never saved.
    `best.pt` as it is.
 
    `evaluation.json` reports each clip, each recording, and each named test
-   group (plus the onset head's inhale F1 for multitask networks). With
+   group (plus the onset head's inhale F1 for multitask networks, and in
+   `head_threshold` the onset threshold it was scored at and where that came from). With
    `save_traces = true` in the experiment (or `--save-traces`; off by default) the run
    also writes `traces/feat-<entry prefix>.parquet` per test clip, one row per output
    sample: the `time`, z-scored `signal` and (with an onset head) `onset` probability
@@ -201,6 +202,8 @@ never saved.
 
    Scoring reads only the cache and each clip's thermistor, so the videos and
    timestamps need not be on the machine once their entries are cached.
+   `--head-threshold` scores the onset head at another threshold than the
+   checkpoint's own (see "Scoring"); `evaluation.json` says which was used.
 
 **A copy of a dataset elsewhere.** Cache keys, sidecars and the training record name
 clips by their absolute paths (in `/` form, `config.canonical`), so a cache made at
@@ -221,8 +224,10 @@ make. Without it nothing changes.
 false` or not) with `zephyr predict`. It preprocesses the clips, into `--cache` or
 else a temporary folder it removes, and writes `<video stem>.prediction.parquet` per
 video: `time`, the z-scored `signal`, the onset head's `onset` probability and `inhale`
-(an inhale the head found there). The lists' `[preprocess]` must be the checkpoint's
-recipe, and a folder holds one checkpoint's predictions:
+(an inhale the head found there, at the checkpoint's onset threshold or
+`--head-threshold`). The lists' `[preprocess]` must be the checkpoint's recipe, and a
+folder holds one checkpoint's predictions at one threshold (`predictions.json` records
+both):
 
 ```bash
 uv run zephyr predict --checkpoint runs/example/fold/seed-42/best.pt --clips <list.toml> --out predictions/
@@ -270,10 +275,11 @@ The measures (`quality_control.metrics.MEASURES`, with which way is better):
 | Family | Measures |
 | --- | --- |
 | rhythm | rate (a description), breaths faster than `breathing_ceiling_hz` (faster than a mouse breathes), inhale/exhale alternation breaks, flat breaths (the trace swings less than `flat_ratio` of the clip's median breath between two inhales). No slower rate is judged: usual rates change with running, odours and task |
-| head | onset head vs DSP peaks on its own trace (a labelled comparison), median peak height, ambiguous peaks (`ambiguous_floor` to 0.5), background probability, expected precision (reference calibration), inhale phase spread (how much the point of the trace's trough-to-trough cycle where the head puts each inhale wanders) |
+| head | onset head vs DSP peaks on its own trace (a labelled comparison), median peak height, ambiguous peaks (`ambiguous_floor` to the checkpoint's onset threshold), background probability, expected precision (reference calibration), inhale phase spread (how much the point of the trace's trough-to-trough cycle where the head puts each inhale wanders) |
 
-Inhales come from the onset head (or DSP on the trace for a headless checkpoint), as
-everywhere. A labelled clip's report also holds a `truth` block, its real scores scored
+Inhales come from the onset head at the checkpoint's own onset threshold (or DSP on the
+trace for a headless checkpoint), as everywhere; a reference and the reports record that
+threshold, and a run refuses a reference calibrated at another. A labelled clip's report also holds a `truth` block, its real scores scored
 as `zephyr evaluate` scores it (over the whole clip exactly so); no measure reads it.
 It is there to check the measures: they are proxies, and only held-out animals with a
 thermistor say which of them track the real F1 (`notebooks/quality_control.py`).
@@ -354,6 +360,21 @@ section explains the ones whose behaviour is not obvious.
   from the cached event times; it is not stored.
   Heads trained before this rule peaked on the frame at or after each event (half a
   frame late on average) and learned a false onset at both ends of every window.
+- The onset head's inhales are its probability's local maxima above the **onset
+  threshold**, at least `HEAD_MIN_DISTANCE_S` (50 ms) apart. Each checkpoint carries its
+  own threshold: with `train_params.head_thresholds` (e.g. `[0.20, 0.25, ..., 0.85]`)
+  training predicts the `[fold.val]` clips again once `best.pt` is fixed, keeps the
+  threshold with the best mean validation inhale F1 (thresholds within
+  `head_threshold_f1_tie`, 0.002, of it tie, and the one whose inhales per minute are
+  closest to the truth's wins) and stores it, with the sweep, as `head_threshold` in
+  `best.pt`. Without the grid, without `[fold.val]` clips (a `val_fraction` tail is not
+  held-out animals) and for checkpoints from before, the threshold is 0.5
+  (`evaluate.HEAD_THRESHOLD`). `evaluate`, `predict`, quality control and the app read
+  the checkpoint's value (`evaluate.head_threshold`); `--head-threshold` on `evaluate` and
+  `predict` overrides it, and every output records the value used and its `source`
+  (`flag`, `checkpoint` or `default`). Head F1 scored at 0.5 is not comparable with head
+  F1 at a chosen threshold. Snapshots (`epoch-<n>.pt`, `last.pt`) carry no threshold,
+  and the app's live validation snippets, drawn before one is chosen, use 0.5.
 - A cache entry whose event set is stale is refused as "not in the feature cache";
   re-running `zephyr preprocess` on its list rebuilds only the target, without decoding
   video.

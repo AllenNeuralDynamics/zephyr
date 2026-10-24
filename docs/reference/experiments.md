@@ -65,6 +65,8 @@ windows.
 | `patience` | 8 | scorings without improvement before stopping |
 | `min_epochs` | 24 | never stop before this |
 | `val_windows` | 2048 | windows scored per validation |
+| `head_thresholds` | `[]` | onset thresholds to sweep on the `[fold.val]` clips once `best.pt` is fixed, e.g. `[0.2, 0.25, ..., 0.85]`; the best is stored in the checkpoint ([Scoring](scoring.md#the-onset-threshold)). Empty keeps 0.5 |
+| `head_threshold_f1_tie` | 0.002 | thresholds whose mean validation inhale F1 is this close to the best tie; the smallest over-count per minute wins |
 
 ### Losses and architecture
 

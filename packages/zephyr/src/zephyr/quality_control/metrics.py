@@ -44,21 +44,29 @@ MEASURES: dict[str, tuple[str, str, str | None]] = {
 class Events:
     """One trace's events, as sample indices of its grid.
 
-    *inhale* comes from the onset head when there is one, else DSP peaks on the trace
-    (*peaks*); *exhale* is always DSP troughs on the trace.
+    *inhale* comes from the onset head when there is one (its maxima above
+    *threshold*), else DSP peaks on the trace (*peaks*); *exhale* is always DSP troughs
+    on the trace.
     """
 
     inhale: np.ndarray
     exhale: np.ndarray
     peaks: np.ndarray
+    threshold: float = HEAD_THRESHOLD
 
 
-def find_events(times: np.ndarray, signal: np.ndarray, onset: np.ndarray | None):
-    """:class:`Events` of one trace (and its onset probability, if the head exists)."""
+def find_events(
+    times: np.ndarray,
+    signal: np.ndarray,
+    onset: np.ndarray | None,
+    threshold: float = HEAD_THRESHOLD,
+):
+    """:class:`Events` of one trace (and its onset probability, if the head exists,
+    read at the checkpoint's onset *threshold*)."""
     fs = 1.0 / float(np.median(np.diff(times)))
     peaks, troughs = detect_inhalation_events(signal, fs)
-    inhale = peaks if onset is None else head_event_indices(onset, times)
-    return Events(inhale=inhale, exhale=troughs, peaks=peaks)
+    inhale = peaks if onset is None else head_event_indices(onset, times, threshold)
+    return Events(inhale=inhale, exhale=troughs, peaks=peaks, threshold=threshold)
 
 
 @dataclass(frozen=True)
@@ -172,7 +180,7 @@ def head(
     )
     if len(maxima):
         out["ambiguous_peak_frac"] = float(
-            np.mean(props["peak_heights"] < HEAD_THRESHOLD)
+            np.mean(props["peak_heights"] < ev.threshold)
         )
     far = _nearest(times[mask], times[ev.inhale]) > BACKGROUND_S
     out["onset_background"] = _mean(onset[mask][far])

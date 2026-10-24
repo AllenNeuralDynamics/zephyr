@@ -25,6 +25,7 @@ from ..config import (
     dump,
 )
 from ..evaluate import (
+    checkpoint_head_threshold,
     has_onset_head,
     load_checkpoint,
     refuse_leaked,
@@ -114,6 +115,7 @@ def measure_reference(
     if unlabelled:
         raise SystemExit(f"calibration clips need a thermistor: {unlabelled}")
     refuse_leaked([state], unseen)
+    threshold = checkpoint_head_threshold(state)
 
     peaks, real = [], []
     entries = features.require(unseen, recipe, features_dir)
@@ -121,7 +123,7 @@ def measure_reference(
         print(f"[calibration {k + 1}/{len(entries)}] {entry.clip_id}", flush=True)
         signal, onset = _predict(model, mean, std, entry, inference, torch_device, amp)
         times = np.load(entry.times)
-        events = find_events(times, signal, onset)
+        events = find_events(times, signal, onset, threshold)
         p, r = _head_matches(entry, times, onset, events.inhale)
         peaks.append(p)
         real.append(r)
@@ -131,6 +133,7 @@ def measure_reference(
             "checkpoint": canonical(checkpoint),
             "checkpoint_sha256": checkpoint_hash(checkpoint),
             "epoch": state.get("epoch"),
+            "head_threshold": threshold,
             "created": datetime.now(UTC).isoformat(timespec="seconds"),
             "zephyr_version": version("zephyr"),
             "calibration_clips": [c.name for c in unseen],
@@ -206,8 +209,10 @@ def _video(
     amp,
     reference: Reference | None,
     head: bool,
+    threshold: float,
 ) -> tuple[Video, np.ndarray]:
-    """The network's prediction for *entry*: one ordinary pass."""
+    """The network's prediction for *entry*: one ordinary pass (the head's inhales at
+    the checkpoint's onset *threshold*)."""
     signal, onset = _predict(model, mean, std, entry, config, device, amp)
     times = np.load(entry.times)
     judged = onset if head else None
@@ -215,7 +220,7 @@ def _video(
         times=times,
         signal=signal,
         onset=judged,
-        events=find_events(times, signal, judged),
+        events=find_events(times, signal, judged, threshold),
     )
     return video, onset
 
@@ -288,11 +293,14 @@ def traces(video: Video, onset: np.ndarray) -> pd.DataFrame:
     )
 
 
-def _write_settings(config: QualityControl, checkpoint_sha: str) -> None:
+def _write_settings(
+    config: QualityControl, checkpoint_sha: str, threshold: float | None
+) -> None:
     """Record the run's settings; refuse a folder holding reports made otherwise."""
     settings = {
         "checkpoint": canonical(config.checkpoint),
         "checkpoint_sha256": checkpoint_sha,
+        "head_threshold": threshold,
         "reference": canonical(config.reference) if config.reference else None,
         "params": dump(config.params),
     }
@@ -314,6 +322,7 @@ def run(config: QualityControl, device: str, amp: str) -> list[Path]:
     torch_device = torch.device(device)
     model, mean, std, state = load_checkpoint(config.checkpoint, torch_device)
     head = has_onset_head([state])
+    threshold = checkpoint_head_threshold(state)
     sha = checkpoint_hash(config.checkpoint)
     reference = None
     if config.reference is not None:
@@ -322,6 +331,12 @@ def run(config: QualityControl, device: str, amp: str) -> list[Path]:
             raise SystemExit(
                 f"{config.reference} was made for another checkpoint than "
                 f"{config.checkpoint}"
+            )
+        calibrated_at = reference.record.get("head_threshold")
+        if calibrated_at is not None and calibrated_at != threshold:
+            raise SystemExit(
+                f"{config.reference} calibrated the head's inhales at onset threshold "
+                f"{calibrated_at}, not {config.checkpoint}'s {threshold}; build it again"
             )
     clips = [c for s in config.clips for c in s.resolved()]
     stems = [c.source.stem for c in clips]
@@ -332,11 +347,12 @@ def run(config: QualityControl, device: str, amp: str) -> list[Path]:
         )
     refuse_leaked([state], clips)
     entries = features.require(clips, config.preprocess, config.features_dir)
-    _write_settings(config, sha)
+    _write_settings(config, sha, threshold if head else None)
     meta = {
         "checkpoint": canonical(config.checkpoint),
         "checkpoint_sha256": sha,
         "reference": canonical(config.reference) if config.reference else None,
+        "head_threshold": threshold if head else None,
         "zephyr_version": version("zephyr"),
         "params": dump(config.params),
     }
@@ -348,7 +364,16 @@ def run(config: QualityControl, device: str, amp: str) -> list[Path]:
             continue
         print(f"[{k + 1}/{len(clips)}] {entry.clip_id}", flush=True)
         video, onset = _video(
-            model, mean, std, entry, config, torch_device, amp, reference, head
+            model,
+            mean,
+            std,
+            entry,
+            config,
+            torch_device,
+            amp,
+            reference,
+            head,
+            threshold,
         )
         result = report(clip, entry, video, config.params, reference, head, meta)
         if config.params.save_traces:
