@@ -70,10 +70,12 @@ def mark_events(
     )
 
 
-def onset_head(ax: Axes, times: NDArray, probability: NDArray) -> None:
-    """The onset head's probability, with its 0.5 threshold."""
+def onset_head(
+    ax: Axes, times: NDArray, probability: NDArray, threshold: float = 0.5
+) -> None:
+    """The onset head's probability, with the threshold its events were found at."""
     ax.plot(times, probability, color=style.ONSET)
-    ax.axhline(0.5, color="0.6", linewidth=0.5, linestyle=":")
+    ax.axhline(threshold, color="0.6", linewidth=0.5, linestyle=":")
     ax.set_ylim(-0.05, 1.15)
     ax.set_ylabel("Onset probability")
 
@@ -162,7 +164,9 @@ def network_figure(
     mark_events(top, head, 2.8, style.color("Zephyr"), "^")
     top.set_ylabel("Breathing (z-score)")
     top.legend(loc="lower right", bbox_to_anchor=(1, 1), ncol=2)
-    onset_head(bottom, tp[kp], prediction["onset"][kp])
+    onset_head(
+        bottom, tp[kp], prediction["onset"][kp], prediction.get("threshold", 0.5)
+    )
     mark_events(bottom, true_on, 1.1, style.TRUTH)
     mark_events(bottom, head, 1.02, style.color("Zephyr"), "^")
     bottom.set_xlim(t0, t1)
@@ -450,7 +454,7 @@ FOLD_SETS: dict[str, str] = {
     "test_b": "B: new sessions",
     "test_c": "C: 359 Hz",
 }
-"""The split's set names (``folds.parquet``) and their labels in :data:`style.SETS`."""
+"""The split's set names (``raw/folds.parquet``) and their labels in :data:`style.SETS`."""
 RATE_BANDS: dict[str, str] = {"t_1-4": "1–4 Hz", "t_4-8": "4–8 Hz", "t_8-15": "8–15 Hz"}
 """The split's columns of time per breathing-rate band, and their labels."""
 
@@ -1380,7 +1384,9 @@ def failure_panel(
         )
     o = ax["onset"]
     o.plot(tp[kp], prediction["onset"][kp], color=style.ONSET)
-    o.axhline(0.5, color="0.6", linewidth=0.5, linestyle=":")
+    o.axhline(
+        prediction.get("threshold", 0.5), color="0.6", linewidth=0.5, linestyle=":"
+    )
     o.set_ylim(0, 1.05)
     o.set_yticks([0, 1])
     o.set_ylabel("Onset (p)")
@@ -1887,7 +1893,9 @@ def failure_figure(
     ax["trace"].set_ylim(-3.8, 3.8)
     ax["trace"].set_ylabel("z-score")
     ax["trace"].legend(loc="lower right", bbox_to_anchor=(1, 1), ncol=4, fontsize=6)
-    onset_head(ax["onset"], tp[kp], prediction["onset"][kp])
+    onset_head(
+        ax["onset"], tp[kp], prediction["onset"][kp], prediction.get("threshold", 0.5)
+    )
     ax["onset"].set_xlim(t0, t1)
     ax["onset"].set_xlabel("Time (s)")
     for i, (ft, image) in enumerate(frames):

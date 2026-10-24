@@ -72,6 +72,14 @@ class EventTests(unittest.TestCase):
         self.assertTrue(err["near_miss"].all())
         self.assertTrue(err["causes"].str.contains("near miss").all())
 
+    def test_a_clip_without_errors_keeps_near_miss_bool(self):
+        true_on = np.arange(1, 50, 1 / 3)
+        p, t = _clip(true_on, true_on)
+        frames = np.zeros((len(p["times"]), 1, 4, 4), np.uint8)
+        err = analysis.errors(p, t, True, p["times"], frames)
+        self.assertTrue(err.empty)
+        self.assertEqual(err["near_miss"].dtype, bool)
+
     def test_each_lag_carries_its_breaths_rate(self):
         true_on = np.arange(1, 50, 1 / 3)
         pred = true_on + 0.01

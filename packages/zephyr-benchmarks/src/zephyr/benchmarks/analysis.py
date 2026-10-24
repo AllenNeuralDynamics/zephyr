@@ -38,6 +38,9 @@ LOCAL_S = 0.25
 """Half-width of the window an error's motion and amplitude are measured over."""
 TABLES = ("breaths", "false_positives", "lags", "windows", "bands")
 """The tables :func:`clip_tables` returns."""
+HEAD_THRESHOLDS = tuple(float(x) for x in np.round(np.arange(0.20, 0.851, 0.05), 2))
+"""Onset thresholds a checkpoint without one of its own is given one from, on its
+validation clips (``evaluate.choose_head_threshold``)."""
 
 
 def truth(entry: features.ClipEntry) -> dict:
@@ -609,10 +612,13 @@ def errors(
     df["rate_hz"] = _local_rate(at, ev["true"], ev["rate"])
     by_kind = {k: df.loc[df["kind"] == k, "time"].to_numpy() for k in (MISSED, FALSE)}
     other = [by_kind[FALSE] if k == MISSED else by_kind[MISSED] for k in df["kind"]]
-    df["near_miss"] = [
-        bool(len(o) and np.min(np.abs(o - t0)) <= LAG_WINDOW_S)
-        for t0, o in zip(at, other, strict=True)
-    ]
+    df["near_miss"] = np.array(
+        [
+            bool(len(o) and np.min(np.abs(o - t0)) <= LAG_WINDOW_S)
+            for t0, o in zip(at, other, strict=True)
+        ],
+        dtype=bool,
+    )  # bool even for a clip without errors, so clips concatenate as bool
     clip_motion = _around(motion_t, motion, ev["true"], np.mean)
     clip_size = _around(t["times"], t["signal"], ev["true"], np.ptp)
     df["motion"] = [
