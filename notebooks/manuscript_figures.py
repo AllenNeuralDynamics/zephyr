@@ -335,6 +335,30 @@ def fig2a(dataset, spec):
 
 
 @app.cell
+def optional_cameras(dataset, folds, spec):
+    # Videos of the optional cameras missing from corpus sessions, which keep their
+    # required cameras: never recorded in the session, or left out on review (the
+    # camera not on the animal).
+    _corpus = set(folds.loc[folds["set"].notna(), "session_id"])
+    _cameras = pd.read_parquet(dataset / "raw" / "cameras.parquet")
+    _clips = pd.read_parquet(dataset / "raw" / "clips.parquet")
+    _dropped = spec.dropped_cameras()
+    v_cameras_missing = {}
+    for _camera in spec.source.optional_cameras:
+        _recorded = set(_cameras.loc[_cameras["camera"] == _camera, "session_id"])
+        _cut = set(_clips.loc[_clips["camera"] == _camera, "session_id"])
+        _reviewed = {s for s in _corpus & _recorded if (s, _camera) in _dropped}
+        assert (_corpus & _recorded) - _cut == _reviewed, _camera
+        _key = _camera.removesuffix("Camera").lower()
+        v_cameras_missing[f"{_key}_not_recorded"] = values.count(
+            len(_corpus - _recorded)
+        )
+        v_cameras_missing[f"{_key}_reviewed"] = values.count(len(_reviewed))
+    v_cameras_missing
+    return (v_cameras_missing,)
+
+
+@app.cell
 def fig2b(folds):
     # Every thermistor breath's rate over the corpus, and per animal.
     _rates = runs.animal_breath_rates()
@@ -1714,6 +1738,7 @@ def manuscript_values(
     v_qc,
     v_rate,
     v_rates,
+    v_cameras_missing,
     v_selection,
     v_size,
     v_tolerance,
@@ -1740,6 +1765,7 @@ def manuscript_values(
         "rate": v_rate,
         "rates": v_rates,
         "selection": v_selection,
+        "optional_cameras": v_cameras_missing,
         "size": v_size,
         "task": v_fig1,
         "threshold": v_threshold,
