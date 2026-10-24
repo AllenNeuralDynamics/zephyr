@@ -671,14 +671,50 @@ _Timing._ Inference time was the wall-clock time from preprocessed crops in memo
 60-Hz trace, median over #tbd[8] 5-min clips after a warm-up, at batch size 1 in bf16 on an
 NVIDIA RTX 4060 Ti (non-network methods on the CPU).
 
-== Comparison methods
+== Benchmarked methods
 
-Motion energy and two pixel methods (the crop's first principal component, and a pixel
-average weighted by power in the breathing band) were computed from the same crops, with
-one sign and lag fitted on the training clips. The Facemap-style readout was a ridge
-regression from lagged principal components of the crop's movie and motion energy
-@syeda2024. TS-CAN @liu2020, PhysNet @yu2019, PhysFormer @yu2022 and RhythmFormer
-@zou2025 were reimplemented from their papers (Supplementary Note 2).
+Every method read the same 96 × 96 gray crops on the 60-Hz grid and was scored by the same
+rules (Scoring). The three pixel methods compute a trace from each clip's pixels with no
+training, so the trace has no set polarity or timing relative to breathing. Each trace was
+therefore band-passed to the breathing band (1–15 Hz) and turned the right way up from its
+own shape: inhalation is shorter than exhalation, so a correct trace falls faster than it
+rises. A single sign and lag (at most 0.5 s), the same for every clip, were then chosen to
+maximise the mean correlation with the thermistor over the training clips, and applied
+unchanged to the test clips.
+
+The methods, their sources and what we changed are in @tab:methods. The four networks
+were trained in our training loop on the losses of their own papers (Supplementary
+Note 2); none has an onset output, so their inhalations were found on the predicted trace.
+
+#figure(
+  table(
+    columns: (auto, auto, 1fr),
+    align: (left, left, left),
+    toprule,
+    table.header([*Method*], [*Source*], [*Details*]),
+    midrule,
+    [Pixel (motion)], [@stringer2019 @musall2019], [Motion energy: mean absolute
+      difference between consecutive frames over the crop],
+    [Pixel (PCA)], [@poh2010], [Of the top #tbd[10] principal components of the
+      band-passed pixels, the one most concentrated in a single spectral peak],
+    [Pixel (SNR)], [this work], [Band-passed pixels weighted by their share of variance in
+      the breathing band, signed to agree, averaged],
+    [Facemap], [@stringer2019 @syeda2024], [Top #tbd[100] principal components of the
+      crop's motion energy and raw frames, at #tbd[11] lags (#tbd[±250] ms); ridge
+      readout, strength chosen leaving one training recording out],
+    [TS-CAN], [@liu2020], [One gray channel; output band-passed to 1–15 Hz],
+    [PhysNet], [@yu2019], [One gray channel; 96 × 96 crop],
+    [PhysFormer], [@yu2022, authors' code], [One gray channel; crop upsampled to 128
+      pixels; rate spectrum over 1–15 Hz],
+    [RhythmFormer], [@zou2025, authors' code], [One gray channel; crop upsampled to 128
+      pixels; rate spectrum over 1–15 Hz],
+    bottomrule,
+  ),
+  caption: [*Benchmarked methods.* Details give the settings of the methods that are not
+    networks, and only what we changed for the networks, which otherwise follow their
+    papers: the networks read one gray channel instead of colour, and their breathing band
+    replaces the heart-rate band.],
+) <tab:methods>
 
 == Scoring
 
