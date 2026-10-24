@@ -39,9 +39,11 @@ uv run marimo export html notebooks/walkthrough.py -o walkthrough.html --no-incl
   (about an hour; the raw thermistors and camera timestamps come from S3).
 - `manuscript_figures.py`: every data panel of the manuscript's figures
   (`manuscript/figures/<figure>/<panel>.svg`, at the sizes in
-  `manuscript/figures/layout.toml`) and the tables it reads (`manuscript/tables/`),
-  from the same runs, clips and cache as `walkthrough.py`, and the quality-control
-  reports for Fig. 5 (`ZEPHYR_MANUSCRIPT_QC`).
+  `manuscript/figures/layout.toml`), the tables it reads (`manuscript/tables/`) and
+  every number its text cites (`manuscript/values.toml`, formatted as printed by
+  `utils/values.py`; `main.typ` reads them as `#v("section.key")`), from the same runs,
+  clips and cache as `walkthrough.py`, and the quality-control reports for Fig. 5
+  (`ZEPHYR_MANUSCRIPT_QC`).
 - `quality_control.py`: `zephyr quality-control` checked where the truth is known.
   Every measure of each video's report against its real inhale F1 (per video), how well
   each ranks videos and windows, how much keeping the best-judged videos raises the
