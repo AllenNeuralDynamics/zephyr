@@ -529,7 +529,10 @@ and thresholds were set by eye on the electrophysiology sessions.
     [#tbd[3]], [], [Timestamp alignment issues], [],
     [#tbd[13]], [], [Low exposure], [],
     [#tbd[6]], [Manual review], [], [],
-    [#tbd[4]], bottomrule,
+    [#tbd[4]], midrule,
+    [Front camera], [Not recorded in the session], [], [#v("optional_cameras.front_not_recorded")],
+    [], [Not on the animal (manual review)], [], [#v("optional_cameras.front_reviewed")],
+    bottomrule,
   ),
   caption: [*Corpus selection.* Rules in the order applied, with the number of sessions
     each removed. Of #v("selection.recorded") recorded sessions, #v("selection.thermistor") passed the thermistor rules
@@ -540,7 +543,10 @@ and thresholds were set by eye on the electrophysiology sessions.
     inhalation, or an exhalation by another exhalation. Timestamps with a single one-frame
     rollback were repaired (#tbd[73]) rather than removed. Low exposure and unplugged sync
     cables were found after the sets were drawn and removed from them, leaving the
-    #tbd[560] sessions of the corpus
+    #tbd[560] sessions of the corpus. The front camera is optional: a session without its video, never recorded or
+    pointed away from the animal, keeps its face and side clips, so the last two rows
+    count front-camera videos left out, not sessions; the face and side cameras were
+    recorded in every session
     #note[check the dead-sensor and window-rule counts].],
 ) <tab:qc>
 
