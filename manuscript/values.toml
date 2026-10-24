@@ -90,6 +90,10 @@ misses_near = "79"
 motion = "9–10"
 shallow = "36–37"
 
+[optional_cameras]
+front_not_recorded = "14"
+front_reviewed = "10"
+
 [qc]
 f1_all = "0.95"
 f1_fail = "0.81"
