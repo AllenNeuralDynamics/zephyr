@@ -1,8 +1,8 @@
 """Choose a downsample target and hand-place crop boxes for a clip list (the logic).
 
-Boxes are placed on the frame downsampled to the list's ``[preprocess] target_size``.
-One box covers a whole recording (the camera does not move within it); ``o`` gives a
-single clip its own. Boxes are written back as ``box = [x, y, w, h]`` with tomlkit,
+Boxes are placed on the frame downsampled to the list's ``[preprocess] target_size``
+(or a clip's own ``frame``). One box covers a whole recording (the camera does not move
+within it); ``o`` or a frame of its own gives a single clip its own. Boxes are written back as ``box = [x, y, w, h]`` with tomlkit,
 leaving the rest of the file untouched; an unplaced recording gets no box and
 preprocessing refuses it.
 
@@ -26,7 +26,7 @@ import cv2
 import numpy as np
 import pandas as pd
 
-from .clips import write_boxes
+from .clips import scale_box, scaled_frame, write_boxes
 from .config import ClipList, ResolvedClip, load, require_videos
 from .video import Box, clamp_box, decode_window, probe_size
 
@@ -119,6 +119,8 @@ class BoxState:
     """Recordings excluded here and then used again: their clips lose ``selection``."""
     locked: bool = False
     """Box and frame size are a network's (``--checkpoint``): only the place moves."""
+    frames: dict[Path, tuple[int, int]] = field(default_factory=dict)
+    """Clips on a frame of their own (not *target_size*); each has its own box."""
 
     def __post_init__(self) -> None:
         self.box_size = min(self.box_size, *self.target_size)
@@ -132,10 +134,32 @@ class BoxState:
             self.boxes[recording.key] = centre_box(
                 *seed, self.box_size, self.target_size
             )
+        for recording in self.recordings:
+            for clip in recording.clips:
+                if clip.video in self.frames and clip.video not in self.overrides:
+                    self.overrides[clip.video] = scale_box(
+                        self.boxes[recording.key],
+                        self.target_size,
+                        self.frames[clip.video],
+                    )
         for video, box in self.overrides.items():
             self.overrides[video] = centre_box(
-                *box_centre(box), self.box_size, self.target_size
+                *box_centre(box), self.box_size, self.frame_of(video)
             )
+
+    def frame_of(self, video: Path) -> tuple[int, int]:
+        """The frame *video*'s box is placed on: its own, else the list's."""
+        return self.frames.get(video, self.target_size)
+
+    @property
+    def frame(self) -> tuple[int, int]:
+        """The displayed clip's frame."""
+        return self.frame_of(self.clip.video)
+
+    @property
+    def input_scale(self) -> float:
+        """The displayed clip's frame over the list's (1: the list's own)."""
+        return self.frame[0] / self.target_size[0]
 
     @property
     def recording(self) -> Recording:
@@ -160,8 +184,8 @@ class BoxState:
 
     @property
     def scale_from_native(self) -> float:
-        """Native pixels per target pixel, for reporting."""
-        return self.native_size[0] / self.target_size[0]
+        """Native pixels per frame pixel of the displayed clip, for reporting."""
+        return self.native_size[0] / self.frame[0]
 
     def is_placed(self, key: str) -> bool:
         """Whether *key* was set by hand rather than left at its default."""
@@ -178,7 +202,7 @@ class BoxState:
         self.part_index = 0
 
     def place(self, centre_x: float, centre_y: float) -> None:
-        box = centre_box(centre_x, centre_y, self.box_size, self.target_size)
+        box = centre_box(centre_x, centre_y, self.box_size, self.frame)
         if self.has_override:
             self.overrides[self.clip.video] = box
         else:
@@ -248,11 +272,14 @@ class BoxState:
         if self.locked:
             return
         self.box_size = int(np.clip(self.box_size + delta, 16, min(self.target_size)))
-        for table in (self.boxes, self.overrides):
-            for key, box in table.items():
-                table[key] = centre_box(
-                    *box_centre(box), self.box_size, self.target_size
-                )
+        for key, box in self.boxes.items():
+            self.boxes[key] = centre_box(
+                *box_centre(box), self.box_size, self.target_size
+            )
+        for video, box in self.overrides.items():
+            self.overrides[video] = centre_box(
+                *box_centre(box), self.box_size, self.frame_of(video)
+            )
 
     def set_target(self, width: int, height: int) -> None:
         """Change the downsample target, carrying every box across proportionally.
@@ -271,10 +298,29 @@ class BoxState:
         self.box_size = min(self.box_size, width, height)
         for table in (self.boxes, self.overrides):
             for key, box in table.items():
+                if key in self.frames:  # on a frame of its own, which stays
+                    continue
                 cx, cy = box_centre(box)
                 table[key] = centre_box(
                     cx * ratio_x, cy * ratio_y, self.box_size, self.target_size
                 )
+
+    def set_input_scale(self, scale: float) -> None:
+        """Put the displayed clip on *scale* times the list's frame (1: the list's
+        own), its box carried onto the same part of the image, as a box of its own.
+        The box keeps its size in pixels: the network's input."""
+        video = self.clip.video
+        new = scaled_frame(self.target_size, scale)
+        old = self.frame
+        if new == old:
+            return
+        moved = scale_box(self.box, old, new)
+        if new == self.target_size:
+            self.frames.pop(video, None)
+        else:
+            self.frames[video] = new
+        self.overrides[video] = centre_box(*box_centre(moved), self.box_size, new)
+        self.placed.add(self.key)
 
     def reset(self) -> None:
         """Return this recording's box to the frame centre, unplaced."""
@@ -285,6 +331,11 @@ class BoxState:
             self.box_size,
             self.target_size,
         )
+        own = self.frames.get(self.clip.video)
+        if own is not None:  # a frame of its own keeps a box of its own
+            self.overrides[self.clip.video] = centre_box(
+                own[0] / 2, own[1] / 2, self.box_size, own
+            )
         self.placed.discard(self.key)
         self.matched.pop(self.key, None)
 
@@ -296,7 +347,8 @@ class BoxState:
             return
         self.reset()
         for clip in self.recording.clips:
-            self.overrides.pop(clip.video, None)
+            if clip.video not in self.frames:
+                self.overrides.pop(clip.video, None)
         self.excluded.add(self.key)
         self.restored.discard(self.key)
 
@@ -305,8 +357,11 @@ class BoxState:
             self.place(*box_centre(self.boxes[self.recordings[self.index - 1].key]))
 
     def toggle_override(self) -> None:
-        """Give the displayed clip a box of its own (from its recording's), or drop it."""
+        """Give the displayed clip a box of its own (from its recording's), or drop it;
+        a clip on its own frame keeps its own."""
         video = self.clip.video
+        if video in self.frames:
+            return
         if video in self.overrides:
             del self.overrides[video]
         else:
@@ -322,12 +377,13 @@ class BoxState:
         return len(self.placed), len(self.recordings) - len(self.excluded)
 
     def clip_boxes(self) -> dict[Path, Box]:
-        """The box of every clip whose recording has been placed."""
+        """The box of every clip whose recording has been placed, and of every clip on
+        a frame of its own (which always has one)."""
         return {
             clip.video: self.overrides.get(clip.video, self.boxes[recording.key])
             for recording in self.recordings
-            if recording.key in self.placed
             for clip in recording.clips
+            if recording.key in self.placed or clip.video in self.frames
         }
 
 
@@ -342,14 +398,16 @@ def initial_state(
     own, and any clip whose box differs from that is an override. A recording whose
     clips are all *excluded* videos is excluded."""
     recordings = recordings_of(clips)
+    frames = {c.video: c.frame for c in clips if c.frame and c.frame != target_size}
     boxes: dict[str, Box] = {}
     overrides: dict[Path, Box] = {}
     for recording in recordings:
         have = [c for c in recording.clips if c.box is not None]
-        if not have:
-            continue
-        boxes[recording.key] = have[0].box
-        overrides |= {c.video: c.box for c in have if c.box != have[0].box}
+        overrides |= {c.video: c.box for c in have if c.video in frames}
+        have = [c for c in have if c.video not in frames]
+        if have:
+            boxes[recording.key] = have[0].box
+            overrides |= {c.video: c.box for c in have if c.box != have[0].box}
     placed = set(boxes)
     sizes = {b[2] for b in [*boxes.values(), *overrides.values()]}
     # Trust the boxes already placed over the flag: those are what preprocessing
@@ -363,6 +421,7 @@ def initial_state(
         overrides=overrides,
         placed=placed,
         box_size=box_size,
+        frames=frames,
         excluded={
             r.key for r in recordings if all(c.video in excluded for c in r.clips)
         },
@@ -377,12 +436,18 @@ def save_boxes(path: Path, state: BoxState) -> None:
         for recording in state.recordings
         if recording.key not in state.placed
         for clip in recording.clips
+        if clip.video not in state.frames
     }
     videos = {r.key: {c.video for c in r.clips} for r in state.recordings}
     write_boxes(
         path,
         state.clip_boxes(),
         state.target_size,
+        frames={
+            clip.video: state.frames.get(clip.video)
+            for recording in state.recordings
+            for clip in recording.clips
+        },
         clear=unplaced,
         exclude=set().union(*(videos[k] for k in state.excluded)),
         restore=set().union(*(videos[k] for k in state.restored)),

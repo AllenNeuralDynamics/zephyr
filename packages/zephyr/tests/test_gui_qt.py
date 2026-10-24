@@ -214,6 +214,24 @@ class BoxWindowTests(unittest.TestCase):
         doc = tomllib.loads(self.list.read_text())
         self.assertEqual(doc["preprocess"]["target_size"], list(NATIVE))
 
+    def test_input_scale_puts_the_clip_on_its_own_frame(self):
+        self.click(50, 40)
+        self.window.scale_edit.setText("2")
+        self.window.apply_input_scale()
+        doc = tomllib.loads(self.list.read_text())
+        frames = {Path(c["video"]).stem: c.get("frame") for c in doc["clip"]}
+        width, height = doc["preprocess"]["target_size"]
+        self.assertEqual(frames["video_face_1_part_1"], [2 * width, 2 * height])
+        self.assertIsNone(frames["video_face_1_part_2"])
+        boxes = _boxes(self.list)
+        self.assertEqual(boxes["video_face_1_part_1"], [84, 64, 32, 32])
+        self.assertEqual(boxes["video_face_1_part_2"], [34, 24, 32, 32])
+        self.assertIn("its own: 2x", self.window.title.text())
+        self.window.scale_edit.setText("1")
+        self.window.apply_input_scale()
+        doc = tomllib.loads(self.list.read_text())
+        self.assertFalse(any("frame" in c for c in doc["clip"]))
+
     def test_typing_a_size_is_not_a_box_key(self):
         self.window.width_edit.setFocus()
         QTest.keyClicks(self.window.width_edit, "2")
@@ -677,6 +695,7 @@ class AppTests(unittest.TestCase):
         window = self.go("Boxes").window
         self.assertTrue(window.frame_fixed)
         self.assertFalse(window.width_edit.isVisibleTo(window))
+        self.assertTrue(window.scale_edit.isVisibleTo(window))  # a clip's own frame
         self.assertIn("set when it was made", window.title.text())
 
     def test_results_says_when_a_clip_has_no_trace(self):

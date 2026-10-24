@@ -2,7 +2,8 @@
 frame.
 
 Recordings on the left, the frame with its box on the right; every change is saved to
-the clip list at once (only ``box`` and ``target_size``). The logic is
+the clip list at once (only ``box``, ``frame`` and ``target_size``). Input scale puts the
+displayed clip on that many times the list's frame (its own ``frame``). The logic is
 :class:`zephyr.annotate.BoxState`. Keys: click place | arrows nudge (shift x10) |
 [ ] resize | n/p recording | 1/2/3 clip | o own box | c copy previous | r re-centre |
 x exclude (never use the recording; again to use it) | a auto (the hand-placed boxes
@@ -183,6 +184,19 @@ class BoxWindow(QtWidgets.QMainWindow):
         larger.clicked.connect(lambda: self.resize_box(STEP))
         controls.addWidget(larger)
         sizing += [smaller, larger]
+        controls.addSpacing(16)
+        controls.addWidget(QtWidgets.QLabel("Input scale:"))
+        self.scale_edit = QtWidgets.QLineEdit(maximumWidth=50)
+        self.scale_edit.setValidator(QtGui.QDoubleValidator(0.05, 16.0, 3))
+        self.scale_edit.setToolTip(
+            "This clip on this many times the list's frame (its own frame): 2 crops "
+            "the same part of the image at twice the pixels. 1 is the list's frame"
+        )
+        self.scale_edit.returnPressed.connect(self.apply_input_scale)
+        controls.addWidget(self.scale_edit)
+        scale_apply = QtWidgets.QPushButton("Set")
+        scale_apply.clicked.connect(self.apply_input_scale)
+        controls.addWidget(scale_apply)
         if self.state.locked:  # the network's crop and frame: only the place moves
             for widget in sizing:
                 widget.setEnabled(False)
@@ -261,19 +275,21 @@ class BoxWindow(QtWidgets.QMainWindow):
         frames = self._frames_for(state.key)
         if frames:
             state.set_part(state.part_index)
-            data = downsample(frames[state.part_index], state.target_size)
+            data = downsample(frames[state.part_index], state.frame)
             suffix = "  (own box)" if state.has_override else ""
             if state.key in state.excluded:
                 suffix = "  (excluded: never used)"
             self.part_label.setText(f"{state.clip.video.stem}{suffix}")
         else:
-            data = np.zeros(state.target_size[::-1], dtype=np.uint8)
+            data = np.zeros(state.frame[::-1], dtype=np.uint8)
             self.part_label.setText("no cached frame")
         if data.ndim == 3:
             data = data.mean(axis=2)
         self.image.setImage(data, levels=(0, 255))
-        width, height = state.target_size
+        width, height = state.frame
         self.view.setLimits(xMin=-width, xMax=2 * width, yMin=-height, yMax=2 * height)
+        if self._shown != state.frame:  # another clip's frame: fit it again
+            self._shown, self._fitted = state.frame, False
         if not self._fitted:
             self.view.setRange(xRange=(0, width), yRange=(0, height), padding=0.02)
             self._fitted = True
@@ -295,6 +311,8 @@ class BoxWindow(QtWidgets.QMainWindow):
 
         scale = state.scale_from_native
         fixed = " (the list's, set when it was made)" if self.frame_fixed else ""
+        if state.clip.video in state.frames:
+            fixed = f" (its own: {state.input_scale:g}x the list's)"
         self.title.setText(
             f"<b>{state.recording.label}</b><br>frame {width}x{height}{fixed} "
             f"({scale:.2f}x downsample)   box {state.box_size}px = "
@@ -306,11 +324,13 @@ class BoxWindow(QtWidgets.QMainWindow):
         self.info.setText(
             f"clips: {', '.join(c.video.stem for c in state.recording.clips)}"
         )
-        self.width_edit.setText(str(width))
-        self.height_edit.setText(str(height))
+        self.width_edit.setText(str(state.target_size[0]))
+        self.height_edit.setText(str(state.target_size[1]))
+        self.scale_edit.setText(f"{state.input_scale:g}")
         self.size_label.setText(str(state.box_size))
 
     _fitted = False
+    _shown: tuple[int, int] | None = None
 
     # ---- actions ----------------------------------------------------------------
 
@@ -378,6 +398,19 @@ class BoxWindow(QtWidgets.QMainWindow):
         self.state.set_target(width, height)
         self._fitted = False
         self._save()
+        self.redraw()
+        self.canvas.setFocus()
+
+    def apply_input_scale(self) -> None:
+        """Put the displayed clip on the typed multiple of the list's frame."""
+        try:
+            scale = float(self.scale_edit.text())
+        except ValueError:
+            self.redraw()
+            return
+        if scale > 0:
+            self.state.set_input_scale(scale)
+            self._save()
         self.redraw()
         self.canvas.setFocus()
 

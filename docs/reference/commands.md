@@ -9,6 +9,7 @@ every flag.
 | [`gui`](#gui) | the desktop app |
 | [`clips scan`](#clips-scan) | make a clip list from a folder of videos |
 | [`clips check`](#clips-check) | read every file of a list and report what would be refused |
+| [`clips frame`](#clips-frame) | put clips on a frame of their own, their boxes carried across |
 | [`annotate`](#annotate) | cache one frame per clip, or match boxes from those placed |
 | [`annotate events`](#annotate-events) | give every clip the default breathing-event detector |
 | [`preprocess`](#preprocess) | decode, crop and gray clips into the feature cache |
@@ -61,6 +62,23 @@ zephyr clips check <list.toml> [--json report.json]
 Reads every file the list names and reports, per clip, what preprocessing or training
 would refuse. It exits non-zero if any clip has a problem. `--json` also writes the
 report.
+
+## clips frame
+
+```text
+zephyr clips frame <list.toml> --input-scale N [--match REGEX]
+```
+
+| Flag | Meaning |
+| --- | --- |
+| `--input-scale N` | put the clips on `N` times the list's `target_size` (their own `frame`); `1` puts them back on the list's |
+| `--match` | only clips whose video path matches this regex (default: every clip, excluded ones too) |
+
+Each clip's box moves with its frame onto the same part of the image, its size in
+pixels scaled by `N`: a 48x48 box on a 360x270 frame becomes 96x96 on 720x540. The
+network sees only the crop, so clips of other cameras can join one list once their
+boxes are the list's size. The list is checked before it is written, so a change that
+leaves clips in use with boxes of two sizes is refused.
 
 ## annotate
 

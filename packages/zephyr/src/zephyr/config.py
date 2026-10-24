@@ -41,7 +41,8 @@ OUTPUT_FS = CANONICAL_BREATHING_SAMPLING_RATE
 predictions on another grid are resampled to it before any metric."""
 
 Box = tuple[int, int, int, int]
-"""Crop box ``(x, y, width, height)`` in ``target_size`` pixels."""
+"""Crop box ``(x, y, width, height)`` in its clip's frame pixels (its ``frame``, else
+its list's ``target_size``)."""
 
 
 def _anchor(path: Path, info: ValidationInfo) -> Path:
@@ -128,8 +129,9 @@ class PreprocessParams(_Model):
 
     target_size: tuple[PositiveInt, PositiveInt]
     """Working frame size ``(width, height)``; the video is scaled to this
-    before cropping, and clip boxes are expressed in these pixels.  No default:
-    a box means nothing without the frame it was placed on."""
+    before cropping, and clip boxes are expressed in these pixels, unless a clip
+    gives its own ``frame``.  No default: a box means nothing without the frame it
+    was placed on."""
     select_fs: float = Field(OUTPUT_FS, gt=0)
     """Rate of the frames the CNN sees, in Hz. Below the output rate, the TCN's input
     is interpolated up to it (half the CNN work at 30 Hz)."""
@@ -149,6 +151,13 @@ class PreprocessParams(_Model):
     }
     """Fields removed after caches existed: kept in the cache key at the values they
     always had, so the caches made before still match."""
+
+    def for_clip(self, clip: "ResolvedClip") -> "PreprocessParams":
+        """The recipe *clip* is preprocessed with: this one, on the clip's own
+        ``frame`` when it has one (its cache key is then a list's at that size)."""
+        if clip.frame is None or clip.frame == self.target_size:
+            return self
+        return self.model_copy(update={"target_size": clip.frame})
 
 
 class Derive(_Model):
@@ -253,8 +262,13 @@ class Clip(_Model):
     clip (inference only)."""
     group: str | None = None
     """Recording label within the video's folder; derived when omitted."""
+    frame: tuple[PositiveInt, PositiveInt] | None = None
+    """This video's working frame size ``(width, height)`` when it is not the list's
+    ``target_size`` (``zephyr clips frame --input-scale``): it is scaled to this before
+    cropping, and its box is in these pixels. The network sees only the crop, so a
+    list may mix frames as long as every box is one size."""
     box: Box | None = None
-    """Hand-placed crop box in ``target_size`` pixels; placed in the app's Boxes page."""
+    """Hand-placed crop box in frame pixels; placed in the app's Boxes page."""
     events: "EventsSource | None" = None
     """This clip's own detector, overriding the list's ``[events]``."""
     selection: Literal["include", "exclude"] | None = None
@@ -298,10 +312,10 @@ class Clip(_Model):
                 raise ValueError(
                     "a clip needs a video, or (thermistor only) a thermistor"
                 )
-            if self.timestamps is not None or self.box is not None:
+            if any(v is not None for v in (self.timestamps, self.box, self.frame)):
                 raise ValueError(
                     f"{self.thermistor.name}: a thermistor-only clip has no "
-                    "timestamps or box"
+                    "timestamps, box or frame"
                 )
         return self
 
@@ -315,6 +329,8 @@ class ResolvedClip(_Model):
     thermistor: Path | None
     group: str
     box: Box | None
+    frame: tuple[int, int] | None = None
+    """Its own frame size; ``None``: its list's ``target_size``."""
     excluded: tuple[tuple[float, float], ...] = ()
     events: EventsSource = EventsSource()
     """Its list's ``[events]``; the default detector when the list has none."""
@@ -400,6 +416,7 @@ def resolve_clip(
         thermistor=thermistor,
         group=group,
         box=clip.box,
+        frame=clip.frame,
         excluded=tuple(clip.excluded),
         events=events_source,
     )
@@ -439,16 +456,16 @@ class ClipList(_Model):
                 f"`thermistor = false`): {missing}"
             )
 
-        width, height = self.preprocess.target_size
         sizes = set()
         for c in resolved:
             if c.box is None:
                 continue
+            width, height = self.preprocess.for_clip(c).target_size
             x, y, w, h = c.box
             if x + w > width or y + h > height:
                 raise ValueError(
                     f"{c.name}: box {list(c.box)} lies outside the "
-                    f"{width}x{height} target frame"
+                    f"{width}x{height} frame"
                 )
             sizes.add((w, h))
         if len(sizes) > 1:
