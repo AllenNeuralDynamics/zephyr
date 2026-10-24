@@ -105,7 +105,10 @@ as the commands.
   <list> --page boxes|breathing`); `zephyr annotate` keeps only what needs no window
   (`--prepare`, `--auto`, `annotate events --auto`). A key or control of the Boxes or
   Breathing page is never dropped (`tests/test_gui_qt.py` checks each against the saved
-  clip list, offscreen). The Boxes page shows the list's frame size (chosen on Clips)
+  clip list, offscreen). A clip may have its own `frame` (`clips frame --input-scale`,
+  or Input scale on the Boxes page): its box is in those pixels, it keys its cache entry
+  as a list at that size would, and the list still needs one box size (the network sees
+  only the crop). The Boxes page shows the list's frame size (chosen on Clips)
   instead of offering it (`frame_fixed`). Opening a project writes nothing; a folder
   is made only by the step that fills it (a dataset's own folder stays as it was).
 

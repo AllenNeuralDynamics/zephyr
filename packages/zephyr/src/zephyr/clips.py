@@ -1,5 +1,5 @@
-"""Writing and checking clip lists: ``zephyr clips scan``, ``zephyr clips check`` and
-the box write-back annotate uses.
+"""Writing and checking clip lists: ``zephyr clips scan``, ``zephyr clips check``,
+``zephyr clips frame`` and the box write-back annotate uses.
 
 A clip list is a human-edited TOML file (see :mod:`zephyr.config`), written with
 ``tomlkit``, which keeps comments, ordering and layout across rewrites.  Scanning writes
@@ -13,6 +13,7 @@ CLI
         --timestamps '{stem}_times.parquet' --thermistor '{stem}_breath.parquet'
     zephyr clips scan other/videos --glob '*.mp4' -o predict.toml --checkpoint best.pt
     zephyr clips check examples/clips.toml [--json report.json]
+    zephyr clips frame list.toml --input-scale 2 --match SideCamera   # own frames
 """
 
 import argparse
@@ -153,13 +154,15 @@ def write_boxes(
     boxes: dict[Path, Box],
     target_size: tuple[int, int] | None = None,
     *,
+    frames: dict[Path, tuple[int, int] | None] | None = None,
     clear: set[Path] = frozenset(),
     exclude: set[Path] = frozenset(),
     restore: set[Path] = frozenset(),
 ) -> None:
-    """Write ``box =`` entries (and optionally ``target_size``) back into *path*,
-    remove the box of every *clear* video, mark every *exclude* video
-    ``selection = "exclude"`` and take that mark off every *restore* video.
+    """Write ``box =`` entries (and optionally ``target_size``) back into *path*, set
+    each *frames* video's own ``frame`` (``None`` removes it), remove the box of every
+    *clear* video, mark every *exclude* video ``selection = "exclude"`` and take that
+    mark off every *restore* video.
 
     Only those keys are touched, so comments, ordering and every other field of
     the hand-edited file survive.  Videos are keyed by resolved path.
@@ -169,6 +172,11 @@ def write_boxes(
     if target_size is not None:
         doc["preprocess"]["target_size"] = list(target_size)
     for entry, video in videos:
+        if video in (frames or {}):
+            if frames[video] is not None:
+                entry["frame"] = list(frames[video])
+            elif "frame" in entry:
+                del entry["frame"]
         if video in boxes:
             entry["box"] = list(boxes[video])
         elif video in clear and "box" in entry:
@@ -208,6 +216,55 @@ def _boxed_list(path: Path) -> tuple:
         if "video" in entry  # thermistor only: never boxed
     ]
     return doc, videos
+
+
+def scaled_frame(target: tuple[int, int], scale: float) -> tuple[int, int]:
+    """The frame *scale* times the list's *target* size, in whole pixels."""
+    if scale <= 0:
+        raise ValueError(f"input scale {scale:g} must be above 0")
+    return max(1, round(target[0] * scale)), max(1, round(target[1] * scale))
+
+
+def scale_box(box: Box, old: tuple[int, int], new: tuple[int, int]) -> Box:
+    """*box* placed on an *old* frame, moved onto a *new* one: the same part of the
+    image, its size in pixels scaled with the frame."""
+    rx, ry = new[0] / old[0], new[1] / old[1]
+    x, y, w, h = box
+    return round(x * rx), round(y * ry), round(w * rx), round(h * ry)
+
+
+def set_frames(path: Path, scale: float, match: str | None = None) -> int:
+    """Give the clips of *path* whose video matches *match* (a regex searched in its
+    path as written; every clip without one) the frame *scale* times the list's
+    ``target_size``, their boxes carried onto it (:func:`scale_box`); a scale of 1
+    removes their own frame. Excluded clips count too. Returns how many changed; the
+    list is validated before it is written."""
+    path = path.resolve()
+    doc = tomlkit.parse(path.read_text())
+    target = tuple(doc["preprocess"]["target_size"])
+    new = scaled_frame(target, scale)
+    pattern = re.compile(match) if match else None
+    changed = 0
+    for entry in doc["clip"]:
+        if "video" not in entry or (
+            pattern and not pattern.search(str(entry["video"]))
+        ):
+            continue
+        old = tuple(entry.get("frame", target))
+        if old == new:
+            continue
+        if "box" in entry:
+            entry["box"] = list(scale_box(tuple(entry["box"]), old, new))
+        if new == target:
+            del entry["frame"]
+        else:
+            entry["frame"] = list(new)
+        changed += 1
+    ClipList.model_validate(
+        doc.unwrap(), context={"base": path.parent, "check_files": False}
+    )
+    path.write_text(tomlkit.dumps(doc))
+    return changed
 
 
 def update_clip_list(
@@ -491,11 +548,34 @@ def main(argv: list[str] | None = None) -> None:
     )
     check_parser.add_argument("clips", type=Path)
     check_parser.add_argument("--json", type=Path, help="Also write the report here.")
+    frame_parser = sub.add_parser(
+        "frame",
+        help="Give clips their own frame: the list's target_size times --input-scale, "
+        "their boxes carried onto it (the same part of the image, scaled in pixels).",
+    )
+    frame_parser.add_argument("clips", type=Path)
+    frame_parser.add_argument(
+        "--input-scale",
+        type=float,
+        required=True,
+        metavar="N",
+        help="Times the list's target_size (2: twice the pixels; 1: the list's again).",
+    )
+    frame_parser.add_argument(
+        "--match", help="Only clips whose video path matches this regex (default: all)."
+    )
     if argv is None:
         import sys
 
         argv = sys.argv[1:]
     args = parser.parse_args(argv)
+    if args.command == "frame":
+        try:
+            changed = set_frames(args.clips, args.input_scale, args.match)
+        except (ValueError, re.error) as exc:
+            raise SystemExit(f"{args.clips}: {exc}") from None
+        print(f"{args.clips}: {changed} clip(s) on {args.input_scale:g}x its frame")
+        return
     if args.command == "check":
         try:
             checks = check(args.clips)

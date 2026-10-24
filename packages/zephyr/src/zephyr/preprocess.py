@@ -170,7 +170,8 @@ def preprocess_clip(
 
     n_decoded = 0
     n_written = 0
-    for block in iter_frames(clip.video, scale_to=params.target_size, crop=clip.box):
+    frame = params.for_clip(clip).target_size
+    for block in iter_frames(clip.video, scale_to=frame, crop=clip.box):
         for frame in block:
             index = n_decoded
             n_decoded += 1

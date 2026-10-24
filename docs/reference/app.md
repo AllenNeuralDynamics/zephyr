@@ -61,6 +61,10 @@ uv run zephyr gui my-project/clips.toml --page boxes   # straight to a page
 | ++x++ | exclude the recording (never used; again to use it) |
 | ++a++ | Auto |
 
+**Input scale** puts the shown clip on that many times the list's frame size (its own
+`frame`, with a box of its own): `2` crops the same part of the image at twice the
+pixels, for a camera whose snout is smaller in the frame. `1` puts it back.
+
 ## Breathing page keys
 
 | Key | Does |

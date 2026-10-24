@@ -48,11 +48,13 @@ class ClipEntry:
 
 
 def cache_key(clip: ResolvedClip, params: PreprocessParams) -> dict:
-    """Everything that determines a clip's arrays."""
+    """Everything that determines a clip's arrays: on its own ``frame``, the key a list
+    at that ``target_size`` would give it."""
     if clip.video is None or clip.timestamps is None:
         raise ValueError(f"{clip.name} is thermistor only; features need its video")
     if clip.box is None:
         raise ValueError(f"{clip.name} has no box; place it in `zephyr gui` (Boxes)")
+    params = params.for_clip(clip)
     recipe = params.KEY_RETIRED | {
         k: v
         for k, v in dump(params).items()

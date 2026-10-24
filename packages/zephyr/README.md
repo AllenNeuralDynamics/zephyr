@@ -66,7 +66,7 @@ pages, in order:
 | --- | --- | --- |
 | Project | opens or creates a project; where each step stands | |
 | Clips | makes a clip list from a video folder, showing first what it would list (each video's session, timestamps and breathing file; other file names under **Other file names**) and the frame size, fixed for the list; checks every file; **Edit TOML** opens the list in your text editor (add clips or paths by hand), **Reload** reads it again and says why if it does not load | `clips scan`, `clips check` |
-| Boxes | one crop box per recording, on the list's frame size; **Auto** matches your boxes on the rest | `annotate --prepare` |
+| Boxes | one crop box per recording, on the list's frame size (or a clip's own, **Input scale**); **Auto** matches your boxes on the rest | `annotate --prepare`, `clips frame` |
 | Breathing | each clip's events and detector, bad stretches and clips, opening on the suggestions for every clip; **Auto** gives every clip the default detector; a dot in the list marks unsaved changes | |
 | Train | writes a new experiment (one fold over the clip list's groups; **Auto split** draws sessions in train/val/test shares), preprocesses, smoke-runs, runs and resumes it | `preprocess`, `run --save-traces` |
 | Results | a run's scores per test group and clip, a clip's trace against its sensor (the run's `traces/`), its curves; scoring it on its test groups or another list | `run --evaluate-only`, `evaluate` |

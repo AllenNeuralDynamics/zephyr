@@ -77,7 +77,8 @@ decoding video.
 | `timestamps` | derived | frame-timestamp parquet, column `Time` |
 | `thermistor` | derived | breathing-sensor parquet, columns `Time` and `Signal`; `false` for an unlabelled clip |
 | `group` | derived | the recording (session). A recording is the pair (video folder, group) |
-| `box` | none | `[x, y, w, h]` in `target_size` pixels. Every clip needs one before preprocessing, and all must share one size |
+| `frame` | the list's `target_size` | `[width, height]` this video is shrunk to instead, e.g. another camera's (`clips frame --input-scale`, or the Boxes page's **Input scale**) |
+| `box` | none | `[x, y, w, h]` in the clip's frame pixels (its `frame`, else `target_size`). Every clip needs one before preprocessing, and all must share one size |
 | `events` | the list's | this clip's own detector, `{method = "...", params = {...}}` |
 | `selection` | none | `"exclude"`: left out of everything downstream. `"include"`: a note only |
 | `reviewed` | `false` | a person confirmed the mark and spans; suggestions never change it |
@@ -89,7 +90,8 @@ decoding video.
 | Writer | Writes |
 | --- | --- |
 | `clips scan` / Clips page | `[preprocess]`, `[derive]`, `[events]`, the `video` of each clip |
-| Boxes page, `annotate --auto` | `box` |
+| Boxes page, `annotate --auto` | `box`, and `frame` (Boxes page only) |
+| `clips frame` | `frame`, `box` |
 | Breathing page, `annotate events --auto` | `[events]`, `events`, `selection`, `reviewed`, `excluded`, `included` |
 | you, in a text editor | anything; comments and layout are kept by every writer |
 
