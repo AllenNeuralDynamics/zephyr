@@ -180,20 +180,14 @@ days, and #tbd[22] of them were recorded on more than one rig (#fig(<fig:corpus>
 Breathing in the corpus covers the full range of the mouse: #tbd[26%] of breaths were at
 2–4 Hz, #tbd[54%] at 4–8 Hz and #tbd[20%] at 8–15 Hz (#fig(<fig:corpus>, "b")).
 
-We evaluated models under two protocols. In the first, whole animals are held out (test
-set A): it asks whether a model works on an animal it has never seen. In the second,
-sessions of training animals are held out (test set B): it asks whether a model works on a
-new day of a known animal. Validation animals, held out whole, were used only to select
-models, and test sessions only for final scoring. We drew five such splits, the folds of
-a cross-validation in which each of the #tbd[48] animals outside the #tbd[359]-Hz group is
-a new animal once (Methods, @tab:split). Because sessions of one animal on one rig
-resemble each other, and moving an animal to another rig changed its scores about
-two-thirds as much as changing the animal on one rig (@fig:rigs), the unit of comparison
-is an animal on one rig (an animal × rig unit): scores are averaged within each unit, then over the units of a fold, and reported
-as the mean over the five folds with its 95% interval (Methods, Statistics). Over the
-folds, test set A holds #tbd[107] units from #tbd[48] animals, and test set B #tbd[86]
-from #tbd[41]. Analyses of a single trained network (the training-set size, quality
-control and example clips) use the published split, one of these draws.
+We scored every method on two test sets: new animals, held out whole (test set A), and
+new sessions of training animals (test set B). Scores come from a five-fold
+cross-validation in which each of the #tbd[48] animals outside the #tbd[359]-Hz group is a
+new animal once (Methods, @tab:split), and are compared between animals on one rig
+(animal × rig units; Methods, Statistics): over the folds, test set A holds #tbd[107]
+units from #tbd[48] animals, and test set B #tbd[86] from #tbd[41]. Analyses of a single
+trained network (the training-set size, quality control and example clips) use the
+published split, a separate draw made the same way.
 
 #figure(
   fit(fig1),
@@ -240,34 +234,31 @@ A linear readout of the leading facial motion components, as in Facemap @syeda20
 better, but recovered only part of the signal ($r = #tbd[0.48]$, inhalation F1
 #tbd[0.51]).
 
-We then trained networks to predict the thermistor trace from video. Ours encodes each
-frame of the snout crop with a convolutional network, whose first layer spans three frames
-so that it sees change between frames, places the frame embeddings on a 60-Hz grid by
-their timestamps, and passes them to a dilated temporal convolutional network
-(#fig(<fig:overview>, "d")\; Methods). It has two outputs: the breathing trace, trained with
-a correlation loss, and the probability of an inhalation onset at each time step, trained
-against a smoothed onset train. It reads only a small 96x96 crop of the grayscale image over the snout of the animal. For comparison we trained four networks developed for physiology from human face
-video, TS-CAN @liu2020, PhysNet @yu2019, PhysFormer @yu2022 and RhythmFormer @zou2025, on the
-same clips and crops, with the same training schedule and model selection on validation
-animals, each with the loss of its original paper (Methods).
+We then trained networks to predict the thermistor trace from a 96 × 96 grayscale crop
+over the snout. Ours encodes each frame and models breathing over time with a temporal
+convolutional network; it outputs the breathing trace and the probability of an
+inhalation onset at each time step (#fig(<fig:overview>, "d")\; Methods). For comparison
+we trained four networks developed for physiology from human face video, TS-CAN @liu2020,
+PhysNet @yu2019, PhysFormer @yu2022 and RhythmFormer @zou2025, on the same clips under the
+same protocol (Methods).
 
 Every network recovered breathing on new animals (#fig(<fig:benchmark>, "b")\;
 @tab:benchmark\; an example in #fig(<fig:overview>, "e")). Ours
 detected inhalation onsets best on new animals, at F1 #tbd[0.96] (95% interval
 #tbd[0.94–0.97]) within 25 ms (#tbd[1.5] frames at 60 Hz), against #tbd[0.94] for PhysNet
-(paired difference #tbd[0.015], #tbd[0.002–0.029]), and recovered the waveform with a
+(paired difference #tbd[0.017], #tbd[0.002–0.031]), and recovered the waveform with a
 correlation of #tbd[0.81] (#tbd[0.78–0.84]), against #tbd[0.79] for PhysNet (difference
 #tbd[0.02], #tbd[0.00–0.04]); TS-CAN, RhythmFormer and PhysFormer reached correlations of
 #tbd[0.64–0.77]. On the published split's ten test animals alone the two correlations
-were tied (#tbd[0.79] against #tbd[0.80]). PhysNet counted breathing rate as well as our
-network (@tab:benchmark). It also infers faster than PhysNet:
+were tied (#tbd[0.79] against #tbd[0.80]). Our network counted breathing rate at least as well as
+PhysNet (@tab:benchmark). It also infers faster than PhysNet:
 a 5-min clip took #tbd[0.87] s on a consumer GPU (RTX 4060 Ti), against #tbd[1.58] s for
 PhysNet and #tbd[5.8–6.0] s for the two transformers (#fig(<fig:benchmark>, "b"); @tab:nets). The onset output contributed modestly: detecting inhalations as
 peaks of the predicted trace gave F1 #tbd[0.94], against #tbd[0.96] from the onset
 probability. Exhalations, detected on the trace, were found less reliably (F1 #tbd[0.75]).
 
 Accuracy depended on breathing rate (#fig(<fig:benchmark>, "c")). Our network was
-least accurate on slow breathing (F1 #tbd[0.88] at 2–3 Hz) and near perfect from 6 to
+least accurate on slow breathing (F1 #tbd[0.89] at 2–3 Hz) and near perfect from 6 to
 12 Hz (F1 #tbd[0.99]), dropping only slightly above 12 Hz (#tbd[0.95]). PhysNet and
 RhythmFormer matched it from 8 to 12 Hz but fell further at both ends (PhysNet
 #tbd[0.86] at 2–3 Hz and #tbd[0.93] above 12 Hz), and PhysFormer reached only #tbd[0.51]
@@ -278,9 +269,9 @@ the thermistor by a median of #tbd[1.7] ms (interquartile range #tbd[−6.2 to 8
 well within one breath at the fastest sniffing rates, and the lag hardly changed with
 breathing rate, from a median of #tbd[+2.5] ms at 2–3 Hz to #tbd[+0.5] ms at 11–12 Hz
 (#fig(<fig:benchmark>, "d")). Breathing rate, counted in 10-s windows, agreed with
-the thermistor with a mean absolute error of #tbd[4.8] breaths per minute (over all windows;
-#tbd[5.0] averaged within animal × rig units, @tab:benchmark) and a bias of
-#tbd[+3.1] (95% limits of agreement #tbd[−14.7] to #tbd[+20.9]\; #fig(<fig:benchmark>, "e")), the measures
+the thermistor with a mean absolute error of #tbd[4.1] breaths per minute (over all windows;
+#tbd[4.4] averaged within animal × rig units, @tab:benchmark) and a bias of
+#tbd[+0.2] (95% limits of agreement #tbd[−16.0] to #tbd[+16.4]\; #fig(<fig:benchmark>, "e")), the measures
 used for camera respiration in humans @villarroel2019. @tab:benchmark gives these rate
 measures for every method, as reported for camera physiology in humans @liu2023toolbox.
 
@@ -301,7 +292,7 @@ measures for every method, as reported for camera physiology in humans @liu2023t
     thermistor inhalation with a prediction within 50 ms) against the breath's rate, every
     fold's new animals pooled: the share of each rate bin's lags (colour), with the median
     (solid) and interquartile range (dashed); dotted lines, the 25-ms tolerance; n =
-    #tbd[1,511,844] inhalations. *e,* Breathing rate in 10-s windows, every fold's new
+    #tbd[1,505,437] inhalations. *e,* Breathing rate in 10-s windows, every fold's new
     animals pooled: our network minus the thermistor against their mean (colour, number of
     windows), with the bias (solid) and 95% limits of agreement (dotted); n =
     #tbd[31,136] windows. *a,* test set A of the published split; *b–e,* test set A of
@@ -338,8 +329,8 @@ network on nested subsets of #tbd[4], #tbd[8] and #tbd[16] of the #tbd[32] train
 animals, with all their sessions (#tbd[35], #tbd[74] and #tbd[148] of #tbd[295]), and on
 three draws of #tbd[2] animals (#tbd[18–19] sessions), and scored each on the same test sets
 (#fig(<fig:general>, "c")). On new animals (test set A), scores barely depended on the
-number of training animals: inhalation F1 was #tbd[0.92] with #tbd[4] animals and
-#tbd[0.94] with #tbd[32] (paired difference #tbd[0.02], 95% interval #tbd[−0.00 to
+number of training animals: inhalation F1 was #tbd[0.93] with #tbd[4] animals and
+#tbd[0.94] with #tbd[32] (paired difference #tbd[0.01], 95% interval #tbd[−0.01 to
   0.04]), and the waveform correlation #tbd[0.77] against #tbd[0.79]. Keeping all #tbd[32]
 animals but a quarter of their sessions (#tbd[74]) gave much the same scores (F1
 #tbd[0.92], $r$ #tbd[0.77]). Below four animals the network depended on which animals
@@ -352,7 +343,7 @@ To see where the
 network fails, we examined every missed (false negative, FN) and every false inhalation (false positive, FP) on new animals
 (#fig(<fig:general>, "d")\; their causes are in #fig(<fig:qc>, "a")). Most of the failures, about three quarters, were small differences between the predicted and true inhalation times rather than gross misdetections (#fig(<fig:general>, "d")). Relaxing the tolerance from 25 to 100 ms raised inhalation F1 on
 new animals from #tbd[0.96] to #tbd[0.99] (mean over folds) and cut the errors left from
-#tbd[9.0%] to #tbd[2.0%] of breaths; halving it to 12.5 ms lowered F1 to #tbd[0.72]
+#tbd[8.6%] to #tbd[1.9%] of breaths; halving it to 12.5 ms lowered F1 to #tbd[0.72]
 (#fig(<fig:general>, "e")).
 
 A low waveform correlation did not mean that the breaths were lost. Across the test-A
@@ -360,9 +351,9 @@ clips of the published split,
 correlation and inhalation F1 were only loosely related (Spearman $rho = #tbd[0.41]$):
 in the #tbd[16] clips with the lowest tenth of correlations ($r < #tbd[0.61]$), median F1
 was still #tbd[0.76], and a quarter reached #tbd[0.89] or more. In the clip shown
-(correlation #tbd[0.48]), every inhalation over the 2 s shown was found although the
-onset output peaked at only #tbd[0.58–0.88] (median #tbd[0.70], against a threshold of
-0.5) and the trace departed from the thermistor in shape ($r = #tbd[0.50]$ over the
+(correlation #tbd[0.51]), every inhalation over the 2 s shown was found although the
+onset output peaked at only #tbd[0.80–0.91] (median #tbd[0.87], against a threshold of
+#tbd[0.75]) and the trace departed from the thermistor in shape ($r = #tbd[0.51]$ over the
 2 s; #fig(<fig:general>, "f")). Onset times can thus be used even where the waveform is
 poor and the onset output is far from certain.
 
@@ -384,7 +375,7 @@ poor and the onset output is far from certain.
     seed per run. *d,* Near misses: among the published split's test-A clips with a
     correlation at least the median,
     the one with the most predictions 25–100 ms from a thermistor inhalation (r =
-    #tbd[0.92], F1 #tbd[0.91]), around its densest near misses. *e,* Our network's inhalation F1 on
+    #tbd[0.90], F1 #tbd[0.95]), around its densest near misses. *e,* Our network's inhalation F1 on
     new animals as the matching tolerance is relaxed (pairs within 100 ms; top) and the
     misses (FN) and false inhalations (FP) left, as a share of thermistor breaths
     (bottom), mean over the #tbd[5] folds with its 95% interval; F1 and errors left at
@@ -395,7 +386,7 @@ poor and the onset output is far from certain.
     #tbd[16] test-A clips of the published split in the lowest tenth of correlation, the
     2-s stretch in which every inhalation is found (no error or excluded span, at least
     4 inhalations) with the lowest median onset probability at the network's events
-    (clip r = #tbd[0.48]; over the 2 s, r = #tbd[0.50] and onset peaks #tbd[0.58–0.88]). In *d* and *f* (one clip each):
+    (clip r = #tbd[0.51]; over the 2 s, r = #tbd[0.51] and onset peaks #tbd[0.80–0.91]). In *d* and *f* (one clip each):
     crops (top), the thermistor and our trace with the thermistor's (black) and the
     network's (blue) inhalations, misses (FN) and false inhalations (FP) marked, and the
     onset probability.],
@@ -403,12 +394,12 @@ poor and the onset output is far from certain.
 
 == Known failure modes and limitations
 
-We first asked what our network's remaining errors are. Of the #tbd[62,258] missed and
-#tbd[78,273] false inhalations on the new animals of the five folds, #tbd[88]% and
-#tbd[69]% were near misses (mean over folds): a prediction and a thermistor inhalation
+We first asked what our network's remaining errors are. Of the #tbd[67,027] missed and
+#tbd[68,233] false inhalations on the new animals of the five folds, #tbd[79]% and
+#tbd[77]% were near misses (mean over folds): a prediction and a thermistor inhalation
 within 100 ms of each other that the 25-ms tolerance did not pair (#fig(<fig:qc>, "a")).
 The other, gross errors did not gather where one might expect. Fast breathing, above
-8 Hz, accounted for #tbd[11]% of gross misses and no gross false inhalations, against
+8 Hz, accounted for #tbd[9]% of gross misses and no gross false inhalations, against
 #tbd[20]% of all breaths; face motion was no more common around errors than around
 breaths in general (#tbd[9–10]% against #tbd[10]%). Only shallow breaths were
 over-represented, at #tbd[36–37]% of gross errors against #tbd[25]% of breaths (Methods).
@@ -420,7 +411,7 @@ animals (Methods). On new animals (test set A), which played no part in setting 
 the best measures ranked the published split's #tbd[156] videos by their true inhalation F1 with Spearman
 correlations of #tbd[0.63–0.80] (#fig(<fig:qc>, "b")). The #tbd[88]% of windows that
 passed every check had a mean inhalation F1 of #tbd[0.96], against #tbd[0.81] for the
-windows that failed and #tbd[0.95] for all (#fig(<fig:qc>, "c")). The onset output is
+windows that failed and #tbd[0.95] for all (#fig(<fig:qc>, "c")). #note[these quality-control reports were made at the 0.5 onset threshold; rerun them at each checkpoint's own] The onset output is
 also calibrated: on validation animals, the probability the network gives a predicted
 inhalation matched the share that were real (expected calibration error #tbd[0.002]\;
 #fig(<fig:qc>, "d")), so each inhalation can carry its own confidence.
@@ -430,7 +421,7 @@ on the crop it sees (#fig(<fig:qc>, "e")). Training with more augmentation, or w
 breathing-rate bin weighted equally, changed inhalation F1 and the waveform correlation on
 test set A of the published split by less than #tbd[0.01] (paired intervals including
 zero). Doubling the crop to 192 × 192 pixels lowered both: inhalation F1 by #tbd[0.055]
-(95% interval #tbd[0.030–0.083]) and the correlation by #tbd[0.078] (#tbd[0.026–0.122])
+(95% interval #tbd[0.029–0.083]) and the correlation by #tbd[0.078] (#tbd[0.026–0.122])
 #note[one seed per variant].
 
 #note[Application, if one is added: run on sessions or animals with no usable thermistor
@@ -439,9 +430,9 @@ zero). Doubling the crop to 192 × 192 pixels lowered both: inhalation F1 by #tb
 #figure(
   fit(fig5),
   caption: [*When to trust a prediction.* *a,* Our network's errors on new animals, mean
-    over the #tbd[5] folds with its 95% interval (#tbd[62,258] misses, FN; #tbd[78,273] false
+    over the #tbd[5] folds with its 95% interval (#tbd[67,027] misses, FN; #tbd[68,233] false
     inhalations, FP): the share that are near misses (a prediction and a thermistor
-    inhalation within 100 ms), and, among the other errors (#tbd[7,702] FN, #tbd[23,100]
+    inhalation within 100 ms), and, among the other errors (#tbd[14,089] FN, #tbd[15,137]
     FP), the share in fast breathing (> 8 Hz), in face motion (top 10% of the clip) and on
     shallow breaths (bottom 25% of the clip); grey ticks, the share of all
     #tbd[1,519,650] thermistor breaths with each property. *b–e,* the published split.
@@ -548,12 +539,17 @@ and scoring.
 
 == Data splits
 
-In every split (@tab:split), test set A and validation held out whole animals and test
-set B held out blocks of consecutive sessions of training animals. Held-out animals were
+Models were evaluated under two protocols. Test set A holds out whole animals and asks
+whether a model works on an animal it has never seen; test set B holds out blocks of
+consecutive sessions of training animals and asks whether it works on a new day of a known
+animal. Validation animals, also held out whole, were used only for early stopping and
+model selection, and test sessions only for final scoring. We drew five such splits, the
+folds of a cross-validation in which each of the #tbd[48] animals outside the #tbd[359]-Hz
+group is a test-A animal once, and one more, the published split, used for analyses of a
+single trained network (@tab:split). Held-out animals were
 the best of many seeded draws covering the corpus's rigs, months and breathing rates, and
 sessions per animal and rig were capped. Animals recorded at #tbd[359] Hz were split by
-session; their remaining #tbd[5] sessions form test set C (@tab:testc).
-Validation animals were used only for early stopping and model selection. The cross-validation folds are described in Supplementary Note 1.
+session; their remaining #tbd[5] sessions form test set C (@tab:testc). The cross-validation folds are described in Supplementary Note 1.
 
 _Training-set size._ We retrained our network on parts of the published split's
 training set (#fig(<fig:general>, "c")): nested subsets of #tbd[4], #tbd[8] and #tbd[16] of the #tbd[32] training animals with all
@@ -664,7 +660,10 @@ comparison networks were trained the same way, each with the loss of its origina
 Clips were predicted in overlapping windows of #tbd[1,024] samples, discarding #tbd[126]
 samples (half the receptive field) at each edge, so that the stitched trace equals a
 single pass over the clip. Inhalation onsets were the peaks of the onset probability above
-#tbd[0.5], at least #tbd[50] ms apart. Exhalations, and the inhalations of methods without
+a threshold, at least #tbd[50] ms apart. The threshold was chosen for each trained network
+on its own validation animals, never on a test set: of #tbd[0.20–0.85] in steps of
+#tbd[0.05], the one with the best mean inhalation F1 over the validation clips. It was
+#tbd[0.70–0.75] for the five folds' networks and #tbd[0.75] for the published split's. Exhalations, and the inhalations of methods without
 an onset output ("DSP"), were found on the predicted trace by the detector used on the
 thermistor, with the same settings (the 40-Hz low-pass does not apply at 60 Hz).
 
