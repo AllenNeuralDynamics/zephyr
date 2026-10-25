@@ -17,6 +17,7 @@
 #import "figures/figs2.typ": body as figs2
 #import "figures/figs3.typ": body as figs3
 #import "figures/figs4.typ": body as figs4
+#import "figures/figs5.typ": body as figs5
 
 // A figure assembled at its printed width (183 mm), scaled to the text width.
 #let fit(body) = layout(size => scale(reflow: true, size.width / 189mm * 100%, body))
@@ -291,6 +292,19 @@ range (#fig(<fig:benchmark>, "c")). Zephyr found almost every inhalation between
 12 Hz (F1 #v("rate.f1_middle")) and slightly fewer above 12 Hz (#v("rate.f1_fast")). It was
 least accurate in slow breathing, at 2–3 Hz (#v("rate.f1_slow")). The other networks lost
 more accuracy at both ends of the range.
+
+Most of the loss in slow breathing came from timing rather than from lost breaths. At
+2–3 Hz, Zephyr found #v("slow.within_25_slow")% of the thermistor's inhalations within
+25 ms and #v("slow.within_50_slow")% within 50 ms, and only #v("slow.absent_slow")% had no
+inhalation within 100 ms (@fig:slow). An inhalation found 25–100 ms off counts as both a
+miss and a false inhalation, so these near misses weigh twice on F1. The spread of
+Zephyr's timing was wider in slow breathing (#v("slow.iqr_ms_slow") ms at 2–3 Hz against
+#v("slow.iqr_ms_mid") ms at 6–8 Hz) but narrower as a share of the breath cycle
+(#v("slow.iqr_cycle_slow")% against #v("slow.iqr_cycle_mid")%). With a tolerance of 10% of
+each breath's cycle, Zephyr found #v("slow.within_cycle_slow")% of inhalations at 2–3 Hz;
+at 10–12 Hz, where 10% of the cycle is shorter than one video frame, it found
+#v("slow.within_cycle_fast")%. A fixed 25-ms tolerance is thus strictest for slow breaths,
+which Zephyr times more precisely than fast ones relative to the breath cycle.
 
 The ability to recover inhalations events with precise timing is crucial for behavior and physiology studies. Over the new animals of all
 folds, Zephyr's inhalations lagged the thermistor's by #v("rate.lag") ms on average (95%
@@ -1105,3 +1119,16 @@ batch, steps per epoch and learning rate are in @tab:nets #note[confirm how the 
     recording (Methods). The cameras' angle, zoom and lighting, the implant and the
     animal's posture differ between rigs and days.],
 ) <fig:views>
+
+#figure(
+  fit(figs5),
+  caption: [*Timing of slow breaths.* Zephyr on the held-out animals of the
+    #v("benchmark.folds") cross-validation folds, by the thermistor's breathing rate (bins
+    labelled by their lower edge; 12 is 12–15 Hz). Lines show the mean over folds and
+    bands its 95% interval. *a,* The share of thermistor inhalations Zephyr found within
+    25 ms (the tolerance used throughout), within 50 ms, and within 10% of the breath's
+    own cycle. *b,* The spread of Zephyr's inhalation times around the thermistor's
+    (interquartile range of the lag). *c,* The same spread as a percentage of the breath's
+    cycle. *d,* The share of thermistor inhalations found 25–100 ms off, which count as
+    both a miss and a false inhalation, and of those with no inhalation within 100 ms.],
+) <fig:slow>

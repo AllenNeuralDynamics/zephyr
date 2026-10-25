@@ -1325,6 +1325,40 @@ def rate_band_panel(
     return fig
 
 
+def rate_lines_panel(
+    width_mm: float,
+    height_mm: float,
+    summary: pd.DataFrame,
+    measures: dict[str, str],
+    ylabel: str,
+    scale: float = 1.0,
+    legend: bool = True,
+) -> Figure:
+    """Measures per breathing-rate bin, one line each (mean over folds, band its 95%
+    interval; *summary*: ``measure``, ``bin``, ``mean``, ``low``, ``high``), labelled by
+    *measures* (measure -> label) and multiplied by *scale* (100 for percentages)."""
+    fig, ax = style.panel(width_mm, height_mm, [["rate"]])
+    a = ax["rate"]
+    bins = list(dict.fromkeys(summary["bin"].astype(str)))
+    x = np.arange(len(bins))
+    for colour, (measure, label) in zip(
+        style.series(2 * len(measures))[::2], measures.items(), strict=True
+    ):
+        g = summary[summary["measure"] == measure]
+        g = g.set_index(g["bin"].astype(str)).reindex(bins)
+        a.plot(x, scale * g["mean"], "-o", ms=2, lw=0.8, color=colour, label=label)
+        if g["low"].notna().any():
+            a.fill_between(
+                x, scale * g["low"], scale * g["high"], color=colour, alpha=0.18, lw=0
+            )
+    a.set_xticks(x, [b.split("-")[0] for b in bins])
+    a.set_xlabel("Breathing rate (Hz)")
+    a.set_ylabel(ylabel)
+    if legend and len(measures) > 1:
+        a.legend(fontsize=5.5, handlelength=1, labelspacing=0.2, borderpad=0.2)
+    return fig
+
+
 def learning_curve_panel(
     width_mm: float,
     height_mm: float,

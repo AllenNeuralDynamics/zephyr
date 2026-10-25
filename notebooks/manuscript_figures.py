@@ -640,6 +640,78 @@ def fig3cde(fold_tables, test_a):
 
 
 @app.cell
+def figs5(fold_tables, test_a):
+    # Supplementary Fig. 5: why slow breaths score lower. Zephyr's breaths on new
+    # animals per rate bin and fold: found within 25 ms, 50 ms and 10% of the breath's
+    # cycle; the spread of its lags in ms and as a share of the cycle; breaths found
+    # late (beyond 25 ms) against not found. Mean over folds with its interval.
+    _t = fold_tables(["Zephyr"], ("breaths", "lags"))
+    _t = {k: v.query("set == @test_a and fold != 'published'") for k, v in _t.items()}
+    _timing = analysis.timing_by_rate(
+        _t["lags"], _t["breaths"], analysis.RATE_BINS_HZ[1:]
+    )
+    _measures = [
+        "within 25 ms",
+        "within 50 ms",
+        "within cycle",
+        "iqr_ms",
+        "iqr_cycle",
+        "near",
+        "absent",
+    ]
+    slow_timing = pd.concat(
+        analysis.across_folds(
+            _timing.rename(columns={m: "value"}), "value", by=["method", "bin"]
+        ).assign(measure=m)
+        for m in _measures
+    )
+    _panels = {
+        "a": (
+            {
+                "within 25 ms": "Within 25 ms",
+                "within 50 ms": "Within 50 ms",
+                "within cycle": "Within 10% of cycle",
+            },
+            "Breaths found (%)",
+            100.0,
+        ),
+        "b": ({"iqr_ms": "Timing spread"}, "Timing spread (ms)", 1.0),
+        "c": ({"iqr_cycle": "Timing spread"}, "Timing spread (% of cycle)", 1.0),
+        "d": (
+            {"near": "Found 25–100 ms off", "absent": "Not found"},
+            "Breaths (%)",
+            100.0,
+        ),
+    }
+    _figs = []
+    for _panel, (_m, _label, _scale) in _panels.items():
+        _fig = plots.rate_lines_panel(
+            *size("figs5", _panel),
+            slow_timing[slow_timing["measure"].isin(list(_m))],
+            _m,
+            _label,
+            scale=_scale,
+        )
+        plots.save_panel(_fig, FIGURES / "figs5" / f"{_panel}.svg")
+        _figs.append(_fig)
+    _at = slow_timing.set_index(["measure", "bin"])["mean"]
+    v_slow = {
+        "within_25_slow": values.pct(_at[("within 25 ms", "2-3")]),
+        "within_50_slow": values.pct(_at[("within 50 ms", "2-3")]),
+        "within_cycle_slow": values.pct(_at[("within cycle", "2-3")]),
+        "within_cycle_fast": values.pct(_at[("within cycle", "10-12")]),
+        "iqr_ms_slow": values.num(_at[("iqr_ms", "2-3")], 0),
+        "iqr_ms_mid": values.num(_at[("iqr_ms", "6-8")], 0),
+        "iqr_cycle_slow": values.num(_at[("iqr_cycle", "2-3")], 0),
+        "iqr_cycle_mid": values.num(_at[("iqr_cycle", "6-8")], 0),
+        "near_slow": values.pct(_at[("near", "2-3")]),
+        "absent_slow": values.pct(_at[("absent", "2-3")], 1),
+    }
+    mo.vstack([mo.hstack(_figs), mo.md(f"{v_slow}")])
+    return (v_slow,)
+
+
+@app.cell
 def table1(
     by_fold, cv_methods, fold_tables, methods, on_cpu, recordings, test_a, timing
 ):
@@ -1780,6 +1852,7 @@ def manuscript_values(
     v_selection,
     v_size,
     v_tolerance,
+    v_slow,
     v_views,
 ):
     # Every number the text cites, as printed, for main.typ (#v("section.key")).
@@ -1805,6 +1878,7 @@ def manuscript_values(
         "task": v_fig1,
         "threshold": v_threshold,
         "tolerance": v_tolerance,
+        "slow": v_slow,
         "views": v_views,
     }
     values.write(

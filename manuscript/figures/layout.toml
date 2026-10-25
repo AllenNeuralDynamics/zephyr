@@ -267,3 +267,32 @@ kind = "data"
 width_mm = 183
 height_mm = 212.5
 what = "A representative subset of sessions: each session's face, side and front camera frames side by side, with each network's crop box"
+
+[figs5]
+width_mm = 183
+gap_mm = 4
+rows = [["a", "b", "c", "d"]]
+
+[figs5.panels.a]
+kind = "data"
+width_mm = 44
+height_mm = 42
+what = "Share of breaths found within 25 ms, 50 ms and 10% of the cycle, by breathing rate"
+
+[figs5.panels.b]
+kind = "data"
+width_mm = 43
+height_mm = 42
+what = "Spread (IQR) of Zephyr's inhalation timing in ms, by breathing rate"
+
+[figs5.panels.c]
+kind = "data"
+width_mm = 43
+height_mm = 42
+what = "Spread (IQR) of Zephyr's inhalation timing as a share of the cycle, by breathing rate"
+
+[figs5.panels.d]
+kind = "data"
+width_mm = 41
+height_mm = 42
+what = "Breaths found 25-100 ms off against not found, by breathing rate"

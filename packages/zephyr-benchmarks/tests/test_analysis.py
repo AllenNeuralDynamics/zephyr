@@ -291,6 +291,20 @@ class SummaryTests(unittest.TestCase):
         self.assertAlmostEqual(out.loc[25.0, "false"], 2 / 3)
         self.assertAlmostEqual(out.loc[50.0, "misses"] + out.loc[50.0, "false"], 2 / 3)
 
+    def test_timing_by_rate_scores_lags_in_ms_and_as_share_of_the_cycle(self):
+        # 2.5-Hz breaths (400-ms cycle): lags 10, 30 and 60 ms, one breath unmatched
+        breaths = pd.DataFrame({"method": "m", "rate_hz": [2.5] * 4})
+        lags = pd.DataFrame(
+            {"method": "m", "rate_hz": [2.5] * 3, "lag_s": [0.01, -0.03, 0.06]}
+        )
+        out = analysis.timing_by_rate(lags, breaths).set_index("bin").loc["2-3"]
+        self.assertAlmostEqual(out["within 25 ms"], 1 / 4)
+        self.assertAlmostEqual(out["within 50 ms"], 2 / 4)
+        # 10% of the cycle is 40 ms
+        self.assertAlmostEqual(out["within cycle"], 2 / 4)
+        self.assertAlmostEqual(out["near"], 2 / 4)
+        self.assertAlmostEqual(out["absent"], 1 / 4)
+
     def test_error_profile_splits_near_misses_from_gross_errors(self):
         err = pd.DataFrame(
             {

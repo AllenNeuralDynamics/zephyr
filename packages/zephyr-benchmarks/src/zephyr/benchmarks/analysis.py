@@ -644,6 +644,44 @@ def cause_counts(err: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def timing_by_rate(
+    lags: pd.DataFrame,
+    breaths: pd.DataFrame,
+    bins=RATE_BINS_HZ,
+    tolerances_ms: Sequence[float] = (25.0, 50.0),
+    cycle_share: float = 0.1,
+) -> pd.DataFrame:
+    """Per breathing-rate bin (and method, and fold when the tables have one): the share
+    of true breaths found within each fixed tolerance and within *cycle_share* of the
+    breath's own cycle, the shares found beyond the first tolerance but within
+    :data:`LAG_WINDOW_S` (``near``) and not within it (``absent``), and the spread (IQR)
+    of the lags in ms and as a percentage of the cycle (lag times rate)."""
+    cut = {"bins": list(bins), "labels": rate_bins(bins)}
+    keys = ["method", *(["fold"] if "fold" in breaths else [])]
+    b = breaths.assign(bin=pd.cut(breaths["rate_hz"], **cut))
+    lag = lags.assign(
+        bin=pd.cut(lags["rate_hz"], **cut),
+        ms=1000 * lags["lag_s"].abs(),
+        signed_ms=1000 * lags["lag_s"],
+        cycle=100 * lags["lag_s"] * lags["rate_hz"],
+    )
+    by = [*keys, "bin"]
+    n = b.groupby(by, observed=False).size()
+    g = lag.groupby(by, observed=False)
+    out = pd.DataFrame({"breaths": n})
+    for t in tolerances_ms:
+        out[f"within {t:g} ms"] = g["ms"].apply(lambda s, t=t: (s <= t).sum()) / n
+    out["within cycle"] = (
+        g["cycle"].apply(lambda s: (s.abs() <= 100 * cycle_share).sum()) / n
+    )
+    first = tolerances_ms[0]
+    out["near"] = g["ms"].apply(lambda s: (s > first).sum()) / n
+    out["absent"] = 1 - g.size() / n
+    out["iqr_ms"] = g["signed_ms"].quantile(0.75) - g["signed_ms"].quantile(0.25)
+    out["iqr_cycle"] = g["cycle"].quantile(0.75) - g["cycle"].quantile(0.25)
+    return out.reset_index()
+
+
 def tolerance_curve(
     lags: pd.DataFrame,
     breaths: pd.DataFrame,
