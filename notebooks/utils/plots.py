@@ -10,6 +10,7 @@ from pathlib import Path
 import matplotlib as mpl
 import numpy as np
 import pandas as pd
+import scipy.stats
 from matplotlib import dates as mdates
 from matplotlib import ticker
 from matplotlib.axes import Axes
@@ -285,12 +286,12 @@ def task_summary_panel(
     rate_hz: tuple[float, float] = (1.0, 11.0),
 ) -> Figure:
     """Sniffing in the task. Top, breathing rate and speed around odor onset per kind
-    of site (*aligned*: ``site``, ``signal``, ``lag``, ``mean``, ``sem``; the
-    thermistor's rate dotted). Bottom, the video's breathing rate against speed over
-    every sample of *samples* (``speed``, ``video``): the share of each speed bin at
-    each rate (each column sums to 1). Speed bins are ``(low, high,
-    step)`` of *speed_range*; rate bins over *rate_hz* hold whole numbers of intervals
-    of the *grid_hz* output grid (:func:`frame_rate_bins`)."""
+    of site (*aligned*: ``site``, ``signal`` (``rate`` or ``speed``), ``lag``,
+    ``mean``, ``sem``). Bottom, breathing rate against speed over every sample of
+    *samples* (``speed``, ``rate``): the share of each speed bin at each rate (each
+    column sums to 1). Speed bins are ``(low, high, step)`` of *speed_range*; rate bins
+    over *rate_hz* hold whole numbers of intervals of the *grid_hz* grid the rate's
+    events lie on (:func:`frame_rate_bins`)."""
     fig, ax = style.panel(
         width_mm,
         height_mm,
@@ -302,12 +303,9 @@ def task_summary_panel(
     _site_legend(a)
     for site in style.SITES:
         colour = style.SITES[site]
-        for target, signal in ((a, "video"), (a, "thermistor"), (v, "speed")):
+        for target, signal in ((a, "rate"), (v, "speed")):
             g = aligned[(aligned["site"] == site) & (aligned["signal"] == signal)]
             if g.empty:
-                continue
-            if signal == "thermistor":
-                target.plot(g["lag"], g["mean"], color=style.TRUTH, lw=0.5, ls=":")
                 continue
             target.fill_between(
                 g["lag"],
@@ -330,10 +328,9 @@ def task_summary_panel(
     speed_bins = np.arange(lo, hi + step / 2, step)
     rate_bins = frame_rate_bins(grid_hz, *rate_hz)
     speed = samples["speed"].to_numpy()
-    keep = np.isfinite(samples["video"].to_numpy()) & np.isfinite(speed)
-    counts, _, _ = np.histogram2d(
-        speed[keep], samples["video"].to_numpy()[keep], [speed_bins, rate_bins]
-    )
+    rate = samples["rate"].to_numpy()
+    keep = np.isfinite(rate) & np.isfinite(speed)
+    counts, _, _ = np.histogram2d(speed[keep], rate[keep], [speed_bins, rate_bins])
     share = counts / np.maximum(counts.sum(axis=1, keepdims=True), 1)
     image = h.pcolormesh(speed_bins, rate_bins, share.T, cmap="Blues", rasterized=True)
     h.set_xlabel("Speed (cm/s)")
@@ -673,13 +670,12 @@ def trace_stack_panel(
     height_mm: float,
     predictions: dict[str, dict],
     truth: dict,
-    scores: dict[str, float],
     origin: float,
     t0: float,
     duration: float,
 ) -> Figure:
-    """Every method's trace (one row each, in the given order) over the thermistor,
-    labelled with its correlation on the whole clip; the thermistor's inhales on top."""
+    """Every method's trace (one row each, in the given order) over the thermistor;
+    the thermistor's inhales on top."""
     fig, ax = style.panel(width_mm, height_mm, [["stack"]])
     a = ax["stack"]
     t1 = t0 + duration
@@ -696,9 +692,6 @@ def trace_stack_panel(
         a.plot(tt[kt], truth["signal"][kt] + y, color="0.85", linewidth=0.6)
         a.plot(tp[kp], p["signal"][kp] + y, color=style.color(name), linewidth=0.8)
         a.text(t0 - 0.02 * duration, y, _shown(name), ha="right", va="center")
-        r = scores.get(name, np.nan)
-        r = 0.0 if abs(r) < 0.005 else r  # no "-0.00"
-        a.text(t1 + 0.01 * duration, y, f"r = {r:.2f}", ha="left", va="center")
     onsets = truth["inhale"] - origin
     onsets = onsets[_inside(onsets, t0, t1)]
     for x in onsets:
@@ -879,8 +872,9 @@ def lag_rate_panel(
     widest_ms: float = 50.0,
 ) -> Figure:
     """Onset lag (predicted minus true inhale) against the breath's rate: the share of
-    each rate bin's lags at each lag (each column sums to 1), with the median (line)
-    and interquartile range (dashed) per bin; dotted, the scorer's tolerance."""
+    each rate bin's lags at each lag (each column sums to 1), with each bin's mean lag
+    (line) and its 95% t-interval over folds (band; *lags* has a ``fold`` column);
+    dotted, the scorer's tolerance."""
     fig, ax = style.panel(width_mm, height_mm, [["heat"]])
     a = ax["heat"]
     lag = lags["lag_s"].to_numpy() * 1000
@@ -895,13 +889,34 @@ def lag_rate_panel(
     share = counts / counts.sum(axis=1, keepdims=True)
     image = a.pcolormesh(x_bins, y_bins, share.T, cmap="Blues", rasterized=True)
     centres = (x_bins[:-1] + x_bins[1:]) / 2
-    which = np.digitize(rate, x_bins) - 1
-    stats = np.array(
-        [np.percentile(lag[which == i], [25, 50, 75]) for i in range(len(centres))]
+    per_fold = (
+        pd.DataFrame(
+            {
+                "bin": np.digitize(rate, x_bins) - 1,
+                "fold": lags["fold"].to_numpy()[keep],
+                "lag": lag,
+            }
+        )
+        .groupby(["bin", "fold"])["lag"]
+        .mean()
+        .groupby("bin")
+        .agg(["mean", "std", "count"])
     )
-    a.plot(centres, stats[:, 1], color=style.TRUTH, lw=0.9)
-    for k in (0, 2):
-        a.plot(centres, stats[:, k], color=style.TRUTH, lw=0.6, ls="--")
+    half = (
+        scipy.stats.t.ppf(0.975, per_fold["count"] - 1)
+        * per_fold["std"]
+        / np.sqrt(per_fold["count"])
+    )
+    x = centres[per_fold.index]
+    a.fill_between(
+        x,
+        per_fold["mean"] - half,
+        per_fold["mean"] + half,
+        color=style.TRUTH,
+        alpha=0.25,
+        lw=0,
+    )
+    a.plot(x, per_fold["mean"], color=style.TRUTH, lw=0.9)
     for y in (-TOLERANCE_MS, TOLERANCE_MS):
         a.axhline(y, color="0.4", linewidth=0.6, linestyle=":")
     a.set_xlabel("Breathing rate (Hz)")
@@ -996,11 +1011,13 @@ def sets_panel(
     metrics: Sequence[str],
     sets: Sequence[str],
     ylabel: str = "Mean over folds",
+    labels: bool = True,
+    legend: str | None = None,
 ) -> Figure:
     """Per metric (side by side), each method's mean (over folds, unless *ylabel* says
     otherwise) on each set with its 95% interval (*summary*: ``metric``, ``set``,
     ``method``, ``mean``, ``low``, ``high``), joined by a line, the method named at the
-    last set."""
+    last set if *labels*, or in a legend at *legend* (a location) on the last metric."""
     fig, ax = style.panel(width_mm, height_mm, [list(metrics)], sharey=True)
     for metric in metrics:
         a = ax[metric]
@@ -1012,7 +1029,7 @@ def sets_panel(
             ]
             y = [r["mean"] if r is not None else np.nan for r in rows]
             colour = style.color(method)
-            a.plot(range(len(sets)), y, "-", color=colour, lw=0.8)
+            a.plot(range(len(sets)), y, "-", color=colour, lw=0.8, label=_shown(method))
             for i, r in enumerate(rows):
                 if r is not None:
                     a.errorbar(
@@ -1029,7 +1046,7 @@ def sets_panel(
         # Names at the last set, nudged apart so they do not overlap.
         ends.sort()
         placed: list[float] = []
-        for y, method in ends:
+        for y, method in ends if labels else []:
             y_text = max(y, placed[-1] + 0.045) if placed else y
             placed.append(y_text)
             a.text(
@@ -1041,10 +1058,14 @@ def sets_panel(
                 color=style.color(method),
             )
         a.set_xticks(range(len(sets)), [s_.split(":")[0] for s_ in sets])
-        a.set_xlim(-0.25, len(sets) - 1 + 0.9)
+        a.set_xlim(-0.25, len(sets) - 1 + (0.9 if labels else 0.25))
         a.set_xlabel("Test set")
         a.set_title(METRIC_LABELS[metric], fontsize=7)
     ax[metrics[0]].set_ylabel(ylabel)
+    if legend is not None:
+        ax[metrics[-1]].legend(
+            loc=legend, fontsize=5.5, handlelength=1, labelspacing=0.2, borderpad=0.2
+        )
     return fig
 
 
@@ -1497,6 +1518,7 @@ def failure_panel(
     o.set_ylabel("Onset (p)")
     o.set_xlim(t0, t1)
     o.set_xlabel("Time (s)")
+    o.xaxis.set_major_locator(ticker.MultipleLocator(0.5))
     for i, (ft, image) in enumerate(frames):
         f = ax[f"f{i}"]
         f.imshow(image, cmap="gray", vmin=0, vmax=255)

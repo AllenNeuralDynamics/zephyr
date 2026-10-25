@@ -64,6 +64,7 @@ width_mm = 59
 height_mm = 44
 what = "The split: animals by date, sessions coloured by set"
 
+
 [fig3]
 width_mm = 183
 gap_mm = 4
@@ -102,78 +103,106 @@ what = "Bland-Altman of breathing rate in 10 s windows, Zephyr, test A"
 [fig4]
 width_mm = 183
 gap_mm = 4
-rows = [["a", "b", "c"], ["d", "e", "f"]]
+rows = [["a", "b", "c"], ["d", "e"]]
 
 [fig4.panels.a]
 kind = "data"
-width_mm = 82
-height_mm = 44
-what = "Test A against test B per method: correlation and inhale F1"
+width_mm = 62
+height_mm = 46
+what = "Held-out animals against held-out sessions per method: correlation and inhale F1"
 
 [fig4.panels.b]
 kind = "data"
-width_mm = 48
-height_mm = 44
-what = "Per-animal inhale F1 on test A, ranked"
+width_mm = 62
+height_mm = 46
+what = "Per-unit inhale F1 on held-out animals, ranked"
 
 [fig4.panels.c]
 kind = "data"
-width_mm = 45
+width_mm = 51
 height_mm = 46
-what = "Test-A correlation and inhale F1 against the number of training animals (4, 8, 16, 32)"
+what = "Inhale F1 and errors left as the onset tolerance is relaxed (25 to 100 ms)"
 
 [fig4.panels.d]
 kind = "data"
-width_mm = 66
+width_mm = 89
 height_mm = 46
-what = "Near misses: a well-correlated test-A clip with many predictions 25-100 ms off"
+what = "Near misses: a well-correlated clip with many predictions 25-100 ms off"
 
 [fig4.panels.e]
 kind = "data"
-width_mm = 43
-height_mm = 44
-what = "Inhale F1 and errors left as the onset tolerance is relaxed (25 to 100 ms)"
-
-[fig4.panels.f]
-kind = "data"
-width_mm = 66
+width_mm = 90
 height_mm = 46
-what = "A low-correlation test-A clip whose inhalations are still found"
+what = "A low-correlation clip whose inhalations are still found"
 
 [fig5]
 width_mm = 183
 gap_mm = 4
-rows = [["a", "b"], ["c", "d", "e"]]
+rows = [["a", "b", "c"]]
 
 [fig5.panels.a]
+kind = "data"
+width_mm = 50
+height_mm = 48
+what = "Test-A correlation and inhale F1 against the number of training animals"
+
+[fig5.panels.b]
+kind = "data"
+width_mm = 70
+height_mm = 48
+what = "Face, side and front cameras: correlation and inhale F1 on new animals and new sessions"
+
+[fig5.panels.c]
+kind = "data"
+width_mm = 55
+height_mm = 48
+what = "Adapting to a new view or rig: test-A inhale F1 against the number of labelled animals, fine-tuned from the face network or trained from scratch (side camera, front camera, 359-Hz group)"
+
+[fig6]
+width_mm = 183
+gap_mm = 4
+rows = [["a", "b"], ["c", "d", "e"]]
+
+[fig6.panels.a]
 kind = "data"
 width_mm = 95
 height_mm = 42
 what = "Our network's errors on test A: share near misses; gross errors in fast breathing, face motion, shallow breaths, against all breaths"
 
-[fig5.panels.b]
+[fig6.panels.b]
 kind = "data"
 width_mm = 84
 height_mm = 42
 what = "The five measures that rank test-A videos best: Spearman correlation with true inhale F1"
 
-[fig5.panels.c]
+[fig6.panels.c]
 kind = "data"
 width_mm = 68
 height_mm = 48
 what = "Test-A windows: mean true F1 against the share kept; oracle; windows passing every check"
 
-[fig5.panels.d]
+[fig6.panels.d]
 kind = "data"
 width_mm = 48
 height_mm = 48
 what = "Calibration of the onset output on validation animals"
 
-[fig5.panels.e]
+[fig6.panels.e]
 kind = "data"
 width_mm = 59
 height_mm = 48
-what = "Zephyr trained differently (more augmentation, rate balance, 192-px crops) minus Zephyr on test A: inhale F1 and correlation"
+what = "Quality control on a session without a thermistor: the measures over the session, and the windows that pass"
+
+[fig7]
+width_mm = 183
+gap_mm = 4
+rows = [["a"]]
+
+[fig7.panels.a]
+kind = "data"
+width_mm = 183
+height_mm = 60
+what = "Sniffing aligned to behaviour (as Fig. 1b) in task sessions without a thermistor, from video: rate around odor onset by site outcome, over many animals"
 
 # Supplementary figures.
 
@@ -208,30 +237,24 @@ what = "Inhale F1 on new animals by breathing rate, 30-Hz and 60-Hz input, mean 
 [figs3]
 width_mm = 183
 gap_mm = 4
-rows = [["a", "b"], ["c", "d"]]
+rows = [["a", "b", "c"]]
 
 [figs3.panels.a]
 kind = "data"
-width_mm = 100
-height_mm = 50
-what = "Our network on each camera, new animals against new sessions: correlation and inhale F1, mean over units with a 95% bootstrap interval"
+width_mm = 62
+height_mm = 55
+what = "Inhale F1 of each new-animal unit for each camera, ranked by the face camera"
 
 [figs3.panels.b]
 kind = "data"
-width_mm = 79
-height_mm = 50
-what = "Inhale F1 of each new-animal unit for each camera, ranked by the face camera"
+width_mm = 62
+height_mm = 55
+what = "Inhale F1 on new animals by breathing rate for each camera, over the share of breaths in each bin"
 
 [figs3.panels.c]
 kind = "data"
-width_mm = 100
-height_mm = 50
-what = "Inhale F1 on new animals by breathing rate for each camera, over the share of breaths in each bin"
-
-[figs3.panels.d]
-kind = "data"
-width_mm = 79
-height_mm = 50
+width_mm = 51
+height_mm = 55
 what = "Inhale F1 of every new-animal clip: side and front cameras against the face camera"
 
 [figs4]
