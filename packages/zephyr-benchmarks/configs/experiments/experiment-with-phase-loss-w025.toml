@@ -6,7 +6,7 @@
 # baseline is full-gray-cv-v3's cv_0 / seed-17. Paths are this machine's copy of the
 # dataset; run with ZEPHYR_PATH_MAP="C:/data/zephyr-local-v2/dataset=/data/zephyr-dataset"
 # so the cache made on Code Ocean is used:
-#   zephyr run packages/zephyr-benchmarks/configs/experiments/experiment-with-phase-loss-w025.toml --smoke
+#   zephyr run packages/zephyr-benchmarks/configs/experiments/experiment-with-phase-loss-w025.toml --no-check-files --smoke
 seeds = [17]
 output_dir = "../../../../runs/experiment-with-phase-loss-w025"
 features_dir = "C:/data/zephyr-local-v2/cache/features-360x270-box96x96-60hz"
