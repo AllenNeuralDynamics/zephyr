@@ -42,6 +42,12 @@ class ConfigTests(unittest.TestCase):
             BenchmarkTrainParams(arch=arch, w_onset=0.0)
         BenchmarkTrainParams(arch="zephyr", w_onset=0.5)
 
+    def test_only_zephyr_has_a_phase_head(self):
+        for arch in nets.ARCHS[1:]:
+            with self.assertRaisesRegex(ValueError, "only zephyr has a phase head"):
+                BenchmarkTrainParams(arch=arch, w_onset=0.0, w_phase=0.5)
+        BenchmarkTrainParams(arch="zephyr", w_phase=0.5)
+
     def test_signal_pool_is_zephyr_only(self):
         with self.assertRaisesRegex(ValueError, "are zephyr options"):
             BenchmarkTrainParams(arch="physnet", w_onset=0.0, signal_pool=2)

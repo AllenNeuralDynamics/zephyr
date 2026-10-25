@@ -334,6 +334,13 @@ section explains the ones whose behaviour is not obvious.
 - `signal_pool` (default 1) makes the signal head read the TCN output average-pooled by
   that factor; `onset_input` (`full`, `pooled` or `both`) picks what the onset head reads
   (the last two need `signal_pool > 1`). Both are stored in the checkpoint's `arch_kwargs`.
+- `w_phase` (default 0) adds a phase head beside the onset head, trained on the sin and
+  cos of the breath phase (0 to 2π between consecutive thermistor inhalations, masked
+  before the first, from the last, and over a cycle touching an excluded span) with
+  `w_phase * mean(1 - cos(φ̂ - φ))`. It is a training signal only: inhalations still come
+  from the onset head, and scoring is unchanged. With a phase head the checkpoint's
+  `arch_kwargs` hold `phase_head = true` and `history.json` gains `train_phase` and
+  `val_phase`. Comparison networks refuse it.
 - With `train_params.save_every = N` a run also keeps `epoch-<nnn>.pt`, scorable like
   `best.pt`; they are mid-schedule (learning rate not decayed), so they show how the
   score evolves, not what a shorter run gives. A seed whose `best.pt` exists is
@@ -341,6 +348,9 @@ section explains the ones whose behaviour is not obvious.
 - Leave-one-out is one `[[fold]]` per held-out recording, each training on the others
   with `groups`. `all` is a reserved test group name.
 - Without a GPU: `--device cpu --amp off --num-workers 0` (about 1.7 s per step).
+- With only a dataset's feature cache on the machine (its videos kept elsewhere),
+  `zephyr run --no-check-files` loads the clip lists without checking that their
+  videos exist; training and scoring read only the cache, which must hold every clip.
 - To check a config before training, load it and print its folds' clip counts with
   `zephyr.config.load`.
 

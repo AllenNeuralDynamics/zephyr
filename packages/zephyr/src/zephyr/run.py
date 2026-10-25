@@ -17,6 +17,7 @@ CLI
 """
 
 import argparse
+import contextlib
 import shutil
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -24,7 +25,7 @@ from pathlib import Path
 
 import torch
 
-from .config import Experiment, Fold, load
+from .config import Experiment, Fold, load, unchecked_files
 from .evaluate import TRACES, Loader, evaluate_groups, load_checkpoint
 from .train import ZEPHYR, Architecture, Machine, OnScored, train_fold
 
@@ -193,6 +194,13 @@ def main(
         "fold's test groups, rewriting evaluation.json; a run without one is refused.",
     )
     parser.add_argument(
+        "--no-check-files",
+        action="store_true",
+        help="Load the clip lists without checking that their videos exist, for a "
+        "feature cache whose videos are kept elsewhere; a clip not in the cache is "
+        "still refused.",
+    )
+    parser.add_argument(
         "--save-traces",
         action="store_true",
         help="Also write each test clip's trace into traces/ (or the experiment's "
@@ -200,44 +208,46 @@ def main(
     )
     args = parser.parse_args(argv)
 
-    experiment = load(runner.experiment, args.config)
-    try:
-        folds = experiment.folds(args.folds)
-    except ValueError as exc:
-        raise SystemExit(str(exc)) from exc
-    seeds = args.seeds or experiment.seeds
-    features_dir = args.cache or experiment.features_dir
-    output_dir = args.output_dir or experiment.output_dir
-    defaults = {
-        "device": experiment.device,
-        "amp": experiment.amp,
-        "num_workers": experiment.num_workers,
-    }
+    checks = unchecked_files() if args.no_check_files else contextlib.nullcontext()
+    with checks:
+        experiment = load(runner.experiment, args.config)
+        try:
+            folds = experiment.folds(args.folds)
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
+        seeds = args.seeds or experiment.seeds
+        features_dir = args.cache or experiment.features_dir
+        output_dir = args.output_dir or experiment.output_dir
+        defaults = {
+            "device": experiment.device,
+            "amp": experiment.amp,
+            "num_workers": experiment.num_workers,
+        }
 
-    machine = choose_machine(args, defaults)
-    if args.smoke and args.output_dir is None:
-        # A finished run is skipped straight to evaluation, so a smoke best.pt in
-        # the real directory would later be reported as the trained model.
-        output_dir = output_dir / "smoke"
+        machine = choose_machine(args, defaults)
+        if args.smoke and args.output_dir is None:
+            # A finished run is skipped straight to evaluation, so a smoke best.pt in
+            # the real directory would later be reported as the trained model.
+            output_dir = output_dir / "smoke"
 
-    for fold in folds:
-        for seed in seeds:
-            run_dir = output_dir.resolve() / fold.name / f"seed-{seed}"
-            print(f"\n=== {fold.name}  seed {seed}  -> {run_dir}", flush=True)
-            run_fold(
-                fold,
-                seed,
-                run_dir,
-                features_dir.resolve(),
-                machine,
-                smoke=args.smoke,
-                resume=args.resume,
-                restart=args.restart,
-                evaluate_only=args.evaluate_only,
-                runner=runner,
-                save_traces=args.save_traces or experiment.save_traces,
-                on_scored=on_scored,
-            )
+        for fold in folds:
+            for seed in seeds:
+                run_dir = output_dir.resolve() / fold.name / f"seed-{seed}"
+                print(f"\n=== {fold.name}  seed {seed}  -> {run_dir}", flush=True)
+                run_fold(
+                    fold,
+                    seed,
+                    run_dir,
+                    features_dir.resolve(),
+                    machine,
+                    smoke=args.smoke,
+                    resume=args.resume,
+                    restart=args.restart,
+                    evaluate_only=args.evaluate_only,
+                    runner=runner,
+                    save_traces=args.save_traces or experiment.save_traces,
+                    on_scored=on_scored,
+                )
 
 
 if __name__ == "__main__":

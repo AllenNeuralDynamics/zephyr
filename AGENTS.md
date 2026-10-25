@@ -28,8 +28,9 @@ the app and its windows):
   notebook reads one reports folder, given in the notebook), and what it
   measures beyond `evaluation.json` lives in `zephyr.benchmarks.analysis`; a notebook
   only caches, downloads and draws.
-- Gray frames are the only input, and only zephyr has an onset head: never add a channel
-  selection, or an onset head to a comparison network.
+- Gray frames are the only input, and only zephyr has an onset head or a phase head
+  (`w_phase`): never add a channel selection, or either head to a comparison network.
+  The phase head is a training signal only; events never come from its phase.
 - Inhale events of a network with an onset head come from the head
   (`head_event_indices`), never from DSP on its trace. DSP is for the thermistor, headless
   methods (labelled "DSP") and exhale F1, or an explicitly labelled comparison.
@@ -61,7 +62,10 @@ Clip lists and experiments:
   group too (its scores at `best.pt` are in `best_per_clip.json` and `history.json`).
 - Loading refuses a video on both sides of a fold, unlabelled training clips, missing boxes and mixed
   `[preprocess]` recipes, and `evaluate` refuses clips a checkpoint trained on. If one
-  refuses, **fix the config, never the check**.
+  refuses, **fix the config, never the check**. The one exception is that videos
+  exist: `zephyr run --no-check-files` (`config.unchecked_files`) skips only that, for
+  a machine with the feature cache but not the videos; a clip not in the cache is
+  still refused.
 - Comparison networks (`arch` other than `zephyr`) run only through `zephyr-benchmarks`.
 - Published results (reports, figures, papers) come from the cross-validation folds
   (`cv_<k>`, from the dataset's `sessions.parquet`) for every method; the first draw

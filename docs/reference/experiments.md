@@ -74,6 +74,7 @@ windows.
 | --- | --- | --- |
 | `w_corr` | 1.0 | weight of the trace's correlation loss |
 | `w_onset` | 0.5 | weight of the onset head's loss |
+| `w_phase` | 0 | weight of the breath-phase loss; above 0 the network gains a phase head (sin and cos of the phase between inhalations), a training signal only: inhalations still come from the onset head |
 | `scales` | `[1, 4, 16]` | time scales of the correlation loss, in samples |
 | `temporal_kernel` | 1 | frames the encoder's first layer spans (odd); 3 or 5 make it a 3D convolution |
 | `signal_pool` | 1 | the signal head reads the TCN output average-pooled by this factor |

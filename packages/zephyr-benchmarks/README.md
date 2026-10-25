@@ -10,7 +10,8 @@ and a Facemap-style ridge regression. Imported as `zephyr.benchmarks`; run as
   taking the same files plus `train_params.arch` (`zephyr`, `tscan`, `physnet`,
   `physformer` or `rhythmformer`), so every network trains and scores under one
   protocol, each on its own paper's loss. zephyr folds run with plain `zephyr run` too.
-  Only zephyr has an onset head; the others need `w_onset = 0`.
+  Only zephyr has an onset head or a phase head; the others need `w_onset = 0` and
+  `w_phase = 0`.
 
 Commands below run from the repository root, after
 `uv sync --locked --all-packages --extra gpu` (or `--extra cpu`).

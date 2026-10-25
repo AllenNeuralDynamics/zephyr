@@ -104,9 +104,11 @@ def predict_clip(
 
         if amp_dtype is not None:
             with torch.autocast(device_type=torch.device(device).type, dtype=amp_dtype):
-                pred_signal, pred_onset = model(block, t_in, t_out, chunk=frame_chunk)
+                outputs = model(block, t_in, t_out, chunk=frame_chunk)
         else:
-            pred_signal, pred_onset = model(block, t_in, t_out, chunk=frame_chunk)
+            outputs = model(block, t_in, t_out, chunk=frame_chunk)
+        # A phase output after the onset logits trains the network only.
+        pred_signal, pred_onset = outputs[:2]
 
         pred_signal = pred_signal.float().squeeze(0).cpu().numpy()
         pred_onset = torch.sigmoid(pred_onset.float()).squeeze(0).cpu().numpy()
