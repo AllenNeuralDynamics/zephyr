@@ -153,6 +153,18 @@ r = "0.79"
 sessions = "34, 65 and 130"
 units = "26"
 
+[slow]
+absent_slow = "1.6"
+iqr_cycle_mid = "9"
+iqr_cycle_slow = "5"
+iqr_ms_mid = "14"
+iqr_ms_slow = "18"
+near_slow = "8"
+within_25_slow = "90"
+within_50_slow = "98"
+within_cycle_fast = "66"
+within_cycle_slow = "97"
+
 [task]
 sites_rewarded = "148"
 sites_skipped = "66"
