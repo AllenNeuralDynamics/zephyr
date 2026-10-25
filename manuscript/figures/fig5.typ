@@ -1,10 +1,10 @@
-// Fig. 5: Judging predictions without a thermistor. Build: typst compile figures/fig5.typ (from manuscript/).
-// Panels: layout.toml [fig5], all drawn by notebooks/manuscript_figures.py.
+// Fig. 5: Using it on new data. Build: typst compile figures/fig5.typ (from manuscript/).
+// Panels: layout.toml [fig5], drawn by notebooks/manuscript_figures.py.
 
 #import "lib.typ": assemble
 
 // Panels that exist as fig5/<name>.svg; the rest are drawn as placeholders.
-#let files = ("a", "b", "c", "d", "e")
+#let files = ("a", "b")
 
 #let body = assemble("fig5", files: files)
 

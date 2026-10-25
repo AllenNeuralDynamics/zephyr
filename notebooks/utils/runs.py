@@ -98,6 +98,9 @@ RUNS = ALL | CV_RUNS
 """Every run by name: :data:`ALL` and :data:`CV_RUNS`."""
 REFERENCE = RESULTS.method[0].label
 """The method every other is compared with (Zephyr)."""
+SINGLE = cv_name(REFERENCE, RESULTS.cross_validation.folds[0])
+"""The trained network the single-network analyses use (example clips, error cases):
+the reference on the first cross-validation fold."""
 
 
 def url(m: ReportedRun) -> str:
@@ -277,9 +280,16 @@ def _derived(name: str) -> Path:
     return DERIVED if head_threshold(name) != HEAD_THRESHOLD else PREDICTIONS
 
 
+def _tag(name: str) -> str:
+    """What run *name*'s cached files are named by: its run, fold and variant (never
+    its label, which a manifest may point at another run)."""
+    m = RUNS[name]
+    tag = f"{m.run}-{m.fold or RESULTS.fold}-{m.variant.replace('/', '-') or 'net'}"
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", tag).strip("_")
+
+
 def _scores_path(name: str, folder: Path | None = None) -> Path:
-    tag = re.sub(r"[^A-Za-z0-9_.-]+", "_", name).strip("_")
-    return (folder or _derived(name)) / f"scores-{tag}.parquet"
+    return (folder or _derived(name)) / f"scores-{_tag(name)}.parquet"
 
 
 def rescored(name: str) -> pd.DataFrame:
@@ -379,6 +389,18 @@ METRICS = {
 def clips() -> dict[str, tuple]:
     """Clip stem -> ``(resolved clip, recipe)`` over the test lists of :func:`root`."""
     return test_sets._clips(root())
+
+
+@functools.cache
+def _listed() -> dict[str, tuple]:
+    """Clip stem -> ``(resolved clip, recipe)`` over the dataset copy's clip list."""
+    clip_list = load(ClipList, root() / "dataset" / "clips.toml", check_files=False)
+    return {c.source.stem: (c, clip_list.preprocess) for c in clip_list.resolve()}
+
+
+def clip(stem: str) -> tuple:
+    """``(resolved clip, recipe)`` of any clip of the dataset copy."""
+    return clips().get(stem) or _listed()[stem]
 
 
 @functools.cache
@@ -627,7 +649,8 @@ def validation_prediction(name: str, stem: str) -> dict:
 
 
 def head_thresholds() -> dict[str, dict]:
-    """Every onset threshold chosen so far (:func:`head_threshold`), by run."""
+    """Every onset threshold chosen so far (:func:`head_threshold`), by run
+    (:func:`_tag`)."""
     path = DERIVED / "head-thresholds.json"
     return json.loads(path.read_text()) if path.is_file() else {}
 
@@ -637,15 +660,24 @@ def head_threshold(name: str) -> float:
     """The onset threshold of run *name*: the scorer's, unless :data:`HEAD_MODE` is
     ``validation``, then the one training would have chosen on the run's own
     validation clips (:func:`zephyr.evaluate.choose_head_threshold` over
-    :data:`zephyr.benchmarks.analysis.HEAD_THRESHOLDS`); cached with its sweep. A run
-    whose validation clips used another recipe than the local copy keeps the
-    scorer's, and says so."""
+    :data:`zephyr.benchmarks.analysis.HEAD_THRESHOLDS`); cached with its sweep. A
+    checkpoint that holds its own (chosen in training, as its ``evaluation.json``
+    records) keeps it; a run whose validation clips used another recipe than the local
+    copy keeps the scorer's, and says so."""
     if HEAD_MODE != "validation" or not RUNS[name].head:
         return HEAD_THRESHOLD
     chosen = head_thresholds()
-    if name not in chosen:
-        if not _validation_recipe_is_local(name):
-            chosen[name] = {
+    key = _tag(name)
+    if key not in chosen:
+        own = ((evaluation(name) or {}).get("head_threshold")) or {}
+        if own.get("source") == "checkpoint":
+            chosen[key] = {
+                "value": own["value"],
+                "chosen_on": "training",
+                "rule": "the checkpoint's own, chosen in training on its validation clips",
+            }
+        elif not _validation_recipe_is_local(name):
+            chosen[key] = {
                 "value": HEAD_THRESHOLD,
                 "chosen_on": None,
                 "rule": "the default: its validation clips are not in the dataset copy",
@@ -658,12 +690,12 @@ def head_threshold(name: str) -> float:
             for s in stems:
                 p = validation_prediction(name, s)
                 on_val.append((entry(s), p["times"], p["onset"]))
-            chosen[name] = choose_head_threshold(
+            chosen[key] = choose_head_threshold(
                 on_val, analysis.HEAD_THRESHOLDS, TrainParams().head_threshold_f1_tie
             )
         DERIVED.mkdir(parents=True, exist_ok=True)
         (DERIVED / "head-thresholds.json").write_text(json.dumps(chosen, indent=1))
-    return float(chosen[name]["value"])
+    return float(chosen[key]["value"])
 
 
 def _prediction_path(name: str, stem: str) -> Path:
@@ -695,10 +727,10 @@ def thumbnail(stem: str) -> np.ndarray | None:
 def box(stem: str) -> tuple[float, float, float, float]:
     """The clip's crop box in the pixels of its :func:`thumbnail` (the clip list's box
     is in the frame the recipe resizes to, ``target_size``)."""
-    clip, recipe = clips()[stem]
+    clip_, recipe = clip(stem)
     image = thumbnail(stem)
     scale = 1.0 if image is None else image.shape[1] / recipe.target_size[0]
-    return tuple(v * scale for v in clip.box)
+    return tuple(v * scale for v in clip_.box)
 
 
 # --- wall time ------------------------------------------------------------------------
@@ -791,8 +823,10 @@ def wall_time(names, n_clips: int = 8) -> pd.DataFrame:
 
 
 def _tables_paths(name: str) -> dict[str, Path]:
-    tag = re.sub(r"[^A-Za-z0-9_.-]+", "_", name).strip("_")
-    return {k: _derived(name) / f"analysis-{tag}-{k}.parquet" for k in analysis.TABLES}
+    return {
+        k: _derived(name) / f"analysis-{_tag(name)}-{k}.parquet"
+        for k in analysis.TABLES
+    }
 
 
 def done(name: str) -> bool:
@@ -850,9 +884,7 @@ def errors(name: str, stem: str) -> pd.DataFrame:
 def set_errors(name: str, set_name: str) -> pd.DataFrame:
     """:func:`errors` of every clip of one test set (``SETS`` value), cached in
     ``cache/walkthrough``; delete the file to recompute."""
-    m = RUNS[name]
-    tag = f"{m.run}-{m.fold or RESULTS.fold}-{m.variant.replace('/', '-') or 'net'}"
-    path = _derived(name) / f"errors-{tag}-{set_name.split(':')[0]}.parquet"
+    path = _derived(name) / f"errors-{_tag(name)}-{set_name.split(':')[0]}.parquet"
     if path.is_file():
         return pd.read_parquet(path)
     stems = sorted(s for s, v in test_clips(name).items() if v == set_name)
