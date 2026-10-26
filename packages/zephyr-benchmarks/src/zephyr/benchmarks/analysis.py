@@ -682,6 +682,55 @@ def timing_by_rate(
     return out.reset_index()
 
 
+def redetect(t: dict, **changes: float) -> np.ndarray:
+    """Inhale times of a clip (*t*, from :func:`truth`) found again on its raw
+    thermistor by the clip's own detector with *changes* to its parameters, inside the
+    clip's span."""
+    source = t["detector"]
+    params = events.detector_params(source.method, {**source.params, **changes})
+    found = events.detect(
+        source.method,
+        pd.DataFrame({TIME_COLUMN: t["raw_t"], BREATHING_SIGNAL_COLUMN: t["raw"]}),
+        (float(t["times"][0]), float(t["times"][-1])),
+        params,
+    )
+    return found.inhale
+
+
+def added_inhales(
+    reference: np.ndarray, other: np.ndarray, tolerance_s: float = 0.025
+) -> pd.DataFrame:
+    """For each breath of *reference* (an inhale and the next): its rate and how many
+    *other* inhales fall inside it farther than *tolerance_s* from any reference inhale
+    (``added``), e.g. the shallow breaths a looser detector finds."""
+    ref, oth = np.sort(reference), np.sort(other)
+    if len(ref) < 2:
+        return pd.DataFrame({"rate_hz": [], "added": []})
+    if len(oth):
+        j = np.clip(np.searchsorted(ref, oth), 1, len(ref) - 1)
+        gap = np.minimum(np.abs(ref[j] - oth), np.abs(ref[j - 1] - oth))
+        new = oth[gap > tolerance_s]
+    else:
+        new = oth
+    host = np.searchsorted(ref, new) - 1
+    host = host[(host >= 0) & (host < len(ref) - 1)]
+    return pd.DataFrame(
+        {
+            "rate_hz": 1.0 / np.diff(ref),
+            "added": np.bincount(host, minlength=len(ref) - 1),
+        }
+    )
+
+
+def added_by_rate(added: pd.DataFrame, bins=RATE_BINS_HZ) -> pd.DataFrame:
+    """Per breathing-rate bin (and every other column of *added* but ``rate_hz`` and
+    ``added``, e.g. the setting and fold): inhales added per reference breath."""
+    keys = [c for c in added.columns if c not in ("rate_hz", "added")]
+    a = added.assign(bin=pd.cut(added["rate_hz"], list(bins), labels=rate_bins(bins)))
+    g = a.groupby([*keys, "bin"], observed=False)["added"]
+    return pd.DataFrame({"breaths": g.size(), "added": g.mean()}).reset_index()
+
+
 def tolerance_curve(
     lags: pd.DataFrame,
     breaths: pd.DataFrame,

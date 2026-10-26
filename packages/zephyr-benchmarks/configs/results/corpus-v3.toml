@@ -167,17 +167,25 @@ label = "Zephyr, 30-Hz input"
 run = "full-gray-30hz-cv-v3"
 head = true
 
-# Zephyr on the other two cameras, the same recipe on their own boxed crops: the side
-# camera (zephyr-compute-sandbox matrix full-gray-side-cv-v4) and the front camera
-# (full-gray-front-cv-v4), all five folds, each checkpoint with the onset threshold
-# training chose on its validation animals. Their clips are those of the same session
-# spans where that camera is clean, scored against the same thermistor.
+# Zephyr on the other two cameras, the same recipe on their own boxed crops, 96 x 96
+# pixels from frames downsampled to 720 x 540: the side camera (zephyr-compute-sandbox
+# matrix full-gray-side-720-cv-v4) and the front camera (full-gray-front-720-cv-v4), the
+# folds trained so far, each checkpoint with the onset threshold training chose on its
+# validation animals. Their clips are those of the same session spans where that camera
+# is clean, scored against the same thermistor.
 [[cross_validation.variant]]
 label = "Zephyr, side camera"
-run = "full-gray-side-cv-v4"
+run = "full-gray-side-720-cv-v4"
 head = true
 
 [[cross_validation.variant]]
 label = "Zephyr, front camera"
-run = "full-gray-front-cv-v4"
+run = "full-gray-front-720-cv-v4"
+head = true
+
+# One Zephyr trained on the pooled clips of all three cameras (full-gray-all-cv-v4), the
+# face camera's recipe, scored on each camera's clips; the folds trained so far.
+[[cross_validation.variant]]
+label = "Zephyr, all cameras"
+run = "full-gray-all-cv-v4"
 head = true

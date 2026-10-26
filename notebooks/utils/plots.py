@@ -1013,6 +1013,7 @@ def sets_panel(
     ylabel: str = "Mean over folds",
     labels: bool = True,
     legend: str | None = None,
+    xlabel: str = "Test set",
 ) -> Figure:
     """Per metric (side by side), each method's mean (over folds, unless *ylabel* says
     otherwise) on each set with its 95% interval (*summary*: ``metric``, ``set``,
@@ -1059,7 +1060,7 @@ def sets_panel(
             )
         a.set_xticks(range(len(sets)), [s_.split(":")[0] for s_ in sets])
         a.set_xlim(-0.25, len(sets) - 1 + (0.9 if labels else 0.25))
-        a.set_xlabel("Test set")
+        a.set_xlabel(xlabel)
         a.set_title(METRIC_LABELS[metric], fontsize=7)
     ax[metrics[0]].set_ylabel(ylabel)
     if legend is not None:
@@ -1325,6 +1326,42 @@ def rate_band_panel(
     return fig
 
 
+def pooled_rate_panel(
+    width_mm: float,
+    height_mm: float,
+    overall: pd.DataFrame,
+    delta: pd.DataFrame,
+    cameras: Sequence[str],
+) -> Figure:
+    """A network trained on several cameras, by breathing-rate bin: its inhale F1 over
+    every camera's breaths (top; *overall*: ``bin``, ``mean``, ``low``, ``high``, band its
+    interval over folds), and per camera its F1 minus that of the network trained on
+    that camera alone (bottom; *delta*: ``camera``, ``bin``, ``delta``)."""
+    fig, ax = style.panel(
+        width_mm, height_mm, [["f1"], ["delta"]], sharex=True, height_ratios=[3, 2]
+    )
+    bins = list(dict.fromkeys(overall["bin"].astype(str)))
+    x = np.arange(len(bins))
+    g = overall.set_index(overall["bin"].astype(str)).reindex(bins)
+    colour = style.color("All cameras")
+    ax["f1"].plot(x, g["mean"], "-o", ms=2, lw=0.8, color=colour)
+    if g["low"].notna().any():
+        ax["f1"].fill_between(x, g["low"], g["high"], color=colour, alpha=0.18, lw=0)
+    ax["f1"].set_ylabel("Inhale F1\n(all cameras)")
+    for camera in cameras:
+        d = delta[delta["camera"] == camera]
+        d = d.set_index(d["bin"].astype(str)).reindex(bins)
+        ax["delta"].plot(
+            x, d["delta"], "-o", ms=1.6, lw=0.7, color=style.color(camera), label=camera
+        )
+    ax["delta"].axhline(0, color="0.5", linewidth=0.5, linestyle=":")
+    ax["delta"].set_ylabel("All minus\none camera")
+    ax["delta"].set_xticks(x, [b.split("-")[0] for b in bins])
+    ax["delta"].set_xlabel("Breathing rate (Hz)")
+    fig.align_ylabels([ax["f1"], ax["delta"]])
+    return fig
+
+
 def rate_lines_panel(
     width_mm: float,
     height_mm: float,
@@ -1454,10 +1491,11 @@ def tolerance_panel(
                 )
                 lines.append(f"{at:g} ms: F1 {r['mean']:.2f}, {share} errors")
             a.text(
-                0.2,
+                0.98,
                 0.04,
                 "\n".join([_shown(method), *lines]),
                 transform=a.transAxes,
+                ha="right",
                 va="bottom",
                 fontsize=5.5,
                 color=colour,
