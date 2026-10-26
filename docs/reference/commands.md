@@ -133,6 +133,7 @@ zephyr run <experiment.toml> [options]
 | `--restart` | delete each run folder and train from scratch |
 | `--evaluate-only` | never train: score each run's `best.pt` on its test groups |
 | `--save-traces` | also write each test clip's trace into `traces/` |
+| `--no-check-files` | load the clip lists without checking that their videos exist, for a feature cache whose videos are kept elsewhere; a clip not in the cache is still refused |
 | `--cache` | feature cache (default: the experiment's `features_dir`) |
 | `--output-dir` | run root (default: the experiment's `output_dir`) |
 | `--device` | `cuda`, `cpu`, ... (default: the experiment's, else CUDA if present) |

@@ -267,10 +267,13 @@ class HeadThresholdTests(unittest.TestCase):
         plain = write_experiment(cls.root, cls.list, name="plain")
         swept = write_experiment(cls.root, cls.list, name="swept")
         swept.write_text(swept.read_text() + cls.GRID)
-        for experiment in (plain, swept):
+        headless = write_experiment(cls.root, cls.list, name="headless")
+        headless.write_text(headless.read_text() + cls.GRID + "w_onset = 0.0\n")
+        for experiment in (plain, swept, headless):
             run.main([str(experiment)])
         cls.plain = cls.root / "runs" / "plain" / "fold" / "seed-1"
         cls.swept = cls.root / "runs" / "swept" / "fold" / "seed-1"
+        cls.headless = cls.root / "runs" / "headless" / "fold" / "seed-1"
 
     @classmethod
     def tearDownClass(cls):
@@ -296,6 +299,12 @@ class HeadThresholdTests(unittest.TestCase):
             self._evaluation(self.swept)["head_threshold"],
             {"value": chosen["value"], "source": "checkpoint"},
         )
+
+    def test_without_an_onset_loss_no_threshold_is_chosen_or_used(self):
+        self.assertNotIn("head_threshold", read_checkpoint(self.headless / "best.pt"))
+        evaluation = self._evaluation(self.headless)
+        self.assertIsNone(evaluation["head_threshold"])
+        self.assertNotIn("head_inhale_f1", evaluation["clips"][0])
 
     def test_a_fold_without_validation_clips_keeps_the_default(self):
         path = self.root / "no-val.pt"

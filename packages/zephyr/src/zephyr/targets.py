@@ -141,3 +141,33 @@ def onset_heatmap(
             bump = np.exp(-0.5 * ((times[lo:hi] - t) / sigma_s) ** 2)
             heatmap[lo:hi] = np.maximum(heatmap[lo:hi], bump)
     return heatmap
+
+
+def breath_phase(
+    times: np.ndarray, onset_times: np.ndarray, excluded: np.ndarray | None = None
+) -> tuple[np.ndarray, np.ndarray]:
+    """Breath phase on *times* and the mask of samples it is defined on.
+
+    The phase runs linearly from 0 to 2π between consecutive inhalations (the
+    thermistor's, as the onset target uses them), so every sample of a cycle is
+    supervised whatever the rate. It is undefined, and masked, before the first
+    inhalation, from the last one on, and over a whole cycle that overlaps an
+    *excluded* span (``(n, 2)`` start/stop seconds): its ends are not both real.
+    """
+    times = np.asarray(times, np.float64)
+    onset_times = np.sort(np.asarray(onset_times, np.float64))
+    phase = np.zeros(len(times), np.float32)
+    mask = np.zeros(len(times), bool)
+    if len(onset_times) < 2 or len(times) == 0:
+        return phase, mask
+    cycle = np.searchsorted(onset_times, times, side="right") - 1
+    mask = (cycle >= 0) & (cycle < len(onset_times) - 1)
+    spans = np.empty((0, 2)) if excluded is None else np.reshape(excluded, (-1, 2))
+    if len(spans):
+        starts, stops = onset_times[:-1], onset_times[1:]
+        bad = ((spans[:, None, 0] <= stops) & (spans[:, None, 1] >= starts)).any(0)
+        mask &= ~bad[np.clip(cycle, 0, len(bad) - 1)]
+    k = cycle[mask]
+    start, stop = onset_times[k], onset_times[k + 1]
+    phase[mask] = 2.0 * np.pi * (times[mask] - start) / (stop - start)
+    return phase, mask

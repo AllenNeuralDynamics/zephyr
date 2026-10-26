@@ -89,6 +89,8 @@ def _zephyr_kwargs(params: TrainParams) -> dict:
         kwargs["onset_input"] = params.onset_input
     if params.temporal_kernel > 1:
         kwargs["temporal_kernel"] = params.temporal_kernel
+    if params.w_phase > 0:
+        kwargs["phase_head"] = True
     return kwargs
 
 
@@ -98,7 +100,7 @@ ZEPHYR = Architecture(
         dropout=params.dropout, **kwargs
     ),
     criterion=lambda params, fs: BreathingLoss(
-        params.w_corr, params.w_onset, tuple(params.scales)
+        params.w_corr, params.w_onset, tuple(params.scales), params.w_phase
     ),
     kwargs=_zephyr_kwargs,
 )
@@ -163,6 +165,34 @@ def _mean(values: list[dict], key: str) -> float:
     return float(np.mean([v[key] for v in values])) if values else float("nan")
 
 
+TARGETS = ("signal", "onset", "phase", "phase_mask")
+"""The batch's targets, which :func:`_loss` reads."""
+
+
+def _keys(values: list[dict]) -> tuple[str, ...]:
+    """The loss terms a history row reports: ``phase`` only with a phase head."""
+    return ("loss", "corr", "onset") + (
+        ("phase",) if values and "phase" in values[0] else ()
+    )
+
+
+def _loss(
+    criterion: torch.nn.Module, outputs: tuple, targets: dict[str, torch.Tensor]
+) -> tuple[torch.Tensor, dict[str, float]]:
+    """*criterion* on a network's outputs, in fp32, and the batch's *targets*; a
+    network returning a phase after its signal and onset is scored on the phase
+    target too."""
+    signal, onset, *extra = (output.float() for output in outputs)
+    phase = {}
+    if extra:
+        phase = {
+            "phase_pred": extra[0],
+            "phase_true": targets["phase"],
+            "phase_mask": targets["phase_mask"],
+        }
+    return criterion(signal, onset, targets["signal"], targets["onset"], **phase)
+
+
 @torch.no_grad()
 def validate_windows(
     model: BreathingNet,
@@ -178,19 +208,14 @@ def validate_windows(
         features = batch["features"].to(device, non_blocking=True)
         t_in = batch["t_in"].to(device, non_blocking=True)
         t_out = batch["t_out"].to(device, non_blocking=True)
-        signal = batch["signal"].to(device, non_blocking=True)
-        onset = batch["onset"].to(device, non_blocking=True)
+        targets = {k: batch[k].to(device, non_blocking=True) for k in TARGETS}
         if amp_dtype is not None:
             with torch.autocast(device_type=device.type, dtype=amp_dtype):
-                pred_signal, pred_onset = model(features, t_in, t_out)
-                _, stats = criterion(
-                    pred_signal.float(), pred_onset.float(), signal, onset
-                )
+                _, stats = _loss(criterion, model(features, t_in, t_out), targets)
         else:
-            pred_signal, pred_onset = model(features, t_in, t_out)
-            _, stats = criterion(pred_signal, pred_onset, signal, onset)
+            _, stats = _loss(criterion, model(features, t_in, t_out), targets)
         parts.append(stats)
-    return {f"val_{k}": _mean(parts, k) for k in ("loss", "corr", "onset")}
+    return {f"val_{k}": _mean(parts, k) for k in _keys(parts)}
 
 
 def score_full_clips(
@@ -650,22 +675,18 @@ def train_fold(
             features_ = batch["features"].to(device, non_blocking=True)
             t_in = batch["t_in"].to(device, non_blocking=True)
             t_out = batch["t_out"].to(device, non_blocking=True)
-            signal = batch["signal"].to(device, non_blocking=True)
-            onset = batch["onset"].to(device, non_blocking=True)
+            targets = {k: batch[k].to(device, non_blocking=True) for k in TARGETS}
 
             optimiser.zero_grad(set_to_none=True)
             if amp_dtype is not None:
                 with torch.autocast(device_type=device.type, dtype=amp_dtype):
-                    pred_signal, pred_onset = model(features_, t_in, t_out)
+                    outputs = model(features_, t_in, t_out)
                 # Losses in fp32: the correlation term normalises by a sum of
                 # squares over 512 samples, which is exactly the kind of
                 # reduction that loses precision in half.
-                loss, stats = criterion(
-                    pred_signal.float(), pred_onset.float(), signal, onset
-                )
+                loss, stats = _loss(criterion, outputs, targets)
             else:
-                pred_signal, pred_onset = model(features_, t_in, t_out)
-                loss, stats = criterion(pred_signal, pred_onset, signal, onset)
+                loss, stats = _loss(criterion, model(features_, t_in, t_out), targets)
 
             scaler.scale(loss).backward()
             if params.grad_clip:
@@ -680,7 +701,7 @@ def train_fold(
             parts.append(stats)
 
         row = {"epoch": epoch, "lr": scheduler.get_last_lr()[0]}
-        row |= {f"train_{k}": _mean(parts, k) for k in ("loss", "corr", "onset")}
+        row |= {f"train_{k}": _mean(parts, k) for k in _keys(parts)}
         if val_loader is not None:
             row |= validate_windows(model, val_loader, criterion, device, amp_dtype)
 

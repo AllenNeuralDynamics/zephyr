@@ -29,7 +29,7 @@ from zephyr.augment import (
 from . import features
 from .features import ClipEntry
 from .rates import DEFAULT_RATE_BINS_HZ, balance_weights, rate_track, window_rates
-from .targets import onset_heatmap
+from .targets import breath_phase, onset_heatmap
 
 INTERP_MARGIN = 2
 """Extra input frames kept either side of a window's output span, so the
@@ -465,6 +465,7 @@ class WindowDataset(Dataset):
 
         signal = np.interp(out_times, target_times, signal_all).astype(np.float32)
         heatmap = onset_heatmap(out_times, onset_times, sigma_s=self.onset_sigma_s)
+        phase, phase_mask = breath_phase(out_times, onset_times, self._spans(entry))
 
         if rng is not None and self.augment.enabled:
             block = apply_spatial(block, rng, self.augment)
@@ -480,6 +481,8 @@ class WindowDataset(Dataset):
             "t_out": torch.from_numpy((out_times - origin).astype(np.float32)),
             "signal": torch.from_numpy(signal),  # (T_out,)
             "onset": torch.from_numpy(heatmap.astype(np.float32)),  # (T_out,)
+            "phase": torch.from_numpy(phase),  # (T_out,) radians
+            "phase_mask": torch.from_numpy(phase_mask),  # (T_out,) bool
             "clip_index": torch.tensor(clip_i),
             "start": torch.tensor(start, dtype=torch.float32),
         }

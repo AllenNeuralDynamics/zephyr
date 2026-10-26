@@ -7,7 +7,8 @@ from unittest import mock
 import numpy as np
 import pandas as pd
 
-from zephyr.config import Experiment, TrainParams
+from zephyr import run
+from zephyr.config import Experiment, TrainParams, load, unchecked_files
 from zephyr.evaluate import trace_name, write_trace
 from zephyr.run import choose_machine, needs_training, run_fold
 from zephyr.train import snapshot_path
@@ -142,3 +143,40 @@ class TraceTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def _remote_experiment(root: Path) -> Path:
+    """An experiment over a list whose videos are not on this machine."""
+    clips = "\n".join(
+        f'[[clip]]\nvideo = "clips/v{g}.mp4"\ntimestamps = "clips/v{g}.parquet"\n'
+        f'thermistor = "clips/t{g}.parquet"\ngroup = "{g}"\nbox = [0, 0, 32, 32]\n'
+        for g in (1, 2)
+    )
+    (root / "clips.toml").write_text(f"[preprocess]\ntarget_size = [64, 48]\n\n{clips}")
+    path = root / "experiment.toml"
+    path.write_text(
+        'seeds = [1]\noutput_dir = "runs"\nfeatures_dir = "cache"\n'
+        '[[fold]]\nname = "fold"\n[[fold.train]]\nclips = "clips.toml"\n'
+        'groups = ["1"]\n[fold.test]\nheld_out = { clips = "clips.toml", '
+        'groups = ["2"] }\n'
+    )
+    return path
+
+
+class UncheckedFilesTests(unittest.TestCase):
+    def test_lists_load_without_their_videos_only_when_asked(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = _remote_experiment(Path(tmp))
+            with self.assertRaisesRegex(ValueError, "do not exist"):
+                load(Experiment, path)
+            with unchecked_files():
+                (fold,) = load(Experiment, path).fold
+                self.assertEqual([c.group for c in fold.train_clips()[0]], ["1"])
+            with self.assertRaisesRegex(ValueError, "do not exist"):
+                fold.train_clips()
+
+    def test_run_still_refuses_clips_missing_from_the_cache(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = _remote_experiment(Path(tmp))
+            with self.assertRaisesRegex(SystemExit, "not in the feature cache"):
+                run.main([str(path), "--no-check-files", "--device", "cpu"])

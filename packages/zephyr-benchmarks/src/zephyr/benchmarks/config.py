@@ -33,6 +33,10 @@ class BenchmarkTrainParams(TrainParams):
             raise ValueError(
                 f"only zephyr has an onset head; arch {self.arch!r} needs w_onset = 0"
             )
+        if self.arch != "zephyr" and self.w_phase != 0:
+            raise ValueError(
+                f"only zephyr has a phase head; arch {self.arch!r} needs w_phase = 0"
+            )
         return self
 
 

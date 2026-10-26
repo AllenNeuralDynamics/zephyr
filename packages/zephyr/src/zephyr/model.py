@@ -232,7 +232,9 @@ class TemporalNet(nn.Module):
     With ``signal_pool > 1`` the signal head reads the stack's output through a
     :class:`PooledBranch`.  *onset_input* says what the onset head reads: the
     full-rate output (``full``), the branch's (``pooled``), or both concatenated
-    (``both``), so it can take timing from one and stability from the other.
+    (``both``), so it can take timing from one and stability from the other.  With
+    *phase_head* a third head reads the same input as the onset head and returns the
+    breath phase as an unnormalised ``(sin, cos)`` pair, a training signal only.
     """
 
     def __init__(
@@ -244,6 +246,7 @@ class TemporalNet(nn.Module):
         dropout: float = 0.1,
         signal_pool: int = 1,
         onset_input: str = "full",
+        phase_head: bool = False,
     ) -> None:
         super().__init__()
         if onset_input not in ("full", "pooled", "both"):
@@ -263,6 +266,8 @@ class TemporalNet(nn.Module):
         self.signal_head = nn.Conv1d(channels, 1, 1)
         onset_width = 2 * channels if onset_input == "both" else channels
         self.onset_head = nn.Conv1d(onset_width, 1, 1)
+        # Only built when used, like the branch: a network without it keeps its keys.
+        self.phase_head = nn.Conv1d(onset_width, 2, 1) if phase_head else None
         self.kernel = kernel
         self.dilations = dilations
 
@@ -274,12 +279,16 @@ class TemporalNet(nn.Module):
             return trunk
         return trunk + self.signal_branch.receptive_field
 
-    def forward(self, embeddings: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """(B, T, embed) -> signal (B, T) and onset logits (B, T)."""
+    def forward(self, embeddings: torch.Tensor) -> tuple[torch.Tensor, ...]:
+        """(B, T, embed) -> signal (B, T) and onset logits (B, T), then the phase
+        (B, T, 2) as ``(sin, cos)`` when the network has a phase head."""
         x = self.blocks(self.project(embeddings.transpose(1, 2)))
         s = x if self.signal_branch is None else self.signal_branch(x)
         o = {"full": x, "pooled": s, "both": torch.cat([x, s], dim=1)}[self.onset_input]
-        return self.signal_head(s).squeeze(1), self.onset_head(o).squeeze(1)
+        out = (self.signal_head(s).squeeze(1), self.onset_head(o).squeeze(1))
+        if self.phase_head is None:
+            return out
+        return (*out, self.phase_head(o).transpose(1, 2))
 
 
 class BreathingNet(nn.Module):
@@ -297,6 +306,7 @@ class BreathingNet(nn.Module):
         signal_pool: int = 1,
         onset_input: str = "full",
         temporal_kernel: int = 1,
+        phase_head: bool = False,
     ) -> None:
         super().__init__()
         self.encoder = FrameEncoder(
@@ -312,6 +322,7 @@ class BreathingNet(nn.Module):
             dropout=dropout,
             signal_pool=signal_pool,
             onset_input=onset_input,
+            phase_head=phase_head,
         )
 
     @property
@@ -335,8 +346,9 @@ class BreathingNet(nn.Module):
         t_in: torch.Tensor,
         t_out: torch.Tensor,
         chunk: int | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """``(B, T_in, 1, H, W)`` -> signal and onset logits, both ``(B, T_out)``.
+    ) -> tuple[torch.Tensor, ...]:
+        """``(B, T_in, 1, H, W)`` -> signal and onset logits, both ``(B, T_out)``,
+        then the phase ``(B, T_out, 2)`` with a phase head (:class:`TemporalNet`).
 
         *t_in*/*t_out* per :func:`resample_embeddings`.
         """
@@ -392,8 +404,24 @@ def onset_bce(onset_logits: torch.Tensor, onset_true: torch.Tensor) -> torch.Ten
     )
 
 
+def phase_loss(
+    phase_pred: torch.Tensor, phase_true: torch.Tensor, mask: torch.Tensor
+) -> torch.Tensor:
+    """Mean ``1 - cos(φ̂ - φ)`` over the *mask*-ed samples, 0 when there are none.
+
+    *phase_pred* is ``(B, T, 2)`` ``(sin, cos)``, normalised here to the unit circle,
+    so only its angle is scored; *phase_true* is in radians.
+    """
+    unit = F.normalize(phase_pred, dim=-1, eps=1e-6)
+    agreement = unit[..., 0] * torch.sin(phase_true) + unit[..., 1] * torch.cos(
+        phase_true
+    )
+    weight = mask.to(agreement.dtype)
+    return ((1.0 - agreement) * weight).sum() / weight.sum().clamp_min(1.0)
+
+
 class BreathingLoss(nn.Module):
-    """Multi-scale correlation loss on the trace, plus one auxiliary term.
+    """Multi-scale correlation loss on the trace, plus auxiliary terms.
 
     ``w_corr`` / ``scales``
         See :func:`multiscale_pearson_loss`.
@@ -403,6 +431,11 @@ class BreathingLoss(nn.Module):
         what a smooth correlation target demands.  ``pos_weight`` is set per
         batch from the target's own positive ratio rather than a fixed
         constant, since that ratio varies with the signal's own rate.
+    ``w_phase``
+        :func:`phase_loss` on the phase head, when the network has one (the
+        phase arguments are given). The onset target is a bump at each inhalation,
+        so on a slow cycle nearly every sample is a negative; the phase supervises
+        every sample of the cycle, whatever its length.
     """
 
     def __init__(
@@ -410,11 +443,13 @@ class BreathingLoss(nn.Module):
         w_corr: float = 1.0,
         w_onset: float = 0.5,
         scales: tuple[int, ...] = (1, 4, 16),
+        w_phase: float = 0.0,
     ) -> None:
         super().__init__()
         self.w_corr = w_corr
         self.w_onset = w_onset
         self.scales = scales
+        self.w_phase = w_phase
 
     def forward(
         self,
@@ -422,12 +457,16 @@ class BreathingLoss(nn.Module):
         onset_logits: torch.Tensor,
         signal_true: torch.Tensor,
         onset_true: torch.Tensor,
+        phase_pred: torch.Tensor | None = None,
+        phase_true: torch.Tensor | None = None,
+        phase_mask: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, dict[str, float]]:
         corr = multiscale_pearson_loss(signal_pred, signal_true, self.scales)
         onset = onset_bce(onset_logits, onset_true)
         total = self.w_corr * corr + self.w_onset * onset
-        return total, {
-            "loss": float(total.detach()),
-            "corr": float(1.0 - corr.detach()),
-            "onset": float(onset.detach()),
-        }
+        stats = {"corr": float(1.0 - corr.detach()), "onset": float(onset.detach())}
+        if phase_pred is not None:
+            phase = phase_loss(phase_pred, phase_true, phase_mask)
+            total = total + self.w_phase * phase
+            stats["phase"] = float(phase.detach())
+        return total, {"loss": float(total.detach()), **stats}

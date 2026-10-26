@@ -132,6 +132,7 @@ The ones you are most likely to change:
 | `lr` | 3e-4 | peak learning rate |
 | `rate_balance` | 0 | 0 to 1: draw windows evenly across breathing rates |
 | `w_onset` | 0.5 | weight of the onset head's loss (0 trains no onset head) |
+| `w_phase` | 0 | weight of a breath-phase loss, which supervises every sample of a cycle (0 trains no phase head) |
 
 ## Running
 

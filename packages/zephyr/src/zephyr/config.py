@@ -17,6 +17,9 @@ import os
 import re
 import string
 import tomllib
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Annotated, ClassVar, Literal, TypeVar
 
@@ -545,6 +548,10 @@ class TrainParams(_Model):
     or both concatenated. ``pooled`` and ``both`` need ``signal_pool > 1``."""
     w_corr: float = Field(1.0, ge=0)
     w_onset: float = Field(0.5, ge=0)
+    w_phase: float = Field(0.0, ge=0)
+    """Weight of the breath-phase loss: above 0 the network gains a phase head (sin
+    and cos of the phase between inhalations), a training signal only; events still
+    come from the onset head. 0 is the network without it."""
     head_thresholds: tuple[float, ...] = ()
     """Onset thresholds swept on the fold's ``val`` clips once ``best.pt`` is fixed;
     the checkpoint keeps the one with the best mean inhale F1 (thresholds within
@@ -600,8 +607,23 @@ class TrainParams(_Model):
         return self
 
 
+_CHECK_FILES: ContextVar[bool] = ContextVar("check_files", default=True)
+
+
+@contextmanager
+def unchecked_files() -> Iterator[None]:
+    """Within it, the clip lists a fold names load without checking that their files
+    exist: for a run that reads only a feature cache, its videos kept elsewhere (a
+    clip missing from the cache is still refused, by ``features.require``)."""
+    token = _CHECK_FILES.set(False)
+    try:
+        yield
+    finally:
+        _CHECK_FILES.reset(token)
+
+
 def _load_list(path: Path) -> ClipList:
-    return load(ClipList, path)
+    return load(ClipList, path, check_files=_CHECK_FILES.get())
 
 
 class Selection(_Model):
