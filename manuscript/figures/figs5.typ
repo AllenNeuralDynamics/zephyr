@@ -5,7 +5,7 @@
 #import "lib.typ": assemble
 
 // Panels that exist as figs5/<name>.svg; the rest are drawn as placeholders.
-#let files = ("a", "b", "c", "d")
+#let files = ("a", "b", "c", "d", "e")
 
 #let body = assemble("figs5", files: files)
 

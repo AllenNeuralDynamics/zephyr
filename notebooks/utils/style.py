@@ -30,6 +30,7 @@ VARIANTS: dict[str, str] = {
     "Zephyr, 30-Hz input": "#56b4e9",
     "Zephyr, side camera": "#cc6677",
     "Zephyr, front camera": "#117733",
+    "Zephyr, all cameras": "#882255",
 }
 """Zephyr trained differently, compared with Zephyr directly."""
 
@@ -136,8 +137,11 @@ CAMERAS: dict[str, str] = {
     "Face camera": METHODS["Zephyr"],
     "Side camera": VARIANTS["Zephyr, side camera"],
     "Front camera": VARIANTS["Zephyr, front camera"],
+    "One camera": METHODS["Zephyr"],
+    "All cameras": VARIANTS["Zephyr, all cameras"],
 }
-"""Our network trained on each camera's video (the face camera's is the reference)."""
+"""Our network trained on each camera's video (the face camera's is the reference),
+and a network per camera against one trained on all three."""
 
 
 def color(name: str) -> str:

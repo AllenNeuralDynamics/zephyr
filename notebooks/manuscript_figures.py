@@ -694,8 +694,53 @@ def figs5(fold_tables, test_a):
         )
         plots.save_panel(_fig, FIGURES / "figs5" / f"{_panel}.svg")
         _figs.append(_fig)
+    # e: inhalations the corpus detector adds, per breath of its labels, when its
+    # prominence fraction is lowered from 0.2, on the thermistor of every held-out clip
+    # (cached: it reads each clip's raw thermistor).
+    _path = runs.PREDICTIONS / "label-added-prominence.parquet"
+    _settings = {0.1: "0.1", 0.05: "0.05"}
+    if _path.is_file():
+        _added = pd.read_parquet(_path)
+    else:
+        _clips = (
+            runs.cv_scores("clips")
+            .query("method == 'Zephyr' and set == @test_a")
+            .drop_duplicates("stem")
+        )
+        _parts = []
+        for _stem, _fold in zip(_clips["stem"], _clips["fold"], strict=True):
+            if not runs.is_local(_stem):
+                continue
+            _truth = runs.truth(_stem)
+            for _frac, _label in _settings.items():
+                _parts.append(
+                    analysis.added_inhales(
+                        _truth["inhale"],
+                        analysis.redetect(_truth, prominence_frac=_frac),
+                    ).assign(fold=_fold, setting=_label)
+                )
+        _added = pd.concat(_parts, ignore_index=True)
+        _added.to_parquet(_path)
+    label_added = analysis.across_folds(
+        analysis.added_by_rate(_added, analysis.RATE_BINS_HZ[1:]),
+        "added",
+        by=["setting", "bin"],
+    ).rename(columns={"setting": "measure"})
+    _fig = plots.rate_lines_panel(
+        *size("figs5", "e"),
+        label_added,
+        {v: f"Prominence {v}" for v in _settings.values()},
+        "Inhalations added (%)",
+        scale=100.0,
+    )
+    plots.save_panel(_fig, FIGURES / "figs5" / "e.svg")
+    _figs.append(_fig)
+    _gain = label_added.set_index(["measure", "bin"])["mean"]
     _at = slow_timing.set_index(["measure", "bin"])["mean"]
     v_slow = {
+        "added_slow": values.pct(_gain[("0.1", "2-3")], 1),
+        "added_mid": values.pct(_gain[("0.1", "6-8")], 1),
+        "added_slow_05": values.pct(_gain[("0.05", "2-3")], 1),
         "within_25_slow": values.pct(_at[("within 25 ms", "2-3")]),
         "within_50_slow": values.pct(_at[("within 50 ms", "2-3")]),
         "within_cycle_slow": values.pct(_at[("within cycle", "2-3")]),
@@ -1651,6 +1696,70 @@ def figs3(test_a, with_unit):
         ),
         FIGURES / "fig5" / "b.svg",
     )
+    # Fig. 5c: one network trained on all three cameras against the network of each
+    # camera, on each camera's clips of the same spans of new animals.
+    _pooled = runs.cv_scores("clips", variants=True).query(
+        "method == 'Zephyr, all cameras' and set == @test_a"
+    )
+    _camera_of = {"FaceCamera": "Face", "SideCamera": "Side", "FrontCamera": "Front"}
+    _pooled = with_unit(
+        _pooled[_pooled["fold"].isin(_folds)].assign(
+            span=_pooled["stem"].map(runs._span),
+            camera=_pooled["stem"].map(lambda s: _camera_of[s.rsplit("_", 1)[1]]),
+        )
+    )
+    _pooled = _pooled[
+        [k in _shared for k in zip(_pooled["fold"], _pooled["span"], strict=True)]
+    ]
+    _single = camera_clips[camera_clips["set"] == test_a]
+    _both = pd.concat(
+        [
+            _single.assign(camera=_single["method"].str.split().str[0]),
+            _pooled.assign(method="All cameras"),
+        ],
+        ignore_index=True,
+    )
+    _both.loc[_both["method"] != "All cameras", "method"] = "One camera"
+    _pool_ci = {
+        m: analysis.bootstrap(
+            _both.assign(set=_both["camera"]), m, reference="One camera", unit="unit"
+        )
+        for m in ("correlation", "inhale")
+    }
+    _pool = {m: t.set_index(["set", "method"]) for m, t in _pool_ci.items()}
+
+    def _gap(m: str, digits: int) -> str:
+        """Pooled minus single-camera, its range over the three cameras."""
+        d = -_pool[m].xs("All cameras", level="method")["One camera minus"]
+        return values.span(d.min(), d.max(), digits)
+
+    v_pooled = {
+        **{
+            f"{k}_{c.lower()}": values.num(_pool[m].loc[(c, "All cameras"), "mean"])
+            for k, m in (("f1", "inhale"), ("r", "correlation"))
+            for c in ("Face", "Side", "Front")
+        },
+        "diff_f1": _gap("inhale", 3),
+        "diff_r": _gap("correlation", 2),
+        # each camera's gain (pooled minus its own network) with its 95% interval
+        **{
+            f"gain_{k}_{c.lower()}": values.num(
+                -_pool[m].loc[(c, "All cameras"), "One camera minus"], 3
+            )
+            for k, m in (("f1", "inhale"), ("r", "correlation"))
+            for c in ("Face", "Side", "Front")
+        },
+        **{
+            f"gain_{k}_{c.lower()}_ci": values.span(
+                -_pool[m].loc[(c, "All cameras"), "diff high"],
+                -_pool[m].loc[(c, "All cameras"), "diff low"],
+                3,
+            )
+            for k, m in (("f1", "inhale"), ("r", "correlation"))
+            for c in ("Face", "Side", "Front")
+        },
+        "units": values.count(_pooled["unit"].nunique()),
+    }
     # a: each new-animal unit, ranked by the face camera, as Fig. 4b.
     figs3a = plots.animals_panel(
         *size("figs3", "a"),
@@ -1685,6 +1794,60 @@ def figs3(test_a, with_unit):
     )
     figs3b = plots.rate_band_panel(*size("figs3", "b"), camera_by_rate, _cameras)
     plots.save_panel(figs3b, FIGURES / "figs3" / "b.svg")
+    # Fig. 5c: inhale F1 by rate, as Fig. 3c, of each camera's network (solid) and of
+    # the network trained on all three cameras (dashed) on that camera's clips, over the
+    # same shared spans of new animals.
+    _pooled_tables = {k: [] for k in ("breaths", "false_positives")}
+    for _f in _folds:
+        _t = runs.tables(runs.cv_name("Zephyr, all cameras", _f))
+        for _k, _parts in _pooled_tables.items():
+            _x = _t[_k].assign(fold=_f)
+            _stems = _x["stem"].astype(str)
+            _x = _x.assign(
+                method=_stems.map(
+                    lambda s: f"{_camera_of[s.rsplit('_', 1)[1]]} camera, all cameras"
+                )
+            )
+            _parts.append(_x[[(_f, runs._span(s)) in _shared for s in _stems]])
+    _pooled_tables = {
+        k: pd.concat(v, ignore_index=True) for k, v in _pooled_tables.items()
+    }
+    _pooled_rate = analysis.f1_by_rate(
+        _pooled_tables["breaths"].query("set == @test_a"),
+        _pooled_tables["false_positives"].query("set == @test_a"),
+        analysis.RATE_BINS_HZ[1:],
+    )
+    pooled_by_rate = analysis.across_folds(
+        _pooled_rate, "f1", by=["method", "bin"]
+    ).merge(
+        _pooled_rate.groupby(["method", "bin"], observed=True)["share"]
+        .mean()
+        .reset_index(),
+        on=["method", "bin"],
+    )
+    # Top: the pooled network over all three cameras' breaths; bottom: per camera, the
+    # pooled network minus that camera's own.
+    _over = analysis.f1_by_rate(
+        _pooled_tables["breaths"].query("set == @test_a").assign(method="All cameras"),
+        _pooled_tables["false_positives"]
+        .query("set == @test_a")
+        .assign(method="All cameras"),
+        analysis.RATE_BINS_HZ[1:],
+    )
+    pooled_overall = analysis.across_folds(_over, "f1", by=["method", "bin"])
+    _single = camera_by_rate.set_index(["method", "bin"])["mean"]
+    pooled_delta = pooled_by_rate.assign(
+        camera=pooled_by_rate["method"].str.removesuffix(", all cameras")
+    ).assign(
+        delta=lambda d: (
+            d["mean"].to_numpy()
+            - _single.reindex(list(zip(d["camera"], d["bin"], strict=True))).to_numpy()
+        )
+    )
+    fig5c = plots.pooled_rate_panel(
+        *size("fig5", "c"), pooled_overall, pooled_delta, _cameras
+    )
+    plots.save_panel(fig5c, FIGURES / "fig5" / "c.svg")
     # c: every new-animal clip, each other camera against the face camera.
     _wide = (
         camera_clips[camera_clips["set"] == test_a]
@@ -1754,9 +1917,12 @@ def figs3(test_a, with_unit):
             mo.hstack([figs3a, figs3b, figs3c]),
             mo.ui.table(cameras_table, selection=None),
             mo.md(f"{v_cameras}"),
+            fig5c,
+            mo.md(f"{v_pooled}"),
+            mo.ui.table(pd.concat(_pool_ci.values()).round(3), selection=None),
         ]
     )
-    return (v_cameras,)
+    return v_cameras, v_pooled
 
 
 @app.cell
@@ -1852,6 +2018,7 @@ def manuscript_values(
     v_selection,
     v_size,
     v_tolerance,
+    v_pooled,
     v_slow,
     v_views,
 ):
@@ -1878,6 +2045,7 @@ def manuscript_values(
         "task": v_fig1,
         "threshold": v_threshold,
         "tolerance": v_tolerance,
+        "pooled": v_pooled,
         "slow": v_slow,
         "views": v_views,
     }

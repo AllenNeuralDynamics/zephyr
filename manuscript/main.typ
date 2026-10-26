@@ -304,7 +304,12 @@ Zephyr's timing was wider in slow breathing (#v("slow.iqr_ms_slow") ms at 2–3 
 each breath's cycle, Zephyr found #v("slow.within_cycle_slow")% of inhalations at 2–3 Hz;
 at 10–12 Hz, where 10% of the cycle is shorter than one video frame, it found
 #v("slow.within_cycle_fast")%. A fixed 25-ms tolerance is thus strictest for slow breaths,
-which Zephyr times more precisely than fast ones relative to the breath cycle.
+which Zephyr times more precisely than fast ones relative to the breath cycle. Part of the
+remaining false inhalations in slow breathing may be shallow breaths that the corpus
+detector does not label. Lowering its prominence fraction from 0.2 to 0.1 added
+#v("slow.added_slow")% more inhalations at 2–3 Hz and #v("slow.added_mid")% at 6–8 Hz
+(@fig:slow), so labs that need these shallow breaths can recover them with a looser
+detector setting.
 
 The ability to recover inhalations events with precise timing is crucial for behavior and physiology studies. Over the new animals of all
 folds, Zephyr's inhalations lagged the thermistor's by #v("rate.lag") ms on average (95%
@@ -419,8 +424,8 @@ which the quality-control measures below are meant to flag.
     inhalation F1 on new animals as the matching tolerance is relaxed up to 100 ms (top),
     and the misses (FN) and false inhalations (FP) left, as a share of thermistor breaths
     (bottom). Lines show the mean over the #v("benchmark.folds") folds with its 95%
-    interval (n = #v("tolerance.breaths") thermistor breaths). Dotted lines mark 12.5 ms,
-    25 ms (the tolerance used throughout), 50 ms and 100 ms. A prediction just outside the
+    interval (n = #v("tolerance.breaths") thermistor breaths). Dots mark F1 at 12.5, 25, 50
+    and 100 ms, and dotted lines mark 25 ms (the tolerance used throughout) and 50 ms. A prediction just outside the
     tolerance counts as both a miss and a false inhalation, so the two shares nearly
     coincide. *d,* An example of near misses. Among the first
     fold's clips of held-out animals with at least the median correlation, this clip has the most
@@ -453,20 +458,27 @@ sessions (#v("size.partial_sessions")) matched the full training set (F1
 number of sessions.
 
 To test if our network architecture can extract breathing signals from different views, we trained Zephyr the same way on the side and front
-cameras, which film the whole animal from farther away and at different angles (@fig:views). Both recovered
-breathing on new animals, though less accurately than the face camera. On the recording
+cameras, which film the whole animal from farther away and at different angles (@fig:views).
+Because the snout fills less of these views, their crops were taken from frames at twice
+the resolution, 96 × 96 pixels from 720 × 540 (Methods). Both recovered breathing on new
+animals, though less accurately than the face camera #note[side and front: fold cv_0 only
+  so far; the other folds are training]. On the recording
 spans all three cameras share, inhalation F1 was #v("cameras.f1_side") (side) and
 #v("cameras.f1_front") (front) against #v("cameras.f1_face") (face), and trace correlation
 #v("cameras.r_side") and #v("cameras.r_front") against #v("cameras.r_face")
-(#fig(<fig:use>, "b")\; @fig:cameras, @tab:cameras).
+(#fig(<fig:use>, "b")\; @fig:cameras, @tab:cameras). The network also has
+room to learn more than one view. A single network trained on the pooled video of all
+three cameras performed no differently from the network trained on each camera alone,
+on any of the three cameras (#fig(<fig:use>, "c")) #note[fold cv_0 only so far; add the
+  numbers once all folds are scored]. Pooling views that differ in distance, angle and
+lighting thus cost no accuracy, so a network of this size has capacity to spare at the
+amount of data we have, and data from new rigs and views can be added to one network
+rather than kept in separate ones.
 
 Next, we tested if a lower frame rate would affect performance. Halving the frame
 rate to 30 Hz changed inhalation F1 and trace correlation on new animals little
 (@fig:input-rate).
 
-#note[Fig. 5c, to run: adapting to a new view or rig. Fine-tune the face network on the
-  side and front cameras with 1, 2, 4 and 8 labelled animals,
-  against training from scratch; this gives the labelling cost of a new rig.]
 The released application takes a lab's own videos through these steps: it places a crop
 box on each recording, predicts breathing, and reports the quality-control measures
 described below (Methods).
@@ -484,8 +496,14 @@ described below (Methods).
     same network trained on the face, side or front camera. Trace correlation and
     inhalation F1 are shown on held-out animals (A) and held-out sessions (B), on the recording
     spans all three cameras share. Points show the mean over animal × rig units with a 95%
-    bootstrap interval, over the units of all #v("cameras.folds") folds (@fig:cameras). *c,* Adapting to a new view or rig with few labelled animals
-    #note[to run].],
+    bootstrap interval, over the units of #v("cameras.folds") of the cross-validation folds
+    (@fig:cameras). *c,* One network trained on the pooled video of all three cameras, on the
+    held-out animals' clips of the recording spans all cameras share. Top, its inhalation
+    F1 by breathing rate over the breaths of all three cameras. Bottom, per camera
+    (colours as in *b*), its F1 minus that of the network trained on that camera alone, on
+    the same clips. The single-camera networks of the side and front cameras read
+    96 × 96-pixel crops from 720 × 540-pixel frames, and the pooled network reads
+    96 × 96-pixel crops from 360 × 270-pixel frames for every camera.],
 ) <fig:use>
 
 == Knowing when to trust a prediction
@@ -568,10 +586,11 @@ efficiently. Zephyr matched larger networks from camera physiology in accuracy a
 exists on which to test generalization beyond our rigs, but within the corpus the method
 worked from other views: trained on the side and front cameras, it found inhalations with
 an F1 of #v("cameras.f1_side") and #v("cameras.f1_front"), against #v("cameras.f1_face")
-for the face. Accuracy depended more on the number of training animals than on the amount
-of video, and #v("size.fewest") animals already gave an F1 of #v("size.fewest_f1"), so a lab
-should need only a handful of animals implanted with a sensor to train the network on its
-own rig and view. A sensor remains necessary where the breathing waveform itself matters,
+for the face. A single network trained on all three cameras at once matched each
+single-camera network on its own camera, so the architecture has the capacity to absorb data from more rigs and views as
+they are collected. Accuracy depended more on the number of training animals than on the amount
+of video: #v("size.fewest") animals already gave an F1 of #v("size.fewest_f1"), and
+accuracy was still rising at the #v("size.all_animals") animals we trained on. A sensor remains necessary where the breathing waveform itself matters,
 and in the slowest breathing, where Zephyr was least accurate.
 
 Reading breathing from video also bears on animal welfare. A nasal implant requires
@@ -591,8 +610,9 @@ positions, yet their lighting and the cameras' exact position, angle and lens st
 differ (@fig:views), and the network scored lower on some rigs and animals than on others
 (@fig:rigs). A camera placed at another angle, a different lens or lighting, or another
 strain may move the face further from what the network has seen. The side and front cameras, which see the
-snout from farther away and at other angles, still yielded breathing #note[quantify with
-  Fig. 5c: the labelled animals a new view or rig needs]. The
+snout from farther away and at other angles, still yielded breathing, and one network
+trained on all three views lost no accuracy on any of them, so a new view is best added
+to the existing training data rather than learned on its own. The
 quality-control measures and the calibrated onset output are meant for the step after:
 once a lab has adapted the network, they flag the windows of each new recording that
 should not be trusted, without a sensor.
@@ -781,7 +801,10 @@ comparison is not paired #note[one seed; repeat with the other seeds and the
 
 Frames were downsampled to 360 × 270 pixels, cropped to a 96 × 96-pixel box over the
 snout (one per session), converted to gray and selected on a 60-Hz grid by their
-timestamps, and standardized over the training clips. The target was the thermistor
+timestamps, and standardized over the training clips. For the side and front cameras,
+which film the animal from farther away, frames were downsampled to 720 × 540 pixels
+instead, with the same 96 × 96-pixel box over the snout. The network trained on all three
+cameras used 360 × 270-pixel frames for every camera. The target was the thermistor
 filtered as above but high-passed at #tbd[0.2] Hz, resampled to 60 Hz and z-scored per
 clip.
 
@@ -1057,7 +1080,7 @@ batch, steps per epoch and learning rate are in @tab:nets #note[confirm how the 
     the face, side and front cameras. Each was scored on the recording spans all three
     cameras share, against the same thermistor events. Scores are on test set A (new
     animals, #v("cameras.clips_a") clips) and test set B (new sessions,
-    #v("cameras.clips_b") clips) of the #v("cameras.folds") cross-validation folds. Each
+    #v("cameras.clips_b") clips) of #v("cameras.folds") of the cross-validation folds. Each
     score was averaged within each animal × rig unit, then over units, and is shown with
     its 95% bootstrap interval over units. Rate MAE is the error in breathing rate over
     10-s windows, in breaths per minute. Each network detected inhalations at its own
@@ -1095,8 +1118,8 @@ batch, steps per epoch and learning rate are in @tab:nets #note[confirm how the 
 #figure(
   fit(figs3),
   caption: [*Zephyr on the side and front cameras.* The same network was trained
-    the same way on each camera's video, in each of the #v("cameras.folds")
-    cross-validation folds. Each was scored on the recording spans all three cameras share, against the same
+    the same way on each camera's video, in #v("cameras.folds") of the cross-validation
+    folds. Each was scored on the recording spans all three cameras share, against the same
     thermistor events. Test set A holds #v("cameras.clips_a") clips from
     #v("cameras.units_a") units of #v("cameras.animals_a") animals, and test set B
     #v("cameras.clips_b") clips from #v("cameras.units_b") units. Every score is in
@@ -1130,5 +1153,8 @@ batch, steps per epoch and learning rate are in @tab:nets #note[confirm how the 
     own cycle. *b,* The spread of Zephyr's inhalation times around the thermistor's
     (interquartile range of the lag). *c,* The same spread as a percentage of the breath's
     cycle. *d,* The share of thermistor inhalations found 25–100 ms off, which count as
-    both a miss and a false inhalation, and of those with no inhalation within 100 ms.],
+    both a miss and a false inhalation, and of those with no inhalation within 100 ms.
+    *e,* Inhalations that the corpus's thermistor detector adds, as a percentage of the
+    labelled breaths in each bin, when its prominence fraction is lowered from 0.2 to 0.1
+    or 0.05 (an added inhalation lies more than 25 ms from every labelled one).],
 ) <fig:slow>

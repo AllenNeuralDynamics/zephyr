@@ -148,15 +148,15 @@ what = "Test-A correlation and inhale F1 against the number of training animals"
 
 [fig5.panels.b]
 kind = "data"
-width_mm = 70
+width_mm = 62
 height_mm = 48
 what = "Face, side and front cameras: correlation and inhale F1 on new animals and new sessions"
 
 [fig5.panels.c]
 kind = "data"
-width_mm = 55
+width_mm = 63
 height_mm = 48
-what = "Adapting to a new view or rig: test-A inhale F1 against the number of labelled animals, fine-tuned from the face network or trained from scratch (side camera, front camera, 359-Hz group)"
+what = "Inhale F1 by breathing rate of each single-camera network and of the network trained on all three cameras, on each camera's clips"
 
 [fig6]
 width_mm = 183
@@ -271,28 +271,34 @@ what = "A representative subset of sessions: each session's face, side and front
 [figs5]
 width_mm = 183
 gap_mm = 4
-rows = [["a", "b", "c", "d"]]
+rows = [["a", "b", "c"], ["d", "e"]]
 
 [figs5.panels.a]
 kind = "data"
-width_mm = 44
+width_mm = 59
 height_mm = 42
 what = "Share of breaths found within 25 ms, 50 ms and 10% of the cycle, by breathing rate"
 
 [figs5.panels.b]
 kind = "data"
-width_mm = 43
+width_mm = 58
 height_mm = 42
 what = "Spread (IQR) of Zephyr's inhalation timing in ms, by breathing rate"
 
 [figs5.panels.c]
 kind = "data"
-width_mm = 43
+width_mm = 58
 height_mm = 42
 what = "Spread (IQR) of Zephyr's inhalation timing as a share of the cycle, by breathing rate"
 
 [figs5.panels.d]
 kind = "data"
-width_mm = 41
+width_mm = 89
 height_mm = 42
 what = "Breaths found 25-100 ms off against not found, by breathing rate"
+
+[figs5.panels.e]
+kind = "data"
+width_mm = 90
+height_mm = 42
+what = "Inhalations the thermistor detector adds per labelled breath when its prominence fraction is lowered from 0.2 to 0.1 or 0.05, by breathing rate"

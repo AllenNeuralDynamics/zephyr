@@ -305,6 +305,15 @@ class SummaryTests(unittest.TestCase):
         self.assertAlmostEqual(out["near"], 2 / 4)
         self.assertAlmostEqual(out["absent"], 1 / 4)
 
+    def test_added_inhales_counts_new_inhales_inside_each_breath(self):
+        reference = np.array([0.0, 0.4, 0.8])  # two 2.5-Hz breaths
+        other = np.array([0.01, 0.2, 0.41, 0.6, 0.7])  # 2 of 5 match the reference
+        added = analysis.added_inhales(reference, other)
+        np.testing.assert_allclose(added["rate_hz"], 2.5)
+        np.testing.assert_array_equal(added["added"], [1, 2])
+        out = analysis.added_by_rate(added.assign(setting="x")).set_index("bin")
+        self.assertAlmostEqual(out.loc["2-3", "added"], 1.5)
+
     def test_error_profile_splits_near_misses_from_gross_errors(self):
         err = pd.DataFrame(
             {

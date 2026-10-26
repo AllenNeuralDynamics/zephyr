@@ -490,12 +490,21 @@ def _saved(
     m = RUNS[name]
     if m.kind == "network":
         traces = f"{folder(m)}/{seeds(folder(m))[0]}/{TRACES}"
-        path = _fetch(f"{traces}/{trace_name(e)}")
-        for own in (stem, Path(e.stem).name.rsplit("-", 1)[0]):
-            if path is None and own in _trace_files(traces):
-                # a run on another recipe (e.g. select_fs) or camera names its traces
-                # by its own entry
-                path = _fetch(f"{traces}/{_trace_files(traces)[own]}")
+        # The clip's own trace first: a run that scored several cameras of a span (one
+        # network on all of them) saved one per camera, and *e* is the copy's clip of
+        # the span, another camera's.
+        path = (
+            _fetch(f"{traces}/{_trace_files(traces)[stem]}")
+            if stem is not None and stem in _trace_files(traces)
+            else None
+        )
+        if path is None:
+            path = _fetch(f"{traces}/{trace_name(e)}")
+        if path is None and Path(e.stem).name.rsplit("-", 1)[0] in _trace_files(traces):
+            # a run on another recipe (e.g. select_fs) names its traces by its own entry
+            path = _fetch(
+                f"{traces}/{_trace_files(traces)[Path(e.stem).name.rsplit('-', 1)[0]]}"
+            )
         if path is None:
             return None
         s = pd.read_parquet(path)
