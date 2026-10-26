@@ -104,9 +104,15 @@ preprocessed and predicted, but never trained on or scored.
 
 ## Timestamps from the video
 
-With no hardware timestamps, a constant-rate video's own frame times will do. They are
-only correct if the sensor's `Time` starts when the video starts. This script writes
-`<video stem>.parquet` next to each video given on the command line:
+With no hardware timestamps, give a video its frame rate instead: `frame_rate = 240` on
+its clip (or `clips scan --frame-rate 240`, `predict --frame-rate 240`) puts frame *i*
+at *i* / 240 s. That is only right if the camera dropped no frames, and the times start
+at 0, not on any other clock, so it suits predicting rather than training against a
+sensor.
+
+To train against a sensor, the video's own frame times will do if the sensor's `Time`
+starts when the video starts. This script writes `<video stem>.parquet` next to each
+video given on the command line:
 
 ```python title="write_timestamps.py"
 import subprocess

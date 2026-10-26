@@ -4,7 +4,7 @@ Done once up front because decoding in the training loop would cap speed at the 
 Three grids: *native* (camera timestamps), *selection* (``select_fs``, the frames the
 CNN sees) and *output* (fixed 60 Hz, where prediction and target live; reconciled after
 the CNN by :meth:`zephyr.model.BreathingNet.forward`). Frames decode from the file start
-so frame ``i`` is row ``i`` of the timestamps.
+so frame ``i`` is row ``i`` of the timestamps (or at ``i / frame_rate``).
 
 Every clip needs a hand-placed box (a guessed one fails silently). Results are cached
 per clip; see :mod:`.features`.
@@ -36,7 +36,7 @@ from .config import (
     require_videos,
 )
 from .targets import load_target
-from .video import iter_frames, probe_size
+from .video import count_frames, iter_frames, probe_size
 
 
 def _nearest_index(times: np.ndarray, wanted: np.ndarray) -> np.ndarray:
@@ -48,6 +48,14 @@ def _nearest_index(times: np.ndarray, wanted: np.ndarray) -> np.ndarray:
     left = np.clip(right - 1, 0, len(times) - 1)
     nearer_left = np.abs(times[left] - wanted) <= np.abs(times[right] - wanted)
     return np.where(nearer_left, left, right)
+
+
+def frame_times(clip: ResolvedClip) -> np.ndarray:
+    """Seconds of each of *clip*'s video frames: its timestamps' ``Time``, or, on its
+    ``frame_rate``, ``i / frame_rate`` over the frames its stream holds."""
+    if clip.frame_rate is not None:
+        return np.arange(count_frames(clip.video)) / clip.frame_rate
+    return pd.read_parquet(clip.timestamps, columns=["Time"])["Time"].to_numpy()
 
 
 def select_anchor_indices(frame_times: np.ndarray, select_fs: float) -> np.ndarray:
@@ -154,11 +162,11 @@ def preprocess_clip(
                 files["sidecar"].write_text(json.dumps(sidecar, indent=2))
             return features.lookup(clip, params, cache_dir)
 
-    frame_times = pd.read_parquet(clip.timestamps)["Time"].to_numpy()
-    n_expected = len(frame_times)
-    anchor_indices = select_anchor_indices(frame_times, params.select_fs)
+    native_times = frame_times(clip)
+    n_expected = len(native_times)
+    anchor_indices = select_anchor_indices(native_times, params.select_fs)
     n_anchors = len(anchor_indices)
-    anchor_times = frame_times[anchor_indices]
+    anchor_times = native_times[anchor_indices]
 
     box_w, box_h = clip.box[2], clip.box[3]
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -184,11 +192,12 @@ def preprocess_clip(
     del out  # closes the memmap: Windows cannot rename an open file
 
     if n_decoded != n_expected:
-        # The timestamp parquet is the authoritative frame record, so a mismatch
-        # means the stored array and the time base have diverged.
+        # The timestamp parquet (or the stream's own count, on a frame_rate) is the
+        # authoritative frame record, so a mismatch means the stored array and the
+        # time base have diverged.
+        record = "frame count" if clip.frame_rate else "timestamp parquet"
         raise ValueError(
-            f"{clip.name}: decoded {n_decoded} frames but the timestamp "
-            f"parquet has {n_expected} rows"
+            f"{clip.name}: decoded {n_decoded} frames but its {record} has {n_expected}"
         )
     if n_written != n_anchors:
         raise ValueError(
@@ -202,7 +211,7 @@ def preprocess_clip(
     np.save(files["times"], out_times)
 
     stats = {
-        "native_fs_hz": float((n_expected - 1) / (frame_times[-1] - frame_times[0])),
+        "native_fs_hz": float((n_expected - 1) / (native_times[-1] - native_times[0])),
         "select_fs_hz": float(1.0 / np.median(np.diff(anchor_times))),
         "elapsed_s": round(time_module.perf_counter() - started, 1),
     }

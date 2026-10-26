@@ -1,7 +1,7 @@
 """The on-disk feature cache: one entry per (video, preprocessing, box).
 
-Files share a prefix ``{video stem}-{hash}`` (video, timestamps, recipe, box; see
-:func:`cache_key`). Per entry: the uint8 gray frames (``gray-``, T x 1 x h x w),
+Files share a prefix ``{video stem}-{hash}`` (video, timestamps or frame rate, recipe,
+box; see :func:`cache_key`). Per entry: the uint8 gray frames (``gray-``, T x 1 x h x w),
 then ``ftime-``, ``time-``, ``target-`` and ``events-``, and a ``{prefix}.json`` sidecar
 (key, stats, thermistor, events), written last so its presence means the arrays are
 complete. Read frames through :func:`reader`.
@@ -50,7 +50,7 @@ class ClipEntry:
 def cache_key(clip: ResolvedClip, params: PreprocessParams) -> dict:
     """Everything that determines a clip's arrays: on its own ``frame``, the key a list
     at that ``target_size`` would give it."""
-    if clip.video is None or clip.timestamps is None:
+    if clip.video is None:
         raise ValueError(f"{clip.name} is thermistor only; features need its video")
     if clip.box is None:
         raise ValueError(f"{clip.name} has no box; place it in `zephyr gui` (Boxes)")
@@ -60,9 +60,14 @@ def cache_key(clip: ResolvedClip, params: PreprocessParams) -> dict:
         for k, v in dump(params).items()
         if params.KEY_DEFAULTS.get(k, object()) != v
     }
+    times = (
+        {"frame_rate": clip.frame_rate}
+        if clip.frame_rate is not None
+        else {"timestamps": canonical(clip.timestamps)}
+    )
     return {
         "video": canonical(clip.video),
-        "timestamps": canonical(clip.timestamps),
+        **times,
         "preprocess": recipe,
         "box": list(clip.box),
     }

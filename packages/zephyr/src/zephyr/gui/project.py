@@ -8,6 +8,7 @@ feature cache), ``runs/<experiment>/`` and ``predictions/<name>/``. Needs no Qt.
 import json
 import os
 import re
+import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -178,7 +179,7 @@ def cache_need(clip_lists: list[Path], cache_dir: Path) -> CacheNeed:
     not cached, the frames it keeps (its timestamps' frames nearest the recipe's
     ``select_fs`` grid, as preprocessing picks them) times its crop's pixels, one
     byte each, as the cache stores them (:mod:`zephyr.features`)."""
-    from ..preprocess import select_anchor_indices
+    from ..preprocess import frame_times, select_anchor_indices
 
     total = todo = cached = unknown = 0
     for path in clip_lists:
@@ -191,13 +192,12 @@ def cache_need(clip_lists: list[Path], cache_dir: Path) -> CacheNeed:
                 continue
             todo += 1
             try:
-                times = pd.read_parquet(clip.timestamps, columns=["Time"])
                 frames = len(
                     select_anchor_indices(
-                        times["Time"].to_numpy(), clip_list.preprocess.select_fs
+                        frame_times(clip), clip_list.preprocess.select_fs
                     )
                 )
-            except (OSError, ValueError, KeyError):
+            except (OSError, ValueError, KeyError, subprocess.CalledProcessError):
                 unknown += 1
                 continue
             width, height = clip.box[2], clip.box[3]

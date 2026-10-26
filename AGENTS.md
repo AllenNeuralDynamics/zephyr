@@ -55,6 +55,11 @@ Clip lists and experiments:
 - Create lists with `zephyr clips scan` (`[derive]` flags for other file names), check
   them with `zephyr clips check`, place boxes in the app (`zephyr gui`, Boxes); never hand-edit
   boxes in bulk.
+- A video with no timestamps is given its `frame_rate` (frame *i* at *i* / rate s,
+  `clips scan --frame-rate`, `predict --frame-rate`), never a rate guessed from the
+  stream; it assumes no dropped frames, so the corpus and anything scored against a
+  sensor keep real timestamps. `predict --video` keeps the one-clip list it predicted
+  from, `<stem>.clip.toml`, in `--out`.
 - Seeds and machine settings belong to the experiment, never to a fold; fold names are
   distinct plain file names.
 - To early-stop on held-out clips (e.g. validation animals), give the fold a `[fold.val]`
@@ -106,7 +111,8 @@ as the commands.
   commands) imports without the `ui` extra and is tested headless. A window's logic
   lives in a headless class (`annotate.BoxState`, `annotate_events.TuneState`).
 - Placing boxes and choosing detectors by hand happen only in the app (`zephyr gui
-  <list> --page boxes|breathing`); `zephyr annotate` keeps only what needs no window
+  <list> --page boxes|breathing`) or its Boxes window (`predict --video --box-gui`,
+  which imports it only then); `zephyr annotate` keeps only what needs no window
   (`--prepare`, `--auto`, `annotate events --auto`). A key or control of the Boxes or
   Breathing page is never dropped (`tests/test_gui_qt.py` checks each against the saved
   clip list, offscreen). A clip may have its own `frame` (`clips frame --input-scale`,

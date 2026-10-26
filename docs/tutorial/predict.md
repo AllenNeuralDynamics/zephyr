@@ -55,6 +55,7 @@ Each video gets `predictions/new-animals/<video stem>.prediction.parquet`:
 | Column | Holds |
 | --- | --- |
 | `time` | seconds, on the video's clock (60 Hz grid) |
+| `frame` | the video frame at that time, counted from 0 |
 | `signal` | the z-scored breathing trace, inhale up |
 | `onset` | the onset head's inhale probability |
 | `inhale` | true where the onset head found an inhale |

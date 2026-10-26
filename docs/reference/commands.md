@@ -47,6 +47,7 @@ zephyr clips scan <directory> --glob <pattern> -o <list.toml> [options]
 | `--unlabelled` | mark every clip `thermistor = false` (prediction only) |
 | `--pattern` | `[derive]` pattern: a regex over the video's file stem, capturing `group` |
 | `--timestamps` | `[derive]` timestamps template |
+| `--frame-rate HZ` | the videos have no timestamps: each clip gets `frame_rate = HZ`, frame *i* at *i* / HZ s (assumes no dropped frames) |
 | `--thermistor` | `[derive]` breathing-file template |
 | `--checkpoint` | a list to predict with this network: no sensor, its `[preprocess]`, each video its own group unless `--pattern` |
 
@@ -166,10 +167,20 @@ Clips a checkpoint trained on are refused.
 
 ```text
 zephyr predict --checkpoint <best.pt> --clips <list.toml>... --out <dir> [options]
+zephyr predict --checkpoint <best.pt> --video <file.mp4> --out <dir>
+    [--frame-rate HZ] (--box X Y | --box-gui | --box-from <list.toml>) [--box-size S]
+    [options]
 ```
 
 | Flag | Meaning |
 | --- | --- |
+| `--clips` | clip lists to predict (from `clips scan --checkpoint`, boxes placed) |
+| `--video` | one video instead of lists: its one-clip list is made here and kept as `<out>/<video stem>.clip.toml` |
+| `--frame-rate HZ` | with `--video`: it has no timestamps, so frame *i* is taken at *i* / HZ s (this assumes no dropped frames); default: its `{stem}.parquet` timestamps, or the rate it was predicted on before |
+| `--box X Y` | with `--video`: the crop's top-left corner, in the video's own pixels |
+| `--box-size S` | with `--box` or `--box-gui`: the crop's side, in the video's own pixels. The video is scaled so that `S` becomes the network's crop; the default is the share of the frame the network's crops covered (on a 720-pixel-wide video and a network of 96-pixel crops on 360x270 frames, 192) |
+| `--box-gui` | with `--video`: place the crop on the app's Boxes window (needs the `ui` extra); prediction starts once it is closed |
+| `--box-from LIST` | with `--video`: the crop (and frame) of a list of one clip, such as another video's `<stem>.clip.toml` |
 | `--out` | the folder for `<video stem>.prediction.parquet` files; one checkpoint per folder |
 | `--cache` | keep the preprocessed frames here and reuse them (default: a temporary folder, removed) |
 | `--groups G...` | only these groups |
@@ -179,7 +190,13 @@ zephyr predict --checkpoint <best.pt> --clips <list.toml>... --out <dir> [option
 | `--infer-window`, `--frame-chunk` | inference window and frame batch sizes |
 
 The lists' `[preprocess]` must be the checkpoint's, and every box the size it trained
-on.
+on. With `--video` and no crop flag, the crop of an earlier run into the same `--out` is
+used again; a different crop or frame rate under an existing prediction needs
+`--restart`.
+
+Each `.prediction.parquet` has one row per output sample: `time`, `frame` (the video
+frame at that time, counted from 0), the z-scored `signal`, the onset head's `onset`
+probability and `inhale`.
 
 ## quality-control run
 

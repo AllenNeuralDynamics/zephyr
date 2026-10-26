@@ -18,6 +18,7 @@ from zephyr.config import ClipList, TrainParams, load
 from zephyr.evaluate import evaluate_groups
 from zephyr.gui.worker import snippets
 from zephyr.predict import (
+    RECORD,
     SETTINGS,
     SUFFIX,
     crop_size,
@@ -127,8 +128,11 @@ class TrainedRunTests(unittest.TestCase):
         written = sorted(p.name for p in out.glob(f"*{SUFFIX}"))
         self.assertEqual(len(written), 3)
         table = pd.read_parquet(out / f"video_face_1_part_1{SUFFIX}")
-        self.assertEqual(list(table.columns), ["time", "signal", "onset", "inhale"])
+        self.assertEqual(
+            list(table.columns), ["time", "frame", "signal", "onset", "inhale"]
+        )
         self.assertEqual(len(table), 1200)
+        np.testing.assert_array_equal(table["frame"], np.arange(1200))  # 60 Hz video
         self.assertAlmostEqual(float(table["signal"].mean()), 0.0, places=4)
         self.assertAlmostEqual(float(table["signal"].std(ddof=0)), 1.0, places=3)
         self.assertTrue((out / SETTINGS).is_file())
@@ -175,6 +179,71 @@ class TrainedRunTests(unittest.TestCase):
         save_boxes(path, state)
         self.predict(path, out)
         self.assertTrue((out / f"video_face_1_part_1{SUFFIX}").is_file())
+
+    def _bare_video(self, name: str) -> Path:
+        """A copy of clip 1's video alone, without its timestamps."""
+        folder = self.root / name
+        folder.mkdir()
+        video = folder / "video.mp4"
+        video.write_bytes((self.root / "data" / "video_face_1_part_1.mp4").read_bytes())
+        return video
+
+    def _video(self, video: Path, out: Path, *flags: str) -> None:
+        main(
+            ["--checkpoint", str(self.checkpoint), "--video", str(video)]
+            + ["--out", str(out), "--device", "cpu", "--amp", "off", "--workers", "1"]
+            + list(flags)
+        )
+
+    def test_one_video_on_its_frame_rate_predicts_as_its_timestamps_do(self):
+        video, out = self._bare_video("bare"), self.root / "predictions" / "one"
+        self._video(video, out, "--frame-rate", "60", "--box", "16", "8")
+        (clip,) = load(ClipList, out / f"video{RECORD}").resolve()
+        self.assertEqual((clip.frame_rate, clip.timestamps), (60.0, None))
+        self.assertEqual((clip.box, clip.frame), ((16, 8, 32, 32), None))
+        self.assertFalse(clip.labelled)
+        ours = pd.read_parquet(out / f"video{SUFFIX}")
+        listed = self.root / "predictions" / "listed"
+        self.predict(self.list, listed)  # the same video, box, on its timestamps
+        theirs = pd.read_parquet(listed / f"video_face_1_part_1{SUFFIX}")
+        np.testing.assert_allclose(ours["signal"], theirs["signal"], atol=1e-5)
+        np.testing.assert_array_equal(ours["frame"], theirs["frame"])
+        np.testing.assert_allclose(ours["time"], theirs["time"] - 100.0)  # from 0 s
+
+    def test_a_video_is_cropped_on_its_own_pixels_and_its_crop_kept(self):
+        video, out = self._bare_video("native"), self.root / "predictions" / "native"
+        flags = ["--frame-rate", "60", "--box", "8", "4", "--box-size", "16"]
+        self._video(video, out, *flags)
+        record = out / f"video{RECORD}"
+        (clip,) = load(ClipList, record).resolve()
+        # 16 px of the 64x48 video become the 32 px crop: it is scaled to 128x96
+        self.assertEqual((clip.frame, clip.box), ((128, 96), (16, 8, 32, 32)))
+        kept = record.read_text()
+        self._video(video, out)  # again, no crop flags: the crop it has
+        self.assertEqual(record.read_text(), kept)
+        with self.assertRaisesRegex(SystemExit, "another crop or frame rate"):
+            self._video(video, out, "--box", "0", "0")
+        self.assertEqual(record.read_text(), kept)  # refused: as it was
+        self._video(video, out, "--box", "0", "0", "--restart")
+        self.assertEqual(load(ClipList, record).resolve()[0].box, (0, 0, 32, 32))
+        other = self._bare_video("next")
+        self._video(other, out.with_name("next"), "--box-from", str(record))
+        (copied,) = load(ClipList, out.with_name("next") / f"video{RECORD}").resolve()
+        self.assertEqual((copied.video, copied.frame_rate), (other.resolve(), 60.0))
+        self.assertEqual((copied.box, copied.frame), ((0, 0, 32, 32), None))
+
+    def test_a_video_needs_a_crop_and_the_crop_flags_need_a_video(self):
+        video = self._bare_video("flags")
+        out = self.root / "predictions" / "flags"
+        with self.assertRaisesRegex(SystemExit, "--video needs a crop"):
+            self._video(video, out, "--frame-rate", "60")
+        with self.assertRaisesRegex(SystemExit, "--box needs --video"):
+            main(
+                ["--checkpoint", str(self.checkpoint), "--clips", str(self.list)]
+                + ["--out", str(out), "--box", "1", "1"]
+            )
+        with self.assertRaisesRegex(SystemExit, "must fit"):
+            self._video(video, out, "--box", "0", "0", "--box-size", "64")
 
     def test_predict_needs_the_checkpoints_recipe(self):
         other = self.root / "other.toml"

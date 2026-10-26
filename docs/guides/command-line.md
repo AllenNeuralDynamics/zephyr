@@ -87,6 +87,20 @@ sensor, and each video its own group. The crop must be the size the network trai
 and `predict` refuses any other. See [Quality control](quality-control.md) to judge the
 predictions.
 
+One video needs only one command. `--frame-rate` stands in for timestamps, and the crop
+is given in the video's own pixels (or placed on the Boxes window with `--box-gui`):
+
+```bash
+uv run zephyr predict --checkpoint best.pt --video session.mp4 --frame-rate 240 \
+    --box-gui --out predictions/session
+```
+
+It writes `predictions/session/session.clip.toml`, the list it predicted from. Run it
+again without a crop flag and it uses the same crop; `--box-from` gives that crop to
+another video. `--box-size` is the crop's side in the video's pixels (the video is
+scaled so it becomes the network's crop); by default it covers the share of the frame
+the network's crops did.
+
 ## Editor support
 
 ```bash

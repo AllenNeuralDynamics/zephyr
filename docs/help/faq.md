@@ -1,8 +1,8 @@
 # FAQ
 
 ??? question "Do I need a breathing sensor?"
-    Only to train and to score. Predicting on new videos needs only the video and its
-    frame timestamps. To train a network for your rig, you need some recordings with a
+    Only to train and to score. Predicting on new videos needs only the video, and its
+    frame timestamps or its frame rate (`--frame-rate`). To train a network for your rig, you need some recordings with a
     sensor (a nasal thermistor, or any sensor whose trace follows breathing) beside the
     face camera.
 

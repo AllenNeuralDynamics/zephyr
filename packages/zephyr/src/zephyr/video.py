@@ -41,6 +41,49 @@ def probe_size(video: Path) -> tuple[int, int]:
     return int(stream["width"]), int(stream["height"])
 
 
+def probe_duration(video: Path) -> float:
+    """Seconds a video's container says it lasts (a quick look, not a count)."""
+    out = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "csv=p=0",
+            str(video),
+        ],
+        capture_output=True,
+        check=True,
+        text=True,
+    ).stdout
+    return float(out.strip())
+
+
+def count_frames(video: Path) -> int:
+    """Frames in *video*'s first stream, counted by demuxing (no decode)."""
+    out = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-count_packets",
+            "-show_entries",
+            "stream=nb_read_packets",
+            "-of",
+            "csv=p=0",
+            str(video),
+        ],
+        capture_output=True,
+        check=True,
+        text=True,
+    ).stdout
+    return int(out.strip().strip(","))
+
+
 def _build_command(
     video: Path,
     *,

@@ -155,13 +155,20 @@ class PredictPage(Page):
         form.addRow("Videos", self.video_glob)
         self.video_times = QtWidgets.QLineEdit(Derive().timestamps)
         form.addRow("Timestamps", self.video_times)
+        self.video_rate = QtWidgets.QLineEdit(placeholderText="(from the timestamps)")
+        self.video_rate.setToolTip(
+            "Videos with no timestamps: their frames per second (frame i at i / rate "
+            "s, assuming no dropped frames); empty: each needs its timestamps"
+        )
+        form.addRow("Frame rate (Hz)", self.video_rate)
         self.video_name = QtWidgets.QLineEdit("videos")
         self.video_name.textChanged.connect(lambda _: self.refresh_listed())
         form.addRow("Into predictions/", self.video_name)
         tab.addLayout(form)
         tab.addWidget(
             note(
-                "Videos and their timestamps only, from any folder. The list takes the "
+                "Videos and their timestamps (or a frame rate) only, from any folder. "
+                "The list takes the "
                 "checkpoint's frame size, and every crop is the size the network "
                 "trained on: you choose only where it goes, on one frame per video."
             )
@@ -259,8 +266,11 @@ class PredictPage(Page):
         files, _ = QtWidgets.QFileDialog.getOpenFileNames(
             self, "Videos to add", start, "Videos (*.mp4 *.avi *.mov *.mkv);;All (*)"
         )
-        if not files or not self._edit_listed(
-            add=list(map(Path, files)), unlabelled=True
+        rate = self._frame_rate()
+        if rate is False or not files:
+            return
+        if not self._edit_listed(
+            add=list(map(Path, files)), unlabelled=True, frame_rate=rate
         ):
             return
         path = self.video_list()
@@ -275,6 +285,23 @@ class PredictPage(Page):
         }
         if chosen and self._edit_listed(remove=chosen) and self._reopen:
             self.place_crops()
+
+    def _frame_rate(self) -> float | None | bool:
+        """The Frame rate field: ``None`` when empty, ``False`` (after saying so)
+        when it is not a number above 0."""
+        text = self.video_rate.text().strip()
+        if not text:
+            return None
+        try:
+            rate = float(text)
+        except ValueError:
+            rate = 0.0
+        if rate > 0:
+            return rate
+        QtWidgets.QMessageBox.warning(
+            self, "Frame rate", f"{text!r} is not a frame rate (frames per second)"
+        )
+        return False
 
     def _pick_folder(self) -> None:
         folder = QtWidgets.QFileDialog.getExistingDirectory(self, "Video folder")
@@ -317,9 +344,14 @@ class PredictPage(Page):
         if self.box_window is not None:  # it would write the old crops back
             self.box_window.close()
             self.box_window = None
+        rate = self._frame_rate()
+        if rate is False:
+            return
         argv = ["scan", folder, "--glob", self.video_glob.text(), "-o", str(path)]
         argv += ["--checkpoint", str(checkpoint)]
-        if self.video_times.text() != Derive().timestamps:
+        if rate is not None:
+            argv += ["--frame-rate", f"{rate:g}"]
+        elif self.video_times.text() != Derive().timestamps:
             argv += ["--timestamps", self.video_times.text()]
         prepare = ["--prepare", "--frame-dir", str(self.project.frames_dir)]
         self._queue = [Job("annotate", [str(path), *prepare], self.project.root)]

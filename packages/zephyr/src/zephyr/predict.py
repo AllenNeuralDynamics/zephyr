@@ -1,18 +1,19 @@
 """Predict breathing from videos with a trained checkpoint; no sensor is needed.
 
-Each clip of the lists (boxed like any other) is preprocessed, into ``--cache`` or else a
-temporary folder removed afterwards, and predicted end to end. ``<out>/<video
-stem>.prediction.parquet`` holds one row per output sample: ``time``, the z-scored
-``signal``, the onset head's ``onset`` probability and ``inhale`` (an inhale found
-there, by the head, at the checkpoint's onset threshold unless ``--head-threshold``).
-The lists' ``[preprocess]`` must be the checkpoint's recipe, and every box the size it
-trained on (``clips scan --checkpoint`` writes such a list).
+Each clip (of the lists, or the one ``--video``) is preprocessed, into ``--cache`` or a
+temporary folder, and predicted end to end into ``<out>/<video stem>.prediction.parquet``:
+per output sample ``time``, ``frame`` (the video frame there), the z-scored ``signal``,
+the head's ``onset`` probability and ``inhale`` (at the checkpoint's onset threshold
+unless ``--head-threshold``). Lists must be on the checkpoint's recipe and crop size
+(``clips scan --checkpoint``); ``--video`` writes its own, ``<stem>.clip.toml``.
 
 CLI
 ---
     zephyr predict --checkpoint best.pt --clips <list.toml>... --out predictions/
         [--cache <dir>] [--groups <g>...] [--restart] [--device cpu] [--amp off]
         [--head-threshold 0.6]
+    zephyr predict --checkpoint best.pt --video session.mp4 --frame-rate 240
+        --box-gui | --box X Y | --box-from <stem>.clip.toml  [--box-size S] --out dir
 """
 
 import argparse
@@ -22,6 +23,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import tomlkit
 import torch
 
 from .config import ClipList, PreprocessParams, ResolvedClip, canonical, dump, load
@@ -33,11 +35,14 @@ from .evaluate import (
     zscore,
 )
 from .infer import predict_clip
-from .preprocess import preprocess_clips
+from .preprocess import _nearest_index, frame_times, preprocess_clips
 from .quality_control.metrics import find_events
 from .quality_control.reference import checkpoint_hash
+from .video import clamp_box, probe_size
 
 SUFFIX = ".prediction.parquet"
+RECORD = ".clip.toml"
+"""Suffix of the one-clip list ``--video`` writes into ``--out``: what was predicted."""
 SETTINGS = "predictions.json"
 """The checkpoint a folder's predictions came from, written once into it."""
 AMP = {"bf16": torch.bfloat16, "fp16": torch.float16, "off": None}
@@ -89,7 +94,7 @@ def select_clips(lists: list[ClipList], groups: list[str] | None) -> list[Resolv
     missing = [
         str(path)
         for c in clips
-        for path in (c.video, c.timestamps)
+        for path in (c.video, c.timestamps if c.frame_rate is None else c.video)
         if path is None or not path.is_file()
     ]
     if missing:
@@ -198,6 +203,7 @@ def predict(
                 amp_dtype=AMP[amp],
             )
             signal, times = zscore(signal), np.load(entry.times)
+            frame = _nearest_index(frame_times(clip), times)  # the video's own frame
             found = find_events(
                 times,
                 signal,
@@ -209,18 +215,225 @@ def predict(
             path = out / f"{clip.video.stem}{SUFFIX}"
             part = path.with_name(path.name + ".part")
             pd.DataFrame(
-                {"time": times, "signal": signal, "onset": onset, "inhale": inhale}
+                {
+                    "time": times,
+                    "frame": frame,
+                    "signal": signal,
+                    "onset": onset,
+                    "inhale": inhale,
+                }
             ).to_parquet(part, index=False)
             part.replace(path)
             print(f"[{k + 1}/{len(todo)}] {entry.clip_id} -> {path.name}", flush=True)
     return [out / f"{c.video.stem}{SUFFIX}" for c in clips]
 
 
+def video_frame(
+    native: tuple[int, int], target: tuple[int, int], crop: int, box_size: int | None
+) -> tuple[tuple[int, int], int]:
+    """The working frame of a video of *native* size whose box is *box_size* native
+    pixels (default: the share of the frame a *crop* on the checkpoint's *target*
+    covers), scaled so that box is the *crop*; and that box size, in native pixels."""
+    if box_size is None:
+        box_size = round(crop * native[0] / target[0])
+    if not 0 < box_size <= min(native):
+        raise SystemExit(
+            f"--box-size {box_size} must fit the {native[0]}x{native[1]} video"
+        )
+    scale = crop / box_size
+    return (round(native[0] * scale), round(native[1] * scale)), box_size
+
+
+def _write_list(doc, path: Path, video: Path) -> None:
+    """Validate the one-clip list *doc*, then write it to *path*."""
+    try:
+        ClipList.model_validate(doc.unwrap(), context={"base": path.parent})
+    except ValueError as exc:
+        raise SystemExit(f"{video}: {exc}") from None
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(tomlkit.dumps(doc))
+
+
+def write_video_list(
+    path: Path,
+    video: Path,
+    checkpoint: Path,
+    *,
+    frame_rate: float | None,
+    corner: tuple[int, int] | None,
+    box_size: int | None,
+) -> None:
+    """Write the one-clip list *path* that predicts *video* with *checkpoint*: its
+    recipe, the video on *frame_rate* (else its ``{stem}.parquet`` timestamps), and a
+    box at native-pixel *corner* (default: centred) of *box_size* native pixels,
+    which becomes the checkpoint's crop (:func:`video_frame`)."""
+    from .clips import EACH_VIDEO, checkpoint_recipe
+
+    recipe, crop = checkpoint_recipe(checkpoint)
+    if crop is None or crop[0] != crop[1]:
+        raise SystemExit(f"{checkpoint} does not say one square crop size")
+    native = probe_size(video)
+    target = tuple(recipe["target_size"])
+    frame, box_size = video_frame(native, target, crop[0], box_size)
+    scale = frame[0] / native[0]
+    if corner is None:
+        corner = ((native[0] - box_size) // 2, (native[1] - box_size) // 2)
+    box = clamp_box((round(corner[0] * scale), round(corner[1] * scale), *crop), *frame)
+    doc = tomlkit.document()
+    doc.add(tomlkit.comment(f"zephyr predict --video {video.name} with {checkpoint}"))
+    doc.add(
+        tomlkit.comment(
+            f"Its box is {box_size} px of the {native[0]}x{native[1]} video, scaled to "
+            f"{frame[0]}x{frame[1]} so it is the network's {crop[0]}x{crop[1]}."
+        )
+    )
+    preprocess = tomlkit.table()
+    for key, value in recipe.items():
+        preprocess.add(key, list(value) if isinstance(value, list | tuple) else value)
+    doc.add("preprocess", preprocess)
+    derive = tomlkit.table()
+    derive.add("pattern", EACH_VIDEO)
+    derive.add("thermistor", "{stem}.thermistor.parquet")  # never read: unlabelled
+    doc.add("derive", derive)
+    entry = tomlkit.table()
+    entry.add("video", Path(video).resolve().as_posix())
+    if frame_rate is not None:
+        entry.add("frame_rate", frame_rate)
+    entry.add("thermistor", False)
+    if frame != target:
+        entry.add("frame", list(frame))
+    entry.add("box", list(box))
+    clips = tomlkit.aot()
+    clips.append(entry)
+    doc.add("clip", clips)
+    _write_list(doc, path, video)
+    print(
+        f"{video.name}: box {box_size} px at {list(corner)} of {native[0]}x"
+        f"{native[1]} -> {crop[0]}x{crop[1]} at {list(box[:2])} of "
+        f"{frame[0]}x{frame[1]} ({path.name})",
+        flush=True,
+    )
+
+
+def reuse_video_list(source: Path, path: Path, video: Path, frame_rate) -> None:
+    """Write *path* for *video* with the frame, box and (unless *frame_rate*) frame
+    rate of the one clip in use of *source* (an earlier ``<stem>.clip.toml``)."""
+    clips = load(ClipList, source, check_files=False).resolve()
+    if len(clips) != 1 or clips[0].box is None:
+        raise SystemExit(f"--box-from {source}: needs a list of one boxed clip")
+    doc = tomlkit.parse(source.read_text())
+    (entry,) = [e for e in doc["clip"] if e.get("selection") != "exclude"]
+    entry["video"] = Path(video).resolve().as_posix()
+    for key in ("timestamps", "group"):  # the source video's own
+        if key in entry:
+            del entry[key]
+    if frame_rate is not None:  # else the source's, if it has one
+        entry["frame_rate"] = frame_rate
+    _write_list(doc, path, video)
+    print(f"{video.name}: the crop of {source} ({path.name})", flush=True)
+
+
+def video_list(args) -> Path:
+    """The list ``--video`` is predicted from, written into ``--out`` from the crop
+    flags; one that changed under an existing prediction needs ``--restart``."""
+    video = args.video
+    if not video.is_file():
+        raise SystemExit(f"no video {video}")
+    if args.box_from is not None and args.box_size is not None:
+        raise SystemExit("--box-size goes with --box or --box-gui; --box-from has one")
+    path = args.out / f"{video.stem}{RECORD}"
+    before = path.read_text() if path.is_file() else None
+    frame_rate = args.frame_rate
+    if frame_rate is None and before is not None:  # the one it was predicted on
+        frame_rate = load(ClipList, path, check_files=False).resolve()[0].frame_rate
+    source = args.box_from
+    if source is None and args.box is None and args.box_size is None:
+        source = path if before is not None else None  # its crop here, again
+    if source is None and args.box is None and not args.box_gui:
+        raise SystemExit(
+            "--video needs a crop: --box X Y (its own pixels), --box-gui to place "
+            "it, or --box-from an earlier <stem>.clip.toml"
+        )
+    if source is not None:
+        with tempfile.TemporaryDirectory() as scratch:  # *path* may be the source
+            copy = Path(scratch) / source.name
+            copy.write_text(source.read_text())
+            reuse_video_list(copy, path, video, frame_rate)
+    else:
+        write_video_list(
+            path,
+            video,
+            args.checkpoint,
+            frame_rate=frame_rate,
+            corner=tuple(args.box) if args.box else None,
+            box_size=args.box_size,
+        )
+    if args.box_gui:
+        from .gui import need_ui
+
+        need_ui()
+        from .gui.boxes import place_crop
+
+        place_crop(path, args.checkpoint)
+    predicted = args.out / f"{video.stem}{SUFFIX}"
+    changed = before is not None and path.read_text() != before
+    if changed and predicted.is_file() and not args.restart:
+        path.write_text(before)  # the prediction there is still that list's
+        raise SystemExit(
+            f"{predicted} was predicted with another crop or frame rate ({path}); "
+            "add --restart to predict it again"
+        )
+    return path
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--checkpoint", type=Path, required=True)
-    parser.add_argument("--clips", type=Path, nargs="+", required=True)
+    given = parser.add_mutually_exclusive_group(required=True)
+    given.add_argument("--clips", type=Path, nargs="+")
+    given.add_argument(
+        "--video",
+        type=Path,
+        help="One video instead of lists: its list (<stem>.clip.toml in --out) is "
+        "made here, the crop from --box, --box-from or --box-gui.",
+    )
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument(
+        "--frame-rate",
+        type=float,
+        metavar="HZ",
+        help="With --video: it has no timestamps, frame i is at i / HZ s (assumes "
+        "no dropped frames); default: its {stem}.parquet timestamps.",
+    )
+    crop = parser.add_mutually_exclusive_group()
+    crop.add_argument(
+        "--box",
+        type=int,
+        nargs=2,
+        metavar=("X", "Y"),
+        help="With --video: the crop's top-left corner, in the video's own pixels.",
+    )
+    crop.add_argument(
+        "--box-from",
+        type=Path,
+        metavar="LIST",
+        help="With --video: the crop (and frame) of this one-clip list, e.g. an "
+        "earlier --out's <stem>.clip.toml.",
+    )
+    crop.add_argument(
+        "--box-gui",
+        action="store_true",
+        help="With --video: place the crop in the app's Boxes window (needs the ui "
+        "extra); prediction starts when it is closed.",
+    )
+    parser.add_argument(
+        "--box-size",
+        type=int,
+        metavar="S",
+        help="With --box or --box-gui: the crop's side in the video's own pixels; "
+        "the video is scaled so it becomes the network's crop (default: the share "
+        "of the frame the network's crops covered).",
+    )
     parser.add_argument(
         "--cache",
         type=Path,
@@ -248,6 +461,14 @@ def main(argv: list[str] | None = None) -> None:
     )
     args = parser.parse_args(argv)
 
+    if args.video is not None:
+        args.clips = [video_list(args)]
+    else:
+        for flag in ("frame_rate", "box", "box_from", "box_size"):
+            if getattr(args, flag) is not None:
+                raise SystemExit(f"--{flag.replace('_', '-')} needs --video")
+        if args.box_gui:
+            raise SystemExit("--box-gui needs --video")
     lists = [load(ClipList, path, check_files=False) for path in args.clips]
     recipes = {lst.preprocess for lst in lists}
     if len(recipes) != 1:

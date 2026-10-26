@@ -28,7 +28,7 @@ import pandas as pd
 
 from .clips import scale_box, scaled_frame, write_boxes
 from .config import ClipList, ResolvedClip, load, require_videos
-from .video import Box, clamp_box, decode_window, probe_size
+from .video import Box, clamp_box, decode_window, probe_duration, probe_size
 
 DEFAULT_BOX_SIZE = 128
 PREPARE_START_S = 150.0
@@ -467,6 +467,8 @@ def frame_path(frame_dir: Path, video: Path) -> Path:
 
 def frame_time(clip: ResolvedClip) -> float:
     """Seconds into *clip* of its cached frame."""
+    if clip.frame_rate is not None:  # no frame count needed: the container's length
+        return min(PREPARE_START_S, probe_duration(clip.video) / 2)
     times = pd.read_parquet(clip.timestamps, columns=["Time"])["Time"].to_numpy()
     return min(PREPARE_START_S, float(times[-1] - times[0]) / 2)
 
