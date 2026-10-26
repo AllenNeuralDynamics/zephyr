@@ -144,6 +144,10 @@ never saved.
        --box-gui --out predictions/session
    ```
 
+   Decoding takes most of the time; a video is decoded in pieces from its keyframes
+   when there are more `--workers` than videos (the same frames as one pass), with a
+   progress line for the decode and for the network's pass.
+
 3. **Annotate**: place one crop box per recording (one box covers a
    recording's parts; `o` gives a single clip its own) on the app's Boxes page (needs
    `--extra ui`). Boxes are written into the clip list as `box = [x, y, w, h]`, and

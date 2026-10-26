@@ -35,7 +35,8 @@ from .evaluate import (
     zscore,
 )
 from .infer import predict_clip
-from .preprocess import _nearest_index, frame_times, preprocess_clips
+from .preprocess import frame_at, preprocess_clips
+from .progress import Progress
 from .quality_control.metrics import find_events
 from .quality_control.reference import checkpoint_hash
 from .video import clamp_box, probe_size
@@ -192,6 +193,12 @@ def predict(
             preprocess_clips(todo, recipe, folder, workers=workers) if todo else []
         )
         for k, (clip, entry) in enumerate(zip(todo, entries, strict=True)):
+            shown = Progress(f"predicting {entry.clip_id}", 1, "windows")
+
+            def counted(done: int, total: int, shown=shown) -> None:
+                shown.total = total
+                shown.add(1)
+
             signal, onset = predict_clip(
                 model,
                 entry,
@@ -201,9 +208,11 @@ def predict(
                 device=torch_device,
                 frame_chunk=frame_chunk,
                 amp_dtype=AMP[amp],
+                on_window=counted,
             )
+            shown.close()
             signal, times = zscore(signal), np.load(entry.times)
-            frame = _nearest_index(frame_times(clip), times)  # the video's own frame
+            frame = frame_at(clip, times)  # the video's own frame
             found = find_events(
                 times,
                 signal,

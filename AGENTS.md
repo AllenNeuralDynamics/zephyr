@@ -203,6 +203,8 @@ resumable steps; what each does and the folder layout are in its README.
   dataset is named as the original with `ZEPHYR_PATH_MAP` (zephyr README), never by
   moving or renaming cache entries.
 - Feature caches store the gray frames; core reads them only through `features.reader`.
+  A video decoded in pieces (from its keyframes, `preprocess.pieces_of`) gives exactly
+  the frames of one pass (`tests/test_decode_pieces.py`), or is refused.
 
 ## When code must change
 

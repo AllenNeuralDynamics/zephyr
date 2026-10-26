@@ -47,8 +47,10 @@ def predict_clip(
     device: torch.device | str = "cuda",
     frame_chunk: int = 256,
     amp_dtype: torch.dtype | None = torch.bfloat16,
+    on_window=None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Predict the full trace for one clip, its frames standardised by *mean* and *std*.
+    *on_window* (if given) is called ``(done, total)`` after each window.
 
     Returns
     -------
@@ -75,7 +77,8 @@ def predict_clip(
     onset = np.zeros(n_out, np.float32)
     filled = np.zeros(n_out, bool)
 
-    for start in window_starts(n_out, window, hop):
+    starts = window_starts(n_out, window, hop)
+    for done, start in enumerate(starts, start=1):
         stop = start + window
         out_times = grid[start:stop]
         # Whichever selection frames cover this window's span, plus slack.
@@ -120,6 +123,8 @@ def predict_clip(
         signal[lo:hi] = pred_signal[lo - start : hi - start]
         onset[lo:hi] = pred_onset[lo - start : hi - start]
         filled[lo:hi] = True
+        if on_window is not None:
+            on_window(done, len(starts))
 
     if not filled.all():
         raise RuntimeError(
