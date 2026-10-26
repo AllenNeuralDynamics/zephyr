@@ -208,12 +208,17 @@ def render(work: Path, out: Path, still: float | None) -> None:
     )
     fig.text(
         30 / W,
-        1 - 525 / H,
-        "Inhalations: thermistor (top) and each camera's "
-        "network, on a mouse none of them saw in training",
-        color="#aaaaaa",
-        fontsize=14,
+        1 - 528 / H,
+        "Zephyr: respiration from video in a held-out mouse",
+        color="white",
+        fontsize=17,
+        weight="bold",
     )
+    # Key to the dashed lines, left of the clock.
+    key = fig.add_axes((1440 / W, 1 - 532 / H, 40 / W, 20 / H), facecolor=BG)
+    key.plot([0, 1], [0.5, 0.5], color="#cccccc", lw=1.6, ls=(0, (3, 3)))
+    key.set_axis_off()
+    fig.text(1490 / W, 1 - 528 / H, "inhalation onsets", color="#cccccc", fontsize=14)
 
     caps = {
         k: cv2.VideoCapture(str(work / f"{span}_{c}.mp4"))
