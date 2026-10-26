@@ -219,11 +219,14 @@ class TrainedRunTests(unittest.TestCase):
         # 16 px of the 64x48 video become the 32 px crop: it is scaled to 128x96
         self.assertEqual((clip.frame, clip.box), ((128, 96), (16, 8, 32, 32)))
         kept = record.read_text()
-        self._video(video, out)  # again, no crop flags: the crop it has
-        self.assertEqual(record.read_text(), kept)
-        with self.assertRaisesRegex(SystemExit, "another crop or frame rate"):
+        with self.assertRaisesRegex(SystemExit, "exists: add --restart"):
             self._video(video, out, "--box", "0", "0")
         self.assertEqual(record.read_text(), kept)  # refused: as it was
+        neighbour = out / f"neighbour{SUFFIX}"
+        neighbour.write_text("another video's")
+        self._video(video, out, "--restart")  # no crop flags: the crop it has
+        self.assertEqual(record.read_text(), kept)
+        self.assertTrue(neighbour.is_file())  # only this video's is predicted again
         self._video(video, out, "--box", "0", "0", "--restart")
         self.assertEqual(load(ClipList, record).resolve()[0].box, (0, 0, 32, 32))
         other = self._bare_video("next")

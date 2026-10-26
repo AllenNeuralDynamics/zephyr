@@ -344,12 +344,21 @@ def reuse_video_list(source: Path, path: Path, video: Path, frame_rate) -> None:
 
 def video_list(args) -> Path:
     """The list ``--video`` is predicted from, written into ``--out`` from the crop
-    flags; one that changed under an existing prediction needs ``--restart``."""
+    flags. A video predicted there already is refused, or with ``--restart`` its
+    prediction (only its own: the folder may hold others) is removed first."""
     video = args.video
     if not video.is_file():
         raise SystemExit(f"no video {video}")
     if args.box_from is not None and args.box_size is not None:
         raise SystemExit("--box-size goes with --box or --box-gui; --box-from has one")
+    predicted = args.out / f"{video.stem}{SUFFIX}"
+    if predicted.is_file():
+        if not args.restart:
+            raise SystemExit(
+                f"{predicted} exists: add --restart to predict {video.name} again"
+            )
+        predicted.unlink()
+        args.restart = False  # the folder's other predictions stay
     path = args.out / f"{video.stem}{RECORD}"
     before = path.read_text() if path.is_file() else None
     frame_rate = args.frame_rate
@@ -384,14 +393,6 @@ def video_list(args) -> Path:
         from .gui.boxes import place_crop
 
         place_crop(path, args.checkpoint)
-    predicted = args.out / f"{video.stem}{SUFFIX}"
-    changed = before is not None and path.read_text() != before
-    if changed and predicted.is_file() and not args.restart:
-        path.write_text(before)  # the prediction there is still that list's
-        raise SystemExit(
-            f"{predicted} was predicted with another crop or frame rate ({path}); "
-            "add --restart to predict it again"
-        )
     return path
 
 

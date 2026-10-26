@@ -95,9 +95,9 @@ uv run zephyr predict --checkpoint best.pt --video session.mp4 --frame-rate 240 
     --box-gui --out predictions/session
 ```
 
-It writes `predictions/session/session.clip.toml`, the list it predicted from. Run it
-again without a crop flag and it uses the same crop; `--box-from` gives that crop to
-another video. `--box-size` is the crop's side in the video's pixels (the video is
+It writes `predictions/session/session.clip.toml`, the list it predicted from. A video
+already predicted there is refused: add `--restart` to predict it again, and without a
+crop flag it uses the same crop. `--box-from` gives that crop to another video. `--box-size` is the crop's side in the video's pixels (the video is
 scaled so it becomes the network's crop); by default it covers the share of the frame
 the network's crops did.
 

@@ -184,16 +184,18 @@ zephyr predict --checkpoint <best.pt> --video <file.mp4> --out <dir>
 | `--out` | the folder for `<video stem>.prediction.parquet` files; one checkpoint per folder |
 | `--cache` | keep the preprocessed frames here and reuse them (default: a temporary folder, removed) |
 | `--groups G...` | only these groups |
-| `--restart` | remove the predictions in `--out` first and predict every clip |
+| `--restart` | remove the predictions in `--out` first and predict every clip; with `--video`, only that video's |
 | `--head-threshold T` | find the onset head's inhales at `T` instead of the checkpoint's own threshold; `predictions.json` records it, and a folder holds one threshold's predictions |
 | `--device`, `--amp`, `--workers` | machine settings (`--workers` as for `preprocess`: one video is decoded in that many pieces) |
 | `--infer-window`, `--frame-chunk` | inference window and frame batch sizes |
 
 The lists' `[preprocess]` must be the checkpoint's, and every box the size it trained
 on. Decoding one video, and the network's pass over it, show a progress line (a line
-every tenth of the way when the output is not a terminal). With `--video` and no crop flag, the crop of an earlier run into the same `--out` is
-used again; a different crop or frame rate under an existing prediction needs
-`--restart`.
+every tenth of the way when the output is not a terminal).
+
+With `--video`, a video that already has a prediction in `--out` is refused; add
+`--restart` to predict it again. Without a crop flag, the crop of the earlier run into
+that `--out` (its `<stem>.clip.toml`) is used again.
 
 Each `.prediction.parquet` has one row per output sample: `time`, `frame` (the video
 frame at that time, counted from 0), the z-scored `signal`, the onset head's `onset`
