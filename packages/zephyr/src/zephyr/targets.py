@@ -148,8 +148,8 @@ def breath_phase(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Breath phase on *times* and the mask of samples it is defined on.
 
-    The phase runs linearly from 0 to 2π between consecutive inhalations (the onset
-    head's events, at their own resolution), so every sample of a cycle is
+    The phase runs linearly from 0 to 2π between consecutive inhalations (the
+    thermistor's, as the onset target uses them), so every sample of a cycle is
     supervised whatever the rate. It is undefined, and masked, before the first
     inhalation, from the last one on, and over a whole cycle that overlaps an
     *excluded* span (``(n, 2)`` start/stop seconds): its ends are not both real.
