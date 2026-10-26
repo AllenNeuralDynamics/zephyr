@@ -475,3 +475,29 @@ class BoxWindow(QtWidgets.QMainWindow):
         self._save()
         print(f"saved {len(self.state.placed)} recording box(es) -> {self.out_path}")
         event.accept()
+
+
+def place_crop(path: Path, checkpoint: Path) -> None:  # pragma: no cover
+    """Place the crop of the clip list *path* (``predict --box-gui``) in this window,
+    the box *checkpoint*'s crop, from a frame cached in a temporary folder; returns
+    once it is closed, every change saved to *path*."""
+    import tempfile
+
+    from ..annotate import open_state, prepare_frames
+    from ..config import ClipList, load
+    from .theme import STYLE
+
+    with tempfile.TemporaryDirectory(prefix="zephyr-crop-") as scratch:
+        frame_dir = Path(scratch)
+        prepare_frames(load(ClipList, path).resolve(), frame_dir)
+        state = open_state(path, frame_dir, checkpoint=checkpoint)
+        app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+        app.setApplicationName("zephyr")
+        app.setStyleSheet(STYLE)
+        window = BoxWindow(state, frame_dir, path)
+        window.setWindowTitle(f"Crop of {path.name}: close to predict")
+        window.resize(1300, 850)
+        window.show()
+        window.raise_()
+        window.canvas.setFocus()
+        app.exec()

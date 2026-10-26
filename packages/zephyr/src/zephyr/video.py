@@ -4,7 +4,8 @@ Piping raw grayscale out of one ffmpeg process decodes far faster at reduced res
 than ``cv2.VideoCapture``, because scaling and colour conversion happen inside ffmpeg.
 :func:`iter_frames` decodes from the file start so frame ``i`` is row ``i`` of the
 timestamp table; ``start_s`` seeks, which suits grabbing a representative frame but not
-exact indexing (the first frame may sit up to one GOP early).
+exact indexing (the first frame may sit up to one GOP early), except at a keyframe
+(:func:`keyframes`), where a video can be decoded in pieces side by side.
 """
 
 import json
@@ -41,6 +42,81 @@ def probe_size(video: Path) -> tuple[int, int]:
     return int(stream["width"]), int(stream["height"])
 
 
+def probe_duration(video: Path) -> float:
+    """Seconds a video's container says it lasts (a quick look, not a count)."""
+    out = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "csv=p=0",
+            str(video),
+        ],
+        capture_output=True,
+        check=True,
+        text=True,
+    ).stdout
+    return float(out.strip())
+
+
+def count_frames(video: Path) -> int:
+    """Frames in *video*'s first stream, counted by demuxing (no decode)."""
+    out = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-count_packets",
+            "-show_entries",
+            "stream=nb_read_packets",
+            "-of",
+            "csv=p=0",
+            str(video),
+        ],
+        capture_output=True,
+        check=True,
+        text=True,
+    ).stdout
+    return int(out.strip().strip(","))
+
+
+def keyframes(video: Path) -> tuple[int, np.ndarray, np.ndarray] | None:
+    """*video*'s frame count, and the frame index and seek time (seconds from its
+    start, half a frame early) of each keyframe, from one read of its packets (no
+    decode); ``None`` when a packet has no time, so it cannot be cut at them."""
+    out = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "packet=pts_time,flags:format=start_time",
+            "-of",
+            "csv=p=0",
+            str(video),
+        ],
+        capture_output=True,
+        check=True,
+        text=True,
+    ).stdout.split()
+    start, rows = out[-1], [line.split(",") for line in out[:-1]]
+    if start == "N/A" or any(r[0] == "N/A" for r in rows):
+        return None
+    pts = np.array([float(r[0]) for r in rows])
+    order = np.sort(pts)  # packets come in decode order, frames in presentation
+    key = np.array(["K" in r[1] for r in rows])
+    index = np.searchsorted(order, pts[key])
+    half = float(np.median(np.diff(order))) / 2 if len(order) > 1 else 0.0
+    return len(order), index, order[index] - float(start) - half
+
+
 def _build_command(
     video: Path,
     *,
@@ -48,6 +124,7 @@ def _build_command(
     crop: Box | None,
     start_s: float | None,
     dur_s: float | None,
+    frames: int | None = None,
 ) -> list[str]:
     cmd = ["ffmpeg", "-v", "error", "-nostdin"]
     if start_s is not None:
@@ -55,6 +132,8 @@ def _build_command(
     cmd += ["-i", str(video)]
     if dur_s is not None:
         cmd += ["-t", f"{dur_s:.6f}"]
+    if frames is not None:
+        cmd += ["-frames:v", str(frames)]
 
     # Emit exactly the frames that are in the file, in presentation order.
     # ffmpeg's default for a non-streamcopy output is constant frame rate, which
@@ -86,8 +165,10 @@ def iter_frames(
     start_s: float | None = None,
     dur_s: float | None = None,
     chunk_frames: int = 256,
+    frames: int | None = None,
 ) -> Iterator[np.ndarray]:
-    """Yield uint8 blocks of at most *chunk_frames* frames.
+    """Yield uint8 blocks of at most *chunk_frames* frames (*frames* of them in all,
+    if given).
 
     The frame is first scaled to *scale_to*, then optionally cropped, so *crop*
     is in ``scale_to`` coordinates and the yielded shape is the crop's height and
@@ -99,7 +180,7 @@ def iter_frames(
     """
     out_w, out_h = (crop[2], crop[3]) if crop is not None else scale_to
     cmd = _build_command(
-        video, scale_to=scale_to, crop=crop, start_s=start_s, dur_s=dur_s
+        video, scale_to=scale_to, crop=crop, start_s=start_s, dur_s=dur_s, frames=frames
     )
     frame_bytes = out_w * out_h
 

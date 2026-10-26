@@ -75,6 +75,7 @@ decoding video.
 | --- | --- | --- |
 | `video` | | the clip's video. Omit it for a sensor-only entry (a whole session), which only the Breathing page reads |
 | `timestamps` | derived | frame-timestamp parquet, column `Time` |
+| `frame_rate` | none | frames per second of a video with no timestamps, instead of `timestamps`: frame *i* is at *i* / `frame_rate` s, which assumes the camera dropped no frames (`clips scan --frame-rate`, `predict --frame-rate`) |
 | `thermistor` | derived | breathing-sensor parquet, columns `Time` and `Signal`; `false` for an unlabelled clip |
 | `group` | derived | the recording (session). A recording is the pair (video folder, group) |
 | `frame` | the list's `target_size` | `[width, height]` this video is shrunk to instead, e.g. another camera's (`clips frame --input-scale`, or the Boxes page's **Input scale**) |

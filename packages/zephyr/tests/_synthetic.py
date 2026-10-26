@@ -18,8 +18,14 @@ FPS = 60
 BOX = (16, 8, 32, 32)
 
 
-def write_video(path: Path, frames: np.ndarray, fps: int = FPS) -> None:
-    """Encode uint8 gray *frames* (T, H, W) losslessly enough for tests."""
+def write_video(
+    path: Path,
+    frames: np.ndarray,
+    fps: int = FPS,
+    codec: tuple[str, ...] = ("-qp", "0"),
+) -> None:
+    """Encode uint8 gray *frames* (T, H, W) losslessly enough for tests (*codec*: the
+    x264 settings, e.g. a short GOP with B-frames)."""
     height, width = frames.shape[1:]
     subprocess.run(
         [
@@ -39,8 +45,7 @@ def write_video(path: Path, frames: np.ndarray, fps: int = FPS) -> None:
             "pipe:0",
             "-c:v",
             "libx264",
-            "-qp",
-            "0",
+            *codec,
             "-pix_fmt",
             "yuv420p",
             str(path),

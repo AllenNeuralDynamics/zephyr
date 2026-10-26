@@ -28,6 +28,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    PositiveFloat,
     PositiveInt,
     ValidationError,
     ValidationInfo,
@@ -260,6 +261,10 @@ class Clip(_Model):
     """The clip's video; omitted for a thermistor-only entry."""
     timestamps: RelPath | None = None
     """Frame timestamp parquet; derived when omitted."""
+    frame_rate: PositiveFloat | None = None
+    """Frames per second of a video with no timestamps: frame ``i`` is taken to be at
+    ``i / frame_rate`` s, which assumes the camera dropped no frames. Instead of
+    ``timestamps``, never with it."""
     thermistor: RelPath | Literal[False] | None = None
     """Ground-truth trace; derived when omitted, ``false`` for an unlabelled
     clip (inference only)."""
@@ -315,20 +320,29 @@ class Clip(_Model):
                 raise ValueError(
                     "a clip needs a video, or (thermistor only) a thermistor"
                 )
-            if any(v is not None for v in (self.timestamps, self.box, self.frame)):
+            fields = (self.timestamps, self.frame_rate, self.box, self.frame)
+            if any(v is not None for v in fields):
                 raise ValueError(
                     f"{self.thermistor.name}: a thermistor-only clip has no "
-                    "timestamps, box or frame"
+                    "timestamps, frame_rate, box or frame"
                 )
+        elif self.timestamps is not None and self.frame_rate is not None:
+            raise ValueError(
+                f"{self.video.name}: timestamps or frame_rate, not both (frame_rate "
+                "stands in for a video's timestamps)"
+            )
         return self
 
 
 class ResolvedClip(_Model):
     """A clip with every field concrete; what the rest of the package consumes.
-    ``video`` and ``timestamps`` are None for a thermistor-only entry."""
+    ``video`` and ``timestamps`` are None for a thermistor-only entry, ``timestamps``
+    also for a video on its ``frame_rate``."""
 
     video: Path | None
     timestamps: Path | None
+    frame_rate: float | None = None
+    """Frames per second standing in for ``timestamps`` (``Clip.frame_rate``)."""
     thermistor: Path | None
     group: str
     box: Box | None
@@ -403,7 +417,7 @@ def resolve_clip(
         return template.format(**fields)
 
     group = clip.group if clip.group is not None else derived("group", "{group}")
-    if clip.timestamps is not None:
+    if clip.timestamps is not None or clip.frame_rate is not None:
         timestamps = clip.timestamps
     else:
         timestamps = clip.video.parent / derived("timestamps", derive.timestamps)
@@ -416,6 +430,7 @@ def resolve_clip(
     return ResolvedClip(
         video=clip.video,
         timestamps=timestamps,
+        frame_rate=clip.frame_rate,
         thermistor=thermistor,
         group=group,
         box=clip.box,

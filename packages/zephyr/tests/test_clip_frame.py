@@ -57,7 +57,9 @@ class FrameConfigTests(_Tmp):
             '[preprocess]\ntarget_size = [100, 80]\n\n[[clip]]\nthermistor = "t.parquet"'
             "\nframe = [200, 160]\n"
         )
-        with self.assertRaisesRegex(ValueError, "no timestamps, box or frame"):
+        with self.assertRaisesRegex(
+            ValueError, "no timestamps, frame_rate, box or frame"
+        ):
             load(ClipList, path)
 
 

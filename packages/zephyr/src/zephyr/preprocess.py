@@ -3,11 +3,10 @@
 Done once up front because decoding in the training loop would cap speed at the codec.
 Three grids: *native* (camera timestamps), *selection* (``select_fs``, the frames the
 CNN sees) and *output* (fixed 60 Hz, where prediction and target live; reconciled after
-the CNN by :meth:`zephyr.model.BreathingNet.forward`). Frames decode from the file start
-so frame ``i`` is row ``i`` of the timestamps.
-
-Every clip needs a hand-placed box (a guessed one fails silently). Results are cached
-per clip; see :mod:`.features`.
+the CNN by :meth:`zephyr.model.BreathingNet.forward`). Frame ``i`` is row ``i`` of the
+timestamps (or at ``i / frame_rate``); spare workers decode a video in pieces from its
+keyframes, the same frames as one pass. Every clip needs a hand-placed box (a guessed
+one fails silently). Results are cached per clip; see :mod:`.features`.
 
 CLI
 ---
@@ -15,6 +14,7 @@ CLI
 """
 
 import argparse
+import itertools
 import json
 import threading
 import time as time_module
@@ -35,8 +35,9 @@ from .config import (
     load,
     require_videos,
 )
+from .progress import Progress
 from .targets import load_target
-from .video import iter_frames, probe_size
+from .video import count_frames, iter_frames, keyframes, probe_size
 
 
 def _nearest_index(times: np.ndarray, wanted: np.ndarray) -> np.ndarray:
@@ -48,6 +49,22 @@ def _nearest_index(times: np.ndarray, wanted: np.ndarray) -> np.ndarray:
     left = np.clip(right - 1, 0, len(times) - 1)
     nearer_left = np.abs(times[left] - wanted) <= np.abs(times[right] - wanted)
     return np.where(nearer_left, left, right)
+
+
+def frame_times(clip: ResolvedClip) -> np.ndarray:
+    """Seconds of each of *clip*'s video frames: its timestamps' ``Time``, or, on its
+    ``frame_rate``, ``i / frame_rate`` over the frames its stream holds."""
+    if clip.frame_rate is not None:
+        return np.arange(count_frames(clip.video)) / clip.frame_rate
+    return pd.read_parquet(clip.timestamps, columns=["Time"])["Time"].to_numpy()
+
+
+def frame_at(clip: ResolvedClip, times: np.ndarray) -> np.ndarray:
+    """The index of *clip*'s video frame nearest each of *times* (its clock): on its
+    ``frame_rate`` by arithmetic, without counting the stream's frames again."""
+    if clip.frame_rate is not None:
+        return np.rint(np.asarray(times) * clip.frame_rate).astype(np.int64)
+    return _nearest_index(frame_times(clip), np.asarray(times))
 
 
 def select_anchor_indices(frame_times: np.ndarray, select_fs: float) -> np.ndarray:
@@ -126,13 +143,73 @@ def _write_target(clip: ResolvedClip, files: dict[str, Path], out_times):
     )
 
 
+def pieces_of(
+    n_frames: int, cut: tuple[int, np.ndarray, np.ndarray] | None, pieces: int
+) -> list[tuple[int, int, float | None]]:
+    """``(first, stop, seek)`` frame ranges a video of *n_frames* is decoded in: up to
+    *pieces* about equal ones, each from a keyframe of *cut* (:func:`video.keyframes`;
+    the first one from the file start, ``seek`` None), or the whole without *cut*."""
+    if cut is None or pieces <= 1 or cut[0] != n_frames:
+        return [(0, n_frames, None)]
+    _, index, seek = cut
+    wanted = np.arange(1, pieces) * n_frames / pieces
+    nearest = np.searchsorted(index, wanted, side="right") - 1  # the keyframe before
+    starts = sorted({int(index[k]) for k in nearest if k >= 0} - {0})
+    starts = [i for i in starts if 0 < i < n_frames]
+    times = dict(zip(index.tolist(), seek.tolist(), strict=True))
+    return [
+        (a, b, None if a == 0 else times[a])
+        for a, b in itertools.pairwise([0, *starts, n_frames])
+    ]
+
+
+def _decode_piece(
+    clip: ResolvedClip,
+    frame: tuple[int, int],
+    anchors: np.ndarray,
+    out: np.ndarray,
+    piece: tuple[int, int, float | None],
+    last: bool,
+    progress: Progress | None,
+) -> tuple[int, int]:
+    """Decode the frames ``first``..``stop`` of *piece* (from ``seek``) into the rows
+    of *out* of the *anchors* among them; return (decoded, written). The *last* piece
+    reads to the end of the video, so a video longer than its record is noticed."""
+    first, stop, seek = piece
+    decoded = written = 0
+    for block in iter_frames(
+        clip.video,
+        scale_to=frame,
+        crop=clip.box,
+        start_s=seek,
+        frames=None if last else stop - first,
+    ):
+        index = first + decoded + np.arange(len(block))
+        decoded += len(block)
+        rows = np.searchsorted(anchors, index)
+        hit = rows < len(anchors)
+        hit[hit] = anchors[rows[hit]] == index[hit]
+        out[rows[hit], 0] = block[hit]
+        written += int(hit.sum())
+        if progress is not None:
+            progress.add(len(block))
+    return decoded, written
+
+
 def preprocess_clip(
-    clip: ResolvedClip, params: PreprocessParams, cache_dir: Path
+    clip: ResolvedClip,
+    params: PreprocessParams,
+    cache_dir: Path,
+    *,
+    pieces: int = 1,
+    progress: Progress | None = None,
 ) -> features.ClipEntry:
     """Preprocess one clip into *cache_dir*; return its entry.
 
     Does nothing for a clip already cached; rebuilds only the target when the frames
-    are cached but the clip's thermistor or event set changed.
+    are cached but the clip's thermistor or event set changed. With *pieces* above 1
+    the video is decoded in that many stretches side by side, each from a keyframe
+    (the frames are the same as from one pass); *progress* counts decoded frames.
     """
     started = time_module.perf_counter()
     key = features.cache_key(clip, params)
@@ -154,11 +231,17 @@ def preprocess_clip(
                 files["sidecar"].write_text(json.dumps(sidecar, indent=2))
             return features.lookup(clip, params, cache_dir)
 
-    frame_times = pd.read_parquet(clip.timestamps)["Time"].to_numpy()
-    n_expected = len(frame_times)
-    anchor_indices = select_anchor_indices(frame_times, params.select_fs)
+    cut = keyframes(clip.video) if pieces > 1 else None  # also counts the frames
+    if cut is not None and clip.frame_rate is not None:
+        native_times = np.arange(cut[0]) / clip.frame_rate
+    else:
+        native_times = frame_times(clip)
+    n_expected = len(native_times)
+    anchor_indices = select_anchor_indices(native_times, params.select_fs)
     n_anchors = len(anchor_indices)
-    anchor_times = frame_times[anchor_indices]
+    anchor_times = native_times[anchor_indices]
+    if progress is not None:
+        progress.total = n_expected
 
     box_w, box_h = clip.box[2], clip.box[3]
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -168,27 +251,34 @@ def preprocess_clip(
         partial, mode="w+", dtype=np.uint8, shape=(n_anchors, 1, box_h, box_w)
     )
 
-    n_decoded = 0
-    n_written = 0
     frame = params.for_clip(clip).target_size
-    for block in iter_frames(clip.video, scale_to=frame, crop=clip.box):
-        for frame in block:
-            index = n_decoded
-            n_decoded += 1
-            if n_written >= n_anchors or index != anchor_indices[n_written]:
-                continue
-            out[n_written, 0] = frame
-            n_written += 1
-
-    out.flush()
-    del out  # closes the memmap: Windows cannot rename an open file
+    stretches = pieces_of(n_expected, cut, pieces)
+    jobs = [
+        (clip, frame, anchor_indices, out, piece, piece[1] == n_expected, progress)
+        for piece in stretches
+    ]
+    try:
+        with ThreadPoolExecutor(max_workers=len(jobs)) as pool:
+            done = list(pool.map(lambda job: _decode_piece(*job), jobs))
+    finally:
+        out.flush()
+        del out, jobs  # closes the memmap: Windows cannot rename an open file
+    for (first, stop, _), (decoded, _) in zip(stretches[:-1], done, strict=False):
+        if decoded != stop - first:  # never shifts later frames: refused instead
+            raise ValueError(
+                f"{clip.name}: decoded {decoded} frames from frame {first}, not "
+                f"{stop - first}"
+            )
+    n_decoded = sum(d for d, _ in done)
+    n_written = sum(w for _, w in done)
 
     if n_decoded != n_expected:
-        # The timestamp parquet is the authoritative frame record, so a mismatch
-        # means the stored array and the time base have diverged.
+        # The timestamp parquet (or the stream's own count, on a frame_rate) is the
+        # authoritative frame record, so a mismatch means the stored array and the
+        # time base have diverged.
+        record = "frame count" if clip.frame_rate else "timestamp parquet"
         raise ValueError(
-            f"{clip.name}: decoded {n_decoded} frames but the timestamp "
-            f"parquet has {n_expected} rows"
+            f"{clip.name}: decoded {n_decoded} frames but its {record} has {n_expected}"
         )
     if n_written != n_anchors:
         raise ValueError(
@@ -202,7 +292,7 @@ def preprocess_clip(
     np.save(files["times"], out_times)
 
     stats = {
-        "native_fs_hz": float((n_expected - 1) / (frame_times[-1] - frame_times[0])),
+        "native_fs_hz": float((n_expected - 1) / (native_times[-1] - native_times[0])),
         "select_fs_hz": float(1.0 / np.median(np.diff(anchor_times))),
         "elapsed_s": round(time_module.perf_counter() - started, 1),
     }
@@ -256,6 +346,10 @@ def preprocess_clips(
     pending = [
         c for c in unique.values() if features.lookup(c, params, cache_dir) is None
     ]
+    # Workers go to clips; a clip has those left over, decoding in pieces side by side
+    pieces = max(1, workers // max(1, len(pending)))
+    # One clip shows its frames as they decode; many show each as it finishes
+    progress = Progress("decoding", 1, "frames") if len(pending) == 1 else None
     print(
         f"{len(unique)} clip(s), {len(unique) - len(pending)} already cached | "
         f"target {params.target_size[0]}x{params.target_size[1]} | select "
@@ -273,12 +367,21 @@ def preprocess_clips(
     print_lock = threading.Lock()
     with ThreadPoolExecutor(max_workers=workers) as executor:
         futures = {
-            executor.submit(preprocess_clip, clip, params, cache_dir): clip
+            executor.submit(
+                preprocess_clip,
+                clip,
+                params,
+                cache_dir,
+                pieces=pieces,
+                progress=progress,
+            ): clip
             for clip in pending
         }
         try:
             for future in as_completed(futures):
                 entry = future.result()
+                if progress is not None:
+                    progress.close()
                 with print_lock:
                     completed += 1
                     print(

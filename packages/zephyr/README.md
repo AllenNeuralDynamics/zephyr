@@ -133,6 +133,21 @@ never saved.
    uv run zephyr predict --checkpoint best.pt --clips new.toml --out predictions/new
    ```
 
+   One video, with no timestamps, is one command: `--frame-rate` puts frame *i* at
+   *i* / rate s (no dropped frames assumed), and the crop is `--box X Y` in the video's
+   own pixels (`--box-size S` of them become the network's crop; by default the share
+   of the frame its crops covered), `--box-gui` (the Boxes window) or `--box-from` an
+   earlier `<stem>.clip.toml`, the one-clip list it keeps in `--out`:
+
+   ```bash
+   uv run zephyr predict --checkpoint best.pt --video session.mp4 --frame-rate 240 \
+       --box-gui --out predictions/session
+   ```
+
+   Decoding takes most of the time; a video is decoded in pieces from its keyframes
+   when there are more `--workers` than videos (the same frames as one pass), with a
+   progress line for the decode and for the network's pass.
+
 3. **Annotate**: place one crop box per recording (one box covers a
    recording's parts; `o` gives a single clip its own) on the app's Boxes page (needs
    `--extra ui`). Boxes are written into the clip list as `box = [x, y, w, h]`, and
@@ -223,7 +238,8 @@ make. Without it nothing changes.
 **Predict** breathing from videos with no sensor (a clip list with boxes, `thermistor =
 false` or not) with `zephyr predict`. It preprocesses the clips, into `--cache` or
 else a temporary folder it removes, and writes `<video stem>.prediction.parquet` per
-video: `time`, the z-scored `signal`, the onset head's `onset` probability and `inhale`
+video: `time`, `frame` (the video's frame there), the z-scored `signal`, the onset
+head's `onset` probability and `inhale`
 (an inhale the head found there, at the checkpoint's onset threshold or
 `--head-threshold`). The lists' `[preprocess]` must be the checkpoint's recipe, and a
 folder holds one checkpoint's predictions at one threshold (`predictions.json` records

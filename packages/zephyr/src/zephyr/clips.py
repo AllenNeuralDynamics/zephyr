@@ -12,6 +12,7 @@ CLI
     zephyr clips scan data --glob '*.mp4' -o list.toml --pattern '(?P<group>.+)'
         --timestamps '{stem}_times.parquet' --thermistor '{stem}_breath.parquet'
     zephyr clips scan other/videos --glob '*.mp4' -o predict.toml --checkpoint best.pt
+        [--frame-rate 240]   # no timestamps: frame i at i / 240 s
     zephyr clips check examples/clips.toml [--json report.json]
     zephyr clips frame list.toml --input-scale 2 --match SideCamera   # own frames
 """
@@ -30,7 +31,7 @@ import tomlkit
 
 from .config import ClipList, Derive, EventsSource, ResolvedClip, load
 from .signal import BREATHING_SIGNAL_COLUMN, TIME_COLUMN
-from .video import Box, probe_size
+from .video import Box, count_frames, probe_size
 
 SENSOR_MIN_HZ = 80.0
 """The breathing signal is low-passed at 40 Hz at its own rate, which needs more than
@@ -82,6 +83,7 @@ def scan(
     derive: Derive | None = None,
     recipe: dict | None = None,
     note: str | None = None,
+    frame_rate: float | None = None,
 ) -> None:
     """Write a clip list of the videos in *directory* matching any of *patterns*.
 
@@ -89,7 +91,8 @@ def scan(
     ``[preprocess]``, e.g. a checkpoint's) replaces it, its videos then named by
     absolute path; *derive*, unless it is the
     default naming, is written as the list's ``[derive]``, and a labelled list's
-    ``[events]`` is :data:`SCAN_EVENTS`; *note* is a comment at the top.  The list is
+    ``[events]`` is :data:`SCAN_EVENTS`; *note* is a comment at the top. With
+    *frame_rate* every video has it instead of timestamps.  The list is
     validated before it is written, so a scan that would produce an unloadable file
     (say, thermistors that do not exist) fails instead of leaving it behind.
     """
@@ -134,6 +137,8 @@ def scan(
         # A list for a checkpoint names videos from anywhere: absolute, so it can move.
         where = video.as_posix() if recipe_given else _relative(video, out.parent)
         entry.add("video", where)
+        if frame_rate is not None:
+            entry.add("frame_rate", frame_rate)
         if unlabelled:
             entry.add("thermistor", False)
         clips.append(entry)
@@ -279,14 +284,16 @@ def update_clip_list(
     remove: set[Path] | None = None,
     list_events: EventsSource | None = None,
     unlabelled: bool = False,
+    frame_rate: float | None = None,
 ) -> None:
     """Edit *path* in place: set each clip's ``events = {method, params}`` (keyed
     by resolved source path: the video, or a thermistor-only entry's thermistor;
     ``None`` removes it, so the clip uses the list's), set each clip's ``excluded``
     and ``included`` spans and ``selection`` mark (removing the key when there are
     none, or the clip is accepted), append the *add* videos (``thermistor = false``
-    with *unlabelled*, as in a list to predict with), delete the *remove* ones and,
-    given *list_events*, set the list's ``[events]``.
+    with *unlabelled*, as in a list to predict with; on *frame_rate* instead of
+    timestamps if given), delete the *remove* ones and, given *list_events*, set the
+    list's ``[events]``.
 
     Like :func:`write_boxes` this keeps every comment and other field.  The result
     is validated before it is written.
@@ -310,6 +317,8 @@ def update_clip_list(
         if video not in present:
             entry = tomlkit.table()
             entry.add("video", _relative(video, path.parent))
+            if frame_rate is not None:
+                entry.add("frame_rate", frame_rate)
             if unlabelled:
                 entry.add("thermistor", False)
             clips.append(entry)
@@ -375,29 +384,6 @@ class ClipCheck:
         return not self.problems
 
 
-def count_frames(video: Path) -> int:
-    """Frames in *video*'s first stream, counted by demuxing (no decode)."""
-    out = subprocess.run(
-        [
-            "ffprobe",
-            "-v",
-            "error",
-            "-select_streams",
-            "v:0",
-            "-count_packets",
-            "-show_entries",
-            "stream=nb_read_packets",
-            "-of",
-            "csv=p=0",
-            str(video),
-        ],
-        capture_output=True,
-        check=True,
-        text=True,
-    ).stdout
-    return int(out.strip().strip(","))
-
-
 def _rate(times: np.ndarray) -> float:
     span = float(times[-1] - times[0]) if len(times) > 1 else 0.0
     return (len(times) - 1) / span if span > 0 else 0.0
@@ -439,6 +425,22 @@ def check_clip(clip: ResolvedClip, select_fs: float) -> ClipCheck:
     video_times = None
     if clip.timestamps is not None and clip.timestamps.is_file():
         video_times = _read_times(clip.timestamps, (TIME_COLUMN,), found, "timestamps")
+    if clip.frame_rate is not None and clip.video is not None and clip.video.is_file():
+        try:
+            frames = count_frames(clip.video)
+        except (subprocess.CalledProcessError, ValueError):
+            found.problems.append(f"video {clip.video.name} cannot be read")
+        else:  # its times are i / frame_rate: nothing to compare the count against
+            found.facts |= {
+                "frames": frames,
+                "camera_hz": clip.frame_rate,
+                "duration_s": round((frames - 1) / clip.frame_rate, 2),
+            }
+            if clip.frame_rate < select_fs:
+                found.problems.append(
+                    f"frame_rate {clip.frame_rate:g} Hz is below select_fs "
+                    f"{select_fs:g} Hz"
+                )
     if video_times is not None:
         camera_hz = _rate(video_times)
         found.facts |= {
@@ -536,6 +538,13 @@ def main(argv: list[str] | None = None) -> None:
         "--pattern", help="[derive] pattern: a regex over the video stem with a group."
     )
     scan_parser.add_argument("--timestamps", help="[derive] timestamps template.")
+    scan_parser.add_argument(
+        "--frame-rate",
+        type=float,
+        metavar="HZ",
+        help="The videos have no timestamps: frame i is at i / HZ s (each clip's "
+        "frame_rate; assumes no dropped frames).",
+    )
     scan_parser.add_argument("--thermistor", help="[derive] thermistor template.")
     scan_parser.add_argument(
         "--checkpoint",
@@ -602,6 +611,8 @@ def main(argv: list[str] | None = None) -> None:
         note = f"For predicting with {args.checkpoint}" + (
             f": every box must be {crop[0]}x{crop[1]}." if crop else "."
         )
+    if args.frame_rate is not None and args.timestamps is not None:
+        raise SystemExit("--timestamps or --frame-rate, not both")
     try:
         rule = Derive(**derive) if derive else None
     except ValueError as exc:
@@ -615,6 +626,7 @@ def main(argv: list[str] | None = None) -> None:
         derive=rule,
         recipe=recipe,
         note=note,
+        frame_rate=args.frame_rate,
     )
 
 

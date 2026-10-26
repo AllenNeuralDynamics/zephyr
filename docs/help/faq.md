@@ -1,8 +1,8 @@
 # FAQ
 
 ??? question "Do I need a breathing sensor?"
-    Only to train and to score. Predicting on new videos needs only the video and its
-    frame timestamps. To train a network for your rig, you need some recordings with a
+    Only to train and to score. Predicting on new videos needs only the video, and its
+    frame timestamps or its frame rate (`--frame-rate`). To train a network for your rig, you need some recordings with a
     sensor (a nasal thermistor, or any sensor whose trace follows breathing) beside the
     face camera.
 
@@ -38,7 +38,9 @@
 ??? question "How long are clips? Is there a length limit?"
     There is no limit. Inference runs in overlapping windows and stitches them, so a
     long clip gives the same trace as one unbounded pass. The tutorial's clips are about
-    5 minutes long.
+    5 minutes long. A long video is never held in memory: its crops are written to disk
+    as they are decoded (about 9 KB per selected frame for a 96x96 crop, so 2.4 GB for
+    an hour at 60 Hz), into `--cache` or a temporary folder.
 
 ??? question "Can I run zephyr on a cluster?"
     Yes. Everything but placing boxes and choosing detectors runs headless. Install
