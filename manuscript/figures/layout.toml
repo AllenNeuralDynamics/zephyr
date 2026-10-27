@@ -302,3 +302,26 @@ kind = "data"
 width_mm = 90
 height_mm = 42
 what = "Inhalations the thermistor detector adds per labelled breath when its prominence fraction is lowered from 0.2 to 0.1 or 0.05, by breathing rate"
+
+[figs6]
+width_mm = 183
+gap_mm = 4
+rows = [["a"], ["b", "c"]]
+
+[figs6.panels.a]
+kind = "data"
+width_mm = 183
+height_mm = 48
+what = "The animal of Fig. 1e from the face, side and front cameras, each frame with the occlusion map inside its network's crop box"
+
+[figs6.panels.b]
+kind = "data"
+width_mm = 95
+height_mm = 95
+what = "Occlusion, gradient and random-weights maps averaged over each camera's new-animal units, over their mean crop (cameras across, maps down)"
+
+[figs6.panels.c]
+kind = "data"
+width_mm = 84
+height_mm = 60
+what = "Share of each inhalation's gradient per frame against the frame's time from the inhalation, one line per camera"

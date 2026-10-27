@@ -4,6 +4,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import torch
 
 from zephyr.benchmarks import analysis
 from zephyr.benchmarks.config import ReportedRun, ResultsManifest
@@ -433,3 +434,65 @@ class QualityTests(unittest.TestCase):
         oracle = retention(table, "f1", "f1", "higher")
         self.assertAlmostEqual(oracle["mean"].iloc[0], truth[-2:].mean())  # top 2 of 20
         self.assertGreater(curve["mean"].iloc[0], curve["mean"].iloc[-1])
+
+
+class _RegionNet(torch.nn.Module):
+    """Reads only crop pixels [20:30, 20:30]: the onset logit is their mean over all
+    frames, the signal their mean in each of the first frames."""
+
+    def forward(self, frames, t_in, t_out, chunk=None):
+        region = frames[:, :, 0, 20:30, 20:30].mean(dim=(2, 3))  # (B, T_in)
+        n = t_out.shape[1]
+        return region[:, :n], region.mean(dim=1, keepdim=True).expand(-1, n)
+
+
+class AttributionTests(unittest.TestCase):
+    def setUp(self):
+        rng = np.random.default_rng(0)
+        t = 40
+        self.window = {
+            "frames": torch.from_numpy(rng.normal(size=(1, t, 1, 48, 48)).astype("f4"))
+            + 1.0,
+            "t_in": torch.arange(t, dtype=torch.float32)[None] / 60,
+            "t_out": torch.arange(30, dtype=torch.float32)[None] / 60,
+            "times": np.arange(30) / 60,
+            "frame_times": np.arange(t) / 60,
+        }
+
+    def test_occlusion_map_is_zero_where_the_network_does_not_look(self):
+        out = analysis.occlusion_map(
+            _RegionNet(), self.window, [5, 10], patch=6, stride=6
+        )
+        self.assertTrue(np.all(out["onset"][36:, 36:] == 0))
+        self.assertTrue(np.all(out["trace"][36:, 36:] == 0))
+        self.assertGreater(abs(out["onset"][24, 24]), 0)
+        self.assertGreater(out["trace"][24, 24], 0)
+
+    def test_gradient_attribution_lies_in_the_region_read(self):
+        out = analysis.gradient_attribution(_RegionNet(), self.window, [5, 10])
+        inside = np.zeros((48, 48), bool)
+        inside[20:30, 20:30] = True
+        self.assertTrue(np.all(out["spatial"][~inside] == 0))
+        self.assertTrue(np.all(out["spatial"][inside] > 0))
+        self.assertEqual(out["temporal"].shape, (2, 40))
+        np.testing.assert_allclose(out["offset_s"][0], np.arange(40) / 60 - 5 / 60)
+
+
+class AttributionSummaryTests(unittest.TestCase):
+    def test_attribution_profile_averages_each_inhales_share(self):
+        temporal = np.array([[1.0, 3.0, 0.0], [0.0, 2.0, 2.0]])
+        offsets = np.array([[-0.02, 0.0, 0.02], [-0.02, 0.0, 0.02]])
+        out = analysis.attribution_profile(
+            temporal, offsets, np.array([-0.03, -0.01, 0.01, 0.03])
+        )
+        np.testing.assert_allclose(out["share"], [0.125, 0.625, 0.25])
+        np.testing.assert_array_equal(out["inhales"], [2, 2, 2])
+
+
+class ClipSaliencyTests(unittest.TestCase):
+    def test_randomized_copies_the_model_with_new_weights(self):
+        torch.manual_seed(0)
+        model = torch.nn.Linear(4, 2)
+        other = analysis.randomized(model)
+        self.assertFalse(torch.equal(model.weight, other.weight))
+        self.assertEqual(model.weight.shape, other.weight.shape)

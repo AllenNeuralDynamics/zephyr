@@ -844,3 +844,210 @@ def retention(
         n = max(1, round(fraction * len(ranked)))
         out.append({"kept": float(fraction), "mean": float(ranked[:n].mean())})
     return pd.DataFrame(out)
+
+
+# --- where a network looks ------------------------------------------------------------
+
+
+def network_window(
+    entry: features.ClipEntry, mean: float, std: float, start: int, n_out: int
+) -> dict:
+    """One window of a clip as a network's input, as inference builds it
+    (:func:`zephyr.infer.predict_clip`): output-grid samples ``start`` to
+    ``start + n_out``, the frames that cover them with the input margin, standardised by
+    the checkpoint's *mean* and *std*. Returns ``frames`` ``(1, T_in, 1, H, W)``,
+    ``t_in``, ``t_out`` (s from the window's first output time) and ``times`` (the
+    output grid's own)."""
+    from zephyr.infer import INPUT_MARGIN
+
+    frame_times = np.load(entry.frame_times)
+    grid = np.load(entry.times)[start : start + n_out]
+    first = max(0, int(np.searchsorted(frame_times, grid[0])) - INPUT_MARGIN)
+    last = min(
+        len(frame_times), int(np.searchsorted(frame_times, grid[-1])) + 1 + INPUT_MARGIN
+    )
+    block = features.reader(entry).read(slice(first, last)).astype(np.float32)
+    frames = (torch.from_numpy(block) - mean) / std
+    return {
+        "frames": frames.unsqueeze(0),
+        "t_in": torch.from_numpy(
+            (frame_times[first:last] - grid[0]).astype(np.float32)
+        )[None],
+        "t_out": torch.from_numpy((grid - grid[0]).astype(np.float32))[None],
+        "times": grid,
+        "frame_times": frame_times[first:last],
+    }
+
+
+def _run(model, frames, t_in, t_out, chunk: int = 256):
+    """Signal and onset logits of *model* on a batch of windows that share times."""
+    b = frames.shape[0]
+    out = model(frames, t_in.expand(b, -1), t_out.expand(b, -1), chunk=chunk)
+    return out[0].float(), out[1].float()
+
+
+def occlusion_map(
+    model: torch.nn.Module,
+    window: dict,
+    at: np.ndarray,
+    patch: int = 12,
+    stride: int = 6,
+    batch: int = 8,
+    device: str | torch.device = "cpu",
+) -> dict[str, np.ndarray]:
+    """What hiding each part of the crop costs a network, over one window (from
+    :func:`network_window`): a *patch*-pixel square, every *stride* pixels, set to the
+    training mean (0 after standardisation) in every frame. Per position, the drop in
+    the mean onset probability at the output samples *at* (true inhales; ``onset``)
+    and one minus the correlation of the trace with the unoccluded one (``trace``);
+    each map is on the crop's pixels, every pixel the mean over the patches covering
+    it."""
+    frames = window["frames"].to(device)
+    t_in, t_out = window["t_in"].to(device), window["t_out"].to(device)
+    _, h, w = frames.shape[2:]
+    at = torch.as_tensor(np.asarray(at, int), device=device)
+    with torch.no_grad():
+        base_signal, base_logits = _run(model, frames, t_in, t_out)
+        base_p = torch.sigmoid(base_logits[0, at]).mean()
+    corners = [
+        (y, x)
+        for y in range(0, h - patch + 1, stride)
+        for x in range(0, w - patch + 1, stride)
+    ]
+    onset, trace = np.zeros((h, w)), np.zeros((h, w))
+    count = np.zeros((h, w))
+    for i in range(0, len(corners), batch):
+        group = corners[i : i + batch]
+        hidden = frames.expand(len(group), -1, -1, -1, -1).clone()
+        for k, (y, x) in enumerate(group):
+            hidden[k, :, :, y : y + patch, x : x + patch] = 0.0
+        with torch.no_grad():
+            signal, logits = _run(model, hidden, t_in, t_out)
+        p = torch.sigmoid(logits[:, at]).mean(dim=1)
+        r = torch.stack(
+            [torch.corrcoef(torch.stack([s, base_signal[0]]))[0, 1] for s in signal]
+        )
+        for k, (y, x) in enumerate(group):
+            onset[y : y + patch, x : x + patch] += float(base_p - p[k])
+            trace[y : y + patch, x : x + patch] += float(1 - r[k])
+            count[y : y + patch, x : x + patch] += 1
+    count[count == 0] = np.nan
+    return {"onset": onset / count, "trace": trace / count}
+
+
+def gradient_attribution(
+    model: torch.nn.Module,
+    window: dict,
+    at: np.ndarray,
+    device: str | torch.device = "cpu",
+) -> dict[str, np.ndarray]:
+    """The absolute gradient of a network's onset logit at each output sample *at*
+    (true inhales) with respect to its input frames, over one window (from
+    :func:`network_window`): ``spatial``, the mean over frames and inhales for each
+    crop pixel; ``temporal``, one row per inhale of the gradient summed over each
+    frame's pixels; and ``offset_s``, each frame's time minus its inhale's, the same
+    shape as ``temporal``. The plain gradient, not gradient times input, so a bright
+    pixel weighs no more than a dark one."""
+    frames = window["frames"].to(device)
+    t_in, t_out = window["t_in"].to(device), window["t_out"].to(device)
+    spatial = np.zeros(frames.shape[-2:])
+    temporal, offsets = [], []
+    in_times = window["frame_times"]
+    for k in np.asarray(at, int):
+        x = frames.clone().requires_grad_(True)
+        _, logits = _run(model, x, t_in, t_out)
+        logits[0, k].backward()
+        a = x.grad.detach().abs()[0, :, 0].cpu().numpy()  # (T_in, H, W)
+        spatial += a.mean(axis=0)
+        temporal.append(a.sum(axis=(1, 2)))
+        offsets.append(in_times - window["times"][k])
+        model.zero_grad(set_to_none=True)
+    n = max(1, len(np.asarray(at)))
+    return {
+        "spatial": spatial / n,
+        "temporal": np.array(temporal),
+        "offset_s": np.array(offsets),
+    }
+
+
+def attribution_profile(
+    temporal: np.ndarray, offsets: np.ndarray, bins: np.ndarray
+) -> pd.DataFrame:
+    """How each inhale's attribution (a row of :func:`gradient_attribution`'s
+    ``temporal``) spreads over its frames: per bin of *bins* (frame time minus the
+    inhale's, s), the mean share of the row's total that its frames carry, per frame."""
+    share = temporal / temporal.sum(axis=1, keepdims=True)
+    k = np.digitize(offsets, bins) - 1
+    rows = []
+    for b in range(len(bins) - 1):
+        inside = k == b
+        n_rows = max(1, inside.any(axis=1).sum())
+        rows.append(
+            {
+                "offset_s": (bins[b] + bins[b + 1]) / 2,
+                "share": float(share[inside].mean()) if inside.any() else np.nan,
+                "inhales": int(n_rows),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def clip_saliency(
+    model: torch.nn.Module,
+    control: torch.nn.Module,
+    entry: features.ClipEntry,
+    mean: float,
+    std: float,
+    inhales: np.ndarray,
+    bins: np.ndarray,
+    n_out: int = 512,
+    windows: int = 2,
+    device: str | torch.device = "cpu",
+) -> dict[str, np.ndarray]:
+    """Where and when a network looks on one clip: *windows* windows of *n_out*
+    output samples, evenly inside the clip, each scored at the true *inhales* at least
+    half a receptive field from its edges. The mean over windows of
+    :func:`occlusion_map`'s ``onset`` (``occlusion``) and ``trace``, of
+    :func:`gradient_attribution`'s ``spatial`` for *model* (``gradient``) and for
+    *control* (e.g. the same network with random weights; ``random``), and its
+    ``profile`` (:func:`attribution_profile` over *bins*, the windows weighted by their
+    inhales)."""
+    margin = model.receptive_field // 2
+    n_grid = len(np.load(entry.times))
+    starts = np.linspace(margin, n_grid - n_out - margin, windows + 2)[1:-1]
+    found = {k: [] for k in ("occlusion", "trace", "gradient", "random")}
+    profiles, weights = [], []
+    for start in starts:
+        w = network_window(entry, mean, std, int(start), n_out)
+        times = w["times"]
+        inside = (inhales >= times[margin]) & (inhales <= times[n_out - margin])
+        at = np.searchsorted(times, inhales[inside])
+        if not len(at):
+            continue
+        o = occlusion_map(model, w, at, device=device)
+        g = gradient_attribution(model, w, at, device=device)
+        found["occlusion"].append(o["onset"])
+        found["trace"].append(o["trace"])
+        found["gradient"].append(g["spatial"])
+        found["random"].append(
+            gradient_attribution(control, w, at, device=device)["spatial"]
+        )
+        profiles.append(
+            attribution_profile(g["temporal"], g["offset_s"], bins)["share"]
+        )
+        weights.append(len(at))
+    out = {k: np.mean(v, axis=0) for k, v in found.items()}
+    out["profile"] = np.average(np.array(profiles), axis=0, weights=weights)
+    return out
+
+
+def randomized(model: torch.nn.Module) -> torch.nn.Module:
+    """A copy of *model* with every layer's weights drawn anew (the saliency
+    control: maps that do not depend on what the network learned)."""
+    import copy
+
+    out = copy.deepcopy(model)
+    for module in out.modules():
+        if hasattr(module, "reset_parameters"):
+            module.reset_parameters()
+    return out
