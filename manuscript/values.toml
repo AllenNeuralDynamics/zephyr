@@ -149,6 +149,15 @@ fast = "20"
 medium = "54"
 slow = "26"
 
+[saliency]
+units = "107"
+units_front = "28"
+units_side = "28"
+within_100 = "66"
+within_100_ci = "63–69"
+within_100_front = "65"
+within_100_side = "63"
+
 [selection]
 clips = "1,506"
 corpus = "560"

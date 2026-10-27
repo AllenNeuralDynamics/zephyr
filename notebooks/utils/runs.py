@@ -985,3 +985,63 @@ def frame_embeddings(stem: str, seconds: float = 60.0) -> tuple[np.ndarray, np.n
         np.savez(path, times=times, embeddings=emb)
     s = np.load(path)
     return s["times"], s["embeddings"]
+
+
+# --- a run's own held-out clips, made here ------------------------------------------
+
+REMOTE_DATASET = "/data/zephyr-dataset"
+"""Where the capsule mounts the dataset: the root a run's clip lists name."""
+DATASET_BUCKET = "aind-scratch-data/vr-foraging/zephyr-dataset"
+
+
+def held_out_entries(
+    name: str, spans: Iterable[str]
+) -> list[tuple[features.ClipEntry, tuple[int, ...], tuple[int, int]]]:
+    """Network run *name*'s own held-out clips (test set A of its ``config.json``) of
+    the recording *spans*, made on this machine: their files downloaded under
+    ``root()/views`` (which stands for the capsule's dataset, so cache keys match its),
+    and their crops made by zephyr's preprocessing with the list's own recipe and boxes
+    into ``root()/cache``. Each comes with its box and the frame size (``target_size``)
+    the box is on."""
+    from zephyr.preprocess import preprocess_clips
+
+    m = RUNS[name]
+    config = json.loads(
+        _fetch(f"{folder(m)}/{seeds(folder(m))[0]}/config.json").read_text()
+    )
+    listed = config["test_clip_lists"]["test_a"]
+    wanted = set(spans)
+    local = root() / "views"
+    mapping = f"{local.as_posix()}={REMOTE_DATASET}"
+    known = os.environ.get("ZEPHYR_PATH_MAP", "")
+    if mapping not in known.split(";"):
+        os.environ["ZEPHYR_PATH_MAP"] = ";".join(p for p in (known, mapping) if p)
+
+    def here(path: str) -> str:
+        return path.replace(REMOTE_DATASET, local.as_posix())
+
+    clips = [
+        c for c in listed["clip"] if Path(c["video"]).stem.rsplit("_", 1)[0] in wanted
+    ]
+    for c in clips:
+        for key in ("video", "timestamps", "thermistor"):
+            if not isinstance(c.get(key), str):
+                continue
+            target = Path(here(c[key]))
+            if not target.is_file():
+                target.parent.mkdir(parents=True, exist_ok=True)
+                part = target.with_name(target.name + ".part")
+                key_s3 = c[key].replace(REMOTE_DATASET, DATASET_BUCKET)
+                _s3().get(key_s3, str(part))
+                part.replace(target)
+            c[key] = target.as_posix()
+    clip_list = ClipList.model_validate({**listed, "clip": clips})
+    resolved = clip_list.resolve()
+    size = clip_list.preprocess.target_size
+    camera = Path(resolved[0].video).stem.rsplit("_", 1)[1]
+    cache = root() / "cache" / f"features-{size[0]}x{size[1]}-box96x96-60hz-{camera}"
+    preprocess_clips(resolved, clip_list.preprocess, cache, workers=4)
+    return [
+        (features.lookup(c, clip_list.preprocess, cache), tuple(c.box), tuple(size))
+        for c in resolved
+    ]

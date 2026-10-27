@@ -757,6 +757,206 @@ def figs5(fold_tables, test_a):
 
 
 @app.cell
+def saliency_data(test_a, with_unit):
+    # Supplementary Fig. 6. The face network of each fold on its new animals, computed
+    # once and cached (it runs the networks on the GPU): for every unit, the clip
+    # nearest the unit's median correlation, two 8.5-s windows (analysis.clip_saliency).
+    # The side and front networks (fold cv_0, the only one they have) on the same
+    # spans: their clips are each run's own held-out list (its config.json), their
+    # videos downloaded under the dataset copy's root and preprocessed as zephyr does.
+    _path = runs.PREDICTIONS / "saliency-face-cv.npz"
+    _bins = np.arange(-1.0, 1.0 + 1e-9, 1 / 60) - 1 / 120
+    _dev = runs.device()
+
+    def _picked(name):
+        c = runs.scores([name]).query("set == @test_a")
+        c = with_unit(c[c["stem"].map(runs.is_local)])
+        median = c.groupby("unit")["correlation"].transform("median")
+        typical = (c["correlation"] - median).abs()
+        return c.loc[typical.groupby(c["unit"]).idxmin()].set_index("unit")["stem"]
+
+    def _camera_saliency(label, fold, spans, bins):
+        """The maps of camera network *label* of *fold* on its own clips of *spans*
+        (span -> unit), with each clip's whole first frame and its box."""
+        import cv2 as _cv2
+
+        name = runs.cv_name(label, fold)
+        model, mean, std, _, _ = runs.network(name)
+        model = model.to(_dev).float().eval()
+        control = analysis.randomized(model)
+        keys = ("occlusion", "trace", "gradient", "random", "profile")
+        rows = {k: [] for k in (*keys, "crop", "frame", "box")}
+        units, stems = [], []
+        for entry, box, size in runs.held_out_entries(name, spans):
+            found = analysis.clip_saliency(
+                model,
+                control,
+                entry,
+                mean,
+                std,
+                analysis.truth(entry)["inhale"],
+                bins,
+                device=_dev,
+            )
+            for k in keys:
+                rows[k].append(found[k])
+            frames = np.load(entry.frames, mmap_mode="r")
+            rows["crop"].append(
+                np.asarray(frames[:: max(1, len(frames) // 50), 0]).mean(0)
+            )
+            video = _cv2.VideoCapture(str(entry.video))
+            _, image = video.read()
+            video.release()
+            gray = _cv2.cvtColor(image, _cv2.COLOR_BGR2GRAY)
+            rows["frame"].append(_cv2.resize(gray, size))
+            rows["box"].append(box)
+            stem = Path(str(entry.video)).stem
+            units.append(spans[stem.rsplit("_", 1)[0]])
+            stems.append(stem)
+        out = {k: np.array(v) for k, v in rows.items()}
+        return out | {
+            "unit": np.array(units),
+            "fold": np.array([fold] * len(units)),
+            "stem": np.array(stems),
+            "offset_s": (bins[:-1] + bins[1:]) / 2,
+        }
+
+    if _path.is_file():
+        _face = dict(np.load(_path, allow_pickle=True))
+    else:
+        _keys = ("occlusion", "trace", "gradient", "random", "crop", "profile")
+        _rows = {k: [] for k in _keys}
+        _units, _of, _stems = [], [], []
+        for _f in runs.RESULTS.cross_validation.folds:
+            _name = runs.cv_name(runs.REFERENCE, _f)
+            _model, _mean, _std, _, _ = runs.network(_name)
+            _model = _model.to(_dev).float().eval()
+            _control = analysis.randomized(_model)
+            for _unit, _stem in _picked(_name).items():
+                _found = analysis.clip_saliency(
+                    _model,
+                    _control,
+                    runs.truth_entry(_stem),
+                    _mean,
+                    _std,
+                    runs.truth(_stem)["inhale"],
+                    _bins,
+                    device=_dev,
+                )
+                for _k in ("occlusion", "trace", "gradient", "random", "profile"):
+                    _rows[_k].append(_found[_k])
+                _t, _frames = runs.gray(_stem)
+                _every = max(1, len(_t) // 50)
+                _rows["crop"].append(np.asarray(_frames[::_every, 0]).mean(axis=0))
+                _units.append(_unit)
+                _of.append(_f)
+                _stems.append(_stem)
+        _face = {k: np.array(v) for k, v in _rows.items()}
+        _face |= {
+            "unit": np.array(_units),
+            "fold": np.array(_of),
+            "stem": np.array(_stems),
+            "offset_s": (_bins[:-1] + _bins[1:]) / 2,
+        }
+        np.savez(_path, **_face)
+    saliency = {"Face camera": _face}
+    _fold = "cv_0"
+    _spans = {
+        str(s).rsplit("_", 1)[0]: str(u)
+        for s, u, f in zip(_face["stem"], _face["unit"], _face["fold"], strict=True)
+        if f == _fold
+    }
+    for _camera in ("side", "front"):
+        _label = f"{_camera.title()} camera"
+        _other = runs.PREDICTIONS / f"saliency-{_camera}-{_fold}.npz"
+        if not _other.is_file():
+            np.savez(
+                _other,
+                **_camera_saliency(f"Zephyr, {_camera} camera", _fold, _spans, _bins),
+            )
+        saliency[_label] = dict(np.load(_other, allow_pickle=True))
+    return (saliency,)
+
+
+@app.cell
+def figs6(saliency):
+    # Supplementary Fig. 6: a: one new animal of fold cv_0 from each camera, the
+    # occlusion map in its crop box (a unit whose maps are close to the average on
+    # every camera, with a clean side view); b: maps averaged over the units of each
+    # camera, over their mean crop; c: how each inhale's gradient spreads over its
+    # frames.
+    _session = "behavior_789907_2025-10-31_18-19-45"
+
+    def _unit_of(found):
+        same = [
+            k
+            for k, s in enumerate(found["stem"])
+            if str(s).rsplit("_span", 1)[0] == _session
+        ]
+        return same[0] if same else 0
+
+    _views = {}
+    for _camera, _found in saliency.items():
+        _i = _unit_of(_found)
+        _stem = str(_found["stem"][_i])
+        if "frame" in _found:
+            _image, _box = _found["frame"][_i], tuple(_found["box"][_i])
+        else:
+            _image, _box = runs.thumbnail(_stem), runs.box(_stem)
+        _views[_camera] = (_image, _box, _found["occlusion"][_i])
+    fig_s6a = plots.saliency_frames_panel(*size("figs6", "a"), _views)
+    plots.save_panel(fig_s6a, FIGURES / "figs6" / "a.svg")
+    _kinds = {
+        "Occlusion": "occlusion",
+        "Gradient": "gradient",
+        "Random weights": "random",
+    }
+    fig_s6b = plots.saliency_grid_panel(
+        *size("figs6", "b"),
+        {c: np.nanmean(f["crop"], axis=0) for c, f in saliency.items()},
+        {
+            k: {c: np.nanmean(f[key], axis=0) for c, f in saliency.items()}
+            for k, key in _kinds.items()
+        },
+    )
+    plots.save_panel(fig_s6b, FIGURES / "figs6" / "b.svg")
+    _profiles, _within = {}, {}
+    for _camera, _found in saliency.items():
+        _long = pd.DataFrame(
+            {
+                "fold": np.repeat(_found["fold"], _found["profile"].shape[1]),
+                "offset_s": np.tile(_found["offset_s"], len(_found["fold"])),
+                "share": 100 * _found["profile"].ravel(),
+            }
+        )
+        _per_fold = _long.groupby(["fold", "offset_s"], as_index=False)["share"].mean()
+        _profiles[_camera] = analysis.across_folds(_per_fold, "share", by=["offset_s"])
+        _near = _per_fold[_per_fold["offset_s"].abs() <= 0.1]
+        _sum = _near.groupby("fold", as_index=False)["share"].sum().assign(all="all")
+        _within[_camera] = analysis.across_folds(_sum, "share", by=["all"]).iloc[0]
+    fig_s6c = plots.attribution_profile_panel(*size("figs6", "c"), _profiles)
+    plots.save_panel(fig_s6c, FIGURES / "figs6" / "c.svg")
+    _face = _within["Face camera"]
+    v_saliency = {
+        "units": values.count(len(saliency["Face camera"]["unit"])),
+        "within_100": values.num(_face["mean"], 0),
+        "within_100_ci": values.span(_face["low"], _face["high"], 0),
+        **{
+            f"within_100_{c.split()[0].lower()}": values.num(w["mean"], 0)
+            for c, w in _within.items()
+            if c != "Face camera"
+        },
+        **{
+            f"units_{c.split()[0].lower()}": values.count(len(f["unit"]))
+            for c, f in saliency.items()
+            if c != "Face camera"
+        },
+    }
+    mo.vstack([fig_s6a, fig_s6b, fig_s6c, mo.md(f"{v_saliency}")])
+    return (v_saliency,)
+
+
+@app.cell
 def table1(
     by_fold, cv_methods, fold_tables, methods, on_cpu, recordings, test_a, timing
 ):
@@ -2019,6 +2219,7 @@ def manuscript_values(
     v_size,
     v_tolerance,
     v_pooled,
+    v_saliency,
     v_slow,
     v_views,
 ):
@@ -2046,6 +2247,7 @@ def manuscript_values(
         "threshold": v_threshold,
         "tolerance": v_tolerance,
         "pooled": v_pooled,
+        "saliency": v_saliency,
         "slow": v_slow,
         "views": v_views,
     }

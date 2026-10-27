@@ -18,6 +18,7 @@
 #import "figures/figs3.typ": body as figs3
 #import "figures/figs4.typ": body as figs4
 #import "figures/figs5.typ": body as figs5
+#import "figures/figs6.typ": body as figs6
 
 // A figure assembled at its printed width (183 mm), scaled to the text width.
 #let fit(body) = layout(size => scale(reflow: true, size.width / 189mm * 100%, body))
@@ -959,6 +960,23 @@ _Error analysis._ An error was a near miss when an error of the other kind lay w
 (mean absolute frame difference within 0.25 s) and breath size (thermistor peak-to-peak
 within 0.25 s), the last two as quantiles over the clip's breaths.
 
+_Spatial and temporal receptive fields._ For each animal × rig unit of the held-out animals of every
+fold, we took the clip nearest the unit's median trace correlation, two 8.5-s windows of
+it, and the face network of that fold, and considered only the thermistor inhalations at
+least half a receptive field from a window's edges. For occlusion, a 12 × 12-pixel square
+of the 96 × 96-pixel crop, moved in 6-pixel steps, was set to the training mean in every
+frame; we recorded the drop in the mean onset probability at the thermistor's
+inhalations, and one minus the correlation of the trace with the unoccluded one, and
+gave each pixel the mean over the squares covering it. For gradients, we took the
+absolute gradient of the onset logit at each thermistor inhalation with respect to every
+input pixel, averaged over frames for the spatial map and summed over pixels for the
+temporal profile; the same network with its weights re-initialised served as a control.
+The side and front networks, trained only on the first fold so far, were analysed the
+same way on that fold's held-out animals (#v("saliency.units_side") units), on the same
+recording spans. The temporal profile is the share of an inhalation's gradient carried by
+each frame, in 1/60-s bins of the frame's time from the inhalation, averaged over the
+inhalations of a unit, then over units and folds (@fig:saliency).
+
 == Statistics
 
 The unit of analysis is an animal on one rig, whose sessions share the implant, camera
@@ -1158,3 +1176,21 @@ batch, steps per epoch and learning rate are in @tab:nets #note[confirm how the 
     labelled breaths in each bin, when its prominence fraction is lowered from 0.2 to 0.1
     or 0.05 (an added inhalation lies more than 25 ms from every labelled one).],
 ) <fig:slow>
+
+#figure(
+  fit(figs6),
+  caption: [*Spatial and temporal receptive fields.* The face network of each cross-validation
+    fold on its held-out animals (#v("saliency.units") animal × rig units), and the side
+    and front networks of the first fold on the same recording spans of its held-out
+    animals (#v("saliency.units_side") units): for each unit, the clip nearest its median
+    face trace correlation (Methods). *a,* One held-out animal of the first fold from the
+    three cameras, each crop box outlined with the occlusion map inside it: how much hiding
+    each part of the crop in every frame lowered the onset probability at the thermistor's
+    inhalations. *b,* Maps averaged over each camera's units, over their mean crop:
+    occlusion, the absolute gradient of the onset output at each inhalation with respect
+    to the input pixels, and the same gradient for the network with random weights. Each
+    map is scaled to its own range. *c,* The share of an inhalation's gradient carried by
+    each frame, against the frame's time from the inhalation. Lines show the mean over
+    folds; for the face network, the band shows the 95% interval over the
+    #v("benchmark.folds") folds.],
+) <fig:saliency>

@@ -6,6 +6,7 @@ Times on a clip's traces are seconds from the clip's first output sample.
 import string
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 
 import matplotlib as mpl
 import numpy as np
@@ -2683,4 +2684,118 @@ def calibration_panel(width_mm: float, height_mm: float, reference: dict) -> Fig
         transform=a.transAxes,
         fontsize=6,
     )
+    return fig
+
+
+# --- where the network looks ---------------------------------------------------------
+
+SALIENCY_CMAP = "magma"
+
+
+def _heat(a: Axes, heat: NDArray, extent=None) -> Any:
+    """*heat* over what *a* shows, scaled from 0 to its 99th percentile, that value
+    written in the top right corner beside a swatch of the scale's top colour."""
+    top = float(np.nanpercentile(heat, 99))
+    shown = a.imshow(
+        heat, cmap=SALIENCY_CMAP, alpha=0.65, extent=extent, vmin=0, vmax=top
+    )
+    text = f"{top:.2f}" if top >= 0.01 else f"{top:.1e}"
+    # The swatch in the corner, the value to its left.
+    a.add_patch(
+        Rectangle(
+            (0.90, 0.89),
+            0.07,
+            0.07,
+            transform=a.transAxes,
+            color=mpl.colormaps[SALIENCY_CMAP](1.0),
+            lw=0,
+        )
+    )
+    a.text(
+        0.88,
+        0.925,
+        text,
+        transform=a.transAxes,
+        ha="right",
+        va="center",
+        fontsize=5,
+        color="white",
+    )
+    return shown
+
+
+def saliency_frames_panel(
+    width_mm: float, height_mm: float, views: dict[str, tuple]
+) -> Figure:
+    """One whole frame per camera (title -> ``(image, box, heat)``), the network's crop
+    box outlined in the camera's colour with *heat* (a map on the crop's pixels)
+    inside it."""
+    names = list(views)
+    fig, ax = style.panel(width_mm, height_mm, [names])
+    for name in names:
+        image, box, heat = views[name]
+        a = ax[name]
+        a.imshow(image, cmap="gray")
+        x, y, w, h = box
+        _heat(a, heat, extent=(x, x + w, y + h, y))
+        a.add_patch(Rectangle((x, y), w, h, fill=False, ec=style.color(name), lw=0.8))
+        a.set_xlim(0, image.shape[1])
+        a.set_ylim(image.shape[0], 0)
+        a.set_title(name, fontsize=6, color=style.color(name))
+        a.set_axis_off()
+    return fig
+
+
+def saliency_grid_panel(
+    width_mm: float,
+    height_mm: float,
+    crops: dict[str, NDArray],
+    maps: dict[str, dict[str, NDArray]],
+) -> Figure:
+    """A grid of maps on the crop's pixels: one column per camera (*crops*: camera ->
+    the mean crop the maps are drawn over), one row per kind of map (*maps*: kind ->
+    camera -> map), each scaled to its own range."""
+    cameras, kinds = list(crops), list(maps)
+    layout = [[f"{k}|{c}" for c in cameras] for k in kinds]
+    fig, ax = style.panel(width_mm, height_mm, layout)
+    for kind in kinds:
+        for camera in cameras:
+            a = ax[f"{kind}|{camera}"]
+            a.imshow(crops[camera], cmap="gray")
+            _heat(a, maps[kind][camera])
+            a.set_xticks([])
+            a.set_yticks([])
+            for spine in a.spines.values():
+                spine.set_visible(False)
+            if kind == kinds[0]:
+                a.set_title(camera, fontsize=6, color=style.color(camera))
+            if camera == cameras[0]:
+                a.set_ylabel(kind, fontsize=6)
+    return fig
+
+
+def attribution_profile_panel(
+    width_mm: float,
+    height_mm: float,
+    profiles: dict[str, pd.DataFrame],
+    half_s: float = 0.5,
+) -> Figure:
+    """Share of an inhale's attribution per frame against the frame's time from the
+    inhale, one line per camera (*profiles*: camera -> ``offset_s``, ``mean``, ``low``,
+    ``high``, in percent; band where there is an interval), within *half_s* s of it."""
+    fig, ax = style.panel(width_mm, height_mm, [["profile"]])
+    a = ax["profile"]
+    for name, profile in profiles.items():
+        p = profile[profile["offset_s"].abs() <= half_s]
+        t = 1000 * p["offset_s"]
+        colour = style.color(name)
+        a.plot(t, p["mean"], color=colour, lw=0.9, label=name)
+        if p["low"].notna().any():
+            a.fill_between(t, p["low"], p["high"], color=colour, alpha=0.2, lw=0)
+    a.axvline(0, color="0.5", lw=0.5, ls=":")
+    a.set_xlabel("Frame time from the inhalation (ms)")
+    a.set_ylabel("Share of attribution\nper frame (%)")
+    a.set_xlim(-1000 * half_s, 1000 * half_s)
+    if len(profiles) > 1:
+        a.legend(fontsize=5.5, handlelength=1, labelspacing=0.2, borderpad=0.2)
     return fig
