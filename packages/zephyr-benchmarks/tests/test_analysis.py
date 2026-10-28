@@ -147,6 +147,19 @@ class SummaryTests(unittest.TestCase):
         self.assertAlmostEqual(f1.loc["8-10", "f1"], 2 / 4)
         self.assertAlmostEqual(f1["share"].sum(), 1.0)
 
+    def test_rate_share_weighs_each_unit_equally(self):
+        # unit a: all slow; unit b: one slow, three fast, so b's many breaths do not
+        # outweigh a's
+        breaths = pd.DataFrame(
+            {"rate_hz": [2.5, 2.5, 9.0, 9.0, 9.0], "unit": ["a", "b", "b", "b", "b"]}
+        )
+        share = analysis.rate_share(breaths, n=200).set_index("bin")
+        self.assertAlmostEqual(share.loc["2-3", "mean"], (1 + 0.25) / 2)
+        self.assertAlmostEqual(share.loc["8-10", "mean"], 0.75 / 2)
+        self.assertEqual(share.loc["1-2", "mean"], 0.0)
+        self.assertLessEqual(share.loc["2-3", "low"], share.loc["2-3", "mean"])
+        self.assertEqual(share["units"].iloc[0], 2)
+
     def test_bootstrap_resamples_animals_and_pairs_the_difference(self):
         rows = [
             {"set": "A", "subject": s, "method": m, "correlation": base + offset}
@@ -328,7 +341,7 @@ class SummaryTests(unittest.TestCase):
         prof = analysis.error_profile(err).set_index("row")
         self.assertAlmostEqual(prof.loc["near miss", "share"], 0.5)
         self.assertEqual(int(prof.loc["near miss", "n"]), 4)
-        self.assertAlmostEqual(prof.loc["fast breathing (> 8 Hz)", "share"], 0.5)
+        self.assertAlmostEqual(prof.loc["sniffing (> 8 Hz)", "share"], 0.5)
         self.assertEqual(int(prof.loc["face motion (top 10%)", "n"]), 2)
 
     def test_score_agreement_ranks_clips_across_methods_and_averages_seeds(self):

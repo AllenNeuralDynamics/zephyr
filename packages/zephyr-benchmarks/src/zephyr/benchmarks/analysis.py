@@ -271,6 +271,33 @@ def f1_by_rate(
     return out.reset_index()
 
 
+def rate_share(
+    breaths: pd.DataFrame,
+    unit: str = "unit",
+    bins=RATE_BINS_HZ,
+    n: int = 2000,
+    seed: int = 0,
+) -> pd.DataFrame:
+    """Share of each unit's thermistor breaths in each rate bin (*breaths*: one method's
+    ``rate_hz`` and *unit*), as the mean over units with a 95% bootstrap interval
+    (:func:`bootstrap`): ``bin``, ``mean``, ``low``, ``high``, ``units``."""
+    labels = rate_bins(bins)
+    cut = pd.cut(breaths["rate_hz"], list(bins), labels=labels)
+    counts = (
+        breaths.assign(bin=cut)
+        .groupby([unit, "bin"], observed=False)
+        .size()
+        .unstack("bin")
+        .reindex(columns=labels, fill_value=0)
+    )
+    share = counts.div(counts.sum(axis=1), axis=0).stack().rename("share")
+    long = share.reset_index().assign(set="all")
+    long["method"] = long["bin"].astype(str)
+    out = bootstrap(long, "share", reference="", n=n, seed=seed, unit=unit)
+    out = out.rename(columns={"method": "bin"}).set_index("bin").reindex(labels)
+    return out[["mean", "low", "high", "units"]].reset_index()
+
+
 def rate_distribution(onsets: dict[str, list[np.ndarray]]) -> pd.DataFrame:
     """Share of breaths per rate bin in each named group of clips, from each clip's
     true inhale times."""
@@ -571,7 +598,7 @@ def mean_spectrum(times: np.ndarray, x: np.ndarray) -> tuple[np.ndarray, np.ndar
 MISSED, FALSE = "missed (FN)", "false (FP)"
 CAUSES: dict[str, Callable[[pd.Series], bool]] = {
     "near miss (other error within 100 ms)": lambda e: e["near_miss"],
-    "fast breathing (> 8 Hz)": lambda e: e["rate_hz"] > 8,
+    "sniffing (> 8 Hz)": lambda e: e["rate_hz"] > 8,
     "face motion (top 10% of the clip)": lambda e: e["motion"] > 0.9,
     "shallow breath (bottom 25%)": lambda e: e["amplitude"] < 0.25,
 }
@@ -772,7 +799,7 @@ def tolerance_curve(
 
 def error_profile(err: pd.DataFrame, fast_hz: float = 8.0) -> pd.DataFrame:
     """Per error kind: the share of errors that are near misses, then, among the rest
-    (gross errors), the share in fast breathing (above *fast_hz*), in face motion (top
+    (gross errors), the share in sniffing (above *fast_hz*), in face motion (top
     10% of the clip) and on shallow breaths (bottom 25%), with ``n`` errors behind each
     share; per fold too, when *err* has a ``fold`` column."""
     keys = ["kind", *(["fold"] if "fold" in err else [])]
@@ -789,7 +816,7 @@ def error_profile(err: pd.DataFrame, fast_hz: float = 8.0) -> pd.DataFrame:
         )
         gross = g[~g["near_miss"]]
         for row, flag in (
-            (f"fast breathing (> {fast_hz:g} Hz)", gross["rate_hz"] > fast_hz),
+            (f"sniffing (> {fast_hz:g} Hz)", gross["rate_hz"] > fast_hz),
             ("face motion (top 10%)", gross["motion"] > 0.9),
             ("shallow breath (bottom 25%)", gross["amplitude"] < 0.25),
         ):
