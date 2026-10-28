@@ -81,31 +81,39 @@ def _arrow(x0, y0, x1, y1) -> str:
     )
 
 
-def _waveform(x, y, w, h, color) -> str:
-    """A respiration-like trace (fast rise, slow fall) along *w* above baseline *y*."""
-    t = np.linspace(0, 1, 120)
-    phase = (t * 3.5) % 1
-    v = np.where(phase < 0.3, phase / 0.3, 1 - (phase - 0.3) / 0.7)
+_GLYPH_T = np.linspace(0, 1, 600)
+_SNIFFING = 1 / (1 + np.exp(-(_GLYPH_T - 0.4) / 0.02))  # 0 while breathing, 1 sniffing
+_CYCLES = 0.75 + np.cumsum(5.5 + 6.5 * _SNIFFING) / len(_GLYPH_T)  # cycles so far
+_INHALE = 0.22  # share of a cycle spent inhaling
+
+
+def _polyline(x, y, w, h, v, color) -> str:
     pts = " ".join(
-        f"{x + a * w:.2f},{y - b * h:.2f}" for a, b in zip(t, v, strict=True)
+        f"{x + a * w:.2f},{y - b * h:.2f}" for a, b in zip(_GLYPH_T, v, strict=True)
     )
     return (
         f'<polyline points="{pts}" fill="none" stroke="{color}" stroke-width="0.35" '
         'stroke-linejoin="round"/>'
     )
+
+
+def _waveform(x, y, w, h, color) -> str:
+    """A thermistor-like trace along *w* above baseline *y*: slow breaths, then a bout
+    of faster, shallower sniffs; each cycle falls sharply as air is drawn in and
+    recovers more slowly on the exhalation."""
+    phase = _CYCLES % 1
+    fall = 0.5 * (1 + np.cos(np.pi * phase / _INHALE))
+    rise = 0.5 * (1 - np.cos(np.pi * (phase - _INHALE) / (1 - _INHALE)))
+    shape = np.where(phase < _INHALE, fall, rise)
+    v = 0.55 + (shape - 0.5) * (1 - 0.5 * _SNIFFING) - 0.15 * _SNIFFING
+    return _polyline(x, y, w, h, v, color)
 
 
 def _onsets(x, y, w, h, color) -> str:
-    """Narrow probability bumps at each inhalation onset along *w* above *y*."""
-    t = np.linspace(0, 1, 160)
-    v = sum(np.exp(-0.5 * ((t - c) / 0.025) ** 2) for c in (0.08, 0.37, 0.66, 0.94))
-    pts = " ".join(
-        f"{x + a * w:.2f},{y - b * h:.2f}" for a, b in zip(t, v, strict=True)
-    )
-    return (
-        f'<polyline points="{pts}" fill="none" stroke="{color}" stroke-width="0.35" '
-        'stroke-linejoin="round"/>'
-    )
+    """Narrow probability bumps at the inhalation onsets of :func:`_waveform`."""
+    starts = np.interp(np.arange(np.ceil(_CYCLES[0]), _CYCLES[-1]), _CYCLES, _GLYPH_T)
+    v = sum(np.exp(-0.5 * ((_GLYPH_T - c) / 0.012) ** 2) for c in starts)
+    return _polyline(x, y, w, h, v, color)
 
 
 def _cuboid(x, y, face, depth, colors) -> str:
