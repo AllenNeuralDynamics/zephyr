@@ -1045,3 +1045,46 @@ def held_out_entries(
         (features.lookup(c, clip_list.preprocess, cache), tuple(c.box), tuple(size))
         for c in resolved
     ]
+
+
+def clip_scores(name: str) -> pd.DataFrame:
+    """Every clip a network run scored, as its own ``evaluation.json`` gives it: the
+    ``set`` (its group), ``stem``, ``session`` (the recording), ``camera`` (after the
+    span in the stem), ``correlation`` and ``inhale`` (the head's inhale F1 at the
+    checkpoint's own onset threshold)."""
+    found = evaluation(name)
+    rows = pd.DataFrame(found["clips"])
+    stem = rows["clip_id"].map(lambda c: Path(c).name)
+    return pd.DataFrame(
+        {
+            "set": rows["group"],
+            "stem": stem,
+            "session": rows["recording"].str.rsplit("#", n=1).str[1],
+            "camera": stem.str.split(r"_span\d+_", regex=True).str[1],
+            "correlation": rows["correlation"],
+            "inhale": rows["head_inhale_f1"],
+        }
+    )
+
+
+DF_ROOT = Path(os.environ.get("ZEPHYR_DF_ROOT", "C:/Data/zephyr-df-dataset"))
+"""The local copy of zephyr-df-dataset: its held-out list (``df_test_a.toml``, the
+dataset's entries of animal 811021) and the crops of those clips in ``cache/``."""
+REMOTE_DF = "/data/zephyr-df-dataset"
+
+
+@functools.cache
+def df_entries() -> dict[str, tuple[features.ClipEntry, tuple[int, ...]]]:
+    """Each held-out DF clip's cache entry and crop box (on the 360 x 270 frame), by
+    stem; the copy named as the capsule names the dataset, so cache keys match."""
+    mapping = f"{DF_ROOT.as_posix()}={REMOTE_DF}"
+    known = os.environ.get("ZEPHYR_PATH_MAP", "")
+    if mapping not in known.split(";"):
+        os.environ["ZEPHYR_PATH_MAP"] = ";".join(p for p in (known, mapping) if p)
+    clip_list = load(ClipList, DF_ROOT / "df_test_a.toml")
+    out = {}
+    for c in clip_list.resolve():
+        entry = features.lookup(c, clip_list.preprocess, DF_ROOT / "cache")
+        if entry is not None:
+            out[Path(str(c.video)).stem] = (entry, tuple(c.box))
+    return out

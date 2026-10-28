@@ -325,3 +325,32 @@ kind = "data"
 width_mm = 84
 height_mm = 60
 what = "Share of each inhalation's gradient per frame against the frame's time from the inhalation, one line per camera"
+
+[figs7]
+width_mm = 183
+gap_mm = 4
+rows = [["a", "b"], ["c", "d"]]
+
+[figs7.panels.a]
+kind = "data"
+width_mm = 90
+height_mm = 40
+what = "The dynamic-foraging rig's side and bottom views of the held-out animal, each crop outlined"
+
+[figs7.panels.b]
+kind = "data"
+width_mm = 89
+height_mm = 40
+what = "A few seconds of one held-out clip from both views: thermistor and the refined network, inhalations as ticks"
+
+[figs7.panels.c]
+kind = "data"
+width_mm = 95
+height_mm = 50
+what = "Held-out animal's correlation and inhale F1 before and after refining, per camera, one line per session"
+
+[figs7.panels.d]
+kind = "data"
+width_mm = 84
+height_mm = 50
+what = "VR test sets A, B and C: after minus before refining, correlation and inhale F1, mean over animal x rig units with 95% interval"

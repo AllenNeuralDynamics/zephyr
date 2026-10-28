@@ -2799,3 +2799,138 @@ def attribution_profile_panel(
     if len(profiles) > 1:
         a.legend(fontsize=5.5, handlelength=1, labelspacing=0.2, borderpad=0.2)
     return fig
+
+
+# --- refining on a new task and rig ---------------------------------------------------
+
+
+def views_panel(width_mm: float, height_mm: float, views: dict[str, tuple]) -> Figure:
+    """One whole frame per camera (title -> ``(image, box)``), the network's crop box
+    outlined in the camera's colour."""
+    names = list(views)
+    fig, ax = style.panel(width_mm, height_mm, [names])
+    for name in names:
+        image, box = views[name]
+        a = ax[name]
+        a.imshow(image, cmap="gray")
+        x, y, w, h = box
+        a.add_patch(Rectangle((x, y), w, h, fill=False, ec=style.color(name), lw=1.0))
+        a.set_title(name, fontsize=6, color=style.color(name))
+        a.set_axis_off()
+    return fig
+
+
+def refined_traces_panel(
+    width_mm: float, height_mm: float, rows: dict[str, dict], half: float = 3.0
+) -> Figure:
+    """One row per camera (title -> ``times``, ``truth``, ``truth_inhale``, ``signal``,
+    ``head``, ``at``): the thermistor and the network's trace (each z-scored) over
+    *half* s either side of ``at``, the thermistor's (black) and the network's (the
+    camera's colour) inhales as ticks above."""
+    names = list(rows)
+    fig, ax = style.panel(width_mm, height_mm, [[n] for n in names], sharex=True)
+    for name in names:
+        r, a = rows[name], ax[name]
+        t = r["times"] - r["at"]
+        keep = np.abs(t) <= half
+        truth, signal = r["truth"][keep], r["signal"][keep]
+        truth = (truth - truth.mean()) / (truth.std() or 1.0)
+        signal = (signal - signal.mean()) / (signal.std() or 1.0)
+        colour = style.color(name)
+        a.plot(t[keep], truth, color=style.TRUTH, lw=0.7, label="Thermistor")
+        a.plot(t[keep], signal, color=colour, lw=0.8, label="Zephyr")
+        for events, y, c, m in (
+            (r["truth_inhale"], 3.4, style.TRUTH, "v"),
+            (r["head"], 2.8, colour, "^"),
+        ):
+            e = events - r["at"]
+            e = e[np.abs(e) <= half]
+            a.plot(e, np.full(len(e), y), m, color=c, ms=2.2, lw=0)
+        a.set_ylim(-3.2, 3.9)
+        a.set_yticks([])
+        a.set_ylabel(name, fontsize=6, color=colour)
+        a.spines["left"].set_visible(False)
+    ax[names[-1]].set_xlabel("Time (s)")
+    ax[names[-1]].legend(
+        loc="upper left", bbox_to_anchor=(0, -0.28), fontsize=5.5, ncol=2, frameon=False
+    )
+    ax[names[-1]].set_xlim(-half, half)
+    return fig
+
+
+def before_after_panel(
+    width_mm: float,
+    height_mm: float,
+    table: pd.DataFrame,
+    metrics: Sequence[str],
+    cameras: Sequence[str],
+) -> Figure:
+    """Per metric (side by side), per camera, each session's score before and after
+    (*table*: ``camera``, ``session``, ``metric``, ``Before``, ``After``) joined by a
+    grey line, with the mean over sessions in each one's colour."""
+    fig, ax = style.panel(width_mm, height_mm, [list(metrics)], sharey=True)
+    for metric in metrics:
+        a = ax[metric]
+        for k, camera in enumerate(cameras):
+            d = table[(table["camera"] == camera) & (table["metric"] == metric)]
+            x = np.array([3 * k, 3 * k + 1])
+            for _, row in d.iterrows():
+                a.plot(x, [row["Before"], row["After"]], color="0.8", lw=0.5, zorder=1)
+            for i, when in enumerate(("Before", "After")):
+                a.plot(
+                    x[i],
+                    d[when].mean(),
+                    "o",
+                    ms=3.5,
+                    color=style.color(when),
+                    mec=style.color(camera),
+                    mew=0.8,
+                    zorder=3,
+                )
+        a.axhline(0, color="0.6", lw=0.5, ls=":")
+        a.set_xticks(
+            [3 * k + 0.5 for k in range(len(cameras))],
+            [c.split()[0] for c in cameras],
+        )
+        a.set_xlim(-0.6, 3 * len(cameras) - 1.4)
+        a.set_title(METRIC_LABELS[metric], fontsize=7)
+    ax[metrics[0]].set_ylabel("Held-out animal")
+    handles = [
+        Line2D([], [], marker="o", ls="", color=style.color(w), ms=3.5, label=w)
+        for w in ("Before", "After")
+    ]
+    ax[metrics[-1]].legend(handles=handles, loc="lower right", fontsize=5.5)
+    return fig
+
+
+def cost_panel(
+    width_mm: float,
+    height_mm: float,
+    summary: pd.DataFrame,
+    metrics: Sequence[str],
+    sets: Sequence[str],
+) -> Figure:
+    """Per metric (side by side), after minus before on each set with its 95% interval
+    (*summary*: ``metric``, ``set``, ``mean``, ``low``, ``high``)."""
+    fig, ax = style.panel(width_mm, height_mm, [list(metrics)], sharey=True)
+    for metric in metrics:
+        a = ax[metric]
+        d = summary[summary["metric"] == metric].set_index("set").loc[list(sets)]
+        x = np.arange(len(sets))
+        a.errorbar(
+            x,
+            d["mean"],
+            yerr=[d["mean"] - d["low"], d["high"] - d["mean"]],
+            fmt="o",
+            ms=3,
+            color=style.color("After"),
+            elinewidth=0.8,
+            capsize=0,
+        )
+        a.axhline(0, color="0.5", lw=0.6, ls=":")
+        a.set_xticks(x, [s.split(":")[0] for s in sets])
+        a.set_xlim(-0.5, len(sets) - 0.5)
+        a.set_xlabel("VR test set")
+        a.set_title(METRIC_LABELS[metric], fontsize=7)
+    ax[metrics[0]].set_ylabel("After minus before")
+    return fig

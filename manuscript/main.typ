@@ -19,6 +19,7 @@
 #import "figures/figs4.typ": body as figs4
 #import "figures/figs5.typ": body as figs5
 #import "figures/figs6.typ": body as figs6
+#import "figures/figs7.typ": body as figs7
 
 // A figure assembled at its printed width (183 mm), scaled to the text width.
 #let fit(body) = layout(size => scale(reflow: true, size.width / 189mm * 100%, body))
@@ -476,6 +477,18 @@ lighting thus cost no accuracy, so a network of this size has capacity to spare 
 amount of data we have, and data from new rigs and views can be added to one network
 rather than kept in separate ones.
 
+A network trained on our task also carried over to a different behavioural task once
+refined there. In this other experiment, video was acquired from head-fixed mice filmed from the side and from
+below (#fig(<fig:refine>, "a")). On a held-out animal of that experiment, the pooled
+network trained on our task alone barely tracked breathing (inhalation F1 #v("refine.f1_before_side")
+from the side, #v("refine.f1_before_bottom") from below). Refining it on two animals of
+that experiment, with half of each batch drawn from its original training set, raised F1 to
+#v("refine.f1_after_side") and #v("refine.f1_after_bottom") and trace correlation to
+#v("refine.r_after_side") and #v("refine.r_after_bottom") on the held-out animal
+(#fig(<fig:refine>, "b,c")). On our own test sets, the refined network lost less than
+0.01 in F1 and correlation (#fig(<fig:refine>, "d"))
+#note[one fold and one held-out animal of the new experiment so far].
+
 Next, we tested if a lower frame rate would affect performance. Halving the frame
 rate to 30 Hz changed inhalation F1 and trace correlation on new animals little
 (@fig:input-rate).
@@ -872,6 +885,19 @@ comparison networks were trained the same way, each with the loss of its origina
   caption: [*Training settings of Zephyr.*],
 ) <tab:train>
 
+_Refining on a different task._ The pooled network of the first fold was refined on
+video of a dynamic-foraging experiment, recorded with a side and a bottom camera and an intranasal
+thermistor, and cut and cropped as the corpus (360 × 270-pixel frames, 96 × 96-pixel
+crops). Training started from the pooled network's checkpoint, with half of each batch
+from the fold's training clips of all three corpus cameras and half from the 8 sessions
+of 2 animals of that experiment, at a learning rate of 1.5 × 10#super[−4], with the other
+settings of @tab:train. Early stopping and the onset threshold used the fold's
+validation animals. Both the refined network and the untouched pooled network were
+scored on the #v("refine.clips") clips (#v("refine.sessions") sessions) of a third
+animal of that experiment, and the refined network also on the fold's test sets. The cost
+on the corpus is the refined network minus the pooled one on the same clips, as the
+mean over animal × rig units with a paired 95% bootstrap interval (@fig:refine).
+
 == Inference and event detection
 
 Clips were predicted in overlapping windows of #tbd[1,024] samples, discarding #tbd[126]
@@ -1194,3 +1220,20 @@ batch, steps per epoch and learning rate are in @tab:nets #note[confirm how the 
     folds; for the face network, the band shows the 95% interval over the
     #v("benchmark.folds") folds.],
 ) <fig:saliency>
+
+#figure(
+  fit(figs7),
+  caption: [*Refining on a different behavioural task.* The pooled network of the first
+    fold (@fig:use), before and after refining on two animals of a dynamic-foraging
+    experiment, scored on a third animal of that experiment (#v("refine.sessions") sessions,
+    #v("refine.clips") clips; Methods). *a,* The experiment's side and bottom views of the
+    held-out animal, each crop box outlined. *b,* Six seconds of one held-out clip from
+    both views: the thermistor (black) and the refined network, each z-scored, with the
+    thermistor's inhalations (black) and the network's onset-head inhalations
+    (coloured) marked above. *c,* Trace correlation and inhalation F1 of the held-out
+    animal before and after refining, per camera. Points show the mean over sessions;
+    grey lines join each session. *d,* The refined network minus the pooled one on the
+    corpus's test sets of the same fold (A, new animals; B, new sessions; C, 359 Hz),
+    over all three cameras. Points show the mean over animal × rig units with a 95%
+    paired bootstrap interval.],
+) <fig:refine>

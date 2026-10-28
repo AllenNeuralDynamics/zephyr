@@ -69,6 +69,24 @@ label = "Zephyr, 192-px crops"
 run = "full-gray-192-v3"
 head = true
 
+# The all-camera Zephyr (full-gray-all-cv-v4, cv_0) on a new task and rig: dynamic
+# foraging (zephyr-df-dataset), its held-out animal 811021 (cv_0's test A animal too).
+# "on DF" is the network as it is, scored there by `zephyr evaluate` on this machine
+# (notebooks/cache/runs/full-gray-all-cv-v4-df); "refined on DF" is it trained further
+# on half VR, half DF windows of the other two animals (finetune-df-cv-v4, sandbox
+# experiments/finetune-df-cv.toml), also scored on cv_0's VR test sets.
+[[variant]]
+label = "Zephyr, all cameras, on DF"
+run = "full-gray-all-cv-v4-df"
+fold = "cv_0"
+head = true
+
+[[variant]]
+label = "Zephyr, all cameras, refined on DF"
+run = "finetune-df-cv-v4"
+fold = "cv_0-df"
+head = true
+
 # Zephyr trained on fewer animals (all of their training sessions), and on as many
 # sessions as 8 animals give but spread over all training animals, on cross-validation
 # fold cv_4 with its validation and test sets (zephyr-compute-sandbox matrix
