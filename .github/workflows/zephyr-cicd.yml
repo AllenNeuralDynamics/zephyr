@@ -32,10 +32,10 @@ jobs:
           manuscript/main.typ "${{ runner.temp }}/manuscript.pdf"
 
       - name: Upload manuscript as artifact
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
-          name: manuscript
           path: ${{ runner.temp }}/manuscript.pdf
+          archive: false
           if-no-files-found: error
           retention-days: 30
 

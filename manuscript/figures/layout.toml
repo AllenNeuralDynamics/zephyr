@@ -8,25 +8,25 @@
 [fig1]
 width_mm = 183
 gap_mm = 4
-rows = [["a", "b"], ["c"], ["d"], ["e"]]
+rows = [["a"], ["b", "c"], ["d"], ["e"]]
 
 [fig1.panels.a]
 kind = "schematic"
-width_mm = 112
-height_mm = 71.2
-what = "Rig rendering: head-fixed mouse on the wheel, front, face and side cameras, odor line (3d-vr-foraging FIG1_overview.svg)"
+width_mm = 183
+height_mm = 80
+what = "Rig rendering: head-fixed mouse on the wheel, front, face and side cameras enlarged beside it, odor line (3d-vr-foraging FIG1_overview.svg)"
 
 [fig1.panels.b]
 kind = "data"
-width_mm = 67
-height_mm = 71.2
-what = "One session: breathing rate and speed around odor onset per kind of site; breathing rate against speed"
+width_mm = 142
+height_mm = 52
+what = "Thirty seconds of one session: speed, the thermistor and its respiration rate, licks, rewards, odor sites"
 
 [fig1.panels.c]
 kind = "data"
-width_mm = 183
-height_mm = 34
-what = "A minute of the same session: speed, breathing rate from video and thermistor, licks, odor sites"
+width_mm = 37
+height_mm = 52
+what = "The same session: respiration rate against speed"
 
 [fig1.panels.d]
 kind = "data"

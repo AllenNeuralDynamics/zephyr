@@ -137,7 +137,7 @@ def fig1bc_data(dataset, spec):
             "reward": _all["reward_onset_time"],
         }
     )
-    task_clips = []
+    task_clips, task_truth = [], []
     for _span in (1, 2):
         _stem = f"{_session}_span{_span}_FaceCamera"
         _p, _t = runs.prediction(_name, _stem), runs.truth(_stem)
@@ -152,6 +152,7 @@ def fig1bc_data(dataset, spec):
                 }
             )
         )
+        task_truth.append(pd.DataFrame({"time": _t["times"], "signal": _t["signal"]}))
     # b: the thermistor over the whole session, its events found as the corpus finds
     # them (the clip list's detector), on a 60-Hz grid
     _raw = pd.read_parquet(
@@ -199,46 +200,50 @@ def fig1bc_data(dataset, spec):
         task_clips,
         task_session,
         task_thermistor_hz,
+        task_truth,
     )
 
 
 @app.cell
-def fig1b(task_aligned, task_session, task_thermistor_hz):
-    fig1b = plots.task_summary_panel(
-        *size("fig1", "b"), task_aligned, task_session, task_thermistor_hz
-    )
-    plots.save_panel(fig1b, FIGURES / "fig1" / "b.svg")
-    _counts = task_aligned.groupby(["site", "signal"])["n"].first()
-    v_fig1 = {
-        f"sites_{s.lower()}": values.count(_counts[(s, "rate")]) for s in style.SITES
-    }
-    mo.vstack([fig1b, mo.ui.table(_counts.reset_index(), selection=None)])
-    return (v_fig1,)
-
-
-@app.cell
-def fig1c(lick_times, odor_sites, task_clips):
+def fig1b(lick_times, odor_sites, task_clips, task_truth):
     _window = 60.0
-    # the clip whose best window holds the most kinds of site, then the most sites
+    # the clip whose best minute holds the most kinds of site, then the most sites;
+    # its second half is shown
     _found = []
-    for _c in task_clips:
-        _t = _c["time"]
-        _found.append((*task_window(odor_sites, _t.iloc[0], _t.iloc[-1], _window), _c))
-    _, _start, _clip = max(_found, key=lambda found: found[0])
+    for _c, _t in zip(task_clips, task_truth, strict=True):
+        _time = _c["time"]
+        _found.append(
+            (*task_window(odor_sites, _time.iloc[0], _time.iloc[-1], _window), _c, _t)
+        )
+    _, _start, _clip, _truth = max(_found, key=lambda found: found[0])
+    _start, _window = _start + _window / 2, _window / 2
     _ex = _clip[(_clip["time"] >= _start) & (_clip["time"] <= _start + _window)]
     _sites = odor_sites[
         (odor_sites["leave"] > _start) & (odor_sites["odor"] < _start + _window)
     ]
-    fig1c = plots.task_stretch_panel(
-        *size("fig1", "c"),
+    fig1b = plots.task_stretch_panel(
+        *size("fig1", "b"),
         _ex.assign(time=_ex["time"] - _start),
+        _truth.assign(time=_truth["time"] - _start),
         _sites.assign(odor=_sites["odor"] - _start, leave=_sites["leave"] - _start),
         lick_times - _start,
         odor_sites["reward"].dropna().to_numpy() - _start,
     )
-    plots.save_panel(fig1c, FIGURES / "fig1" / "c.svg")
-    fig1c
+    plots.save_panel(fig1b, FIGURES / "fig1" / "b.svg")
+    fig1b
     return
+
+
+@app.cell
+def fig1c(task_aligned, task_session, task_thermistor_hz):
+    fig1c = plots.rate_speed_panel(*size("fig1", "c"), task_session, task_thermistor_hz)
+    plots.save_panel(fig1c, FIGURES / "fig1" / "c.svg")
+    _counts = task_aligned.groupby(["site", "signal"])["n"].first()
+    v_fig1 = {
+        f"sites_{s.lower()}": values.count(_counts[(s, "rate")]) for s in style.SITES
+    }
+    mo.vstack([fig1c, mo.ui.table(_counts.reset_index(), selection=None)])
+    return (v_fig1,)
 
 
 @app.cell
@@ -446,6 +451,7 @@ def fig3_methods():
     # score is averaged within a unit, and units are what is counted and resampled.
     _folds = pd.read_parquet(runs.root() / "dataset" / "raw" / "folds.parquet")
     _rig = dict(zip(_folds["session_id"], _folds["rig"], strict=True))
+    _subject = dict(zip(_folds["session_id"], _folds["subject_id"], strict=True))
 
     def with_unit(table: pd.DataFrame) -> pd.DataFrame:
         """*table* (a ``session`` and ``subject`` per row) with its ``rig`` and
@@ -453,9 +459,18 @@ def fig3_methods():
         rig = table["session"].map(_rig)
         return table.assign(rig=rig, unit=table["subject"].astype(str) + "@" + rig)
 
+    def rate_share(breaths: pd.DataFrame) -> pd.DataFrame:
+        """:func:`analysis.rate_share` of one method's *breaths* (a ``stem`` per row),
+        over animal x rig units; the animal from the session metadata."""
+        session = breaths["stem"].astype(str).str.rsplit("_span", n=1).str[0]
+        units = with_unit(
+            breaths.assign(session=session, subject=session.map(_subject))
+        )
+        return analysis.rate_share(units, bins=analysis.RATE_BINS_HZ[1:])
+
     recordings = with_unit(runs.scores(methods, "per_recording"))
     test_a = runs.SETS["test_a"]
-    return methods, recordings, test_a, with_unit
+    return methods, rate_share, recordings, test_a, with_unit
 
 
 @app.cell
@@ -527,7 +542,7 @@ def fig3a(cv_methods, methods):
 
 @app.cell
 def fig3b(by_fold, methods, test_a):
-    # Inference time per clip (walkthrough harness): networks on this machine's GPU,
+    # Inference speed, frames per second (walkthrough harness): networks on this machine's GPU,
     # the pixel methods and Facemap in numpy on its CPU. Inhale F1 on new animals per
     # fold (dots) and its mean over folds with the 95% interval.
     timing = runs.wall_time(methods).set_index("method")
@@ -537,14 +552,14 @@ def fig3b(by_fold, methods, test_a):
         *size("fig3", "b"),
         analysis.per_fold(_a, "inhale", by=["method"]),
         analysis.fold_scores(_a, "inhale", by=["method"]),
-        timing["s per clip (median)"],
+        timing["frames per s"],
         methods,
         on_cpu=on_cpu,
         label_offsets={
             "Zephyr": (-4, 6),
             "TS-CAN": (3, -7),
             "PhysNet": (4, 3),
-            "Pixel (SNR)": (3, 6),
+            "Pixel (SNR)": (-12, -7),
         },
     )
     plots.save_panel(fig3b, FIGURES / "fig3" / "b.svg")
@@ -553,7 +568,7 @@ def fig3b(by_fold, methods, test_a):
 
 
 @app.cell
-def fig3cde(fold_tables, test_a):
+def fig3cde(fold_tables, rate_share, test_a):
     # The networks' clip-by-clip tables on new animals, per fold. c: F1 by rate, mean
     # over folds with its interval; d, e: every fold's new-animal breaths and windows
     # pooled (each animal is new in one fold only).
@@ -568,10 +583,12 @@ def fig3cde(fold_tables, test_a):
         .reset_index(),
         on=["method", "bin"],
     )
+    _cv_breaths = whole["breaths"][whole["breaths"]["fold"] != "published"]
     fig3c = plots.rate_band_panel(
         *size("fig3", "c"),
         _rate,
         nets[::-1],
+        rate_share(_cv_breaths[_cv_breaths["method"] == "Zephyr"]),
         legend=False,  # colours as in b, where every method is named
     )
     plots.save_panel(fig3c, FIGURES / "fig3" / "c.svg")
@@ -1244,6 +1261,14 @@ def table1(
         "mae_units": values.num(_summary["MAE (Hz)"].loc[_ref, "mean"], 1),
         "seconds": values.num(timing.loc[_ref, "s per clip (median)"]),
         "physnet_seconds": values.num(timing.loc["PhysNet", "s per clip (median)"]),
+        "fps": values.count(round(timing.loc[_ref, "frames per s"], -2)),
+        "physnet_fps": values.count(round(timing.loc["PhysNet", "frames per s"], -2)),
+        "transformer_fps": "–".join(
+            values.count(round(v, -2))
+            for v in timing.loc[["PhysFormer", "RhythmFormer"], "frames per s"].agg(
+                ["min", "max"]
+            )
+        ),
         # the share of PhysNet's inference time Zephyr saves, and the transformers' time
         # as a multiple of Zephyr's
         "physnet_saved": values.pct(
@@ -1663,7 +1688,7 @@ def fig6_data():
 @app.cell
 def fig6a(test_a):
     # Fig. 6a: what our network's errors on new animals are, per fold, then over folds.
-    # The share that are near misses, then, among the rest, the share in fast breathing,
+    # The share that are near misses, then, among the rest, the share in sniffing,
     # face motion and on shallow breaths, against the share of all true breaths with
     # each (motion and size are quantiles of each clip's own breaths, so those
     # baselines are fixed).
@@ -1682,7 +1707,7 @@ def fig6a(test_a):
     )
     _fast = _breaths.groupby("fold")["rate_hz"].apply(lambda r: (r > 8).mean())
     _baseline = {
-        "fast breathing (> 8 Hz)": float(_fast.mean()),
+        "sniffing (> 8 Hz)": float(_fast.mean()),
         "face motion (top 10%)": 0.10,
         "shallow breath (bottom 25%)": 0.25,
     }
@@ -1690,7 +1715,7 @@ def fig6a(test_a):
     plots.save_panel(fig6a, FIGURES / "fig6" / "a.svg")
     _p = error_profile.set_index(["kind", "row"])
     _kinds = {"misses": "missed (FN)", "false": "false (FP)"}
-    _near, _fast = "near miss", "fast breathing (> 8 Hz)"
+    _near, _fast = "near miss", "sniffing (> 8 Hz)"
     _motion, _shallow = "face motion (top 10%)", "shallow breath (bottom 25%)"
 
     def _range(row: str) -> str:
@@ -1929,7 +1954,7 @@ def figs1(by_fold, test_a):
 
 
 @app.cell
-def figs2(by_fold, test_a, with_unit):
+def figs2(by_fold, rate_share, test_a, with_unit):
     # Supplementary Fig. 2: our network fed 30-Hz video (every other frame), still
     # predicting on the 60-Hz grid, against the same network on 60-Hz video, on every
     # fold. a: the difference per test set, paired by fold; b: inhale F1 on new animals
@@ -1979,10 +2004,12 @@ def figs2(by_fold, test_a, with_unit):
         .reset_index(),
         on=["method", "bin"],
     )
+    _breaths = pd.concat(_tables["breaths"], ignore_index=True)
     figs2b = plots.rate_band_panel(
         *size("figs2", "b"),
         input_rate_by_rate,
         [runs.REFERENCE, _name],
+        rate_share(_breaths[_breaths["method"] == runs.REFERENCE]),
         ylim=(0.8, 1.0),
     )
     plots.save_panel(figs2b, FIGURES / "figs2" / "b.svg")
@@ -1998,7 +2025,7 @@ def figs2(by_fold, test_a, with_unit):
 
 
 @app.cell
-def figs3(test_a, with_unit):
+def figs3(rate_share, test_a, with_unit):
     # Supplementary Fig. 3 and Table S5: our network trained on each camera's video, on
     # the cross-validation folds every camera has so far, scored on the recording spans
     # every camera has, all against the same thermistor events (the face clips').
@@ -2149,7 +2176,13 @@ def figs3(test_a, with_unit):
         .reset_index(),
         on=["method", "bin"],
     )
-    figs3b = plots.rate_band_panel(*size("figs3", "b"), camera_by_rate, _cameras)
+    _face = _tables["breaths"].query("set == @test_a")
+    figs3b = plots.rate_band_panel(
+        *size("figs3", "b"),
+        camera_by_rate,
+        _cameras,
+        rate_share(_face[_face["method"] == _cameras[0]]),
+    )
     plots.save_panel(figs3b, FIGURES / "figs3" / "b.svg")
     # Fig. 5c: inhale F1 by rate, as Fig. 3c, of each camera's network (solid) and of
     # the network trained on all three cameras (dashed) on that camera's clips, over the

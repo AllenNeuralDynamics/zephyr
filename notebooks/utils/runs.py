@@ -822,6 +822,7 @@ def wall_time(names, n_clips: int = 8) -> pd.DataFrame:
                 "s per clip (median)": float(np.median(seconds)),
                 "s per min of video": float(np.median(seconds / video * 60)),
                 "x real time": float(np.median(video / seconds)),
+                "frames per s": float(np.median(video * timing.CLIP_FS / seconds)),
                 "peak GPU memory (GB)": r.get("peak_gb"),
             }
         )

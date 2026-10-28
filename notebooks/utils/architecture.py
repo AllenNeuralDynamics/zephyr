@@ -22,6 +22,7 @@ INK, MUTED = "#222222", "#666666"
 CONV = ("#d6e6f4", "#a9c8e4", "#7fa9d1")  # front, top, side
 DENSE = ("#e8e8e8", "#cfcfcf", "#b5b5b5")
 TCN = "#0072b2"
+HEADS = (("#e6f0f8", "#0072b2"), ("#e3f4ee", "#009e73"))  # fill, ink: waveform, onset
 
 
 @dataclass(frozen=True)
@@ -77,6 +78,33 @@ def _arrow(x0, y0, x1, y1) -> str:
     return (
         f'<path d="M{x0:.2f},{y0:.2f} L{x1:.2f},{y1:.2f}" stroke="#333" '
         'stroke-width="0.3" fill="none" marker-end="url(#arrow)"/>'
+    )
+
+
+def _waveform(x, y, w, h, color) -> str:
+    """A respiration-like trace (fast rise, slow fall) along *w* above baseline *y*."""
+    t = np.linspace(0, 1, 120)
+    phase = (t * 3.5) % 1
+    v = np.where(phase < 0.3, phase / 0.3, 1 - (phase - 0.3) / 0.7)
+    pts = " ".join(
+        f"{x + a * w:.2f},{y - b * h:.2f}" for a, b in zip(t, v, strict=True)
+    )
+    return (
+        f'<polyline points="{pts}" fill="none" stroke="{color}" stroke-width="0.35" '
+        'stroke-linejoin="round"/>'
+    )
+
+
+def _onsets(x, y, w, h, color) -> str:
+    """Narrow probability bumps at each inhalation onset along *w* above *y*."""
+    t = np.linspace(0, 1, 160)
+    v = sum(np.exp(-0.5 * ((t - c) / 0.025) ** 2) for c in (0.08, 0.37, 0.66, 0.94))
+    pts = " ".join(
+        f"{x + a * w:.2f},{y - b * h:.2f}" for a, b in zip(t, v, strict=True)
+    )
+    return (
+        f'<polyline points="{pts}" fill="none" stroke="{color}" stroke-width="0.35" '
+        'stroke-linejoin="round"/>'
     )
 
 
@@ -208,7 +236,7 @@ def network_svg(
     out.append(_arrow(x - 3.5, base - 6.0, x - 0.6, base - 6.0))
     shown = dilations[:4]
     levels = len(shown) + 1
-    tcn_w = 33.0
+    tcn_w = 30.0
     n = 1 + 2 * sum(shown)
     xs = np.linspace(x + 1.0, x + tcn_w - 1.0, n)
     ys = np.linspace(base - 1.0, 11.5, levels)
@@ -278,17 +306,23 @@ def network_svg(
         )
     )
 
-    # two heads
-    x = x + tcn_w + 9.5
-    top_y, bottom_y = base - 11.0, base + 1.0
-    mid_y = (top_y + bottom_y) / 2
-    out.append(_arrow(x - 4.5, mid_y, x - 1.0, top_y + 1.0))
-    out.append(_arrow(x - 4.5, mid_y, x - 1.0, bottom_y - 1.0))
-    out.append(_text(x, top_y + 1.0, "Trace", FONT, INK, "start", "bold"))
-    out.append(_text(x, top_y + 3.6, "1×1 conv", SMALL, MUTED, "start"))
-    out.append(_text(x, top_y + 5.8, "Pearson loss", SMALL, MUTED, "start"))
-    out.append(_text(x, bottom_y - 1.0, "Onset", FONT, INK, "start", "bold"))
-    out.append(_text(x, bottom_y + 1.6, "1×1 conv", SMALL, MUTED, "start"))
-    out.append(_text(x, bottom_y + 3.8, "BCE, Gaussian target", SMALL, MUTED, "start"))
+    # two heads, each in its own box with a sketch of what it outputs
+    x = x + tcn_w + 10.5
+    box_w, box_h = width_mm - x - 0.6, 12.0
+    tops = (2.5, base - 4.5)
+    mid_y = (tops[0] + tops[1] + box_h) / 2
+    heads = (
+        ("Waveform", "1×1 conv, Pearson loss", HEADS[0], _waveform),
+        ("Inhalation onset", "1×1 conv, BCE", HEADS[1], _onsets),
+    )
+    for y0, (title, detail, (fill, ink), glyph) in zip(tops, heads, strict=True):
+        out.append(_arrow(x - 4.0, mid_y, x - 0.5, y0 + box_h / 2))
+        out.append(
+            f'<rect x="{x:.2f}" y="{y0:.2f}" width="{box_w:.2f}" height="{box_h}" '
+            f'rx="1.2" fill="{fill}" stroke="{ink}" stroke-width="0.25"/>'
+        )
+        out.append(_text(x + 1.2, y0 + 3.0, title, FONT, INK, "start", "bold"))
+        out.append(_text(x + 1.2, y0 + 5.4, detail, SMALL, MUTED, "start"))
+        out.append(glyph(x + 1.2, y0 + 10.6, box_w - 2.4, 3.6, ink))
     out.append("</svg>")
     return "\n".join(out)
