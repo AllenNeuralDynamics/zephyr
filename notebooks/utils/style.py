@@ -31,6 +31,8 @@ VARIANTS: dict[str, str] = {
     "Zephyr, side camera": "#cc6677",
     "Zephyr, front camera": "#117733",
     "Zephyr, all cameras": "#882255",
+    "Zephyr, all cameras, on DF": "#999999",
+    "Zephyr, all cameras, refined on DF": "#aa4499",
 }
 """Zephyr trained differently, compared with Zephyr directly."""
 
