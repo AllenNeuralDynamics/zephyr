@@ -957,6 +957,163 @@ def figs6(saliency):
 
 
 @app.cell
+def figs7(with_unit):
+    # Supplementary Fig. 7: the all-camera network on a different behavioural task (dynamic
+    # foraging, zephyr-df-dataset), scored on its held-out animal before and after it
+    # was refined there. a: the experiment's two views of the held-out animal with their
+    # crops; b: a few seconds of one of its clips from both views, the thermistor and
+    # the refined network; c: each session's scores before and after; d: what refining
+    # cost on the VR test sets of cv_0, after minus before per animal x rig unit.
+    import cv2 as _cv2
+
+    from zephyr.evaluate import head_event_indices as _head_events
+
+    _parent = runs.cv_name("Zephyr, all cameras", "cv_0")
+    _on_df, _refined = (
+        "Zephyr, all cameras, on DF",
+        "Zephyr, all cameras, refined on DF",
+    )
+    _cameras = {"side_camera_right": "Side view", "bottom_camera": "Bottom view"}
+    _before = runs.clip_scores(_on_df)
+    _after = runs.clip_scores(_refined)
+    _df = _after[_after["set"] == "df_test_a"]
+    _metrics = ["correlation", "inhale"]
+
+    # c: each session and camera, the mean of its clips before and after.
+    _table = pd.concat(
+        pd.DataFrame(
+            {
+                "Before": _before.groupby(["camera", "session"])[m].mean(),
+                "After": _df.groupby(["camera", "session"])[m].mean(),
+            }
+        )
+        .reset_index()
+        .assign(metric=m, camera=lambda d: d["camera"].map(_cameras))
+        for m in _metrics
+    )
+    fig_s7c = plots.before_after_panel(
+        *size("figs7", "c"), _table, _metrics, list(_cameras.values())
+    )
+    plots.save_panel(fig_s7c, FIGURES / "figs7" / "c.svg")
+
+    # d: the VR test sets, every camera, after minus before per unit (paired
+    # bootstrap); the animal from the corpus's session metadata.
+    _folds = pd.read_parquet(runs.root() / "dataset" / "raw" / "folds.parquet")
+    _subject = dict(
+        zip(_folds["session_id"], _folds["subject_id"].astype(str), strict=True)
+    )
+    _vr_sets = ["test_a", "test_b", "test_c"]
+    _vr = pd.concat(
+        [
+            runs.clip_scores(_parent).assign(method="Before"),
+            _after.assign(method="After"),
+        ],
+        ignore_index=True,
+    )
+    _vr = _vr[_vr["set"].isin(_vr_sets)]
+    _vr = with_unit(_vr.assign(subject=_vr["session"].map(_subject)))
+    _cost = []
+    for _m in _metrics:
+        _b = analysis.bootstrap(_vr, _m, reference="Before", unit="unit")
+        _b = _b[_b["method"] == "After"]
+        _cost.append(
+            pd.DataFrame(
+                {
+                    "metric": _m,
+                    "set": _b["set"],
+                    "mean": -_b["Before minus"],
+                    "low": -_b["diff high"],
+                    "high": -_b["diff low"],
+                    "units": _b["units"],
+                }
+            )
+        )
+    refine_cost = pd.concat(_cost, ignore_index=True)
+    _set_names = {
+        "test_a": "A: new animals",
+        "test_b": "B: new sessions",
+        "test_c": "C: 359 Hz",
+    }
+    fig_s7d = plots.cost_panel(
+        *size("figs7", "d"),
+        refine_cost.assign(set=refine_cost["set"].map(_set_names)),
+        _metrics,
+        list(_set_names.values()),
+    )
+    plots.save_panel(fig_s7d, FIGURES / "figs7" / "d.svg")
+
+    # a, b: the session whose refined correlation, averaged over both cameras, is
+    # nearest the median of the held-out animal's sessions; its first span.
+    _by_session = _df.groupby("session")["correlation"].mean()
+    _session = (_by_session - _by_session.median()).abs().idxmin()
+    _entries = runs.df_entries()
+    _threshold = runs.head_threshold(_refined)
+    _views, _rows = {}, {}
+    for _camera, _label in _cameras.items():
+        _stem = f"{_session}_span1_{_camera}"
+        _entry, _box = _entries[_stem]
+        _image = _cv2.imread(
+            str(runs.DF_ROOT / "thumbnails" / f"{_session}_{_camera}.png"),
+            _cv2.IMREAD_GRAYSCALE,
+        )
+        _scale = _image.shape[1] / 360  # boxes are on the 360 x 270 frame
+        _views[_label] = (_image, tuple(v * _scale for v in _box))
+        _truth = analysis.truth(_entry)
+        _signal, _onset = runs._saved(_refined, _entry, _stem)
+        _times = _truth["times"]
+        _n = min(len(_times), len(_signal))
+        _rows[_label] = {
+            "times": _times[:_n],
+            "truth": _truth["signal"][:_n],
+            "truth_inhale": _truth["inhale"],
+            "signal": _signal[:_n],
+            "head": _times[_head_events(_onset[:_n], _times[:_n], _threshold)],
+            "at": float(_times[_n // 2]),
+        }
+    fig_s7a = plots.views_panel(*size("figs7", "a"), _views)
+    plots.save_panel(fig_s7a, FIGURES / "figs7" / "a.svg")
+    fig_s7b = plots.refined_traces_panel(*size("figs7", "b"), _rows)
+    plots.save_panel(fig_s7b, FIGURES / "figs7" / "b.svg")
+
+    _cam = _df.groupby("camera")[_metrics].mean()
+    _bef = _before.groupby("camera")[_metrics].mean()
+    _c = refine_cost.set_index(["metric", "set"])
+    v_refine = {
+        "sessions": values.count(_df["session"].nunique()),
+        "clips": values.count(len(_df)),
+        **{
+            f"{k}_{w}_{c.split('_')[0]}": values.num(t.loc[c, m])
+            for k, m in (("f1", "inhale"), ("r", "correlation"))
+            for w, t in (("after", _cam), ("before", _bef))
+            for c in _cameras
+        },
+        **{
+            f"cost_{k}_{s.split('_')[1]}": values.num(_c.loc[(m, s), "mean"], 3)
+            for k, m in (("f1", "inhale"), ("r", "correlation"))
+            for s in _vr_sets
+        },
+        **{
+            f"cost_{k}_{s.split('_')[1]}_ci": values.span(
+                _c.loc[(m, s), "low"], _c.loc[(m, s), "high"], 3
+            )
+            for k, m in (("f1", "inhale"), ("r", "correlation"))
+            for s in _vr_sets
+        },
+        "threshold_after": values.num(_threshold, 1),
+        "threshold_before": values.num(runs.head_threshold(_on_df), 1),
+    }
+    mo.vstack(
+        [
+            mo.hstack([fig_s7a, fig_s7b]),
+            mo.hstack([fig_s7c, fig_s7d]),
+            mo.md(f"{v_refine}"),
+            mo.ui.table(refine_cost.round(4), selection=None),
+        ]
+    )
+    return (v_refine,)
+
+
+@app.cell
 def table1(
     by_fold, cv_methods, fold_tables, methods, on_cpu, recordings, test_a, timing
 ):
@@ -2219,6 +2376,7 @@ def manuscript_values(
     v_size,
     v_tolerance,
     v_pooled,
+    v_refine,
     v_saliency,
     v_slow,
     v_views,
@@ -2247,6 +2405,7 @@ def manuscript_values(
         "threshold": v_threshold,
         "tolerance": v_tolerance,
         "pooled": v_pooled,
+        "refine": v_refine,
         "saliency": v_saliency,
         "slow": v_slow,
         "views": v_views,

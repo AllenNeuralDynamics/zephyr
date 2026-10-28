@@ -143,10 +143,30 @@ CAMERAS: dict[str, str] = {
 """Our network trained on each camera's video (the face camera's is the reference),
 and a network per camera against one trained on all three."""
 
+DF_CAMERAS: dict[str, str] = {
+    "Side view": "#cc6677",
+    "Bottom view": "#ddaa33",
+}
+"""The dynamic-foraging rig's cameras: the face from the right, the snout from below."""
+
+REFINING: dict[str, str] = {
+    "Before": "#999999",
+    "After": METHODS["Zephyr"],
+}
+"""The all-camera network as it is, and refined on the new task's views."""
+
 
 def color(name: str) -> str:
     """The colour of a method, a variant, a camera, a set of clips, or ``"Truth"``."""
-    return {**METHODS, **VARIANTS, **CAMERAS, **SETS, "Truth": TRUTH}[name]
+    return {
+        **METHODS,
+        **VARIANTS,
+        **CAMERAS,
+        **DF_CAMERAS,
+        **REFINING,
+        **SETS,
+        "Truth": TRUTH,
+    }[name]
 
 
 def mosaic(
