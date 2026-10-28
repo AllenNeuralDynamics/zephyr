@@ -12,6 +12,33 @@ on:
   workflow_dispatch:
 
 jobs:
+  manuscript:
+    runs-on: ubuntu-latest
+    name: Build manuscript PDF
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - uses: typst-community/setup-typst@v5.3.0
+        with:
+          typst-version: "0.15.0"
+
+      - name: Compile manuscript
+        run: >-
+          typst compile --font-path manuscript/template/fonts
+          manuscript/main.typ "${{ runner.temp }}/manuscript.pdf"
+
+      - name: Upload manuscript as artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: manuscript
+          path: ${{ runner.temp }}/manuscript.pdf
+          if-no-files-found: error
+          retention-days: 30
+
   # ╔──────────────────────────╗
   # │   _____         _        │
   # │  |_   _|__  ___| |_ ___  │
