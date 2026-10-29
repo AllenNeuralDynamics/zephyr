@@ -1187,6 +1187,7 @@ def fig7():
         label="Zephyr (z)",
         colour=style.color("Zephyr"),
         inhalations=_s["head"] - _start,
+        speed_on_rate=True,
         onset=pd.DataFrame({"time": _grid[_keep] - _start, "p": _s["onset"][_keep]}),
     )
     plots.save_panel(fig_5a, FIGURES / "fig7" / "a.svg")

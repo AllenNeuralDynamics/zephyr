@@ -539,9 +539,10 @@ compare #fig(<fig:overview>, "b,c")) #note[claims to check by the authors].
 #figure(
   fit(fig7),
   caption: [*Respiration measured from video alone.* A task session of a mouse without a
-    thermistor, predicted by the network trained on all three cameras. *a,* Fifteen
-    seconds: running speed, the predicted trace with its inhalations, the onset
-    probability, and the respiration rate the inhalations give, with licks, reward deliveries and odor sites (grey). *b,* Respiration
+    thermistor, predicted by the network trained on all three cameras. *a,* Fifteen seconds
+    of the predicted trace with its inhalations, the onset probability, and the
+    respiration rate they give with running speed (grey, right axis), licks, reward
+    deliveries and odor sites (grey). *b,* Respiration
     rate and running speed around odor onset, by whether the mouse stopped and was
     rewarded (n = #v("application.sites_rewarded")), stopped and was not
     (n = #v("application.sites_unrewarded")) or ran past

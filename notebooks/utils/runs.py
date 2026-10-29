@@ -14,6 +14,7 @@ import json
 import os
 import re
 import time
+import tomllib
 from collections.abc import Callable, Iterable
 from pathlib import Path
 
@@ -1118,7 +1119,23 @@ def application(session: str) -> dict:
         return dataset_file(f"{entry.asset}/{name}", OPEN_DATA)
 
     licks = pd.read_parquet(asset("licks.parquet"))
+    # The face frame, and the crop box on it (the box is on the clip's own frame size).
+    from PIL import Image
+
+    thumbnail = np.asarray(Image.open(folder / "thumbnail.png").convert("L"))
+    clip = tomllib.loads(
+        (
+            folder / "predictions" / f"{run.run}-{run.fold}" / "video.clip.toml"
+        ).read_text()
+    )
+    first = clip["clip"][0]
+    scale = (
+        thumbnail.shape[1]
+        / (first.get("frame") or clip["preprocess"]["target_size"])[0]
+    )
     return {
+        "thumbnail": thumbnail,
+        "box": tuple(v * scale for v in first["box"]),
         "times": times,
         "signal": pred["signal"].to_numpy(),
         "onset": pred["onset"].to_numpy(),
