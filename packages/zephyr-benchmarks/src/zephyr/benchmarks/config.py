@@ -62,6 +62,9 @@ class ReportedRun(BaseModel):
     head: bool = False
     """Whether it is a zephyr network trained with its onset head (its inhale events come
     from the head, not DSP); no other network has one."""
+    fold: str = ""
+    """The run's fold folder, when it is not the manifest's ``fold``: ``<run>/<fold>/``
+    for a network, ``<run>/<fold>/<kind>/<variant>/`` for a baseline."""
 
     @model_validator(mode="after")
     def _variant_names_a_baseline(self) -> "ReportedRun":
@@ -69,6 +72,54 @@ class ReportedRun(BaseModel):
             raise ValueError(f"{self.label}: only a facemap or pixel run has a variant")
         if self.head and self.kind != "network":
             raise ValueError(f"{self.label}: only a network has an onset head")
+        return self
+
+
+class CrossValidationRuns(BaseModel):
+    """The methods retrained on each cross-validation fold: every ``method`` is read
+    from each of ``folds`` (its ``fold`` is set per fold)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    folds: list[str] = Field(min_length=1)
+    method: list[ReportedRun] = Field(min_length=1)
+    variant: list[ReportedRun] = []
+    """The first method trained differently on each fold, compared with it alone."""
+
+    @model_validator(mode="after")
+    def _labels_are_distinct(self) -> "CrossValidationRuns":
+        labels = [r.label for r in (*self.method, *self.variant)]
+        if len(set(labels)) != len(labels):
+            raise ValueError(f"repeated labels in {labels}")
+        if any(r.fold for r in (*self.method, *self.variant)):
+            raise ValueError("a cross-validation method takes its fold from folds")
+        return self
+
+
+class ApplicationSession(BaseModel):
+    """A task session without a thermistor whose face video was predicted."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    session: str
+    """The session folder, which holds ``predictions/<run>-<fold>/``."""
+    asset: str
+    """Its processed asset (running speed, sites, licks, subject metadata)."""
+    example: bool = False
+    """Whether a report shows this session on its own."""
+
+
+class Application(BaseModel):
+    """Sessions without a thermistor, predicted by one network (``network`` and
+    ``fold`` name its run, as in the manifest's methods and variants)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    network: str
+    fold: str
+    session: list[ApplicationSession] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _one_example(self) -> "Application":
+        if sum(s.example for s in self.session) != 1:
+            raise ValueError("application: exactly one session is the example")
         return self
 
 
@@ -83,10 +134,16 @@ class ResultsManifest(BaseModel):
     """The compared methods, in the order tables list them."""
     variant: list[ReportedRun] = []
     """The first method trained differently, compared with it alone."""
+    learning_curve: list[ReportedRun] = []
+    """The first method trained on parts of its training set, scored on the same tests."""
+    cross_validation: CrossValidationRuns | None = None
+    """Methods retrained on each cross-validation fold (labels as in ``method``)."""
+    application: Application | None = None
+    """Sessions without a thermistor that a report predicts and summarizes."""
 
     @model_validator(mode="after")
     def _labels_are_distinct(self) -> "ResultsManifest":
-        labels = [r.label for r in (*self.method, *self.variant)]
+        labels = [r.label for r in (*self.method, *self.variant, *self.learning_curve)]
         if len(set(labels)) != len(labels):
             raise ValueError(f"repeated labels in {labels}")
         return self

@@ -8,15 +8,21 @@ from scipy.signal import butter, filtfilt, find_peaks
 CANONICAL_BREATHING_SAMPLING_RATE = 60.0
 TIME_COLUMN = "Time"
 BREATHING_SIGNAL_COLUMN = "Signal"
+LOWPASS_HZ = 40.0
+"""Corner of the low-pass every thermistor trace is filtered with."""
 
 
 def filter_sniff_signal(
     values: np.ndarray, fs: float, highpass_hz: float = 0.2
 ) -> np.ndarray:
-    """Filter raw thermistor samples before resampling the training target."""
+    """Filter raw thermistor samples before resampling the training target (or a
+    predicted trace before detecting its events): the 40-Hz low-pass is skipped
+    when the signal is sampled too slowly for it."""
     b_hp, a_hp = butter(2, highpass_hz, "highpass", fs=fs)
     filtered = filtfilt(b_hp, a_hp, values)
-    b_lp, a_lp = butter(2, 40.0, "lowpass", fs=fs)
+    if LOWPASS_HZ >= fs / 2:
+        return filtered
+    b_lp, a_lp = butter(2, LOWPASS_HZ, "lowpass", fs=fs)
     return filtfilt(b_lp, a_lp, filtered)
 
 

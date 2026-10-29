@@ -24,7 +24,8 @@ the app and its windows):
 - `notebooks/` (marimo) only read results and never train (the one exception,
   `corpus.py`, rebuilds the corpus into a folder of its own); every figure uses
   `notebooks/utils/style.py`. Which runs a report compares is a results manifest
-  (`zephyr-benchmarks/configs/results/`), never a list in a notebook (the quality
+  (`zephyr-benchmarks/configs/results/`; sessions without a thermistor it shows are
+  its `[application]`), never a list in a notebook (the quality
   notebook reads one reports folder, given in the notebook), and what it
   measures beyond `evaluation.json` lives in `zephyr.benchmarks.analysis`; a notebook
   only caches, downloads and draws.
@@ -33,7 +34,9 @@ the app and its windows):
   The phase head is a training signal only; events never come from its phase.
 - Inhale events of a network with an onset head come from the head
   (`head_event_indices`), never from DSP on its trace. DSP is for the thermistor, headless
-  methods (labelled "DSP") and exhale F1, or an explicitly labelled comparison.
+  methods (labelled "DSP") and exhale F1, or an explicitly labelled comparison; DSP on a
+  predicted trace is always the clip's own event detector (`evaluate.predicted_events`),
+  never a detector of its own.
 - The head's onset threshold belongs to the checkpoint (`head_threshold` in its state,
   chosen on `[fold.val]` clips by `train_params.head_thresholds`; 0.5 without). Read it
   with `evaluate.head_threshold` / `checkpoint_head_threshold`, never the constant;

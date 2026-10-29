@@ -8,6 +8,7 @@ from matplotlib.figure import Figure
 
 COLUMN_IN: dict[str, float] = {"single": 3.5, "double": 7.2}
 """Figure widths in inches: one journal column, or the full page width."""
+MM_PER_IN: float = 25.4
 
 METHODS: dict[str, str] = {
     "Zephyr": "#0072b2",
@@ -24,6 +25,14 @@ METHODS: dict[str, str] = {
 
 VARIANTS: dict[str, str] = {
     "Zephyr, more augmentation": "#7b3294",
+    "Zephyr, rate-balanced": "#c2a5cf",
+    "Zephyr, 192-px crops": "#a6611a",
+    "Zephyr, 30-Hz input": "#56b4e9",
+    "Zephyr, side camera": "#cc6677",
+    "Zephyr, front camera": "#117733",
+    "Zephyr, all cameras": "#882255",
+    "Zephyr, all cameras, on DF": "#999999",
+    "Zephyr, all cameras, refined on DF": "#aa4499",
 }
 """Zephyr trained differently, compared with Zephyr directly."""
 
@@ -36,11 +45,42 @@ SETS: dict[str, str] = {
 }
 """The training and validation clips and the three test sets."""
 
+SET_LABELS: dict[str, str] = {
+    "A: new animals": "Held-out animals",
+    "B: new sessions": "Held-out sessions",
+    "C: 359 Hz": "359-Hz sessions",
+}
+"""How each test set (a key of :data:`SETS`) is named in a figure."""
+
+
+def set_label(name: str, wrap: bool = False, short: bool = False) -> str:
+    """*name*'s label in a figure (:data:`SET_LABELS`), on two lines when *wrap*, or
+    without "Held-out" when *short* (for an axis labelled "Held out")."""
+    label = SET_LABELS.get(name, name)
+    if short:
+        return label.removeprefix("Held-out ").capitalize()
+    return label.replace(" ", "\n", 1) if wrap else label
+
+
 ERRORS: dict[str, str] = {
     "missed (FN)": "#d55e00",
     "false (FP)": "#cc79a7",
 }
 """Event errors: a true inhale missed, a predicted inhale with no true one."""
+
+SITES: dict[str, str] = {
+    "Rewarded": "#e69f00",
+    "Unrewarded": "#7f7f7f",
+    "Skipped": "#cc79a7",
+}
+"""Odor sites of the foraging task: the animal stopped and was rewarded, stopped and
+was not, or ran past without stopping."""
+
+REWARD: str = "#d55e00"
+"""A reward delivery."""
+
+SPEED: str = "#7f7f7f"
+"""The animal's running speed."""
 
 ONSET: str = "#009e73"
 """The onset head's probability."""
@@ -112,9 +152,40 @@ def figure(
     return plt.subplots(figsize=(w, w * aspect), layout="constrained", **kwargs)
 
 
+CAMERAS: dict[str, str] = {
+    "Face camera": METHODS["Zephyr"],
+    "Side camera": VARIANTS["Zephyr, side camera"],
+    "Front camera": VARIANTS["Zephyr, front camera"],
+    "One camera": METHODS["Zephyr"],
+    "All cameras": VARIANTS["Zephyr, all cameras"],
+}
+"""Our network trained on each camera's video (the face camera's is the reference),
+and a network per camera against one trained on all three."""
+
+DF_CAMERAS: dict[str, str] = {
+    "Side view": "#cc6677",
+    "Bottom view": "#ddaa33",
+}
+"""The dynamic-foraging rig's cameras: the face from the right, the snout from below."""
+
+REFINING: dict[str, str] = {
+    "Before": "#999999",
+    "After": METHODS["Zephyr"],
+}
+"""The all-camera network as it is, and refined on the new task's views."""
+
+
 def color(name: str) -> str:
-    """The colour of a method, a variant, a set of clips, or ``"Truth"``."""
-    return {**METHODS, **VARIANTS, **SETS, "Truth": TRUTH}[name]
+    """The colour of a method, a variant, a camera, a set of clips, or ``"Truth"``."""
+    return {
+        **METHODS,
+        **VARIANTS,
+        **CAMERAS,
+        **DF_CAMERAS,
+        **REFINING,
+        **SETS,
+        "Truth": TRUTH,
+    }[name]
 
 
 def mosaic(
@@ -123,6 +194,21 @@ def mosaic(
     """Like :func:`figure`, for a named layout; returns the axes by name."""
     w = COLUMN_IN[width]
     fig = plt.figure(figsize=(w, w * aspect), layout="constrained")
+    return fig, fig.subplot_mosaic(layout, **kwargs)
+
+
+def panel(
+    width_mm: float, height_mm: float, layout: list[list[str]], **kwargs: Any
+) -> tuple[Figure, dict[str, Any]]:
+    """One panel of a manuscript figure at its printed size, axes by name.
+
+    Saved with :func:`utils.plots.save_panel`, which keeps this size exactly, so a
+    figure assembled from panels lines up as laid out.
+    """
+    fig = plt.figure(
+        figsize=(width_mm / MM_PER_IN, height_mm / MM_PER_IN), layout="constrained"
+    )
+    fig.get_layout_engine().set(w_pad=1 / MM_PER_IN, h_pad=1 / MM_PER_IN)
     return fig, fig.subplot_mosaic(layout, **kwargs)
 
 

@@ -4,6 +4,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import torch
 
 from zephyr.benchmarks import analysis
 from zephyr.benchmarks.config import ReportedRun, ResultsManifest
@@ -27,6 +28,22 @@ def _clip(true_on, pred_on, seconds=60.0):
     p = {"times": times, "signal": signal, "onset": np.zeros_like(times)}
     p["head"] = np.asarray(pred_on, float)
     return p, t
+
+
+class TaskEventTests(unittest.TestCase):
+    def test_breathing_rate_is_that_of_the_breath_each_time_falls_in(self):
+        inhales = np.array([0.0, 0.5, 1.0, 1.25])
+        rate = analysis.breathing_rate(inhales, np.array([-0.1, 0.2, 0.7, 1.1, 1.3]))
+        np.testing.assert_allclose(rate, [np.nan, 2.0, 2.0, 4.0, np.nan])
+
+    def test_event_aligned_rows_are_nan_outside_the_samples(self):
+        times = np.arange(0, 10, 0.5)
+        rows = analysis.event_aligned(
+            times, times * 2, np.array([1.0, 9.0]), np.array([-1.0, 0.0, 1.0])
+        )
+        np.testing.assert_allclose(rows, [[0.0, 2.0, 4.0], [16.0, 18.0, np.nan]])
+        empty = analysis.event_aligned(times, times, np.empty(0), np.zeros(3))
+        self.assertEqual(empty.shape, (0, 3))
 
 
 class EventTests(unittest.TestCase):
@@ -55,6 +72,22 @@ class EventTests(unittest.TestCase):
         self.assertEqual(sorted(err["kind"]), sorted([analysis.MISSED, analysis.FALSE]))
         self.assertTrue(err["near_miss"].all())
         self.assertTrue(err["causes"].str.contains("near miss").all())
+
+    def test_a_clip_without_errors_keeps_near_miss_bool(self):
+        true_on = np.arange(1, 50, 1 / 3)
+        p, t = _clip(true_on, true_on)
+        frames = np.zeros((len(p["times"]), 1, 4, 4), np.uint8)
+        err = analysis.errors(p, t, True, p["times"], frames)
+        self.assertTrue(err.empty)
+        self.assertEqual(err["near_miss"].dtype, bool)
+
+    def test_each_lag_carries_its_breaths_rate(self):
+        true_on = np.arange(1, 50, 1 / 3)
+        pred = true_on + 0.01
+        p, t = _clip(true_on, pred)
+        lags = analysis.clip_tables(p, t, head=True)["lags"]
+        np.testing.assert_allclose(lags["lag_s"], 0.01, atol=1e-9)
+        np.testing.assert_allclose(lags["rate_hz"].dropna(), 3.0)
 
     def test_excluded_spans_are_not_scored(self):
         true_on = np.arange(1, 50, 1 / 3)
@@ -86,6 +119,19 @@ class SummaryTests(unittest.TestCase):
         self.assertEqual(row["bias (Hz)"], 0)
         self.assertAlmostEqual(row["r"], 1.0)
 
+    def test_rate_agreement_gives_percentage_error_per_group(self):
+        w = pd.DataFrame(
+            {
+                "true_hz": [2.0, 4.0, 5.0, 5.0],
+                "pred_hz": [2.2, 4.4, 5.0, 5.0],
+                "method": "m",
+                "subject": ["a", "a", "b", "b"],
+            }
+        )
+        rows = analysis.rate_agreement(w, by=["method", "subject"])
+        self.assertAlmostEqual(rows.loc[("m", "a"), "MAPE (%)"], 10.0)
+        self.assertEqual(rows.loc[("m", "b"), "MAPE (%)"], 0.0)
+
     def test_f1_by_rate_bins_misses_and_false_events_by_rate(self):
         breaths = pd.DataFrame(
             {
@@ -100,6 +146,41 @@ class SummaryTests(unittest.TestCase):
         self.assertEqual(f1.loc["2-3", "f1"], 1.0)
         self.assertAlmostEqual(f1.loc["8-10", "f1"], 2 / 4)
         self.assertAlmostEqual(f1["share"].sum(), 1.0)
+
+    def test_odor_aligned_averages_sites_of_each_kind(self):
+        grid = np.arange(0, 10, 0.1)
+        onsets = pd.DataFrame({"odor": [3.0, 5.0, 9.9], "kind": "Rewarded"})
+        out = analysis.odor_aligned(
+            grid, {"rate": grid}, onsets, np.array([-1.0, 0.0, 1.0])
+        )
+        at = out.set_index("lag")
+        self.assertEqual(at.loc[0.0, "n"], 2)  # the last site's window leaves the grid
+        self.assertAlmostEqual(at.loc[0.0, "mean"], 4.0)
+        self.assertLess(at.loc[0.0, "low"], 4.0)
+
+    def test_rate_given_speed_rows_sum_to_one(self):
+        samples = pd.DataFrame(
+            {"speed": [1.0, 1.0, 12.0, np.nan], "rate": [2.5, 6.0, 6.0, 3.0]}
+        )
+        counts = analysis.rate_speed_counts(
+            samples, np.array([0.0, 10.0, 20.0, 30.0]), np.array([2.0, 4.0, 8.0])
+        )
+        self.assertEqual(counts.sum(), 3)
+        share = analysis.rate_given_speed(counts)
+        np.testing.assert_allclose(share.sum(axis=1), [1.0, 1.0, 0.0])
+
+    def test_rate_share_weighs_each_unit_equally(self):
+        # unit a: all slow; unit b: one slow, three fast, so b's many breaths do not
+        # outweigh a's
+        breaths = pd.DataFrame(
+            {"rate_hz": [2.5, 2.5, 9.0, 9.0, 9.0], "unit": ["a", "b", "b", "b", "b"]}
+        )
+        share = analysis.rate_share(breaths, n=200).set_index("bin")
+        self.assertAlmostEqual(share.loc["2-3", "mean"], (1 + 0.25) / 2)
+        self.assertAlmostEqual(share.loc["8-10", "mean"], 0.75 / 2)
+        self.assertEqual(share.loc["1-2", "mean"], 0.0)
+        self.assertLessEqual(share.loc["2-3", "low"], share.loc["2-3", "mean"])
+        self.assertEqual(share["units"].iloc[0], 2)
 
     def test_bootstrap_resamples_animals_and_pairs_the_difference(self):
         rows = [
@@ -116,6 +197,174 @@ class SummaryTests(unittest.TestCase):
         # every animal is 0.1 better, so every resample's difference is exactly 0.1
         self.assertAlmostEqual(ci.loc["Other", "diff low"], 0.1)
         self.assertAlmostEqual(ci.loc["Other", "diff high"], 0.1)
+
+    def test_bootstrap_takes_any_column_as_the_unit(self):
+        rows = [
+            {"set": "A", "unit": u, "method": "Zephyr", "correlation": v}
+            for u, v in (("a@1", 0.2), ("a@2", 0.4), ("b@1", 0.9))
+        ]
+        ci = analysis.bootstrap(pd.DataFrame(rows), "correlation", n=50, unit="unit")
+        self.assertEqual(int(ci["units"].iloc[0]), 3)
+        self.assertAlmostEqual(ci["mean"].iloc[0], 0.5)
+
+    def test_rig_and_animal_pairs_differ_in_one_of_the_two(self):
+        # a on rigs 1 and 2 (0.2 apart), b on rig 1 (0.5 from a@1): the a@2-b@1 pair
+        # differs in both, so it is neither kind.
+        rows = pd.DataFrame(
+            {
+                "subject": ["a", "a", "a", "b"],
+                "rig": ["1", "1", "2", "1"],
+                "inhale": [0.4, 0.6, 0.7, 1.0],
+            }
+        )
+        pairs = analysis.rig_animal_pairs(rows, "inhale").set_index("kind")
+        self.assertEqual(len(pairs), 2)
+        self.assertAlmostEqual(pairs.loc[analysis.RIG_PAIR, "difference"], 0.2)
+        self.assertAlmostEqual(pairs.loc[analysis.ANIMAL_PAIR, "difference"], 0.5)
+
+    def test_rig_animal_bootstrap_resamples_animals(self):
+        # Every same-rig pair of animals is 0.3 apart and every animal's two rigs 0.1,
+        # so every resample's means, and their difference, are exact.
+        rows = pd.DataFrame(
+            [
+                {"subject": s, "rig": r, "inhale": base + (0.1 if r == "2" else 0.0)}
+                for s, base in zip("abc", (0.0, 0.3, 0.6), strict=True)
+                for r in ("1", "2")
+            ]
+        )
+        pairs = analysis.rig_animal_pairs(rows, "inhale")
+        ci = analysis.rig_animal_bootstrap(pairs, n=200).set_index("kind")
+        self.assertAlmostEqual(ci.loc[analysis.RIG_PAIR, "low"], 0.1)
+        self.assertAlmostEqual(ci.loc[analysis.RIG_PAIR, "high"], 0.1)
+        self.assertEqual(ci.loc[analysis.RIG_PAIR, "pairs"], 3)
+        self.assertGreater(ci.loc[analysis.ANIMAL_PAIR, "mean"], 0.3)
+        self.assertGreaterEqual(ci.loc["difference", "low"], 0.2 - 1e-9)
+
+    def test_familiarity_tells_animal_and_rig_apart_per_method(self):
+        rows = pd.DataFrame(
+            {
+                "method": ["small", "small", "small", "full"],
+                "subject": [1, 1, 2, 2],
+                "rig": ["4A", "5B", "5B", "5B"],
+            }
+        )
+        trained = {
+            "small": pd.DataFrame({"subject": ["1"], "rig": ["4A"]}),
+            "full": pd.DataFrame({"subject": ["1", "2"], "rig": ["4A", "5B"]}),
+        }
+        seen = analysis.familiarity(rows, trained)
+        self.assertEqual(
+            seen["animal"].tolist(), ["same rig", "other rig", "new", "same rig"]
+        )
+        self.assertEqual(seen["rig_trained"].tolist(), [True, False, False, True])
+
+    def test_cross_validation_runs_take_their_fold_from_folds(self):
+        from zephyr.benchmarks.config import CrossValidationRuns
+
+        run = ReportedRun(label="Zephyr", run="cv", head=True)
+        cv = CrossValidationRuns(folds=["cv_0", "cv_1"], method=[run])
+        self.assertEqual(cv.folds, ["cv_0", "cv_1"])
+        with self.assertRaises(ValueError):
+            CrossValidationRuns(
+                folds=["cv_0"], method=[run.model_copy(update={"fold": "x"})]
+            )
+        with self.assertRaises(ValueError):
+            CrossValidationRuns(folds=["cv_0"], method=[run, run])
+        other = run.model_copy(update={"label": "Zephyr, 30 Hz", "run": "cv-30"})
+        cv = CrossValidationRuns(folds=["cv_0"], method=[run], variant=[other])
+        self.assertEqual(cv.variant, [other])
+        with self.assertRaises(ValueError):
+            CrossValidationRuns(folds=["cv_0"], method=[run], variant=[run])
+        with self.assertRaises(ValueError):
+            CrossValidationRuns(
+                folds=["cv_0"],
+                method=[run],
+                variant=[other.model_copy(update={"fold": "x"})],
+            )
+
+    def test_across_folds_gives_a_t_interval_and_none_for_one_fold(self):
+        rows = pd.DataFrame(
+            {
+                "method": ["a"] * 3 + ["b"],
+                "fold": [0, 1, 2, 0],
+                "v": [1.0, 2.0, 3.0, 5.0],
+            }
+        )
+        out = analysis.across_folds(rows, "v").set_index("method")
+        self.assertAlmostEqual(out.loc["a", "mean"], 2.0)
+        self.assertAlmostEqual(out.loc["a", "high"] - 2.0, 4.302653 / np.sqrt(3), 5)
+        self.assertEqual(int(out.loc["b", "folds"]), 1)
+        self.assertTrue(np.isnan(out.loc["b", "low"]))
+
+    def test_fold_scores_average_units_then_folds_and_pair_by_fold(self):
+        rows = pd.DataFrame(
+            {
+                "set": "A",
+                "method": ["Zephyr"] * 4 + ["Other"] * 4,
+                "fold": [0, 0, 1, 1] * 2,
+                "unit": ["u", "v", "w", "x"] * 2,
+                "f1": [0.9, 0.7, 1.0, 0.8, 0.8, 0.6, 0.8, 0.6],
+            }
+        )
+        out = analysis.fold_scores(rows, "f1").set_index("method")
+        self.assertAlmostEqual(out.loc["Zephyr", "mean"], 0.85)
+        self.assertAlmostEqual(out.loc["Other", "minus ref"], -0.15)
+        self.assertEqual(int(out.loc["Other", "folds"]), 2)
+
+    def test_tolerance_curve_counts_hits_within_each_tolerance(self):
+        breaths = pd.DataFrame({"method": "m", "detected": [True, True, False]})
+        lags = pd.DataFrame({"method": "m", "lag_s": [0.01, -0.04]})
+        false = pd.DataFrame({"method": ["m"]})
+        out = analysis.tolerance_curve(lags, breaths, false, [25, 50]).set_index(
+            "tolerance_ms"
+        )
+        # 3 true, 3 predicted (2 detected + 1 false): 1 hit at 25 ms, 2 at 50 ms
+        self.assertAlmostEqual(out.loc[25.0, "f1"], 2 / 6)
+        self.assertAlmostEqual(out.loc[50.0, "f1"], 4 / 6)
+        self.assertAlmostEqual(out.loc[50.0, "errors"], 2 / 3)
+        # at 25 ms: 2 of the 3 true breaths missed, 2 of the 3 predictions false
+        self.assertAlmostEqual(out.loc[25.0, "misses"], 2 / 3)
+        self.assertAlmostEqual(out.loc[25.0, "false"], 2 / 3)
+        self.assertAlmostEqual(out.loc[50.0, "misses"] + out.loc[50.0, "false"], 2 / 3)
+
+    def test_timing_by_rate_scores_lags_in_ms_and_as_share_of_the_cycle(self):
+        # 2.5-Hz breaths (400-ms cycle): lags 10, 30 and 60 ms, one breath unmatched
+        breaths = pd.DataFrame({"method": "m", "rate_hz": [2.5] * 4})
+        lags = pd.DataFrame(
+            {"method": "m", "rate_hz": [2.5] * 3, "lag_s": [0.01, -0.03, 0.06]}
+        )
+        out = analysis.timing_by_rate(lags, breaths).set_index("bin").loc["2-3"]
+        self.assertAlmostEqual(out["within 25 ms"], 1 / 4)
+        self.assertAlmostEqual(out["within 50 ms"], 2 / 4)
+        # 10% of the cycle is 40 ms
+        self.assertAlmostEqual(out["within cycle"], 2 / 4)
+        self.assertAlmostEqual(out["near"], 2 / 4)
+        self.assertAlmostEqual(out["absent"], 1 / 4)
+
+    def test_added_inhales_counts_new_inhales_inside_each_breath(self):
+        reference = np.array([0.0, 0.4, 0.8])  # two 2.5-Hz breaths
+        other = np.array([0.01, 0.2, 0.41, 0.6, 0.7])  # 2 of 5 match the reference
+        added = analysis.added_inhales(reference, other)
+        np.testing.assert_allclose(added["rate_hz"], 2.5)
+        np.testing.assert_array_equal(added["added"], [1, 2])
+        out = analysis.added_by_rate(added.assign(setting="x")).set_index("bin")
+        self.assertAlmostEqual(out.loc["2-3", "added"], 1.5)
+
+    def test_error_profile_splits_near_misses_from_gross_errors(self):
+        err = pd.DataFrame(
+            {
+                "kind": ["missed (FN)"] * 4,
+                "near_miss": [True, True, False, False],
+                "rate_hz": [10.0, 3.0, 9.0, 3.0],
+                "motion": [0.5, 0.5, 0.95, 0.2],
+                "amplitude": [0.5, 0.5, 0.1, 0.9],
+            }
+        )
+        prof = analysis.error_profile(err).set_index("row")
+        self.assertAlmostEqual(prof.loc["near miss", "share"], 0.5)
+        self.assertEqual(int(prof.loc["near miss", "n"]), 4)
+        self.assertAlmostEqual(prof.loc["sniffing (> 8 Hz)", "share"], 0.5)
+        self.assertEqual(int(prof.loc["face motion (top 10%)", "n"]), 2)
 
     def test_score_agreement_ranks_clips_across_methods_and_averages_seeds(self):
         scores = [0.2, 0.5, 0.9, 0.4]
@@ -207,6 +456,23 @@ class ManifestTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             ResultsManifest(root="s3://b", method=[run], variant=[run])
 
+    def test_an_application_has_exactly_one_example(self):
+        run = {"label": "Zephyr", "run": "r"}
+        two = [{"session": s, "asset": f"{s}_processed", "example": True} for s in "ab"]
+        with self.assertRaises(ValueError):
+            ResultsManifest(
+                root="s3://b",
+                method=[run],
+                application={"network": "Zephyr", "fold": "f", "session": two},
+            )
+        one = [two[0], {"session": "b", "asset": "b_processed"}]
+        manifest = ResultsManifest(
+            root="s3://b",
+            method=[run],
+            application={"network": "Zephyr", "fold": "f", "session": one},
+        )
+        self.assertEqual(len(manifest.application.session), 2)
+
 
 class QualityTests(unittest.TestCase):
     def test_a_measure_that_tracks_the_truth_is_oriented_positive(self):
@@ -220,3 +486,65 @@ class QualityTests(unittest.TestCase):
         oracle = retention(table, "f1", "f1", "higher")
         self.assertAlmostEqual(oracle["mean"].iloc[0], truth[-2:].mean())  # top 2 of 20
         self.assertGreater(curve["mean"].iloc[0], curve["mean"].iloc[-1])
+
+
+class _RegionNet(torch.nn.Module):
+    """Reads only crop pixels [20:30, 20:30]: the onset logit is their mean over all
+    frames, the signal their mean in each of the first frames."""
+
+    def forward(self, frames, t_in, t_out, chunk=None):
+        region = frames[:, :, 0, 20:30, 20:30].mean(dim=(2, 3))  # (B, T_in)
+        n = t_out.shape[1]
+        return region[:, :n], region.mean(dim=1, keepdim=True).expand(-1, n)
+
+
+class AttributionTests(unittest.TestCase):
+    def setUp(self):
+        rng = np.random.default_rng(0)
+        t = 40
+        self.window = {
+            "frames": torch.from_numpy(rng.normal(size=(1, t, 1, 48, 48)).astype("f4"))
+            + 1.0,
+            "t_in": torch.arange(t, dtype=torch.float32)[None] / 60,
+            "t_out": torch.arange(30, dtype=torch.float32)[None] / 60,
+            "times": np.arange(30) / 60,
+            "frame_times": np.arange(t) / 60,
+        }
+
+    def test_occlusion_map_is_zero_where_the_network_does_not_look(self):
+        out = analysis.occlusion_map(
+            _RegionNet(), self.window, [5, 10], patch=6, stride=6
+        )
+        self.assertTrue(np.all(out["onset"][36:, 36:] == 0))
+        self.assertTrue(np.all(out["trace"][36:, 36:] == 0))
+        self.assertGreater(abs(out["onset"][24, 24]), 0)
+        self.assertGreater(out["trace"][24, 24], 0)
+
+    def test_gradient_attribution_lies_in_the_region_read(self):
+        out = analysis.gradient_attribution(_RegionNet(), self.window, [5, 10])
+        inside = np.zeros((48, 48), bool)
+        inside[20:30, 20:30] = True
+        self.assertTrue(np.all(out["spatial"][~inside] == 0))
+        self.assertTrue(np.all(out["spatial"][inside] > 0))
+        self.assertEqual(out["temporal"].shape, (2, 40))
+        np.testing.assert_allclose(out["offset_s"][0], np.arange(40) / 60 - 5 / 60)
+
+
+class AttributionSummaryTests(unittest.TestCase):
+    def test_attribution_profile_averages_each_inhales_share(self):
+        temporal = np.array([[1.0, 3.0, 0.0], [0.0, 2.0, 2.0]])
+        offsets = np.array([[-0.02, 0.0, 0.02], [-0.02, 0.0, 0.02]])
+        out = analysis.attribution_profile(
+            temporal, offsets, np.array([-0.03, -0.01, 0.01, 0.03])
+        )
+        np.testing.assert_allclose(out["share"], [0.125, 0.625, 0.25])
+        np.testing.assert_array_equal(out["inhales"], [2, 2, 2])
+
+
+class ClipSaliencyTests(unittest.TestCase):
+    def test_randomized_copies_the_model_with_new_weights(self):
+        torch.manual_seed(0)
+        model = torch.nn.Linear(4, 2)
+        other = analysis.randomized(model)
+        self.assertFalse(torch.equal(model.weight, other.weight))
+        self.assertEqual(model.weight.shape, other.weight.shape)
