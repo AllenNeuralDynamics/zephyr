@@ -24,7 +24,8 @@ the app and its windows):
 - `notebooks/` (marimo) only read results and never train (the one exception,
   `corpus.py`, rebuilds the corpus into a folder of its own); every figure uses
   `notebooks/utils/style.py`. Which runs a report compares is a results manifest
-  (`zephyr-benchmarks/configs/results/`), never a list in a notebook (the quality
+  (`zephyr-benchmarks/configs/results/`; sessions without a thermistor it shows are
+  its `[application]`), never a list in a notebook (the quality
   notebook reads one reports folder, given in the notebook), and what it
   measures beyond `evaluation.json` lives in `zephyr.benchmarks.analysis`; a notebook
   only caches, downloads and draws.

@@ -147,6 +147,28 @@ class SummaryTests(unittest.TestCase):
         self.assertAlmostEqual(f1.loc["8-10", "f1"], 2 / 4)
         self.assertAlmostEqual(f1["share"].sum(), 1.0)
 
+    def test_odor_aligned_averages_sites_of_each_kind(self):
+        grid = np.arange(0, 10, 0.1)
+        onsets = pd.DataFrame({"odor": [3.0, 5.0, 9.9], "kind": "Rewarded"})
+        out = analysis.odor_aligned(
+            grid, {"rate": grid}, onsets, np.array([-1.0, 0.0, 1.0])
+        )
+        at = out.set_index("lag")
+        self.assertEqual(at.loc[0.0, "n"], 2)  # the last site's window leaves the grid
+        self.assertAlmostEqual(at.loc[0.0, "mean"], 4.0)
+        self.assertLess(at.loc[0.0, "low"], 4.0)
+
+    def test_rate_given_speed_rows_sum_to_one(self):
+        samples = pd.DataFrame(
+            {"speed": [1.0, 1.0, 12.0, np.nan], "rate": [2.5, 6.0, 6.0, 3.0]}
+        )
+        counts = analysis.rate_speed_counts(
+            samples, np.array([0.0, 10.0, 20.0, 30.0]), np.array([2.0, 4.0, 8.0])
+        )
+        self.assertEqual(counts.sum(), 3)
+        share = analysis.rate_given_speed(counts)
+        np.testing.assert_allclose(share.sum(axis=1), [1.0, 1.0, 0.0])
+
     def test_rate_share_weighs_each_unit_equally(self):
         # unit a: all slow; unit b: one slow, three fast, so b's many breaths do not
         # outweigh a's
@@ -433,6 +455,23 @@ class ManifestTests(unittest.TestCase):
         run = {"label": "Zephyr", "run": "r"}
         with self.assertRaises(ValueError):
             ResultsManifest(root="s3://b", method=[run], variant=[run])
+
+    def test_an_application_has_exactly_one_example(self):
+        run = {"label": "Zephyr", "run": "r"}
+        two = [{"session": s, "asset": f"{s}_processed", "example": True} for s in "ab"]
+        with self.assertRaises(ValueError):
+            ResultsManifest(
+                root="s3://b",
+                method=[run],
+                application={"network": "Zephyr", "fold": "f", "session": two},
+            )
+        one = [two[0], {"session": "b", "asset": "b_processed"}]
+        manifest = ResultsManifest(
+            root="s3://b",
+            method=[run],
+            application={"network": "Zephyr", "fold": "f", "session": one},
+        )
+        self.assertEqual(len(manifest.application.session), 2)
 
 
 class QualityTests(unittest.TestCase):

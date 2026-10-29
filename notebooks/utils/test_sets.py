@@ -10,7 +10,7 @@ from zephyr.config import PATH_MAP_ENV, ClipList, load
 CACHE = Path(__file__).resolve().parents[1] / "cache"
 """``notebooks/cache/``: everything the notebooks compute once (ignored by git)."""
 ROOT_ENV = "ZEPHYR_TEST_ROOT"
-"""The local folder; the notebooks use it (or ``C:/Data/zephyr-local-v2``) by default."""
+"""The local folder; the notebooks use it (or ``D:/zephyr-local-v2``) by default."""
 DATASET_ROOT = "/data/zephyr-dataset"
 """Where the dataset the copy was taken from lives (the cache keys name it)."""
 RECIPE = "features-360x270-box96x96-60hz"

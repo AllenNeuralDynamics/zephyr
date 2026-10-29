@@ -20,6 +20,8 @@ from matplotlib.lines import Line2D
 from matplotlib.patches import Rectangle
 from numpy.typing import NDArray
 
+from zephyr.benchmarks import analysis
+
 from . import style
 
 FIGURES: Path = Path(__file__).resolve().parents[1] / "figures"
@@ -286,7 +288,7 @@ def task_summary_panel(
     of site (*aligned*: ``site``, ``signal`` (``rate`` or ``speed``), ``lag``,
     ``mean``, ``sem``). Bottom, breathing rate against speed over every sample of
     *samples* (``speed``, ``rate``): the share of each speed bin at each rate (each
-    column sums to 1). Speed bins are ``(low, high, step)`` of *speed_range*; rate bins
+    speed bin sums to 1). Speed bins are ``(low, high, step)`` of *speed_range*; rate bins
     over *rate_hz* hold whole numbers of intervals of the *grid_hz* grid the rate's
     events lie on (:func:`frame_rate_bins`)."""
     fig, ax = style.panel(
@@ -335,22 +337,103 @@ def _rate_speed(
     rate_hz: tuple[float, float],
 ) -> None:
     """Respiration rate against speed on *h* (see :func:`task_summary_panel`)."""
+    speed_bins, rate_bins = rate_speed_bins(grid_hz, speed_range, rate_hz)
+    counts = analysis.rate_speed_counts(samples, speed_bins, rate_bins)
+    _share_mesh(fig, h, analysis.rate_given_speed(counts), speed_bins, rate_bins)
+
+
+def rate_speed_bins(
+    grid_hz: float,
+    speed_range: tuple[float, float, float] = (-5.0, 60.0, 5.0),
+    rate_hz: tuple[float, float] = (1.0, 11.0),
+) -> tuple[NDArray, NDArray]:
+    """Speed bins, ``(low, high, step)`` of *speed_range*, and respiration-rate bins over
+    *rate_hz* that hold whole numbers of intervals of the *grid_hz* grid
+    (:func:`frame_rate_bins`)."""
     lo, hi, step = speed_range
-    speed_bins = np.arange(lo, hi + step / 2, step)
-    rate_bins = frame_rate_bins(grid_hz, *rate_hz)
-    speed = samples["speed"].to_numpy()
-    rate = samples["rate"].to_numpy()
-    keep = np.isfinite(rate) & np.isfinite(speed)
-    counts, _, _ = np.histogram2d(speed[keep], rate[keep], [speed_bins, rate_bins])
-    share = counts / np.maximum(counts.sum(axis=1, keepdims=True), 1)
+    return np.arange(lo, hi + step / 2, step), frame_rate_bins(grid_hz, *rate_hz)
+
+
+def _share_mesh(
+    fig: Figure, h: Axes, share: NDArray, speed_bins: NDArray, rate_bins: NDArray
+) -> None:
+    """*share* (speed bins x rate bins, each speed bin summing to 1) on *h*."""
     image = h.pcolormesh(speed_bins, rate_bins, share.T, cmap="Blues", rasterized=True)
     h.set_xlabel("Speed (cm/s)")
     h.set_ylabel("Respiration (Hz)")
-    h.set_ylim(*rate_hz)
+    h.set_ylim(rate_bins[0], rate_bins[-1])
     h.grid(False)
     bar = fig.colorbar(image, ax=h, fraction=0.06, pad=0.02, aspect=15)
     bar.ax.tick_params(labelsize=5.5)
     bar.outline.set_visible(False)
+
+
+def share_heat_panel(
+    width_mm: float,
+    height_mm: float,
+    share: NDArray,
+    speed_bins: NDArray,
+    rate_bins: NDArray,
+    title: str = "",
+) -> Figure:
+    """Respiration rate against speed from a precomputed *share* (speed bins x rate
+    bins, :func:`analysis.rate_given_speed`)."""
+    fig, ax = style.panel(width_mm, height_mm, [["heat"]])
+    _share_mesh(fig, ax["heat"], share, speed_bins, rate_bins)
+    if title:
+        ax["heat"].set_title(title, fontsize=6.5)
+    return fig
+
+
+def aligned_panel(
+    width_mm: float,
+    height_mm: float,
+    aligned: pd.DataFrame,
+    legend: bool = True,
+    title: str = "",
+) -> Figure:
+    """Respiration rate (top) and running speed (bottom) around odor onset per kind of
+    site (*aligned*: ``kind``, ``signal`` (``rate`` or ``speed``), ``lag``, ``mean``,
+    ``low``, ``high``, from :func:`analysis.odor_aligned` or
+    :func:`analysis.aligned_across_units`), the band its interval."""
+    fig, ax = style.panel(
+        width_mm, height_mm, [["rate"], ["speed"]], height_ratios=[1, 0.6], sharex=True
+    )
+    for kind, colour in style.SITES.items():
+        for signal in ("rate", "speed"):
+            g = aligned[(aligned["kind"] == kind) & (aligned["signal"] == signal)]
+            if g.empty:
+                continue
+            a = ax[signal]
+            a.fill_between(
+                g["lag"], g["low"], g["high"], color=colour, alpha=0.25, lw=0
+            )
+            a.plot(g["lag"], g["mean"], color=colour, lw=0.9)
+    for a in ax.values():
+        a.axvline(0, color="0.3", lw=0.5)
+        a.xaxis.set_major_locator(ticker.MultipleLocator(2))
+    if legend:
+        ax["rate"].legend(
+            handles=[
+                Line2D([], [], color=c, lw=0.9, label=k) for k, c in style.SITES.items()
+            ],
+            loc="lower left",
+            bbox_to_anchor=(-0.05, 1.0),
+            ncol=len(style.SITES),
+            columnspacing=0.5,
+            handlelength=0.8,
+            handletextpad=0.3,
+            fontsize=5,
+            borderaxespad=0.1,
+        )
+    if title:
+        ax["rate"].set_title(title, fontsize=6.5, pad=12 if legend else 3)
+    ax["rate"].set_ylabel("Respiration\n(Hz)")
+    ax["speed"].set_ylabel("Speed\n(cm/s)")
+    ax["speed"].set_xlabel("From odor onset (s)")
+    ax["speed"].set_xlim(aligned["lag"].min(), aligned["lag"].max())
+    fig.align_ylabels(list(ax.values()))
+    return fig
 
 
 def rate_speed_panel(
@@ -376,21 +459,35 @@ def task_stretch_panel(
     sites: pd.DataFrame,
     licks: NDArray,
     rewards: NDArray,
+    label: str = "Thermistor",
+    colour: str = style.TRUTH,
+    inhalations: NDArray | None = None,
+    onset: pd.DataFrame | None = None,
 ) -> Figure:
-    """A stretch of one session (*example*: ``time`` (s), ``speed``, ``thermistor``
-    respiration rate; *thermistor*: ``time``, ``signal``; *sites*: ``odor``, ``leave``;
-    *licks*, *rewards*: times): running speed, the thermistor, then its respiration
-    rate, with licks (ticks), reward deliveries (triangles) and odor sites (shaded)."""
-    fig, ax = style.panel(
-        width_mm,
-        height_mm,
-        [["speed"], ["signal"], ["rate"]],
-        height_ratios=[0.6, 1.1, 1],
-        sharex=True,
-    )
+    """A stretch of one session (*example*: ``time`` (s), ``speed``, ``rate``, the
+    respiration rate; *thermistor*: ``time``, ``signal``, the respiration trace, from
+    the thermistor or a network as *label* says, drawn in *colour*; *sites*: ``odor``,
+    ``leave``; *licks*, *rewards*, *inhalations*: times; *onset*: ``time``, ``p``, a
+    network's onset probability): running speed, the trace with its *inhalations* as
+    ticks above, the onset probability when given, then the respiration rate, with
+    licks (ticks), reward deliveries (triangles) and odor sites (shaded)."""
+    rows = [
+        ["speed"],
+        ["signal"],
+        *([["onset"]] if onset is not None else []),
+        ["rate"],
+    ]
+    ratios = [0.6, 1.1, *([0.6] if onset is not None else []), 1]
+    fig, ax = style.panel(width_mm, height_mm, rows, height_ratios=ratios, sharex=True)
     s, w, r = ax["speed"], ax["signal"], ax["rate"]
     t0, t1 = example["time"].iloc[0], example["time"].iloc[-1]
-    for a in (s, w, r):
+    if onset is not None:
+        o = ax["onset"]
+        o.plot(onset["time"], onset["p"], color=style.ONSET, lw=0.6)
+        o.set_ylim(0, 1.05)
+        o.set_yticks([0, 1])
+        o.set_ylabel("Onset (p)")
+    for a in ax.values():
         for site in sites.itertuples():
             a.axvspan(site.odor, site.leave, color=SITE_SHADE, alpha=0.18, lw=0)
     s.plot(example["time"], example["speed"], color=style.SPEED)
@@ -399,13 +496,25 @@ def task_stretch_panel(
     w.plot(
         thermistor["time"].to_numpy()[keep],
         thermistor["signal"].to_numpy()[keep],
-        color=style.TRUTH,
+        color=colour,
         lw=0.4,
     )
+    if inhalations is not None:
+        shown = inhalations[_inside(inhalations, t0, t1)]
+        w.plot(
+            shown,
+            np.full(len(shown), 1.02),
+            "v",
+            color=colour,
+            ms=1.6,
+            lw=0,
+            clip_on=False,
+            transform=w.get_xaxis_transform(),
+        )
     w.set_yticks([])
-    w.set_ylabel("Thermistor", fontsize=6)
+    w.set_ylabel(label, fontsize=6)
     w.spines["left"].set_visible(False)
-    r.plot(example["time"], example["thermistor"], color=style.TRUTH, lw=0.7)
+    r.plot(example["time"], example["rate"], color=colour, lw=0.7)
     shown = licks[_inside(licks, t0, t1)]
     r.plot(
         shown,
@@ -447,7 +556,7 @@ def task_stretch_panel(
     r.set_ylim(0, 12)
     r.set_ylabel("Respiration\n(Hz)")
     r.set_xlabel("Time (s)")
-    fig.align_ylabels([s, w, r])
+    fig.align_ylabels(list(ax.values()))
     return fig
 
 
@@ -1330,17 +1439,18 @@ def rate_band_panel(
     height_mm: float,
     f1: pd.DataFrame,
     names: Sequence[str],
-    share: pd.DataFrame,
+    share: pd.DataFrame | None = None,
     legend: bool = True,
     ylim: tuple[float, float] = (0.4, 1.02),
 ) -> Figure:
     """Inhale F1 per breathing-rate bin, one line per method (mean over folds, band its
     95% interval; *f1*: ``method``, ``bin``, ``mean``, ``low``, ``high``), over the
-    share of breaths in each bin (*share*, from :func:`analysis.rate_share`: mean over
-    units, band its 95% interval); *ylim* bounds the F1 axis."""
-    fig, ax = style.panel(
-        width_mm, height_mm, [["f1"], ["share"]], sharex=True, height_ratios=[3, 1]
-    )
+    share of breaths in each bin when *share* is given (from
+    :func:`analysis.rate_share`: mean over units, band its 95% interval); *ylim*
+    bounds the F1 axis."""
+    rows = [["f1"], ["share"]] if share is not None else [["f1"]]
+    ratios = [3, 1] if share is not None else [1]
+    fig, ax = style.panel(width_mm, height_mm, rows, sharex=True, height_ratios=ratios)
     bins = list(dict.fromkeys(f1["bin"].astype(str)))
     x = np.arange(len(bins))
     for method in names:
@@ -1354,18 +1464,21 @@ def rate_band_panel(
             ax["f1"].fill_between(
                 x, g["low"], g["high"], color=colour, alpha=0.18, lw=0
             )
-    s = share.set_index(share["bin"].astype(str)).reindex(bins)
-    ax["share"].plot(x, 100 * s["mean"], "-o", ms=1.6, lw=0.8, color=style.TRUTH)
-    ax["share"].fill_between(
-        x, 100 * s["low"], 100 * s["high"], color=style.TRUTH, alpha=0.15, lw=0
-    )
-    ax["share"].set_ylim(bottom=0)
-    ax["share"].set_ylabel("Cycles (%)")
-    ax["share"].set_xticks(x, [b.split("-")[0] for b in bins])
-    ax["share"].set_xlabel("Respiration rate (Hz)")
+    bottom = ax["f1"]
+    if share is not None:
+        s = share.set_index(share["bin"].astype(str)).reindex(bins)
+        bottom = ax["share"]
+        bottom.plot(x, 100 * s["mean"], "-o", ms=1.6, lw=0.8, color=style.TRUTH)
+        bottom.fill_between(
+            x, 100 * s["low"], 100 * s["high"], color=style.TRUTH, alpha=0.15, lw=0
+        )
+        bottom.set_ylim(bottom=0)
+        bottom.set_ylabel("Cycles (%)")
+        fig.align_ylabels([ax["f1"], bottom])
+    bottom.set_xticks(x, [b.split("-")[0] for b in bins])
+    bottom.set_xlabel("Respiration rate (Hz)")
     ax["f1"].set_ylabel("Inhale F1\n(held-out animals)")
     ax["f1"].set_ylim(*ylim)
-    fig.align_ylabels([ax["f1"], ax["share"]])
     if legend:
         ax["f1"].legend(loc="lower center", fontsize=6, handlelength=1, ncol=3)
     return fig
@@ -2871,40 +2984,40 @@ def views_panel(width_mm: float, height_mm: float, views: dict[str, tuple]) -> F
 
 
 def refined_traces_panel(
-    width_mm: float, height_mm: float, rows: dict[str, dict], half: float = 3.0
+    width_mm: float, height_mm: float, rows: dict[str, dict], duration: float = 12.0
 ) -> Figure:
     """One row per camera (title -> ``times``, ``truth``, ``truth_inhale``, ``signal``,
-    ``head``, ``at``): the thermistor and the network's trace (each z-scored) over
-    *half* s either side of ``at``, the thermistor's (black) and the network's (the
-    camera's colour) inhales as ticks above."""
+    ``head``, ``start``): the thermistor and the network's trace (each z-scored) over
+    *duration* s from ``start`` (s from the clip's start, the axis's time), the
+    thermistor's (black) and the network's (the camera's colour) inhales as ticks
+    above."""
     names = list(rows)
     fig, ax = style.panel(width_mm, height_mm, [[n] for n in names], sharex=True)
     for name in names:
         r, a = rows[name], ax[name]
-        t = r["times"] - r["at"]
-        keep = np.abs(t) <= half
+        origin = r["times"][0]
+        t0, t1 = r["start"], r["start"] + duration
+        t = r["times"] - origin
+        keep = _inside(t, t0, t1)
         truth, signal = r["truth"][keep], r["signal"][keep]
         truth = (truth - truth.mean()) / (truth.std() or 1.0)
         signal = (signal - signal.mean()) / (signal.std() or 1.0)
         colour = style.color(name)
-        a.plot(t[keep], truth, color=style.TRUTH, lw=0.7, label="Thermistor")
-        a.plot(t[keep], signal, color=colour, lw=0.8, label="Zephyr")
+        a.plot(t[keep], truth, color=style.TRUTH, lw=0.6, label="Thermistor")
+        a.plot(t[keep], signal, color=colour, lw=0.7, label="Zephyr")
         for events, y, c, m in (
             (r["truth_inhale"], 3.4, style.TRUTH, "v"),
             (r["head"], 2.8, colour, "^"),
         ):
-            e = events - r["at"]
-            e = e[np.abs(e) <= half]
-            a.plot(e, np.full(len(e), y), m, color=c, ms=2.2, lw=0)
+            e = events - origin
+            e = e[_inside(e, t0, t1)]
+            a.plot(e, np.full(len(e), y), m, color=c, ms=1.8, lw=0)
         a.set_ylim(-3.2, 3.9)
         a.set_yticks([])
         a.set_ylabel(name, fontsize=6, color=colour)
         a.spines["left"].set_visible(False)
     ax[names[-1]].set_xlabel("Time (s)")
-    ax[names[-1]].legend(
-        loc="upper left", bbox_to_anchor=(0, -0.28), fontsize=5.5, ncol=2, frameon=False
-    )
-    ax[names[-1]].set_xlim(-half, half)
+    ax[names[-1]].set_xlim(t0, t1)
     return fig
 
 

@@ -228,3 +228,14 @@ head = true
 label = "Zephyr, all cameras"
 run = "full-gray-all-cv-v4"
 head = true
+
+# A task session without a thermistor, its face video predicted by the all-camera
+# network of cv_0 (`zephyr predict`), with its processed asset on aind-open-data (Fig. 5).
+[application]
+network = "Zephyr, all cameras"
+fold = "cv_0"
+
+[[application.session]]
+session = "878045_2026-10-26_20-09-07"
+asset = "878045_2026-10-26_20-09-07_processed_2026-10-27_06-06-39"
+example = true
