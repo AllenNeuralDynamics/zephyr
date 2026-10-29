@@ -463,35 +463,71 @@ def task_stretch_panel(
     colour: str = style.TRUTH,
     inhalations: NDArray | None = None,
     onset: pd.DataFrame | None = None,
+    speed_on_rate: bool = False,
+    thumbnail: NDArray | None = None,
+    box: tuple[float, float, float, float] | None = None,
 ) -> Figure:
     """A stretch of one session (*example*: ``time`` (s), ``speed``, ``rate``, the
     respiration rate; *thermistor*: ``time``, ``signal``, the respiration trace, from
     the thermistor or a network as *label* says, drawn in *colour*; *sites*: ``odor``,
     ``leave``; *licks*, *rewards*, *inhalations*: times; *onset*: ``time``, ``p``, a
-    network's onset probability): running speed, the trace with its *inhalations* as
-    ticks above, the onset probability when given, then the respiration rate, with
-    licks (ticks), reward deliveries (triangles) and odor sites (shaded)."""
-    rows = [
-        ["speed"],
-        ["signal"],
-        *([["onset"]] if onset is not None else []),
-        ["rate"],
+    network's onset probability): running speed (its own row, or on a right axis over
+    the rate if *speed_on_rate*), the trace with its *inhalations* as ticks above, the
+    onset probability when given, then the respiration rate, with licks (ticks), reward
+    deliveries (triangles) and odor sites (shaded); the session's *thumbnail* (with the
+    crop *box*) on the left when given."""
+    names = [
+        *([] if speed_on_rate else ["speed"]),
+        "signal",
+        *(["onset"] if onset is not None else []),
+        "rate",
     ]
-    ratios = [0.6, 1.1, *([0.6] if onset is not None else []), 1]
-    fig, ax = style.panel(width_mm, height_mm, rows, height_ratios=ratios, sharex=True)
-    s, w, r = ax["speed"], ax["signal"], ax["rate"]
+    ratios = {"speed": 0.6, "signal": 1.1, "onset": 0.6, "rate": 1.0}
+    if thumbnail is None:
+        layout, widths = [[n] for n in names], None
+    else:
+        layout, widths = [["frame", n] for n in names], [1, 2.1]
+    fig, ax = style.panel(
+        width_mm,
+        height_mm,
+        layout,
+        height_ratios=[ratios[n] for n in names],
+        width_ratios=widths,
+    )
+    traces = [ax[n] for n in names]
+    for a in traces[:-1]:
+        a.sharex(traces[-1])
+        a.tick_params(labelbottom=False)
+    w, r = ax["signal"], ax["rate"]
     t0, t1 = example["time"].iloc[0], example["time"].iloc[-1]
+    if thumbnail is not None:
+        _crop_image(ax["frame"], thumbnail, "")
+        ax["frame"].set_axis_off()
+        if box is not None:
+            ax["frame"].add_patch(
+                Rectangle(
+                    box[:2], box[2], box[3], fill=False, edgecolor=CROP_EDGE, lw=0.8
+                )
+            )
     if onset is not None:
         o = ax["onset"]
         o.plot(onset["time"], onset["p"], color=style.ONSET, lw=0.6)
         o.set_ylim(0, 1.05)
         o.set_yticks([0, 1])
         o.set_ylabel("Onset (p)")
-    for a in ax.values():
+    for a in traces:
         for site in sites.itertuples():
             a.axvspan(site.odor, site.leave, color=SITE_SHADE, alpha=0.18, lw=0)
-    s.plot(example["time"], example["speed"], color=style.SPEED)
-    s.set_ylabel("Speed\n(cm/s)")
+    if speed_on_rate:
+        s = r.twinx()
+        s.spines["right"].set_visible(True)
+        s.grid(False)
+        s.set_ylabel("Speed (cm/s)", color=style.SPEED)
+        s.tick_params(axis="y", colors=style.SPEED)
+    else:
+        s = ax["speed"]
+        s.set_ylabel("Speed\n(cm/s)")
+    s.plot(example["time"], example["speed"], color=style.SPEED, lw=0.7)
     keep = _inside(thermistor["time"].to_numpy(), t0, t1)
     w.plot(
         thermistor["time"].to_numpy()[keep],
@@ -543,10 +579,10 @@ def task_stretch_panel(
         *r.get_legend_handles_labels()[0],
         Rectangle((0, 0), 1, 1, color=SITE_SHADE, alpha=0.3, lw=0, label="Odor site"),
     ]
-    s.legend(
+    traces[0].legend(
         handles=handles,
         loc="lower right",
-        bbox_to_anchor=(1, 1.0),
+        bbox_to_anchor=(1, 1.04 if inhalations is not None else 1.0),
         ncol=3,
         fontsize=5.5,
         handlelength=1,
@@ -554,9 +590,9 @@ def task_stretch_panel(
     )
     r.set_xlim(t0, t1)
     r.set_ylim(0, 12)
-    r.set_ylabel("Respiration\n(Hz)")
+    r.set_ylabel("Respiration\n(Hz)", **({"color": colour} if speed_on_rate else {}))
     r.set_xlabel("Time (s)")
-    fig.align_ylabels(list(ax.values()))
+    fig.align_ylabels(traces)
     return fig
 
 
