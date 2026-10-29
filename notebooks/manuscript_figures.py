@@ -1337,7 +1337,7 @@ def fig4ab(by_fold, test_a):
         _shown,
         ["correlation", "inhale"],
         _sets,
-        labels=False,
+        label_on="correlation",
     )
     plots.save_panel(fig4a, FIGURES / "fig4" / "a.svg")
     fig4b = plots.animals_panel(
@@ -1397,8 +1397,9 @@ def fig5a(test_a, with_unit):
     # Fig. 5a: Zephyr trained on fewer animals (all their sessions), and on fewer
     # sessions of all its animals (open), on the cross-validation fold those runs were
     # trained on, against Zephyr on that fold; scored per unit on its new animals (test
-    # A), the same units for every run. The 2-animal draws exist on the published split
-    # only: they are reported apart, flagged, and not drawn.
+    # A), the same units for every run. The 2-animal draws were trained on the published
+    # split and scored on this fold's new animals, none of which they trained on; they
+    # are drawn as dots, the line through their mean.
     _size = runs.available(runs.LEARNING_CURVE)
 
     def _cv_fold(name):
@@ -1415,7 +1416,6 @@ def fig5a(test_a, with_unit):
     _on_fold = [n for n in _size if _cv_fold(n)]
     _ref = runs.cv_name(runs.REFERENCE, _cv_fold(_on_fold[0]))
     _names = [_ref, *_on_fold]
-    _published = [runs.REFERENCE, *(n for n in _size if not _cv_fold(n))]
 
     def _curve(names, reference):
         trained = {n: runs.training(n) for n in names}
@@ -1453,15 +1453,22 @@ def fig5a(test_a, with_unit):
         return pd.DataFrame(rows), recs, trained
 
     learning, _recs, _trained = _curve(_names, _ref)
-    _drawn, _, _ = _curve(_published, runs.REFERENCE)
+    # Draws: several runs of one size below the fold's own, each on all the sessions
+    # its split gave its animals (so drawn as the curve's dots).
+    _sizes = learning.groupby("method")["animals"].first()
+    _repeated = _sizes.map(_sizes.value_counts()) > 1
+    _draws = _sizes[_repeated & (_sizes < _sizes[_ref])].index
+    learning.loc[learning["method"].isin(_draws), "full"] = True
     # The text's numbers: runs found by what they trained on, not by their labels.
     _f1 = learning[learning["metric"] == "inhale"].set_index("method")
     _r = learning[learning["metric"] == "correlation"].set_index("method")
-    _full = _f1[_f1["full"]].sort_values("animals")
+    _draw = _f1.index.isin(_draws)
+    _d = _f1[_draw].sort_index()
+    _full = _f1[_f1["full"] & ~_draw].sort_values("animals")
     _smallest = _full.index[0]  # fewest animals
-    _partial = _f1[~_f1["full"]].index[0]  # all animals, a part of their sessions
-    _d = _drawn[(_drawn["metric"] == "inhale") & (_drawn["animals"] == 2)]
-    _d = _d.set_index("method").sort_index()
+    _partial = _f1[~_f1["full"] & ~_draw].index[
+        0
+    ]  # all animals, part of their sessions
     # The fewest animals against all, paired on the units both were scored on.
     _pair = _recs[(_recs["set"] == test_a) & _recs["method"].isin([_ref, _smallest])]
     _shared = set.intersection(
@@ -1503,6 +1510,10 @@ def fig5a(test_a, with_unit):
         "draws_f1": ", ".join(values.num(x) for x in _d["mean"].iloc[:-1])
         + " and "
         + values.num(_d["mean"].iloc[-1]),
+        "draws_r": ", ".join(values.num(x) for x in _r.loc[_d.index, "mean"].iloc[:-1])
+        + " and "
+        + values.num(_r.loc[_d.index[-1], "mean"]),
+        "draw_animals": values.count(_d["animals"].iloc[0]),
         "fold": _ref.split(" | ")[-1],
         "units": values.count(_f1.loc[_ref, "units"]),
     }
@@ -1609,11 +1620,6 @@ def fig4df(test_a):
             _at = float(_t[np.argmax([np.sum(np.abs(_t - x) < 1.5) for x in _t])])
         else:
             _median_p, _at, _peaks, local_r = _quietest[_stem]
-        _frame_t, _frames = runs.gray(_stem)
-        _picked = dict.fromkeys(
-            min(int(np.searchsorted(_frame_t, _at + dt)), len(_frames) - 1)
-            for dt in np.linspace(-0.4, 0.4, 5)
-        )
         _fig = plots.failure_panel(
             *size("fig4", _panel),
             _truth,
@@ -1621,7 +1627,7 @@ def fig4df(test_a):
             _errors,
             _origin,
             _at - _origin,
-            [(_frame_t[i] - _origin, np.asarray(_frames[i, 0])) for i in _picked],
+            [],
             half=1.0,
             legend=_panel == "d",
         )

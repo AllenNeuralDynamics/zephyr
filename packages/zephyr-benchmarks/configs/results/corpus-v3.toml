@@ -134,6 +134,27 @@ run = "full-gray-data-size-small-v3"
 fold = "animals-2-draw-3"
 head = true
 
+# The same three 2-animal checkpoints scored by `zephyr evaluate` on cv_4's test A
+# clips (none of whose animals they trained on), so they join the cv_4 curve; the
+# evaluations sit in the local run store (notebooks/cache/runs/), not on S3 yet.
+[[learning_curve]]
+label = "Zephyr, 2 animals, on cv_4"
+run = "full-gray-data-size-small-v3-cv4"
+fold = "cv_4-animals-2"
+head = true
+
+[[learning_curve]]
+label = "Zephyr, 2 animals (draw 2), on cv_4"
+run = "full-gray-data-size-small-v3-cv4"
+fold = "cv_4-animals-2-draw-2"
+head = true
+
+[[learning_curve]]
+label = "Zephyr, 2 animals (draw 3), on cv_4"
+run = "full-gray-data-size-small-v3-cv4"
+fold = "cv_4-animals-2-draw-3"
+head = true
+
 # Five-fold cross-validation: each method retrained on every fold of
 # cross_validation.parquet, each of the 48 animals outside the 359-Hz group a test-A
 # animal once (zephyr-compute-sandbox matrices full-gray-cv-v3, physnet-cv-v3,

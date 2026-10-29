@@ -23,9 +23,9 @@ ROOT_ENV = "ZEPHYR_DATASET_ROOT"
 SETS = {
     "train": "train",
     "val": "validation",
-    "test_a": "test A (new animals)",
-    "test_b": "test B (new sessions)",
-    "test_c": "test C (359 Hz)",
+    "test_a": "held-out animals",
+    "test_b": "held-out sessions",
+    "test_c": "359-Hz sessions",
 }
 SET_COLOURS = {
     "train": "Train",

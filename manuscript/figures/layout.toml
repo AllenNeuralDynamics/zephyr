@@ -126,13 +126,13 @@ what = "Inhale F1 and errors left as the onset tolerance is relaxed (25 to 100 m
 [fig4.panels.d]
 kind = "data"
 width_mm = 89
-height_mm = 46
+height_mm = 38
 what = "Near misses: a well-correlated clip with many predictions 25-100 ms off"
 
 [fig4.panels.e]
 kind = "data"
 width_mm = 90
-height_mm = 46
+height_mm = 38
 what = "A low-correlation clip whose inhalations are still found"
 
 [fig5]

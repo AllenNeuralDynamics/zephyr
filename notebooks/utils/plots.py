@@ -530,7 +530,13 @@ def rate_distribution_panel(
     for name, values in rates.items():
         counts, _ = np.histogram(values, bins)
         density = 100 * counts / len(values) / np.diff(bins)
-        a.stairs(density, bins, color=style.color(name), linewidth=0.9, label=name)
+        a.stairs(
+            density,
+            bins,
+            color=style.color(name),
+            linewidth=0.9,
+            label=style.set_label(name),
+        )
     a.set_xlim(low, high)
     a.set_ylim(bottom=0)
     a.set_xlabel("Respiration rate (Hz)")
@@ -640,7 +646,7 @@ def split_panel(width_mm: float, height_mm: float, folds: pd.DataFrame) -> Figur
             part["subject_id"].map(row),
             s=2.5,
             color=style.color(label),
-            label=label,
+            label=style.set_label(label),
             linewidths=0,
         )
     a.set_ylim(len(animals) - 0.5, -0.5)
@@ -882,7 +888,7 @@ def accuracy_time_panel(
     a.set_xlim(2.2, 30)
     a.set_ylim(0, 1.02)
     a.set_xlabel("Inference (10³ frames/s)")
-    a.set_ylabel(f"{METRIC_LABELS[metric]} (new animals)")
+    a.set_ylabel(f"{METRIC_LABELS[metric]} (held-out animals)")
     return fig
 
 
@@ -1044,12 +1050,14 @@ def sets_panel(
     ylabel: str = "Mean over folds",
     labels: bool = True,
     legend: str | None = None,
-    xlabel: str = "Test set",
+    xlabel: str = "Held out",
+    label_on: str | None = None,
 ) -> Figure:
     """Per metric (side by side), each method's mean (over folds, unless *ylabel* says
     otherwise) on each set with its 95% interval (*summary*: ``metric``, ``set``,
     ``method``, ``mean``, ``low``, ``high``), joined by a line, the method named at the
-    last set if *labels*, or in a legend at *legend* (a location) on the last metric."""
+    last set if *labels* (on the *label_on* metric only, when given), or in a legend at
+    *legend* (a location) on the last metric."""
     fig, ax = style.panel(width_mm, height_mm, [list(metrics)], sharey=True)
     for metric in metrics:
         a = ax[metric]
@@ -1078,7 +1086,8 @@ def sets_panel(
         # Names at the last set, nudged apart so they do not overlap.
         ends.sort()
         placed: list[float] = []
-        for y, method in ends if labels else []:
+        named = labels and label_on in (None, metric)
+        for y, method in ends if named else []:
             y_text = max(y, placed[-1] + 0.045) if placed else y
             placed.append(y_text)
             a.text(
@@ -1089,8 +1098,8 @@ def sets_panel(
                 fontsize=6,
                 color=style.color(method),
             )
-        a.set_xticks(range(len(sets)), [s_.split(":")[0] for s_ in sets])
-        a.set_xlim(-0.25, len(sets) - 1 + (0.9 if labels else 0.25))
+        a.set_xticks(range(len(sets)), [style.set_label(s_, short=True) for s_ in sets])
+        a.set_xlim(-0.25, len(sets) - 1 + (0.9 if named else 0.25))
         a.set_xlabel(xlabel)
         a.set_title(METRIC_LABELS[metric], fontsize=7)
     ax[metrics[0]].set_ylabel(ylabel)
@@ -1241,7 +1250,7 @@ def animals_panel(
     a.set_xticks(ranks, [str(r + 1) for r in ranks])
     a.set_xlim(-1, len(table))
     a.set_xlabel(f"{unit_label} (ranked)")
-    a.set_ylabel(f"{METRIC_LABELS[metric]} (test A)")
+    a.set_ylabel(f"{METRIC_LABELS[metric]} (held-out animals)")
     if len(names) > 1:
         a.legend(loc="lower right", fontsize=6, handletextpad=0.2)
     if by_animal is not None:
@@ -1354,7 +1363,7 @@ def rate_band_panel(
     ax["share"].set_ylabel("Cycles (%)")
     ax["share"].set_xticks(x, [b.split("-")[0] for b in bins])
     ax["share"].set_xlabel("Respiration rate (Hz)")
-    ax["f1"].set_ylabel("Inhale F1\n(new animals)")
+    ax["f1"].set_ylabel("Inhale F1\n(held-out animals)")
     ax["f1"].set_ylim(*ylim)
     fig.align_ylabels([ax["f1"], ax["share"]])
     if legend:
@@ -1368,11 +1377,13 @@ def pooled_rate_panel(
     overall: pd.DataFrame,
     delta: pd.DataFrame,
     cameras: Sequence[str],
+    ylim: tuple[float, float] = (0.4, 1.02),
 ) -> Figure:
     """A network trained on several cameras, by breathing-rate bin: its inhale F1 over
     every camera's breaths (top; *overall*: ``bin``, ``mean``, ``low``, ``high``, band its
     interval over folds), and per camera its F1 minus that of the network trained on
-    that camera alone (bottom; *delta*: ``camera``, ``bin``, ``delta``)."""
+    that camera alone (bottom; *delta*: ``camera``, ``bin``, ``delta``); *ylim* bounds
+    the F1 axis, as in :func:`rate_band_panel`, so the two compare."""
     fig, ax = style.panel(
         width_mm, height_mm, [["f1"], ["delta"]], sharex=True, height_ratios=[3, 2]
     )
@@ -1384,6 +1395,7 @@ def pooled_rate_panel(
     if g["low"].notna().any():
         ax["f1"].fill_between(x, g["low"], g["high"], color=colour, alpha=0.18, lw=0)
     ax["f1"].set_ylabel("Inhale F1\n(all cameras)")
+    ax["f1"].set_ylim(*ylim)
     for camera in cameras:
         d = delta[delta["camera"] == camera]
         d = d.set_index(d["bin"].astype(str)).reindex(bins)
@@ -1578,12 +1590,15 @@ def failure_panel(
     half: float = 1.5,
     legend: bool = True,
 ) -> Figure:
-    """A window around one error: the crops around it (top), the thermistor and
+    """A window around one error: the crops around it (top, when *frames* has any), the thermistor and
     Zephyr's trace with true inhales, head events and errors marked, and the onset
     probability; *half* seconds either side, the legend under the trace if *legend*."""
-    n = len(frames)
-    layout = [[f"f{i}" for i in range(n)], ["trace"] * n, ["onset"] * n]
-    fig, ax = style.panel(width_mm, height_mm, layout, height_ratios=[1.1, 1.6, 0.8])
+    n = max(len(frames), 1)
+    layout = [["trace"] * n, ["onset"] * n]
+    ratios = [1.6, 0.8]
+    if frames:
+        layout, ratios = [[f"f{i}" for i in range(n)], *layout], [1.1, *ratios]
+    fig, ax = style.panel(width_mm, height_mm, layout, height_ratios=ratios)
     t0, t1 = at - half, at + half
     tt, tp = truth["times"] - origin, prediction["times"] - origin
     kt, kp = _inside(tt, t0, t1), _inside(tp, t0, t1)
@@ -2963,7 +2978,7 @@ def cost_panel(
             capsize=0,
         )
         a.axhline(0, color="0.5", lw=0.6, ls=":")
-        a.set_xticks(x, [s.split(":")[0] for s in sets])
+        a.set_xticks(x, [style.set_label(s, wrap=True) for s in sets])
         a.set_xlim(-0.5, len(sets) - 0.5)
         a.set_xlabel("VR test set")
         a.set_title(METRIC_LABELS[metric], fontsize=7)

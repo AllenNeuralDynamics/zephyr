@@ -45,6 +45,23 @@ SETS: dict[str, str] = {
 }
 """The training and validation clips and the three test sets."""
 
+SET_LABELS: dict[str, str] = {
+    "A: new animals": "Held-out animals",
+    "B: new sessions": "Held-out sessions",
+    "C: 359 Hz": "359-Hz sessions",
+}
+"""How each test set (a key of :data:`SETS`) is named in a figure."""
+
+
+def set_label(name: str, wrap: bool = False, short: bool = False) -> str:
+    """*name*'s label in a figure (:data:`SET_LABELS`), on two lines when *wrap*, or
+    without "Held-out" when *short* (for an axis labelled "Held out")."""
+    label = SET_LABELS.get(name, name)
+    if short:
+        return label.removeprefix("Held-out ").capitalize()
+    return label.replace(" ", "\n", 1) if wrap else label
+
+
 ERRORS: dict[str, str] = {
     "missed (FN)": "#d55e00",
     "false (FP)": "#cc79a7",
