@@ -34,7 +34,7 @@
   if found == none { text(fill: rgb("#b42318"))[\[#key\]] } else { found }
 }
 
-// The benchmark table (Table 1 and its test-B twin), from a CSV the figure notebook
+// The benchmark table (Table 1 and its held-out-session twin), from a CSV the figure notebook
 // writes: "mean (low–high)" cells put the interval on a smaller line under the mean.
 #let benchmark-table(path) = {
   let rows = csv(path).slice(1)
@@ -402,8 +402,8 @@ which the quality-control measures below are meant to flag.
 #figure(
   fit(fig4),
   caption: [*Generalization and its limits.* *a,* Scores of each method on held-out
-    animals (test-A; n = #v("benchmark.units_a") animal × rig units) and on held-out sessions
-    of training animals (test-B; n = #v("benchmark.units_b")). Each fold's score
+    animals (n = #v("benchmark.units_a") animal × rig units) and on held-out sessions
+    of training animals (n = #v("benchmark.units_b")). Each fold's score
     is the mean over its units. Points show the mean over the #v("benchmark.folds") folds
     with its 95% interval. Colours as in @fig:benchmark. *b,* Inhalation F1 of each held-out animal × rig unit of the five
     folds, ranked by Zephyr (n = #v("benchmark.units_a")). Each unit's score is the mean
@@ -422,7 +422,7 @@ which the quality-control measures below are meant to flag.
     #v("clips.low_clips") clips of held-out animals in the first fold in the lowest tenth of
     correlation, this is the 2-s stretch, with every inhalation found and at least 4 of
     them, where the onset probability at Zephyr's inhalations was lowest (clip
-    r = #v("clips.quiet_r"); over the 2 s, r = #v("clips.quiet_stretch_r")). In *d* and *e*, crops are shown at the top. Below, Zephyr's
+    r = #v("clips.quiet_r"); over the 2 s, r = #v("clips.quiet_stretch_r")). In *d* and *e*, Zephyr's
     trace is drawn over the thermistor with the thermistor's (black) and Zephyr's (blue)
     inhalations, misses (FN) and false inhalations (FP) marked, above the onset
     probability.],
@@ -439,7 +439,10 @@ animals (#fig(<fig:use>, "a")). While accuracy grew with the number of training 
 Inhalation F1 was #v("size.nested_f1") with #v("size.animals") animals, against
 #v("size.f1") with all #v("size.all_animals") (#v("size.fewest") animals minus all: paired
 difference #v("size.diff"), 95% interval #v("size.diff_ci")), and trace correlation fell
-from #v("size.r") to #v("size.fewest_r"). The amount of video mattered less than the
+from #v("size.r") to #v("size.fewest_r"). With only #v("size.draw_animals") training
+animals, results depended on which animals were drawn: three draws reached F1
+#v("size.draws_f1") (trace correlation #v("size.draws_r")). The amount of video mattered
+less than the
 number of animals: training on all #v("size.all_animals") animals but a quarter of their
 sessions (#v("size.partial_sessions")) matched the full training set (F1
 #v("size.partial_f1"), $r$ #v("size.partial_r")), and outscored 8 animals with the same
@@ -489,12 +492,15 @@ described below (Methods).
     (top) and trace correlation (bottom) of Zephyr retrained on fewer animals, scored on
     the held-out animals of fold #v("size.fold"), against Zephyr trained on all of that fold's
     training animals. Filled points, joined by a line, are nested
-    subsets of the training animals with all their sessions. The open point, drawn beside
+    subsets of the training animals with all their sessions. Small dots at
+    #v("size.draw_animals") are three draws of #v("size.draw_animals") animals, trained on
+    the published split (none of whose training animals are held out here), and the line
+    passes through their mean. The open point, drawn beside
     #v("size.all_animals"), uses all #v("size.all_animals") animals with a quarter of their
     sessions (#v("size.partial_sessions")). Points show the mean over the same
     #v("size.units") units with a 95% bootstrap interval. Each run used one seed. *b,* The
     same network trained on the face, side or front camera. Trace correlation and
-    inhalation F1 are shown on held-out animals (A) and held-out sessions (B), on the recording
+    inhalation F1 are shown on held-out animals and held-out sessions, on the recording
     spans all three cameras share. Points show the mean over animal × rig units with a 95%
     bootstrap interval, over the units of #v("cameras.folds") of the cross-validation folds
     (@fig:cameras). *c,* One network trained on the pooled video of all three cameras, on the
@@ -748,16 +754,16 @@ and scoring.
 
 == Data splits
 
-Models were evaluated under two protocols. Test set A holds out whole animals and asks
-whether a model works on an animal it has never seen; test set B holds out blocks of
-consecutive sessions of training animals and asks whether it works on a new day of a known
+Models were evaluated under two protocols. The held-out animals are whole animals, and
+ask whether a model works on an animal it has never seen; the held-out sessions are blocks
+of consecutive sessions of training animals and asks whether it works on a new day of a known
 animal. Validation animals, also held out whole, were used only for early stopping and
 model selection, and test sessions only for final scoring. We drew five such splits, the
 folds of a cross-validation in which each of the #v("benchmark.animals_a") animals outside the #tbd[359]-Hz
-group is a test-A animal once (@tab:split); analyses of a single trained network use the
+group is a held-out animal once (@tab:split); analyses of a single trained network use the
 first fold. One more split drawn the same way, the published split, holds only the
-comparisons not yet retrained on the folds (PhysFormer, RhythmFormer, the
-2-animal draws and test set C). Held-out animals were
+comparisons not yet retrained on the folds (PhysFormer, RhythmFormer and test set
+C) and the training of the 2-animal draws. Held-out animals were
 the best of many seeded draws covering the corpus's rigs, months and respiration rates, and
 sessions per animal and rig were capped. Animals recorded at #tbd[359] Hz were split by
 session; their remaining #tbd[5] sessions form test set C (@tab:testc). The cross-validation folds are described in Supplementary Note 1.
@@ -767,10 +773,11 @@ _Training-set size._ We retrained Zephyr on parts of the training set of fold
 #v("size.all_animals") training animals with all their sessions (#v("size.sessions")
 sessions), and #v("size.partial_sessions") sessions drawn from all #v("size.all_animals")
 animals. Three draws of 2 animals (#v("size.draw_sessions") sessions) were trained on the
-published split only.
+published split, which trains on none of fold #v("size.fold")'s held-out animals, and
+scored on that fold's held-out animals with the other runs.
 
-_Rig coverage._ The #tbd[4]- and #tbd[8]-animal runs trained on only some test-A rigs.
-Test-A units on a rig seen in training scored F1 #tbd[0.94] and #tbd[0.96], against
+_Rig coverage._ The #tbd[4]- and #tbd[8]-animal runs trained on only some rigs of the held-out
+animals. Held-out units on a rig seen in training scored F1 #tbd[0.94] and #tbd[0.96], against
 #tbd[0.91] for units on other rigs (#tbd[10] against #tbd[11] units with #tbd[4] animals,
 #tbd[15] against #tbd[6] with #tbd[8]). The groups hold different units, so the
 comparison is not paired #note[one seed; repeat with the other seeds and the
@@ -784,17 +791,17 @@ comparison is not paired #note[one seed; repeat with the other seeds and the
     table.header([*Set*], [*Held out as*], [*Animals*], [*Sessions*]),
     midrule, [Train], [—], [#tbd[31–33]],
     [#tbd[213–295]], [Validation], [whole animals], [#tbd[9]],
-    [#tbd[67–144]], [Test A], [whole animals], [#tbd[9–10]],
-    [#tbd[75–128]], [Test B], [sessions of training animals], [#tbd[26–30]],
+    [#tbd[67–144]], [Held-out animals], [whole animals], [#tbd[9–10]],
+    [#tbd[75–128]], [Held-out sessions], [sessions of training animals], [#tbd[26–30]],
     [#tbd[70–119]], [Test C], [#tbd[359]-Hz sessions], [#tbd[2]],
     [#tbd[5]], midrule, [Total], [],
     [#tbd[50]], [#tbd[560]], bottomrule,
   ),
   caption: [*Split sizes.* Values are the minimum and maximum over the #tbd[6]
     splits, the published split and the #tbd[5] cross-validation folds. In the folds,
-    each of the #tbd[48] animals outside the #tbd[359]-Hz group is a test-A animal once.
-    Validation includes #tbd[2] sessions of the #tbd[359]-Hz animals. Test B animals are
-    also training animals, so animals do not add up across sets.],
+    each of the #tbd[48] animals outside the #tbd[359]-Hz group is a held-out animal once.
+    Validation includes #tbd[2] sessions of the #tbd[359]-Hz animals. Animals with held-out
+    sessions are also training animals, so animals do not add up across sets.],
 ) <tab:split>
 
 == Preprocessing
@@ -1022,23 +1029,23 @@ onset lag and rate agreement pool all folds and carry no interval. #note[units o
 
 The five folds were drawn over the #tbd[560] sessions of the corpus, beside the
 published split and under the same rules (Methods, Data splits). The #tbd[48] animals
-outside the #tbd[359]-Hz group were divided into five test-A groups, the most balanced of
+outside the #tbd[359]-Hz group were divided into five groups of held-out animals, the most balanced of
 #tbd[20,000] seeded draws judged by the worst group, and fold $k$ tests group $k$ whole,
 so that each animal is a new animal once. Each fold draws #tbd[8] whole validation animals
 from the animals it trains on. Every animal with at least #tbd[4] sessions is cut by date
-into one block of sessions for each fold it trains in, and that fold tests the block as
-test set B, so each such session is in test set B once. The #tbd[359]-Hz animals keep
+into one block of sessions for each fold it trains in, and that fold holds the block out as
+held-out sessions, so each such session is held out once. The #tbd[359]-Hz animals keep
 their sets of the published split in every fold. Every set of every fold is within about
 #tbd[2] percentage points of the corpus's share of time at each respiration rate, and every
 fold passes the checks of the published split (no test or validation animal in training).
 @tab:folds gives the sets of each fold; each fold's runs were scored on exactly its
-test-A animals.
+held-out animals.
 
 #figure(
   kind: table,
   csv-table("tables/cv_folds.csv", 6, ([Set], [cv_0], [cv_1], [cv_2], [cv_3], [cv_4])),
   caption: [*Cross-validation folds.* Each cell gives animals / sessions in one set
-    of one fold. Test B animals also train, so animals do not add up across sets.],
+    of one fold. Animals with held-out sessions also train, so animals do not add up across sets.],
 ) <tab:folds>
 
 == Supplementary Note 2: Comparison networks
@@ -1087,11 +1094,11 @@ batch, steps per epoch and learning rate are in @tab:nets #note[confirm how the 
 
 #figure(
   kind: table,
-  // Written by notebooks/manuscript_figures.py (test set B, over folds, seed 17).
+  // Written by notebooks/manuscript_figures.py (held-out sessions, over folds, seed 17).
   benchmark-table("tables/benchmark_b.csv"),
-  caption: [*Benchmark on new sessions of known animals (test set B).* The table
+  caption: [*Benchmark on held-out sessions of known animals.* The table
     follows @tab:benchmark, on the held-out sessions of training animals. Each score was
-    averaged within each animal × rig unit, then over the test-B units of a split, then
+    averaged within each animal × rig unit, then over the held-out-session units of a split, then
     over splits. Values are the mean with its 95% interval over the
     #v("benchmark.folds") cross-validation folds (#v("benchmark.units_b") units of
     #v("benchmark.animals_b") animals). Methods run on one split show the published split
@@ -1108,9 +1115,9 @@ batch, steps per epoch and learning rate are in @tab:nets #note[confirm how the 
   ),
   caption: [*Zephyr on each camera.* The same network was trained the same way on
     the face, side and front cameras. Each was scored on the recording spans all three
-    cameras share, against the same thermistor events. Scores are on test set A (new
-    animals, #v("cameras.clips_a") clips) and test set B (new sessions,
-    #v("cameras.clips_b") clips) of #v("cameras.folds") of the cross-validation folds. Each
+    cameras share, against the same thermistor events. Scores are on held-out animals
+    (#v("cameras.clips_a") clips) and held-out sessions
+    (#v("cameras.clips_b") clips) of #v("cameras.folds") of the cross-validation folds. Each
     score was averaged within each animal × rig unit, then over units, and is shown with
     its 95% bootstrap interval over units. Rate MAE is the error in respiration rate over
     10-s windows, in cycles per minute. Each network detected inhalations at its own
@@ -1134,8 +1141,8 @@ batch, steps per epoch and learning rate are in @tab:nets #note[confirm how the 
 
 #figure(
   fit(figs1),
-  caption: [*Rig and animal as sources of score differences.* Zephyr on new
-    animals, from test set A of the five folds, in which each animal is new once. A unit
+  caption: [*Rig and animal as sources of score differences.* Zephyr on held-out
+    animals of the five folds, in which each animal is held out once. A unit
     is an animal on one rig, with its score averaged over its clips. We compared pairs of
     units that share the animal but not the rig (#tbd[159] pairs, #tbd[22] animals
     recorded on more than one rig) with pairs that share the rig but not the animal
@@ -1152,7 +1159,7 @@ batch, steps per epoch and learning rate are in @tab:nets #note[confirm how the 
     on every other frame (30 Hz), still predicting on the 60-Hz grid, and retrained on each
     of the five folds. *a,* The 30-Hz network minus the 60-Hz network on each test set, in
     trace correlation, inhalation F1 (onset output) and exhalation F1. Grey points are
-    single folds, shown with their mean and its 95% t-interval over the #tbd[5] folds. *b,* Inhalation F1 on new animals (test set A) by respiration rate, with each
+    single folds, shown with their mean and its 95% t-interval over the #tbd[5] folds. *b,* Inhalation F1 on held-out animals by respiration rate, with each
     fold's cycles pooled. Lines show the mean over folds with its 95% interval. The
     bottom panel shows each unit's share of cycles in each bin, as the mean over animal × rig units with its 95% bootstrap interval.],
 ) <fig:input-rate>
@@ -1162,9 +1169,9 @@ batch, steps per epoch and learning rate are in @tab:nets #note[confirm how the 
   caption: [*Zephyr on the side and front cameras.* The same network was trained
     the same way on each camera's video, in #v("cameras.folds") of the cross-validation
     folds. Each was scored on the recording spans all three cameras share, against the same
-    thermistor events. Test set A holds #v("cameras.clips_a") clips from
-    #v("cameras.units_a") units of #v("cameras.animals_a") animals, and test set B
-    #v("cameras.clips_b") clips from #v("cameras.units_b") units. Every score is in
+    thermistor events. The held-out animals have #v("cameras.clips_a") clips
+    from #v("cameras.units_a") units of #v("cameras.animals_a") animals, and the held-out
+    sessions #v("cameras.clips_b") clips from #v("cameras.units_b") units. Every score is in
     @tab:cameras, and trace correlation and inhalation F1 on both sets are in
     #fig(<fig:use>, "b"). *a,* Inhalation F1 of each new-animal unit, ranked by the face camera, as in
     #fig(<fig:general>, "b"). *b,* Inhalation F1 on new animals by respiration rate
@@ -1232,7 +1239,8 @@ batch, steps per epoch and learning rate are in @tab:nets #note[confirm how the 
     (coloured) marked above. *c,* Trace correlation and inhalation F1 of the held-out
     animal before and after refining, per camera. Points show the mean over sessions;
     grey lines join each session. *d,* The refined network minus the pooled one on the
-    corpus's test sets of the same fold (A, new animals; B, new sessions; C, 359 Hz),
+    corpus's test sets of the same fold (held-out animals, held-out sessions and the
+    359-Hz sessions),
     over all three cameras. Points show the mean over animal × rig units with a 95%
     paired bootstrap interval.],
 ) <fig:refine>
