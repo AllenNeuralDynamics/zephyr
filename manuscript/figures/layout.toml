@@ -103,106 +103,137 @@ what = "Bland-Altman of breathing rate in 10 s windows, Zephyr, test A"
 [fig4]
 width_mm = 183
 gap_mm = 4
-rows = [["a", "b", "c"], ["d", "e"]]
+rows = [["a", "b", "c"], ["d", "e", "f"], ["g", "h", "i"]]
 
 [fig4.panels.a]
 kind = "data"
 width_mm = 62
-height_mm = 46
+height_mm = 40
 what = "Held-out animals against held-out sessions per method: correlation and inhale F1"
 
 [fig4.panels.b]
 kind = "data"
 width_mm = 62
-height_mm = 46
+height_mm = 40
 what = "Per-unit inhale F1 on held-out animals, ranked"
 
 [fig4.panels.c]
 kind = "data"
 width_mm = 51
-height_mm = 46
-what = "Inhale F1 and errors left as the onset tolerance is relaxed (25 to 100 ms)"
+height_mm = 40
+what = "Held-out-animal correlation and inhale F1 against the number of training animals"
 
 [fig4.panels.d]
 kind = "data"
-width_mm = 89
-height_mm = 38
-what = "Near misses: a well-correlated clip with many predictions 25-100 ms off"
+width_mm = 64
+height_mm = 42
+what = "Face, side and front cameras: correlation and inhale F1 on held-out animals and sessions"
 
 [fig4.panels.e]
 kind = "data"
-width_mm = 90
-height_mm = 38
-what = "A low-correlation clip whose inhalations are still found"
+width_mm = 58
+height_mm = 42
+what = "Inhale F1 on held-out animals by respiration rate for each camera, with each unit's share of cycles"
 
-[fig5]
-width_mm = 183
-gap_mm = 4
-rows = [["a", "b", "c"]]
-
-[fig5.panels.a]
+[fig4.panels.f]
 kind = "data"
-width_mm = 50
-height_mm = 48
-what = "Test-A correlation and inhale F1 against the number of training animals"
+width_mm = 53
+height_mm = 42
+what = "Inhale F1 by respiration rate of the network trained on all three cameras, and its difference from each single-camera network"
 
-[fig5.panels.b]
+[fig4.panels.g]
 kind = "data"
-width_mm = 62
-height_mm = 48
-what = "Face, side and front cameras: correlation and inhale F1 on new animals and new sessions"
+width_mm = 48
+height_mm = 40
+what = "A different task: the side and bottom views of its held-out animal, each crop outlined"
 
-[fig5.panels.c]
+[fig4.panels.h]
 kind = "data"
-width_mm = 63
-height_mm = 48
-what = "Inhale F1 by breathing rate of each single-camera network and of the network trained on all three cameras, on each camera's clips"
+width_mm = 80
+height_mm = 40
+what = "Twelve seconds of one of its clips from both views: thermistor and the refined network"
+
+[fig4.panels.i]
+kind = "data"
+width_mm = 47
+height_mm = 40
+what = "Its held-out animal's correlation and inhale F1 before and after refining, per camera"
 
 [fig6]
 width_mm = 183
 gap_mm = 4
-rows = [["a", "b"], ["c", "d", "e"]]
+rows = [["a", "b", "c"], ["d", "e"], ["f", "g", "h"]]
 
 [fig6.panels.a]
 kind = "data"
-width_mm = 95
-height_mm = 42
-what = "Our network's errors on test A: share near misses; gross errors in fast breathing, face motion, shallow breaths, against all breaths"
+width_mm = 55
+height_mm = 40
+what = "Inhale F1 and errors left as the onset tolerance is relaxed"
 
 [fig6.panels.b]
 kind = "data"
-width_mm = 84
-height_mm = 42
-what = "The five measures that rank test-A videos best: Spearman correlation with true inhale F1"
+width_mm = 64
+height_mm = 40
+what = "Near misses: a well-correlated clip with many predictions 25-100 ms off"
 
 [fig6.panels.c]
 kind = "data"
-width_mm = 68
-height_mm = 48
-what = "Test-A windows: mean true F1 against the share kept; oracle; windows passing every check"
+width_mm = 56
+height_mm = 40
+what = "A low-correlation clip whose inhalations are still found"
 
 [fig6.panels.d]
 kind = "data"
-width_mm = 48
-height_mm = 48
-what = "Calibration of the onset output on validation animals"
+width_mm = 95
+height_mm = 42
+what = "Errors on held-out animals: share near misses; gross errors in sniffing, motion, shallow cycles"
 
 [fig6.panels.e]
 kind = "data"
+width_mm = 84
+height_mm = 42
+what = "The five measures that rank held-out videos best: Spearman correlation with true F1"
+
+[fig6.panels.f]
+kind = "data"
+width_mm = 68
+height_mm = 46
+what = "Held-out windows: mean true F1 against the share kept; oracle"
+
+[fig6.panels.g]
+kind = "data"
+width_mm = 48
+height_mm = 46
+what = "Calibration of the onset output on validation animals"
+
+[fig6.panels.h]
+kind = "data"
 width_mm = 59
-height_mm = 48
-what = "Quality control on a session without a thermistor: the measures over the session, and the windows that pass"
+height_mm = 46
+what = "Quality control on a session without a thermistor: the measures over time"
 
 [fig7]
 width_mm = 183
 gap_mm = 4
-rows = [["a"]]
+rows = [["a", ["b", "c"]]]
 
 [fig7.panels.a]
 kind = "data"
-width_mm = 183
-height_mm = 60
-what = "Sniffing aligned to behaviour (as Fig. 1b) in task sessions without a thermistor, from video: rate around odor onset by site outcome, over many animals"
+width_mm = 118
+height_mm = 90
+what = "Thirty seconds of a session without a thermistor: speed, Zephyr's trace with its inhalations, its respiration rate, licks, rewards, odor sites"
+
+[fig7.panels.b]
+kind = "data"
+width_mm = 61
+height_mm = 48
+what = "The same session: respiration rate and speed around odor onset per kind of site"
+
+[fig7.panels.c]
+kind = "data"
+width_mm = 61
+height_mm = 38
+what = "The same session: respiration rate against running speed"
 
 # Supplementary figures.
 
@@ -237,7 +268,7 @@ what = "Inhale F1 on new animals by breathing rate, 30-Hz and 60-Hz input, mean 
 [figs3]
 width_mm = 183
 gap_mm = 4
-rows = [["a", "b", "c"]]
+rows = [["a", "b"]]
 
 [figs3.panels.a]
 kind = "data"
@@ -246,12 +277,6 @@ height_mm = 55
 what = "Inhale F1 of each new-animal unit for each camera, ranked by the face camera"
 
 [figs3.panels.b]
-kind = "data"
-width_mm = 62
-height_mm = 55
-what = "Inhale F1 on new animals by breathing rate for each camera, over the share of breaths in each bin"
-
-[figs3.panels.c]
 kind = "data"
 width_mm = 51
 height_mm = 55
@@ -329,28 +354,11 @@ what = "Share of each inhalation's gradient per frame against the frame's time f
 [figs7]
 width_mm = 183
 gap_mm = 4
-rows = [["a", "b"], ["c", "d"]]
+rows = [["a"]]
 
 [figs7.panels.a]
 kind = "data"
-width_mm = 90
-height_mm = 40
-what = "The dynamic-foraging rig's side and bottom views of the held-out animal, each crop outlined"
-
-[figs7.panels.b]
-kind = "data"
 width_mm = 89
-height_mm = 40
-what = "A few seconds of one held-out clip from both views: thermistor and the refined network, inhalations as ticks"
-
-[figs7.panels.c]
-kind = "data"
-width_mm = 95
 height_mm = 50
-what = "Held-out animal's correlation and inhale F1 before and after refining, per camera, one line per session"
+what = "Corpus test sets: after minus before refining, correlation and inhale F1, mean over animal x rig units with 95% interval"
 
-[figs7.panels.d]
-kind = "data"
-width_mm = 84
-height_mm = 50
-what = "VR test sets A, B and C: after minus before refining, correlation and inhale F1, mean over animal x rig units with 95% interval"

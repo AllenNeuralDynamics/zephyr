@@ -95,6 +95,34 @@ class CrossValidationRuns(BaseModel):
         return self
 
 
+class ApplicationSession(BaseModel):
+    """A task session without a thermistor whose face video was predicted."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    session: str
+    """The session folder, which holds ``predictions/<run>-<fold>/``."""
+    asset: str
+    """Its processed asset (running speed, sites, licks, subject metadata)."""
+    example: bool = False
+    """Whether a report shows this session on its own."""
+
+
+class Application(BaseModel):
+    """Sessions without a thermistor, predicted by one network (``network`` and
+    ``fold`` name its run, as in the manifest's methods and variants)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    network: str
+    fold: str
+    session: list[ApplicationSession] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _one_example(self) -> "Application":
+        if sum(s.example for s in self.session) != 1:
+            raise ValueError("application: exactly one session is the example")
+        return self
+
+
 class ResultsManifest(BaseModel):
     """Which runs a report compares, under which labels (``configs/results/``)."""
 
@@ -110,6 +138,8 @@ class ResultsManifest(BaseModel):
     """The first method trained on parts of its training set, scored on the same tests."""
     cross_validation: CrossValidationRuns | None = None
     """Methods retrained on each cross-validation fold (labels as in ``method``)."""
+    application: Application | None = None
+    """Sessions without a thermistor that a report predicts and summarizes."""
 
     @model_validator(mode="after")
     def _labels_are_distinct(self) -> "ResultsManifest":

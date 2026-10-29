@@ -154,6 +154,65 @@ def event_aligned(
     return np.array(rows, float).reshape(len(at), len(lags))
 
 
+def odor_aligned(
+    grid: np.ndarray,
+    signals: dict[str, np.ndarray],
+    onsets: pd.DataFrame,
+    lags: np.ndarray,
+    level: float = 0.95,
+) -> pd.DataFrame:
+    """Each of *signals* (sampled on *grid*) around odor onset, per kind of site
+    (*onsets*: ``odor`` time, ``kind``): ``kind``, ``signal``, ``lag``, the ``mean``
+    over sites with its *level* t-interval (``low``, ``high``) and ``n`` sites. Sites
+    whose window leaves *grid* are left out."""
+    inside = onsets[onsets["odor"].between(grid[0] - lags[0], grid[-1] - lags[-1])]
+    rows = []
+    for kind, group in inside.groupby("kind"):
+        for name, values in signals.items():
+            x = event_aligned(grid, values, group["odor"].to_numpy(), lags)
+            n = len(x)
+            mean = np.nanmean(x, 0)
+            half = (
+                stats.t.ppf(0.5 + level / 2, n - 1)
+                * np.nanstd(x, 0, ddof=1)
+                / np.sqrt(n)
+                if n > 1
+                else np.full(len(lags), np.nan)
+            )
+            rows.append(
+                pd.DataFrame(
+                    {
+                        "kind": kind,
+                        "signal": name,
+                        "lag": lags,
+                        "mean": mean,
+                        "low": mean - half,
+                        "high": mean + half,
+                        "n": n,
+                    }
+                )
+            )
+    return pd.concat(rows, ignore_index=True)
+
+
+def rate_speed_counts(
+    samples: pd.DataFrame, speed_bins: np.ndarray, rate_bins: np.ndarray
+) -> np.ndarray:
+    """How many samples (*samples*: ``speed``, ``rate``) fall in each speed (rows) and
+    respiration-rate (columns) bin; samples without a rate are left out."""
+    speed = samples["speed"].to_numpy()
+    rate = samples["rate"].to_numpy()
+    keep = np.isfinite(rate) & np.isfinite(speed)
+    counts, _, _ = np.histogram2d(speed[keep], rate[keep], [speed_bins, rate_bins])
+    return counts
+
+
+def rate_given_speed(counts: np.ndarray) -> np.ndarray:
+    """:func:`rate_speed_counts` as the share of each speed bin at each rate (each row
+    sums to 1, or 0 where the bin is empty)."""
+    return counts / np.maximum(counts.sum(axis=1, keepdims=True), 1)
+
+
 def band_correlations(a: np.ndarray, b: np.ndarray, fs: float) -> dict[str, float]:
     """Correlation of *a* and *b* after both are band-passed to each of :data:`BANDS_HZ`."""
     out = {}
@@ -600,7 +659,7 @@ CAUSES: dict[str, Callable[[pd.Series], bool]] = {
     "near miss (other error within 100 ms)": lambda e: e["near_miss"],
     "sniffing (> 8 Hz)": lambda e: e["rate_hz"] > 8,
     "face motion (top 10% of the clip)": lambda e: e["motion"] > 0.9,
-    "shallow breath (bottom 25%)": lambda e: e["amplitude"] < 0.25,
+    "shallow cycle (bottom 25%)": lambda e: e["amplitude"] < 0.25,
 }
 """What each error is checked against, in order; an error can have several, or none."""
 NO_CAUSE = "none of these"
@@ -818,7 +877,7 @@ def error_profile(err: pd.DataFrame, fast_hz: float = 8.0) -> pd.DataFrame:
         for row, flag in (
             (f"sniffing (> {fast_hz:g} Hz)", gross["rate_hz"] > fast_hz),
             ("face motion (top 10%)", gross["motion"] > 0.9),
-            ("shallow breath (bottom 25%)", gross["amplitude"] < 0.25),
+            ("shallow cycle (bottom 25%)", gross["amplitude"] < 0.25),
         ):
             rows.append({**label, "row": row, "share": flag.mean(), "n": len(gross)})
     return pd.DataFrame(rows)

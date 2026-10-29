@@ -223,7 +223,7 @@ def fig1b(lick_times, odor_sites, task_clips, task_truth):
     ]
     fig1b = plots.task_stretch_panel(
         *size("fig1", "b"),
-        _ex.assign(time=_ex["time"] - _start),
+        _ex.assign(time=_ex["time"] - _start, rate=_ex["thermistor"]),
         _truth.assign(time=_truth["time"] - _start),
         _sites.assign(odor=_sites["odor"] - _start, leave=_sites["leave"] - _start),
         lick_times - _start,
@@ -1009,9 +1009,9 @@ def figs7(with_unit):
         for m in _metrics
     )
     fig_s7c = plots.before_after_panel(
-        *size("figs7", "c"), _table, _metrics, list(_cameras.values())
+        *size("fig4", "i"), _table, _metrics, list(_cameras.values())
     )
-    plots.save_panel(fig_s7c, FIGURES / "figs7" / "c.svg")
+    plots.save_panel(fig_s7c, FIGURES / "fig4" / "i.svg")
 
     # d: the VR test sets, every camera, after minus before per unit (paired
     # bootstrap); the animal from the corpus's session metadata.
@@ -1052,12 +1052,12 @@ def figs7(with_unit):
         "test_c": "C: 359 Hz",
     }
     fig_s7d = plots.cost_panel(
-        *size("figs7", "d"),
+        *size("figs7", "a"),
         refine_cost.assign(set=refine_cost["set"].map(_set_names)),
         _metrics,
         list(_set_names.values()),
     )
-    plots.save_panel(fig_s7d, FIGURES / "figs7" / "d.svg")
+    plots.save_panel(fig_s7d, FIGURES / "figs7" / "a.svg")
 
     # a, b: the session whose refined correlation, averaged over both cameras, is
     # nearest the median of the held-out animal's sessions; its first span.
@@ -1085,12 +1085,13 @@ def figs7(with_unit):
             "truth_inhale": _truth["inhale"],
             "signal": _signal[:_n],
             "head": _times[_head_events(_onset[:_n], _times[:_n], _threshold)],
-            "at": float(_times[_n // 2]),
+            # 12 s around the clip's middle, in s from its start
+            "start": round(float(_times[_n // 2] - _times[0]) - 6.0),
         }
-    fig_s7a = plots.views_panel(*size("figs7", "a"), _views)
-    plots.save_panel(fig_s7a, FIGURES / "figs7" / "a.svg")
-    fig_s7b = plots.refined_traces_panel(*size("figs7", "b"), _rows)
-    plots.save_panel(fig_s7b, FIGURES / "figs7" / "b.svg")
+    fig_s7a = plots.views_panel(*size("fig4", "g"), _views)
+    plots.save_panel(fig_s7a, FIGURES / "fig4" / "g.svg")
+    fig_s7b = plots.refined_traces_panel(*size("fig4", "h"), _rows)
+    plots.save_panel(fig_s7b, FIGURES / "fig4" / "h.svg")
 
     _cam = _df.groupby("camera")[_metrics].mean()
     _bef = _before.groupby("camera")[_metrics].mean()
@@ -1128,6 +1129,88 @@ def figs7(with_unit):
         ]
     )
     return (v_refine,)
+
+
+@app.cell
+def fig7():
+    # Fig. 5: respiration in a task session without a thermistor, from the face video
+    # alone (the manifest's application session, predicted by the all-camera network
+    # of cv_0). a: 30 s of it; b: respiration rate and speed around odor onset per kind
+    # of site; c: respiration rate against speed.
+    _entry = next(e for e in runs.RESULTS.application.session if e.example)
+    _s = runs.application(_entry.session)
+    _grid = _s["times"]
+    _speed = np.interp(_grid, _s["speed"].index.to_numpy(), _s["speed"].to_numpy())
+    _rate = analysis.breathing_rate(_s["head"], _grid)
+    _sites = _s["sites"]
+    _odor = _sites[
+        (_sites["site_label"] == "RewardSite") & _sites["odor_onset_time"].notna()
+    ]
+    _onsets = pd.DataFrame(
+        {
+            "odor": _odor["odor_onset_time"].to_numpy(),
+            "leave": _odor["stop_time"].to_numpy(),
+            "kind": [
+                plots.site_kind(bool(c), bool(r))
+                for c, r in zip(_odor["has_choice"], _odor["has_reward"], strict=True)
+            ],
+            "reward": _odor["reward_onset_time"].to_numpy(),
+        }
+    )
+    _lags = np.arange(-2.0, 5.0 + 1e-9, 1 / 60)
+    _aligned = analysis.odor_aligned(
+        _grid, {"rate": _rate, "speed": _speed}, _onsets, _lags
+    )
+    _window = 15.0
+    _, _start = task_window(_onsets, _grid[0], _grid[-1], _window)
+    _keep = (_grid >= _start) & (_grid <= _start + _window)
+    _signal = _s["signal"][_keep]
+    _shown = _onsets[(_onsets["leave"] > _start) & (_onsets["odor"] < _start + _window)]
+    fig_5a = plots.task_stretch_panel(
+        *size("fig7", "a"),
+        pd.DataFrame(
+            {
+                "time": _grid[_keep] - _start,
+                "speed": _speed[_keep],
+                "rate": _rate[_keep],
+            }
+        ),
+        pd.DataFrame(
+            {
+                "time": _grid[_keep] - _start,
+                "signal": (_signal - _signal.mean()) / _signal.std(),
+            }
+        ),
+        _shown.assign(odor=_shown["odor"] - _start, leave=_shown["leave"] - _start),
+        _s["licks"] - _start,
+        _onsets["reward"].dropna().to_numpy() - _start,
+        label="Zephyr (z)",
+        colour=style.color("Zephyr"),
+        inhalations=_s["head"] - _start,
+        onset=pd.DataFrame({"time": _grid[_keep] - _start, "p": _s["onset"][_keep]}),
+    )
+    plots.save_panel(fig_5a, FIGURES / "fig7" / "a.svg")
+    fig_5b = plots.aligned_panel(*size("fig7", "b"), _aligned)
+    plots.save_panel(fig_5b, FIGURES / "fig7" / "b.svg")
+    _bins = plots.rate_speed_bins(60.0)
+    _counts = analysis.rate_speed_counts(
+        pd.DataFrame({"speed": _speed, "rate": _rate}), *_bins
+    )
+    fig_5c = plots.share_heat_panel(
+        *size("fig7", "c"), analysis.rate_given_speed(_counts), *_bins
+    )
+    plots.save_panel(fig_5c, FIGURES / "fig7" / "c.svg")
+    _n = _aligned[(_aligned["signal"] == "rate") & (_aligned["lag"] == _lags[0])]
+    v_application = {
+        "animal": _s["subject"],
+        "minutes": values.count((_grid[-1] - _grid[0]) / 60),
+        **{
+            f"sites_{k.lower()}": values.count(n)
+            for k, n in _n.set_index("kind")["n"].items()
+        },
+    }
+    mo.vstack([fig_5a, mo.hstack([fig_5b, fig_5c]), mo.md(f"{v_application}")])
+    return (v_application,)
 
 
 @app.cell
@@ -1377,8 +1460,8 @@ def fig4e(whole):
             columns={"mean": _k, "low": f"{_k} low", "high": f"{_k} high"}
         )
         tolerance = tolerance.merge(_apart.drop(columns="folds"), on=_by)
-    fig4c = plots.tolerance_panel(*size("fig4", "c"), tolerance, _nets)
-    plots.save_panel(fig4c, FIGURES / "fig4" / "c.svg")
+    fig4c = plots.tolerance_panel(*size("fig6", "a"), tolerance, _nets)
+    plots.save_panel(fig4c, FIGURES / "fig6" / "a.svg")
     _at = tolerance.set_index("tolerance_ms")
     v_tolerance = {
         "f1_12": values.num(_at.loc[12.5, "mean"]),
@@ -1531,11 +1614,11 @@ def fig5a(test_a, with_unit):
         units=("unit", "size"), inhale=("inhale", "mean"), r=("correlation", "mean")
     )
     fig5a = plots.learning_curve_panel(
-        *size("fig5", "a"),
+        *size("fig4", "c"),
         learning,
         {"New animals": style.color(test_a)},
     )
-    plots.save_panel(fig5a, FIGURES / "fig5" / "a.svg")
+    plots.save_panel(fig5a, FIGURES / "fig4" / "c.svg")
     mo.vstack(
         [
             fig5a,
@@ -1598,7 +1681,7 @@ def fig4df(test_a):
 
     _quietest = {s: _quiet(s) for s in _low.index}
     _upper = min(_quietest, key=lambda s: _quietest[s][0])
-    _cases = {"d": _clips.loc[_near], "e": _clips.loc[_upper]}
+    _cases = {"b": _clips.loc[_near], "c": _clips.loc[_upper]}
     low_r = {
         "clips": len(_low),
         "below r": float(_clips["correlation"].quantile(0.1)),
@@ -1615,13 +1698,13 @@ def fig4df(test_a):
         _p = runs.prediction(_one, _stem)
         _origin = float(_p["times"][0])
         _truth = runs.truth(_stem)
-        if _panel == "d":
+        if _panel == "b":
             _t = _errors.loc[_errors["near_miss"], "time"].to_numpy()
             _at = float(_t[np.argmax([np.sum(np.abs(_t - x) < 1.5) for x in _t])])
         else:
             _median_p, _at, _peaks, local_r = _quietest[_stem]
         _fig = plots.failure_panel(
-            *size("fig4", _panel),
+            *size("fig6", _panel),
             _truth,
             _p,
             _errors,
@@ -1629,9 +1712,9 @@ def fig4df(test_a):
             _at - _origin,
             [],
             half=1.0,
-            legend=_panel == "d",
+            legend=_panel == "b",
         )
-        plots.save_panel(_fig, FIGURES / "fig4" / f"{_panel}.svg")
+        plots.save_panel(_fig, FIGURES / "fig6" / f"{_panel}.svg")
         _shown += [
             mo.md(
                 f"**{_panel}**: {_stem}, inhale F1 {_row['inhale']:.3f}, "
@@ -1646,9 +1729,9 @@ def fig4df(test_a):
         "low_r": values.num(low_r["below r"]),
         "low_f1": values.num(low_r["median F1"]),
         "low_f1_quartile": values.num(_low["inhale"].quantile(0.75)),
-        "near_r": values.num(_cases["d"]["correlation"]),
-        "near_f1": values.num(_cases["d"]["inhale"]),
-        "quiet_r": values.num(_cases["e"]["correlation"]),
+        "near_r": values.num(_cases["b"]["correlation"]),
+        "near_f1": values.num(_cases["b"]["inhale"]),
+        "quiet_r": values.num(_cases["c"]["correlation"]),
         "quiet_stretch_r": values.num(local_r),
         "quiet_peaks": values.span(_peaks.min(), _peaks.max()),
         "quiet_peak": values.num(_median_p),
@@ -1715,14 +1798,14 @@ def fig6a(test_a):
     _baseline = {
         "sniffing (> 8 Hz)": float(_fast.mean()),
         "face motion (top 10%)": 0.10,
-        "shallow breath (bottom 25%)": 0.25,
+        "shallow cycle (bottom 25%)": 0.25,
     }
-    fig6a = plots.error_profile_panel(*size("fig6", "a"), error_profile, _baseline)
-    plots.save_panel(fig6a, FIGURES / "fig6" / "a.svg")
+    fig6a = plots.error_profile_panel(*size("fig6", "d"), error_profile, _baseline)
+    plots.save_panel(fig6a, FIGURES / "fig6" / "d.svg")
     _p = error_profile.set_index(["kind", "row"])
     _kinds = {"misses": "missed (FN)", "false": "false (FP)"}
     _near, _fast = "near miss", "sniffing (> 8 Hz)"
-    _motion, _shallow = "face motion (top 10%)", "shallow breath (bottom 25%)"
+    _motion, _shallow = "face motion (top 10%)", "shallow cycle (bottom 25%)"
 
     def _range(row: str) -> str:
         shares = [100 * _p.loc[(k, row), "mean"] for k in _kinds.values()]
@@ -1764,14 +1847,14 @@ def fig6bc(judged, qc_videos, qc_windows, test_a, truth_f1):
         "Windows": analysis.quality_agreement(_windows, judged, truth_f1),
     }
     _top = qc_ranks["Videos"].nlargest(5, "oriented")
-    fig6b = plots.qc_agreement_panel(*size("fig6", "b"), {"Videos": _top})
+    fig6b = plots.qc_agreement_panel(*size("fig6", "e"), {"Videos": _top})
     _best = qc_ranks["Windows"].sort_values("oriented", ascending=False)["measure"]
     _fractions = tuple(np.linspace(0.05, 1, 20))
     _checks = [c for c in _windows if c.startswith("ok_")]
     _w = _windows.dropna(subset=[truth_f1])
     _pass = _w[_w[_checks].fillna(True).astype(bool).all(axis=1)]
     fig6c = plots.qc_retention_panel(
-        *size("fig6", "c"),
+        *size("fig6", "f"),
         {
             m: analysis.retention(_w, m, truth_f1, judged[m], _fractions)
             for m in _best.head(3)
@@ -1810,7 +1893,7 @@ def fig6bc(judged, qc_videos, qc_windows, test_a, truth_f1):
 def fig6d():
     _reference = quality.reference(str(QC / "reference.json"))
     mo.stop(_reference is None, mo.md("No reference yet."))
-    fig6d = plots.calibration_panel(*size("fig6", "d"), _reference)
+    fig6d = plots.calibration_panel(*size("fig6", "g"), _reference)
     v_calibration = {"ece": values.num(_reference["onset_calibration"]["ece"], 3)}
     fig6d
     return (v_calibration,)
@@ -2075,7 +2158,7 @@ def figs3(rate_share, test_a, with_unit):
     }
     plots.save_panel(
         plots.sets_panel(
-            *size("fig5", "b"),
+            *size("fig4", "d"),
             pd.concat(_ci[m].assign(metric=m) for m in ("correlation", "inhale")),
             _cameras,
             ["correlation", "inhale"],
@@ -2084,7 +2167,7 @@ def figs3(rate_share, test_a, with_unit):
             labels=False,
             legend="lower right",
         ),
-        FIGURES / "fig5" / "b.svg",
+        FIGURES / "fig4" / "d.svg",
     )
     # Fig. 5c: one network trained on all three cameras against the network of each
     # camera, on each camera's clips of the same spans of new animals.
@@ -2182,14 +2265,13 @@ def figs3(rate_share, test_a, with_unit):
         .reset_index(),
         on=["method", "bin"],
     )
-    _face = _tables["breaths"].query("set == @test_a")
     figs3b = plots.rate_band_panel(
-        *size("figs3", "b"),
+        *size("fig4", "e"),
         camera_by_rate,
         _cameras,
-        rate_share(_face[_face["method"] == _cameras[0]]),
+        legend=False,  # colours as in Fig. 3d
     )
-    plots.save_panel(figs3b, FIGURES / "figs3" / "b.svg")
+    plots.save_panel(figs3b, FIGURES / "fig4" / "e.svg")
     # Fig. 5c: inhale F1 by rate, as Fig. 3c, of each camera's network (solid) and of
     # the network trained on all three cameras (dashed) on that camera's clips, over the
     # same shared spans of new animals.
@@ -2241,9 +2323,9 @@ def figs3(rate_share, test_a, with_unit):
         )
     )
     fig5c = plots.pooled_rate_panel(
-        *size("fig5", "c"), pooled_overall, pooled_delta, _cameras
+        *size("fig4", "f"), pooled_overall, pooled_delta, _cameras
     )
-    plots.save_panel(fig5c, FIGURES / "fig5" / "c.svg")
+    plots.save_panel(fig5c, FIGURES / "fig4" / "f.svg")
     # c: every new-animal clip, each other camera against the face camera.
     _wide = (
         camera_clips[camera_clips["set"] == test_a]
@@ -2251,9 +2333,9 @@ def figs3(rate_share, test_a, with_unit):
         .reset_index()
     )
     figs3c = plots.paired_scatter_panel(
-        *size("figs3", "c"), _wide, _cameras[0], _cameras[1:], "inhale"
+        *size("figs3", "b"), _wide, _cameras[0], _cameras[1:], "inhale"
     )
-    plots.save_panel(figs3c, FIGURES / "figs3" / "c.svg")
+    plots.save_panel(figs3c, FIGURES / "figs3" / "b.svg")
     # Table S5: per set and camera, every score over units (mean, 95% bootstrap
     # interval), with the breathing-rate MAE of 10-s windows (breaths per minute).
     _w = _tables["windows"]
@@ -2415,6 +2497,7 @@ def manuscript_values(
     v_size,
     v_tolerance,
     v_pooled,
+    v_application,
     v_refine,
     v_saliency,
     v_slow,
@@ -2444,6 +2527,7 @@ def manuscript_values(
         "threshold": v_threshold,
         "tolerance": v_tolerance,
         "pooled": v_pooled,
+        "application": v_application,
         "refine": v_refine,
         "saliency": v_saliency,
         "slow": v_slow,

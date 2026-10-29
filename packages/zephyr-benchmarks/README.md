@@ -149,7 +149,10 @@ and the label each is shown under: a `root` (an `s3://` prefix or a folder), the
 not the manifest's `fold`), `[[variant]]`s of the first method and its
 `[[learning_curve]]`, the first method retrained on parts of its training set, and a
 `[cross_validation]` of the `folds` each `[[cross_validation.method]]` and
-`[[cross_validation.variant]]` (the first method trained differently) was retrained on. `corpus-v3.toml` is the corpus benchmark that `notebooks/walkthrough.py`
+`[[cross_validation.variant]]` (the first method trained differently) was retrained on.
+An optional `[application]` names task sessions without a thermistor that a report
+predicts (`network` and `fold` name the run, each `[[application.session]]` its
+`session` folder, processed `asset` and whether it is the one `example`). `corpus-v3.toml` is the corpus benchmark that `notebooks/walkthrough.py`
 reports. To report other runs, copy it under a new name.
 
 `analysis.py` measures, clip by clip, what a run's own scores do not: every true inhale

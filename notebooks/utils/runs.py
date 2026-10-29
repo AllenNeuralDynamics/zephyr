@@ -62,7 +62,7 @@ any other value (e.g. ``default``) keeps the scorer's 0.5."""
 DERIVED = PREDICTIONS / "head-validation" if HEAD_MODE == "validation" else PREDICTIONS
 """Where the scores, tables and errors of a run whose onset threshold was chosen on
 validation are cached, apart from those at the scorer's (:func:`_derived`)."""
-DEFAULT_ROOT = Path("C:/Data/zephyr-local-v2")
+DEFAULT_ROOT = Path("D:/zephyr-local-v2")
 """The local copy of the dataset and its cache, unless ``ZEPHYR_TEST_ROOT`` names one."""
 METHODS: dict[str, ReportedRun] = {r.label: r for r in RESULTS.method}
 """Every compared method, in the order tables list them."""
@@ -1068,7 +1068,7 @@ def clip_scores(name: str) -> pd.DataFrame:
     )
 
 
-DF_ROOT = Path(os.environ.get("ZEPHYR_DF_ROOT", "C:/Data/zephyr-df-dataset"))
+DF_ROOT = Path(os.environ.get("ZEPHYR_DF_ROOT", "D:/zephyr-df-dataset"))
 """The local copy of zephyr-df-dataset: its held-out list (``df_test_a.toml``, the
 dataset's entries of animal 811021) and the crops of those clips in ``cache/``."""
 REMOTE_DF = "/data/zephyr-df-dataset"
@@ -1089,3 +1089,42 @@ def df_entries() -> dict[str, tuple[features.ClipEntry, tuple[int, ...]]]:
         if entry is not None:
             out[Path(str(c.video)).stem] = (entry, tuple(c.box))
     return out
+
+
+APPLICATION_ROOT = Path(os.environ.get("ZEPHYR_APPLICATION_ROOT", "D:/ToBePredicted"))
+"""The folder of the manifest's application sessions, each with its face camera's
+``metadata.csv`` and ``predictions/<run>-<fold>/`` from ``zephyr predict``."""
+OPEN_DATA = "s3://aind-open-data"
+
+
+@functools.cache
+def application(session: str) -> dict:
+    """One of the manifest's sessions without a thermistor: the prediction on the Harp
+    clock (``times``, ``signal``, ``onset``) and its inhalations (``head``), and from
+    its processed asset the running ``speed``, ``sites``, ``licks`` and ``subject``."""
+    app = RESULTS.application
+    entry = next(s for s in app.session if s.session == session)
+    run = RUNS[cv_name(app.network, app.fold)]
+    folder = APPLICATION_ROOT / session
+    pred = pd.read_parquet(
+        folder / "predictions" / f"{run.run}-{run.fold}" / "video.prediction.parquet"
+    )
+    clock = pd.read_csv(
+        folder / "FaceCamera" / "metadata.csv", usecols=["ReferenceTime"]
+    )
+    times = clock["ReferenceTime"].to_numpy()[pred["frame"].to_numpy()]
+
+    def asset(name: str) -> Path:
+        return dataset_file(f"{entry.asset}/{name}", OPEN_DATA)
+
+    licks = pd.read_parquet(asset("licks.parquet"))
+    return {
+        "times": times,
+        "signal": pred["signal"].to_numpy(),
+        "onset": pred["onset"].to_numpy(),
+        "head": times[pred["inhale"].to_numpy()],
+        "speed": pd.read_parquet(asset("position_velocity.parquet"))["velocity"],
+        "sites": pd.read_parquet(asset("sites.parquet")),
+        "licks": licks.index[licks["is_lick_onset"]].to_numpy(),
+        "subject": str(json.loads(asset("subject.json").read_text())["subject_id"]),
+    }
