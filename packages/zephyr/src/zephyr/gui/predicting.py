@@ -1,13 +1,16 @@
 """The Predict page: a checkpoint's traces for a clip list, or for videos from any folder
 (``clips scan --checkpoint``, their crops placed at the network's size, then ``zephyr
-predict``), and, on request, quality control of them (``zephyr quality-control run``),
-shown per video with the crop it came from."""
+predict``), on request with quality control of each (``--quality-control``),
+shown per video with the crop it came from; the Quality tab sets each video's scores
+beside the checkpoint's validation windows (:mod:`.quality`)."""
 
 import json
 import re
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
+import pyqtgraph as pg
 from PySide6 import QtCore, QtWidgets
 
 from .. import features
@@ -15,10 +18,12 @@ from ..annotate import open_state
 from ..clips import update_clip_list
 from ..config import Derive
 from ..predict import SETTINGS, SUFFIX
+from ..quality_control.metrics import MEASURES
 from .boxes import BoxWindow
 from .jobs import Job
 from .pages import Page
 from .project import Project, is_smoke, run_label, run_status
+from .quality import GOOD_F1, SHOWN, QualityState
 from .widgets import (
     JobPanel,
     TraceView,
@@ -30,6 +35,8 @@ from .widgets import (
 )
 
 QC_SUFFIX = ".qc.json"
+QC_COLOURS = {"good": (110, 110, 110), "poor": (213, 94, 0), "video": (0, 114, 178)}
+"""Overview rows: the reference's good and poor windows, and the folder's videos."""
 VIDEO_LIST = "videos.toml"
 """The Videos tab's list, in the predictions folder it fills."""
 
@@ -87,8 +94,7 @@ class PredictPage(Page):
             "keep the frames in the project's cache (shows the crop; takes space)"
         )
         form.addRow("", self.keep)
-        self.qc = QtWidgets.QCheckBox("judge them (quality control; keeps the frames)")
-        self.qc.toggled.connect(lambda on: self.keep.setChecked(True) if on else None)
+        self.qc = QtWidgets.QCheckBox("judge them (quality control)")
         form.addRow("", self.qc)
         tab.addLayout(form)
         tab.addWidget(
@@ -119,9 +125,12 @@ class PredictPage(Page):
         bar.addStretch(1)
         right.addLayout(bar)
         split = QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)
+        self.browse = QtWidgets.QTabWidget()
         self.videos = QtWidgets.QListWidget()
         self.videos.currentRowChanged.connect(lambda _: self.show_video())
-        split.addWidget(self.videos)
+        self.browse.addTab(self.videos, "Videos")
+        self.browse.addTab(self._build_quality(), "Quality")
+        split.addWidget(self.browse)
         view = QtWidgets.QWidget()
         column = QtWidgets.QVBoxLayout(view)
         column.setContentsMargins(0, 0, 0, 0)
@@ -130,13 +139,247 @@ class PredictPage(Page):
         column.addWidget(self.verdict)
         self.trace = TraceView()
         column.addWidget(self.trace, 1)
+        # The chosen measure per window, under the onset probability on the trace's own
+        # time axis; a click zooms the trace to its window.
+        self.strip = pg.PlotWidget()
+        self.strip.setMaximumHeight(90)
+        self.strip.setMinimumHeight(60)
+        self.strip.showGrid(x=True, alpha=0.15)
+        self.strip.setXLink(self.trace.plot)
+        self.strip.scene().sigMouseClicked.connect(self._strip_clicked)
+        self.trace.plots.addWidget(self.strip)
         split.addWidget(view)
-        split.setSizes([150, 550])
+        # Its plots ask for more height than a window has: the page fits the window
+        # and the splitter shares it, rather than the page scrolling.
+        split.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Ignored
+        )
+        split.setSizes([280, 670])
+        self._quality: QualityState | None = None
+        self._origin = 0.0
+        self._stem: str | None = None
         right.addWidget(split, 1)
         self._queue: list[Job] = []
         self._then = None
         self.box_window: BoxWindow | None = None
         self._reopen = False
+
+    # ---- quality control --------------------------------------------------------
+
+    def _build_quality(self) -> QtWidgets.QWidget:
+        page = QtWidgets.QWidget()
+        column = QtWidgets.QVBoxLayout(page)
+        column.setContentsMargins(0, 0, 0, 0)
+        bar = QtWidgets.QHBoxLayout()
+        bar.addWidget(QtWidgets.QLabel("Measure"))
+        self.qc_measure = QtWidgets.QComboBox()
+        self.qc_measure.currentIndexChanged.connect(lambda _: self.show_quality())
+        bar.addWidget(self.qc_measure)
+        bar.addSpacing(12)
+        bar.addWidget(QtWidgets.QLabel("Reference split at true F1 ≥"))
+        self.good_f1 = QtWidgets.QDoubleSpinBox(
+            minimum=0.0, maximum=1.0, singleStep=0.05, decimals=2, value=GOOD_F1
+        )
+        self.good_f1.setToolTip(
+            "The checkpoint's validation windows, where the truth was known, are shown "
+            "in two rows: those predicted at least this well (true inhale F1), and "
+            "the rest. A description of the reference, never a verdict on a video."
+        )
+        self.good_f1.valueChanged.connect(self._resplit)
+        bar.addWidget(self.good_f1)
+        bar.addStretch(1)
+        column.addLayout(bar)
+        self.qc_note = note("")
+        column.addWidget(self.qc_note)
+        parts = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
+        self.overview = pg.PlotWidget()
+        self.overview.showGrid(x=True, alpha=0.15)
+        self.overview.invertY(True)
+        self.overview.setMouseEnabled(x=False, y=False)
+        self.overview.scene().sigMouseClicked.connect(self._overview_clicked)
+        parts.addWidget(self.overview)
+        self.qc_table = QtWidgets.QTableWidget()
+        self.qc_table.setSortingEnabled(True)
+        self.qc_table.setSelectionBehavior(
+            QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows
+        )
+        self.qc_table.setEditTriggers(
+            QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers
+        )
+        self.qc_table.cellClicked.connect(self._table_clicked)
+        parts.addWidget(self.qc_table)
+        parts.setSizes([500, 400])
+        column.addWidget(parts, 1)
+        self._rows = []
+        return page
+
+    def fill_quality(self, folder: Path | None) -> None:
+        """Read the folder's quality-control reports, and its checkpoint's reference."""
+        state = QualityState(folder, self.good_f1.value()) if folder else None
+        self._quality = None if state is None or state.empty else state
+        current = self.qc_measure.currentData()
+        self.qc_measure.blockSignals(True)
+        self.qc_measure.clear()
+        if self._quality is not None:
+            for name in self._quality.measures():
+                self.qc_measure.addItem(MEASURES[name][1], name)
+            found = self.qc_measure.findData(current)
+            self.qc_measure.setCurrentIndex(max(found, 0))
+        self.qc_measure.blockSignals(False)
+        self.fill_table()
+        self.show_quality()
+
+    def _resplit(self, value: float) -> None:
+        if self._quality is not None:
+            self._quality.good_f1 = value
+        self.show_quality()
+
+    def show_quality(self) -> None:
+        """The overview of the chosen measure, and its strip under the trace."""
+        plot = self.overview
+        plot.clear()
+        self._rows = []
+        state, measure = self._quality, self.qc_measure.currentData()
+        if state is None or measure is None:
+            self.qc_note.setText(
+                "No quality-control reports in this folder: tick 'judge them' when "
+                "predicting."
+            )
+            self.show_strip()
+            return
+        self.qc_note.setText(
+            "Each row is the spread of the measure over 30-s windows (box: middle "
+            "half; whiskers: 5-95%; line: median). "
+            + (
+                "The top rows are the checkpoint's validation windows, where the "
+                "truth was known."
+                if state.split
+                else "The checkpoint has no reference: the videos are shown against "
+                "each other."
+            )
+        )
+        self._rows = state.rows(measure)
+        for y, row in enumerate(self._rows):
+            spread = row.spread()
+            if spread is None:
+                continue
+            lo, q1, median, q3, hi = spread
+            colour = QC_COLOURS[row.kind]
+            strong = row.stem is not None and row.stem == self._stem
+            plot.addItem(pg.PlotDataItem([lo, hi], [y, y], pen=pg.mkPen(colour)))
+            plot.addItem(
+                pg.BarGraphItem(
+                    x0=[q1],
+                    width=[max(q3 - q1, 1e-9)],
+                    y=[y],
+                    height=0.6,
+                    brush=pg.mkBrush(*colour, 230 if strong else 120),
+                    pen=pg.mkPen("k" if strong else colour),
+                )
+            )
+            plot.addItem(
+                pg.PlotDataItem(
+                    [median, median], [y - 0.3, y + 0.3], pen=pg.mkPen("k", width=2)
+                )
+            )
+        plot.getAxis("left").setTicks(
+            [[(y, row.label) for y, row in enumerate(self._rows)]]
+        )
+        plot.setLabel("bottom", MEASURES[measure][1])
+        plot.setYRange(-0.6, len(self._rows) - 0.4)
+        self.show_strip()
+
+    def fill_table(self) -> None:
+        """One row per video: minutes, and each measure's median over its windows
+        (with its median percentile among the validation windows, when known)."""
+        table = self.qc_table
+        table.setSortingEnabled(False)
+        table.clear()
+        frame = self._quality.table() if self._quality is not None else pd.DataFrame()
+        columns = [c for c in frame.columns if c != "stem"]
+        heads = ["Video"] + [
+            "Minutes"
+            if c == "minutes"
+            else f"{MEASURES[c[4:]][1]} (pct)"
+            if c.startswith("pct_")
+            else MEASURES[c][1]
+            for c in columns
+        ]
+        table.setColumnCount(len(heads))
+        table.setHorizontalHeaderLabels(heads)
+        table.setRowCount(len(frame))
+        for r, row in enumerate(frame.itertuples(index=False)):
+            values = row._asdict()
+            table.setItem(r, 0, QtWidgets.QTableWidgetItem(values["stem"]))
+            for c, name in enumerate(columns, start=1):
+                item = QtWidgets.QTableWidgetItem()
+                value = values[name]
+                if value is not None and np.isfinite(value):
+                    item.setData(QtCore.Qt.ItemDataRole.DisplayRole, round(value, 3))
+                table.setItem(r, c, item)
+        table.resizeColumnsToContents()
+        table.setSortingEnabled(True)
+
+    def select_video(self, stem: str) -> None:
+        """Show video *stem*: its trace, onset probability and crop, and its strip."""
+        for k in range(self.videos.count()):
+            if self.videos.item(k).text() == stem:
+                self.videos.setCurrentRow(k)
+                return
+
+    def _overview_clicked(self, event) -> None:
+        point = self.overview.plotItem.vb.mapSceneToView(event.scenePos())
+        k = round(point.y())
+        if 0 <= k < len(self._rows) and self._rows[k].stem is not None:
+            self.select_video(self._rows[k].stem)
+
+    def _table_clicked(self, row: int, _column: int) -> None:
+        item = self.qc_table.item(row, 0)
+        if item is not None:
+            self.select_video(item.text())
+
+    def show_strip(self) -> None:
+        """The chosen measure over the shown video's windows, on the trace's time axis,
+        with the reference's good windows' 5-95% range shaded."""
+        strip = self.strip
+        strip.clear()
+        state, measure = self._quality, self.qc_measure.currentData()
+        if state is None or measure is None or self._stem is None:
+            strip.setVisible(False)
+            return
+        windows = state.over_time(self._stem, measure)
+        strip.setVisible(not windows.empty)
+        if windows.empty:
+            return
+        edges = (
+            np.r_[windows["start"].to_numpy(), windows["end"].iloc[-1]] - self._origin
+        )
+        strip.plot(
+            edges,
+            windows["value"].to_numpy(),
+            stepMode="center",
+            pen=pg.mkPen(QC_COLOURS["video"], width=2),
+        )
+        good = state.good_range(measure)
+        if good is not None:
+            band = pg.LinearRegionItem(
+                values=good,
+                orientation="horizontal",
+                movable=False,
+                brush=pg.mkBrush(*QC_COLOURS["good"], 50),
+            )
+            strip.addItem(band)
+        strip.setLabel("left", MEASURES[measure][1])
+
+    def _strip_clicked(self, event) -> None:
+        if self._quality is None or self._stem is None:
+            return
+        x = self.strip.plotItem.vb.mapSceneToView(event.scenePos()).x()
+        window = self._quality.window_at(self._stem, x + self._origin)
+        if window is not None:
+            self.trace.plot.setXRange(
+                window[0] - self._origin, window[1] - self._origin, padding=0
+            )
 
     # ---- videos from anywhere ----------------------------------------------------
 
@@ -205,6 +448,8 @@ class PredictPage(Page):
             "removed afterwards"
         )
         tab.addWidget(self.video_cache)
+        self.video_qc = QtWidgets.QCheckBox("judge them (quality control)")
+        tab.addWidget(self.video_qc)
         go = accent("3. Predict")
         go.clicked.connect(self.predict_videos)
         tab.addWidget(go)
@@ -408,6 +653,8 @@ class PredictPage(Page):
             if not ask_cache_space(self, [path], cache):
                 return
             argv += ["--cache", str(cache)]
+        if self.video_qc.isChecked():
+            argv.append("--quality-control")
         self._out = path.parent
         self.jobs.run(Job("predict", argv, self.project.root))
 
@@ -518,21 +765,7 @@ class PredictPage(Page):
             argv += ["--cache", str(project.cache_dir)]
         self._queue = []
         if self.qc.isChecked():
-            self._queue.append(
-                Job(
-                    "quality-control",
-                    [
-                        "run",
-                        *common,
-                        "--cache",
-                        str(project.cache_dir),
-                        "--out",
-                        str(out),
-                        *selection,
-                    ],
-                    project.root,
-                )
-            )
+            argv.append("--quality-control")
         self._out = out
         self.jobs.run(Job("predict", argv, project.root))
 
@@ -548,12 +781,15 @@ class PredictPage(Page):
     def fill_videos(self) -> None:
         folder = self.folder.currentData()
         self.videos.clear()
+        self._stem = None
         if folder is None:
+            self.fill_quality(None)
             return
         for path in sorted(folder.glob(f"*{SUFFIX}")):
             item = QtWidgets.QListWidgetItem(path.name[: -len(SUFFIX)])
             item.setData(QtCore.Qt.ItemDataRole.UserRole, path)
             self.videos.addItem(item)
+        self.fill_quality(folder)
         if self.videos.count():
             self.videos.setCurrentRow(0)
 
@@ -583,26 +819,27 @@ class PredictPage(Page):
         stem = path.name[: -len(SUFFIX)]
         table = pd.read_parquet(path)
         time = table["time"].to_numpy()
+        self._stem, self._origin = stem, float(time[0]) if len(time) else 0.0
         report_path = path.with_name(stem + QC_SUFFIX)
-        bad, verdict = [], ""
+        verdict = ""
         if report_path.is_file():
-            report = json.loads(report_path.read_text())
-            bad = [
-                (w["start"], w["end"])
-                for w in report["windows"]
-                if any(v is False for v in w["checks"].values())
-            ]
-            summary = report["summary"]
-            # A measure without a value (expected precision with no reference) is null.
+            summary = json.loads(report_path.read_text())["summary"]
+            # A measure without a value (expected precision with no reference) is null;
+            # percentiles place it among the checkpoint's validation windows.
+            position = summary.get("percentiles") or {}
             cells = [
-                f"<b>{name}</b> {_measure(summary.get(name))} "
-                + ("pass" if ok else "fail" if ok is False else "n/a")
-                for name, ok in summary["checks"].items()
+                f"<b>{name}</b> {_measure(summary.get(name))}"
+                + (
+                    f" ({position[name]:.0f}th pct)"
+                    if position.get(name) is not None
+                    else ""
+                )
+                for name in SHOWN
+                if name in summary
             ]
             verdict = (
-                f"Whole video: {'; '.join(cells)}.<br>{len(bad)} of "
-                f"{len(report['windows'])} windows fail a measure (shaded). A "
-                "measure is judged per window; a video is never failed as a whole."
+                f"Whole video: {'; '.join(cells)} (percentiles among the checkpoint's "
+                "validation windows; every measure is on the Quality tab)."
             )
         self.verdict.setText(verdict)
         self.verdict.setVisible(bool(verdict))
@@ -612,7 +849,7 @@ class PredictPage(Page):
             table["signal"].to_numpy(),
             inhale=time[table["inhale"].to_numpy(bool)],
             entry=self._entry(stem),
-            bad_spans=bad,
             onset=table["onset"].to_numpy() if "onset" in table else None,
             threshold=_threshold(path.parent / SETTINGS),
         )
+        self.show_quality()

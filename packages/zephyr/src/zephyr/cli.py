@@ -19,8 +19,6 @@ CLI
     zephyr run <experiment.toml> [--smoke] [--folds <name>...]
     zephyr evaluate --checkpoint <best.pt> --clips <list.toml>... --cache <dir>
     zephyr predict --checkpoint <best.pt> --clips <list.toml>... --out <dir>
-    zephyr quality-control run --checkpoint <best.pt> --clips <list.toml>...
-        --cache <dir> --out <dir> [--reference <ref.json>]
     zephyr quality-control reference --checkpoint <best.pt> --clips <list.toml>...
         --cache <dir> --out <ref.json>
     zephyr schema <dir>

@@ -27,6 +27,8 @@ from zephyr.predict import (
     select_clips,
 )
 from zephyr.preprocess import main as preprocess
+from zephyr.quality_control.reference import Reference, checkpoint_hash
+from zephyr.quality_control.report import REFERENCE
 from zephyr.train import settle_head_threshold
 
 RUN = Path("runs/experiment/fold/seed-1")
@@ -372,11 +374,60 @@ class HeadThresholdTests(unittest.TestCase):
             {"value": chosen["value"], "source": "checkpoint"},
         )
 
+    def test_the_threshold_sweep_writes_the_checkpoints_qc_reference(self):
+        reference = Reference.load(self.swept / REFERENCE)
+        self.assertEqual(
+            reference.checkpoint_sha256, checkpoint_hash(self.swept / "best.pt")
+        )
+        chosen = read_checkpoint(self.swept / "best.pt")["head_threshold"]
+        self.assertEqual(reference.record["head_threshold"], chosen["value"])
+        self.assertEqual(len(reference.record["calibration_clips"]), 1)
+        windows = reference.validation
+        self.assertTrue(windows)
+        self.assertIn("truth_inhale_f1", windows[0])
+        self.assertIn("head_trace_f1", windows[0])
+        self.assertFalse((self.plain / REFERENCE).exists())  # no sweep, no reference
+
     def test_without_an_onset_loss_no_threshold_is_chosen_or_used(self):
         self.assertNotIn("head_threshold", read_checkpoint(self.headless / "best.pt"))
         evaluation = self._evaluation(self.headless)
         self.assertIsNone(evaluation["head_threshold"])
         self.assertNotIn("head_inhale_f1", evaluation["clips"][0])
+
+    def _judged(self, out: Path, *extra: str) -> dict:
+        main(
+            ["--checkpoint", str(self.swept / "best.pt"), "--clips", str(self.list)]
+            + ["--out", str(out), "--device", "cpu", "--amp", "off", "--workers", "1"]
+            + ["--groups", "3", "--quality-control", *extra]
+        )
+        (report,) = out.glob("*.qc.json")
+        return json.loads(report.read_text())
+
+    def test_predict_writes_each_videos_quality_control_from_the_same_pass(self):
+        data = self._judged(self.root / "judged")
+        self.assertEqual(data["reference"].rsplit("/", 1)[-1], REFERENCE)
+        self.assertIn("percentiles", data["summary"])
+        self.assertNotIn("truth", data["summary"])  # never read, even when there is one
+        settings = json.loads((self.root / "judged" / SETTINGS).read_text())
+        self.assertIsNotNone(settings["quality_control"])
+
+    def test_quality_control_is_the_same_without_the_thermistor(self):
+        labelled = self._judged(self.root / "with-sensor")
+        sensor = self.root / "data" / "thermistor_3_part_1.parquet"
+        sensor.rename(sensor.with_suffix(".away"))
+        try:
+            unlabelled = self._judged(self.root / "without-sensor")
+        finally:
+            sensor.with_suffix(".away").rename(sensor)
+        self.assertEqual(labelled["summary"], unlabelled["summary"])
+        self.assertEqual(labelled["windows"], unlabelled["windows"])
+
+    def test_a_reference_flag_needs_quality_control(self):
+        with self.assertRaisesRegex(SystemExit, "needs --quality-control"):
+            main(
+                ["--checkpoint", str(self.swept / "best.pt"), "--clips", str(self.list)]
+                + ["--out", str(self.root / "x"), "--qc-reference", "r.json"]
+            )
 
     def test_a_fold_without_validation_clips_keeps_the_default(self):
         path = self.root / "no-val.pt"
@@ -390,6 +441,7 @@ class HeadThresholdTests(unittest.TestCase):
         )
         self.assertEqual((chosen["value"], chosen["chosen_on"]), (0.5, None))
         self.assertEqual(read_checkpoint(path)["head_threshold"], chosen)
+        self.assertFalse((self.root / REFERENCE).exists())  # nothing to fit it on
 
     def test_a_flag_overrides_the_checkpoint_and_says_so(self):
         clip_list = load(ClipList, self.list, check_files=False)

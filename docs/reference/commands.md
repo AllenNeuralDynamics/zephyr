@@ -16,8 +16,7 @@ every flag.
 | [`run`](#run) | train an experiment's folds and score their test groups |
 | [`evaluate`](#evaluate) | score checkpoints on clip lists |
 | [`predict`](#predict) | predict breathing on videos, no sensor needed |
-| [`quality-control run`](#quality-control-run) | judge predictions without a sensor |
-| [`quality-control reference`](#quality-control-reference) | calibrate a checkpoint's onset head, once |
+| [`quality-control reference`](#quality-control-reference) | measure a checkpoint once on its validation clips |
 | [`schema`](#schema) | write JSON schemas of the config files |
 
 ## gui
@@ -186,6 +185,8 @@ zephyr predict --checkpoint <best.pt> --video <file.mp4> --out <dir>
 | `--groups G...` | only these groups |
 | `--restart` | remove the predictions in `--out` first and predict every clip; with `--video`, only that video's |
 | `--head-threshold T` | find the onset head's inhales at `T` instead of the checkpoint's own threshold; `predictions.json` records it, and a folder holds one threshold's predictions |
+| `--quality-control` | also write each video's quality-control report, `<stem>.qc.json`, from the same pass ([Quality control](../guides/quality-control.md)) |
+| `--qc-reference FILE` | with `--quality-control`: the checkpoint's reference (default: `qc-reference.json` beside the checkpoint, when there is one) |
 | `--device`, `--amp`, `--workers` | machine settings (`--workers` as for `preprocess`: one video is decoded in that many pieces) |
 | `--infer-window`, `--frame-chunk` | inference window and frame batch sizes |
 
@@ -200,25 +201,6 @@ that `--out` (its `<stem>.clip.toml`) is used again.
 Each `.prediction.parquet` has one row per output sample: `time`, `frame` (the video
 frame at that time, counted from 0), the z-scored `signal`, the onset head's `onset`
 probability and `inhale`.
-
-## quality-control run
-
-!!! warning "Experimental"
-    Quality control is under active development: its measures, bounds and report
-    format may change.
-
-```text
-zephyr quality-control run --checkpoint <best.pt> --clips <list.toml>... --cache <dir> --out <dir> [options]
-```
-
-| Flag | Meaning |
-| --- | --- |
-| `--reference` | the checkpoint's reference, for expected precision |
-| `--groups G...` | only these groups of the lists |
-| `--window-s` | window width in seconds (default 30) |
-| `--threshold MEASURE=BOUND` | override a pass bound (repeat; `nan`: not checked) |
-| `--no-traces` | skip the `.qc.parquet` traces |
-| `--device`, `--amp`, `--infer-window`, `--frame-chunk` | machine settings |
 
 ## quality-control reference
 

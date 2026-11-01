@@ -23,8 +23,9 @@ def _():
     measure against the clip's real inhale F1, per video and per window.
 
     Give a folder of reports (local or `s3://`, copied once into
-    `notebooks/cache/quality-control/`) and, optionally, the reference it used;
-    `ZEPHYR_QC_REPORTS` and `ZEPHYR_QC_REFERENCE` fill them in.
+    `notebooks/cache/quality-control/`) and, optionally, the reference it used and a
+    folder of noisy-frame reports (`zephyr-benchmarks probe`); `ZEPHYR_QC_REPORTS`,
+    `ZEPHYR_QC_REFERENCE` and `ZEPHYR_QC_PROBES` fill them in.
     """)
     return
 
@@ -33,8 +34,11 @@ def _():
 def _():
     run = mo.ui.text(value=quality.REPORTS, label="Reports folder", full_width=True)
     ref = mo.ui.text(value=quality.REFERENCE, label="Reference file", full_width=True)
-    mo.vstack([run, ref])
-    return ref, run
+    probed = mo.ui.text(
+        value=quality.PROBES, label="Noisy-frames folder", full_width=True
+    )
+    mo.vstack([run, ref, probed])
+    return probed, ref, run
 
 
 @app.cell
@@ -195,6 +199,25 @@ def _(ref):
     _reference = quality.reference(ref.value)
     mo.stop(_reference is None, mo.md("No reference given."))
     plots.calibration_figure(_reference)
+    return
+
+
+@app.cell
+def _():
+    mo.md(r"""
+    ## 7. Noisy frames
+
+    How do the predictions degrade as Gaussian noise is added to the frames? Each line
+    is a video, over the noise level.
+    """)
+    return
+
+
+@app.cell
+def _(probed):
+    _table = quality.probes(probed.value)
+    mo.stop(_table.empty, mo.md("No noisy-frame reports given."))
+    plots.probe_curves_figure(_table)
     return
 
 

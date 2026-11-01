@@ -186,6 +186,48 @@ def score_entry(entry: ClipEntry, predicted: pd.DataFrame, **kwargs) -> Score:
     )
 
 
+def score_span(
+    truth: tuple[pd.DataFrame, Events],
+    times: np.ndarray,
+    signal: np.ndarray,
+    inhale_s: np.ndarray | None,
+    span: tuple[float, float],
+    whole: bool = False,
+) -> dict | None:
+    """A prediction's real scores over *span* of its clip, as :func:`score_entry` scores
+    a clip (over the *whole* clip exactly so: every true event, as it passes them).
+    *truth* is the clip's thermistor frame and cached event set
+    (:func:`truth_frame`, :func:`truth_events`); *inhale_s* the predicted inhales, if
+    they come from an onset head."""
+    thermistor, found = truth
+    t = thermistor[TIME_COLUMN].to_numpy()
+    rows = (t >= span[0] - 1.0) & (t < span[1] + 1.0)
+    mask = (times >= span[0]) & (times < span[1])
+    if rows.sum() < 2 or mask.sum() < 2:
+        return None
+    inhale, exhale = np.asarray(found.inhale, float), np.asarray(found.exhale, float)
+    if not whole:
+        inhale = inhale[(inhale >= span[0]) & (inhale < span[1])]
+        exhale = exhale[(exhale >= span[0]) & (exhale < span[1])]
+        if inhale_s is not None:
+            inhale_s = inhale_s[(inhale_s >= span[0]) & (inhale_s < span[1])]
+    predicted = pd.DataFrame(
+        {
+            TIME_COLUMN: times[mask].astype(np.float64),
+            BREATHING_SIGNAL_COLUMN: signal[mask].astype(np.float64),
+        }
+    )
+    score = score_clip(
+        thermistor[rows],
+        predicted,
+        truth_onset_times_s=inhale,
+        truth_offset_times_s=exhale,
+        predicted_onset_times_s=inhale_s,
+        excluded_s=found.excluded,
+    )
+    return score.to_dict()
+
+
 def head_event_indices(
     probability: np.ndarray, times: np.ndarray, threshold: float = HEAD_THRESHOLD
 ) -> np.ndarray:

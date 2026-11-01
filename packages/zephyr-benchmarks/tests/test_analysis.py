@@ -183,6 +183,30 @@ class TruthTests(unittest.TestCase):
         self.assertEqual(t["excluded"].shape, (0, 2))
         np.testing.assert_array_equal(t["inhale"], [1.0, 2.0])
 
+    def test_window_truth_scores_the_reports_windows_against_the_thermistor(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            times = np.arange(0, 90, 1 / FS)
+            breath = np.sin(2 * np.pi * 2 * times)
+            onsets = times[np.r_[False, np.diff(np.sign(breath)) > 0]]
+            np.savez(d / "events.npz", onset_times=onsets, offset_times=onsets + 0.25)
+            pd.DataFrame({"Time": times, "Signal": breath}).to_parquet(
+                d / "therm.parquet"
+            )
+
+            class Entry:
+                events = d / "events.npz"
+                thermistor = d / "therm.parquet"
+
+            inhale = np.isin(times, onsets)
+            prediction = pd.DataFrame(
+                {"time": times, "signal": breath, "inhale": inhale}
+            )
+            table = analysis.window_truth(Entry(), prediction, window_s=30.0)
+        self.assertEqual(list(table["whole"]), [True, False, False, False])
+        self.assertGreater(table["truth_correlation"].min(), 0.99)
+        self.assertGreater(table["truth_inhale_f1"].min(), 0.99)
+
 
 class ManifestTests(unittest.TestCase):
     def test_every_shipped_manifest_loads(self):
@@ -191,6 +215,26 @@ class ManifestTests(unittest.TestCase):
         for path in paths:
             with self.subTest(path=path.name):
                 self.assertTrue(load(ResultsManifest, path).method)
+
+    def test_quality_sets_take_a_role_and_distinct_labels(self):
+        base = {"root": "r", "method": [{"label": "Zephyr", "run": "x"}]}
+        sets = [
+            {"label": "Held out", "reports": "vr", "role": "working"},
+            {"label": "Noise 32", "reports": "noise", "role": "null", "noise": 32},
+        ]
+        manifest = ResultsManifest(
+            **base, quality={"reference": "ref.json", "set": sets}
+        )
+        self.assertEqual(manifest.quality.set[1].noise, 32)
+        with self.assertRaises(ValueError):
+            ResultsManifest(
+                **base, quality={"reference": "ref.json", "set": [sets[0], sets[0]]}
+            )
+        with self.assertRaises(ValueError):
+            ResultsManifest(
+                **base,
+                quality={"reference": "r", "set": [sets[0] | {"role": "good"}]},
+            )
 
     def test_a_variant_is_only_for_a_baseline_and_a_head_only_for_a_network(self):
         with self.assertRaises(ValueError):

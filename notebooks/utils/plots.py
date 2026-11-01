@@ -7,6 +7,7 @@ import string
 from collections.abc import Sequence
 from pathlib import Path
 
+import matplotlib as mpl
 import numpy as np
 import pandas as pd
 from matplotlib import ticker
@@ -923,4 +924,41 @@ def calibration_figure(reference: dict) -> Figure:
         ax.set_title(f"ECE {cal['ece_raw']:.3f} raw, {cal['ece']:.3f} calibrated")
     ax.set_xlabel("Calibrated P(inhale is real)")
     ax.set_ylabel("Share matched to a true inhale")
+    return fig
+
+
+# --- noisy frames ----------------------------------------------------------------------
+
+
+def probe_curves_figure(table: pd.DataFrame, truth: str = "truth_inhale_f1") -> Figure:
+    """Each video's noisy frames (:func:`zephyr.benchmarks.probe.load_probes`) as a line
+    over the noise level (0: the ordinary prediction): its agreement with the ordinary
+    trace (left) and, for labelled clips, its true inhale F1 (right). Lines are coloured
+    by the ordinary prediction's true F1; the thick line is the median over videos."""
+    columns = [("agree_trace_r", "Trace r with the\nordinary prediction")]
+    if truth in table and table[truth].notna().any():
+        columns.append((truth, "True inhale F1"))
+    ordinary = table[table["sigma"] == 0].set_index("stem")
+    colour = ordinary.get(truth)
+    cmap = mpl.colormaps["viridis"]
+    fig, axes = style.figure("double", 0.3, ncols=len(columns))
+    for ax, (column, label) in zip(np.atleast_1d(axes), columns, strict=True):
+        curves = table.groupby(["stem", "sigma"])[column].mean().unstack("sigma")
+        for stem, values in curves.iterrows():
+            c = cmap(float(colour.get(stem, 0.5))) if colour is not None else "0.6"
+            ax.plot(values.index, values.to_numpy(), color=c, lw=0.6, alpha=0.7)
+        ax.plot(curves.columns, curves.median().to_numpy(), color=style.TRUTH, lw=1.5)
+        ax.set_xscale("symlog", linthresh=4)
+        ax.set_xticks(list(curves.columns))
+        ax.set_xticklabels([f"{v:g}" for v in curves.columns])
+        ax.set_xlabel("Noise s.d. (gray levels)")
+        ax.set_ylabel(label)
+        ax.set_ylim(-0.2, 1.02)
+    if colour is not None:
+        fig.colorbar(
+            mpl.cm.ScalarMappable(cmap=cmap, norm=mpl.colors.Normalize(0, 1)),
+            ax=axes,
+            label="Ordinary true F1",
+            shrink=0.8,
+        )
     return fig

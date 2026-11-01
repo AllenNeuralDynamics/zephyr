@@ -2,38 +2,39 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from unittest import mock
 
 import numpy as np
-import pandas as pd
 import torch
 from _clipfiles import write_list
 
 from zephyr import features
 from zephyr.config import (
     ClipList,
-    QualityControl,
-    QualityThresholds,
+    QualityParams,
     TrainParams,
     load,
 )
 from zephyr.evaluate import load_checkpoint
 from zephyr.model import BreathingNet
-from zephyr.quality_control import configure, load_reports, run
+from zephyr.quality_control import configure, load_reports, quality_report
 from zephyr.quality_control.metrics import (
     MEASURES,
     Video,
-    check,
     find_events,
     measure,
     spans,
 )
 from zephyr.quality_control.reference import (
     Reference,
-    checkpoint_hash,
     fit_calibration,
+    percentiles,
 )
-from zephyr.quality_control.report import _spread_out, measure_reference
+from zephyr.quality_control.report import (
+    _spread_out,
+    load_reference,
+    measure_reference,
+    write_report,
+)
 
 FS = 60.0
 CEILING = 15.0
@@ -90,7 +91,7 @@ class MeasureTests(unittest.TestCase):
     def test_without_a_head_its_measures_are_nan(self):
         times, signal, _ = _breathing()
         m = _measure(_video(times, signal, None))
-        for name in ("head_trace_f1", "peak_prob", "inhale_phase_spread"):
+        for name in ("head_trace_f1", "peak_prob"):
             self.assertTrue(np.isnan(m[name]), name)
         self.assertAlmostEqual(m["rate_hz"], 4.0, places=1)  # DSP inhales instead
 
@@ -129,16 +130,6 @@ class MeasureTests(unittest.TestCase):
         m = _measure(_video(times, signal, None))
         self.assertGreater(m["too_fast_frac"], 0.9)
 
-    def test_inhales_at_one_point_of_the_cycle_have_no_phase_spread(self):
-        times, signal, onset = _breathing()
-        steady = _measure(_video(times, signal, onset))["inhale_phase_spread"]
-        rng = np.random.default_rng(0)
-        anywhere = np.zeros(len(times))
-        anywhere[rng.choice(len(times), 150, replace=False)] = 1.0
-        wandering = _measure(_video(times, signal, anywhere))["inhale_phase_spread"]
-        self.assertLess(steady, 0.05)
-        self.assertGreater(wandering, 0.5)
-
     def test_a_stretch_the_network_flattens_counts_as_flat_breaths(self):
         times, signal, onset = _breathing(seconds=40)
         flat = signal.copy()
@@ -165,30 +156,29 @@ class MeasureTests(unittest.TestCase):
             self.assertIn(better, ("higher", "lower", None))
 
 
-class CheckTests(unittest.TestCase):
-    def test_each_measure_passes_on_its_good_side(self):
-        values = {"expected_precision": 0.9, "flat_breath_frac": 0.2}
-        bounds = {"expected_precision": 0.8, "flat_breath_frac": 0.1}
+class PercentileTests(unittest.TestCase):
+    def test_a_value_is_placed_among_the_validation_windows(self):
+        windows = [{"peak_prob": v} for v in (0.1, 0.2, 0.3, 0.4)]
         self.assertEqual(
-            check(values, bounds),
-            {"expected_precision": True, "flat_breath_frac": False},
+            percentiles({"peak_prob": 0.25}, windows, ["peak_prob"]),
+            {"peak_prob": 50.0},
+        )
+        self.assertEqual(
+            percentiles({"peak_prob": 0.2}, windows, ["peak_prob"]), {"peak_prob": 37.5}
+        )
+        self.assertEqual(
+            percentiles({"peak_prob": 9.0}, windows, ["peak_prob"]),
+            {"peak_prob": 100.0},
         )
 
-    def test_a_missing_value_or_bound_is_not_checked(self):
-        checks = check(
-            {"expected_precision": float("nan"), "peak_prob": 0.9},
-            {
-                "expected_precision": 0.8,
-                "peak_prob": 0.5,
-                "too_fast_frac": float("nan"),
-            },
+    def test_a_missing_value_or_distribution_has_no_percentile(self):
+        windows = [{"peak_prob": 0.5, "too_fast_frac": None}]
+        out = percentiles(
+            {"peak_prob": None, "too_fast_frac": 0.0},
+            windows,
+            ["peak_prob", "too_fast_frac"],
         )
-        self.assertEqual(checks, {"expected_precision": None, "peak_prob": True})
-        self.assertEqual(check({}, {"peak_prob": 0.5}), {"peak_prob": None})
-
-    def test_every_judging_measure_has_a_threshold(self):
-        judged = {m for m, (_, _, better) in MEASURES.items() if better}
-        self.assertEqual(set(QualityThresholds.model_fields), judged)
+        self.assertEqual(out, {"peak_prob": None, "too_fast_frac": None})
 
 
 class ReferenceTests(unittest.TestCase):
@@ -214,8 +204,61 @@ T_FRAMES, SIZE = 600, 16
 NET = {"widths": (4, 4, 4, 4), "embed": 8, "tcn_channels": 8, "dilations": (1, 2)}
 
 
-class RunTests(unittest.TestCase):
-    """End to end: a tiny checkpoint, one unlabelled clip in a real cache entry."""
+class ReportTests(unittest.TestCase):
+    """A report from a prediction alone."""
+
+    def _report(self, reference=None):
+        video = _video(*_breathing(seconds=90))
+        return quality_report(
+            video, QualityParams(window_s=30), reference, True, {"checkpoint": "c"}
+        )
+
+    def test_a_report_holds_scores_and_no_verdict(self):
+        data = self._report()
+        json.dumps(data, allow_nan=False)  # NaN would not parse in strict readers
+        self.assertEqual(data["inhale_events"], "onset head")
+        self.assertEqual(set(data["summary"]), set(MEASURES))
+        self.assertEqual(len(data["windows"]), 3)
+        self.assertEqual(data["params"]["window_s"], 30.0)
+
+    def test_a_reference_places_each_measure_among_its_validation_windows(self):
+        windows = [{"peak_prob": p, "head_trace_f1": 0.95} for p in (0.0, 1.0)]
+        reference = _reference(validation=windows)
+        data = self._report(reference)
+        for span in (data["summary"], *data["windows"]):
+            self.assertEqual(set(span["percentiles"]), set(MEASURES))
+            self.assertEqual(span["percentiles"]["peak_prob"], 50.0)
+
+    def test_reports_read_back_as_tables(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            reference = _reference(validation=[{"peak_prob": 0.5}])
+            write_report(self._report(reference), Path(tmp) / "clip.qc.json")
+            videos, windows = load_reports(tmp)
+        self.assertEqual(list(videos["stem"]), ["clip"])
+        self.assertEqual(len(windows), 3)
+        self.assertIn("pct_peak_prob", windows.columns)
+
+
+class ReferenceLoadingTests(unittest.TestCase):
+    def _write(self, tmp, **fields) -> Path:
+        path = Path(tmp) / "qc-reference.json"
+        path.write_text(json.dumps({"checkpoint_sha256": "a" * 64} | fields))
+        return path
+
+    def test_a_reference_of_another_checkpoint_or_threshold_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write(tmp, onset_calibration=None, head_threshold=0.7)
+            self.assertEqual(
+                load_reference(path, "a" * 64, 0.7).checkpoint_sha256, "a" * 64
+            )
+            with self.assertRaisesRegex(SystemExit, "another checkpoint"):
+                load_reference(path, "b" * 64, 0.7)
+            with self.assertRaisesRegex(SystemExit, "onset threshold 0.7"):
+                load_reference(path, "a" * 64, 0.5)
+
+
+class CalibrationTests(unittest.TestCase):
+    """A tiny checkpoint and one unlabelled clip in a real cache entry."""
 
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
@@ -279,114 +322,6 @@ class RunTests(unittest.TestCase):
         load_checkpoint(path, torch.device("cpu"))  # the file loads
         return path
 
-    def _config(self, *extra: str, window_s: float = 3.0) -> QualityControl:
-        """What ``zephyr quality-control run`` with these flags would run."""
-        r = self.root
-        return configure(
-            [
-                "run",
-                f"--checkpoint={r / 'best.pt'}",
-                f"--clips={r / 'clips.toml'}",
-                f"--cache={r / 'cache'}",
-                f"--out={r / 'qc'}",
-                "--device=cpu",
-                "--amp=off",
-                "--infer-window=256",
-                f"--window-s={window_s}",
-                *extra,
-            ]
-        )
-
-    def test_writes_one_report_per_video_and_reads_back(self):
-        (report,) = run(self._config(), "cpu", "off")
-        self.assertEqual(report.name, "video_face_1_part_1.qc.json")
-        data = json.loads(report.read_text())  # NaN would not parse in strict readers
-        self.assertEqual(data["inhale_events"], "onset head")
-        self.assertFalse(data["labelled"])
-        self.assertNotIn("truth", data["summary"])
-        self.assertEqual(len(data["windows"]), 3)
-        self.assertEqual(set(data["summary"]), {*MEASURES, "checks"})
-        checks = data["summary"]["checks"]
-        self.assertEqual(set(checks), {*QualityThresholds.model_fields})
-        self.assertIsNone(checks["expected_precision"])  # no reference: not checked
-        videos, windows = load_reports(report.parent)
-        self.assertIn("ok_head_trace_f1", windows.columns)
-        self.assertEqual(len(videos), 1)
-        self.assertEqual(len(windows), 3)
-
-    def test_a_threshold_flag_overrides_or_unchecks_a_bound(self):
-        config = self._config(
-            "--threshold", "peak_prob=nan", "--threshold=too_fast_frac=0.5"
-        )
-        self.assertEqual(config.params.thresholds.too_fast_frac, 0.5)
-        (report,) = run(config, "cpu", "off")
-        self.assertNotIn(
-            "peak_prob", json.loads(report.read_text())["summary"]["checks"]
-        )
-
-    def test_a_finished_report_is_kept_and_other_settings_are_refused(self):
-        (report,) = run(self._config(), "cpu", "off")
-        before = report.stat().st_mtime_ns
-        run(self._config(), "cpu", "off")
-        self.assertEqual(report.stat().st_mtime_ns, before)
-        with self.assertRaisesRegex(SystemExit, "other settings"):
-            run(self._config(window_s=4.0), "cpu", "off")
-
-    def test_the_traces_are_one_parquet_row_per_sample(self):
-        (report,) = run(self._config(), "cpu", "off")
-        traces = pd.read_parquet(report.with_name("video_face_1_part_1.qc.parquet"))
-        self.assertEqual(len(traces), T_FRAMES)
-        self.assertEqual(list(traces.columns), ["time", "signal", "onset", "inhale"])
-        self.assertEqual(traces["inhale"].dtype, bool)
-
-    def test_a_reference_calibrates_the_head(self):
-        reference = self.root / "qc-reference.json"
-        reference.write_text(
-            json.dumps(
-                {
-                    "checkpoint_sha256": checkpoint_hash(self.checkpoint),
-                    "onset_calibration": {"slope": 1.0, "intercept": 0.0},
-                }
-            )
-        )
-        config = self._config().model_copy(update={"reference": reference})
-        (report,) = run(config, "cpu", "off")
-        summary = json.loads(report.read_text())["summary"]
-        self.assertEqual(
-            summary["expected_precision"] is None, summary["peak_prob"] is None
-        )
-
-    def test_reports_find_inhales_at_the_checkpoints_threshold(self):
-        (report,) = run(self._config(), "cpu", "off")
-        self.assertEqual(json.loads(report.read_text())["head_threshold"], 0.5)
-        self._save("best.pt", w_onset=0.5, head_threshold={"value": 0.8})
-        config = self._config().model_copy(update={"output_dir": self.root / "qc2"})
-        (report,) = run(config, "cpu", "off")
-        self.assertEqual(json.loads(report.read_text())["head_threshold"], 0.8)
-
-    def test_a_reference_calibrated_at_another_threshold_is_refused(self):
-        reference = self.root / "qc-reference.json"
-        reference.write_text(
-            json.dumps(
-                {
-                    "checkpoint_sha256": checkpoint_hash(self.checkpoint),
-                    "onset_calibration": None,
-                    "head_threshold": 0.7,
-                }
-            )
-        )
-        config = self._config().model_copy(update={"reference": reference})
-        with self.assertRaisesRegex(SystemExit, "onset threshold 0.7"):
-            run(config, "cpu", "off")
-
-    def test_a_reference_of_another_checkpoint_is_refused(self):
-        other = self.root / "other.json"
-        other.write_text(json.dumps({"checkpoint_sha256": "0" * 64}))
-        with mock.patch.object(Reference, "load", return_value=_reference()):
-            config = self._config().model_copy(update={"reference": other})
-            with self.assertRaisesRegex(SystemExit, "another checkpoint"):
-                run(config, "cpu", "off")
-
     def _calibrate(self, checkpoint: Path):
         return measure_reference(
             checkpoint,
@@ -410,7 +345,7 @@ class RunTests(unittest.TestCase):
 
 
 class CommandLineTests(unittest.TestCase):
-    def test_a_misspelt_measure_is_refused(self):
+    def test_reports_come_from_predict_not_a_command_of_their_own(self):
         with tempfile.TemporaryDirectory() as tmp:
             clips = write_list(
                 Path(tmp) / "clips.toml",
@@ -419,8 +354,8 @@ class CommandLineTests(unittest.TestCase):
                 target_size=(SIZE, SIZE),
             )
             argv = ["run", "--checkpoint=x.pt", f"--clips={clips}", "--cache=c"]
-            with self.assertRaises(ValueError):
-                configure([*argv, "--out=o", "--threshold=peak_probability=0.5"])
+            with self.assertRaises(SystemExit):
+                configure([*argv, "--out=o"])
 
     def test_groups_are_kept_per_list_and_unknown_ones_refused(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -2,8 +2,10 @@
 
 A :class:`Reference` is a calibration of the onset head's peaks on labelled clips the
 checkpoint never trained on (its validation animals): the chance that an inhale the
-head asserts is real. It is a JSON file beside the checkpoint (written after training,
-or by ``zephyr quality-control reference``), tied to it by its SHA-256.
+head asserts is real; and every measure on those clips' windows, with each window's
+true scores, the distribution a video's measures are placed in (:func:`percentiles`).
+It is a JSON file beside the checkpoint (written by training, or by ``zephyr
+quality-control reference``), tied to it by its SHA-256.
 """
 
 import hashlib
@@ -42,6 +44,9 @@ class Reference:
     onset_calibration: dict | None
     record: dict
     """Everything else written (clips, settings, reliability): kept as read."""
+    validation: list[dict] | None = None
+    """Each validation window's measures and true scores (``truth_<metric>``); None
+    in a reference made before they were kept."""
 
     def calibrate(self, peak_probability: np.ndarray) -> np.ndarray:
         """Probability that an inhale the head asserts with this peak is real."""
@@ -55,6 +60,7 @@ class Reference:
             checkpoint_sha256=data["checkpoint_sha256"],
             onset_calibration=data["onset_calibration"],
             record=data,
+            validation=(data.get("validation") or {}).get("windows"),
         )
 
 
@@ -81,6 +87,24 @@ def fit_calibration(peaks: np.ndarray, real: np.ndarray) -> dict | None:
         "ece": expected_calibration_error(calibrated, real),
         "reliability": reliability(calibrated, real),
     }
+
+
+def percentiles(values: dict, windows: list[dict], names) -> dict[str, float]:
+    """Where each measure of *names* in *values* lies among the validation *windows*:
+    the percentage of their values below it (ties count half); None without a value."""
+    out = {}
+    for name in names:
+        value = values.get(name)
+        known = np.array(
+            [w.get(name) for w in windows if w.get(name) is not None], float
+        )
+        known = known[np.isfinite(known)]
+        if value is None or not np.isfinite(value) or not len(known):
+            out[name] = None
+            continue
+        below = np.sum(known < value) + 0.5 * np.sum(known == value)
+        out[name] = float(100 * below / len(known))
+    return out
 
 
 def reliability(predicted: np.ndarray, real: np.ndarray) -> list[dict]:

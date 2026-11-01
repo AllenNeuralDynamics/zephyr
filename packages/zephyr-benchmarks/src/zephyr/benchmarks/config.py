@@ -72,6 +72,37 @@ class ReportedRun(BaseModel):
         return self
 
 
+class QualitySet(BaseModel):
+    """One folder of quality-control reports (``zephyr quality-control run``, or the
+    noise null of ``zephyr-benchmarks probe`` at one ``noise`` level), and its role."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    label: str
+    reports: str
+    """The folder, under the report's quality-control root."""
+    role: Literal["working", "null", "application"]
+    """A network that works there, a known failure, or sessions without a thermistor."""
+    noise: float | None = None
+    """For a noise null: the level (gray levels) read from its probe reports."""
+
+
+class Quality(BaseModel):
+    """The quality-control scores a report compares: the network's reference (its
+    validation windows) and each set of reports, all scored, never judged."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    reference: str
+    """The network's ``qc-reference.json``, under the quality-control root."""
+    set: list[QualitySet] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _labels_are_distinct(self) -> "Quality":
+        labels = [s.label for s in self.set]
+        if len(set(labels)) != len(labels):
+            raise ValueError(f"quality: repeated labels in {labels}")
+        return self
+
+
 class ResultsManifest(BaseModel):
     """Which runs a report compares, under which labels (``configs/results/``)."""
 
@@ -83,6 +114,9 @@ class ResultsManifest(BaseModel):
     """The compared methods, in the order tables list them."""
     variant: list[ReportedRun] = []
     """The first method trained differently, compared with it alone."""
+    quality: Quality | None = None
+    """Quality-control scores of networks that work, known failures and sessions
+    without a thermistor."""
 
     @model_validator(mode="after")
     def _labels_are_distinct(self) -> "ResultsManifest":
