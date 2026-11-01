@@ -146,7 +146,10 @@ within about the seed-to-seed spread rather than on the exact numbers.
 and the label each is shown under: a `root` (an `s3://` prefix or a folder), then one
 `[[method]]` per method (`run` folder, `kind` `network`/`facemap`/`pixel`, the baseline's
 `variant`, and `head = true` for a network with an onset head) and `[[variant]]`s of the
-first method. `corpus-v3.toml` is the corpus benchmark that `notebooks/walkthrough.py`
+first method. An optional `[quality]` names the quality-control scores it compares:
+a network's `reference` and each `[[quality.set]]` of reports (`label`, `reports`
+folder, `role`: `working`, `null` or `application`, and for a noise null of `probe` its
+`noise` level), all under a quality-control root the report sets. `corpus-v3.toml` is the corpus benchmark that `notebooks/walkthrough.py`
 reports. To report other runs, copy it under a new name.
 
 `analysis.py` measures, clip by clip, what a run's own scores do not: every true inhale
@@ -160,3 +163,10 @@ onset head come from the head.
 `zephyr-benchmarks occlusion --checkpoint <best.pt> --clips <a>.toml ... --cache <dir> --out <file.npz>`
 is inference-only analysis, not an experiment: one patch-occlusion map per clip of event
 F1 on the first `--window-s` seconds of each clip (`--patch`, `--stride`).
+
+`zephyr-benchmarks probe --checkpoint <best.pt> --clips <a>.toml ... --cache <dir> --out <dir>`
+is too: a null for quality control. Each video is predicted again with Gaussian noise of
+each `--sigmas` level (gray levels, default 4 to 64) added to the cached frames the
+network sees, and measured as `zephyr predict --quality-control` measures a video. One
+`<stem>.probe.json` per video: each level's measures, its agreement with the ordinary
+prediction and, for a labelled clip, its truth; `probe.load_probes` reads them back.

@@ -34,10 +34,9 @@ MEASURES: dict[str, tuple[str, str, str | None]] = {
     "ambiguous_peak_frac": ("head", "Ambiguous onset peaks", "lower"),
     "onset_background": ("head", "Onset background", "lower"),
     "expected_precision": ("head", "Expected precision", "higher"),
-    "inhale_phase_spread": ("head", "Inhale phase spread", "lower"),
 }
-"""Every measure: its family, a label, and whether a good prediction scores
-``"higher"`` or ``"lower"`` (``None``: a description, not a judgement)."""
+"""Every measure: its family, a label, and which way a better prediction tends to
+score (``"higher"`` or ``"lower"``; ``None``: a description). Reports never judge it."""
 
 
 @dataclass(frozen=True)
@@ -189,21 +188,6 @@ def head(
     return out
 
 
-def inhale_phase_spread(times, inhale: np.ndarray, troughs: np.ndarray, span) -> float:
-    """How much the point of the trace's cycle (trough to trough) where the head puts
-    each inhale wanders: 1 minus the resultant length of those phases (0: always the
-    same point; 1: anywhere)."""
-    t_in = _at(times, inhale, span)
-    t_tr = np.sort(times[troughs])
-    after = np.searchsorted(t_tr, t_in, side="right")
-    ok = (after > 0) & (after < len(t_tr))
-    if ok.sum() < 5:
-        return NAN
-    before, after = t_tr[after[ok] - 1], t_tr[after[ok]]
-    phase = (t_in[ok] - before) / (after - before)
-    return float(1 - np.abs(np.mean(np.exp(2j * np.pi * phase))))
-
-
 def flat_breaths(signal: np.ndarray, times, inhale: np.ndarray, span, ratio: float):
     """Share of the span's breaths (inhale to inhale) whose trace swings less than
     *ratio* of the clip's median breath: stretches where the trace sees nothing.
@@ -241,30 +225,4 @@ def measure(
         video.signal, times, ev.inhale, span, flat_ratio
     )
     out |= head(video, span, ambiguous_floor, reference)
-    if video.onset is not None:  # DSP peaks against the same trace say nothing
-        out["inhale_phase_spread"] = inhale_phase_spread(
-            times, ev.inhale, ev.exhale, span
-        )
-    else:
-        out["inhale_phase_spread"] = NAN
     return out
-
-
-def check(
-    values: dict[str, float], thresholds: dict[str, float | None]
-) -> dict[str, bool | None]:
-    """Whether each measure is on the good side of its threshold (``"higher"`` measures
-    at or above it, ``"lower"`` ones at or below). A measure without a threshold
-    (``None`` or NaN) is not checked; one without a value (NaN) is ``None``."""
-    checks: dict[str, bool | None] = {}
-    for name, bound in thresholds.items():
-        if bound is None or not np.isfinite(bound):  # TOML says "unchecked" with nan
-            continue
-        value = values.get(name)
-        if value is None or not np.isfinite(value):
-            checks[name] = None
-        elif MEASURES[name][2] == "higher":
-            checks[name] = bool(value >= bound)
-        else:
-            checks[name] = bool(value <= bound)
-    return checks

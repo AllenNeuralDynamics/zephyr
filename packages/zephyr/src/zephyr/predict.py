@@ -4,14 +4,15 @@ Each clip (of the lists, or the one ``--video``) is preprocessed, into ``--cache
 temporary folder, and predicted end to end into ``<out>/<video stem>.prediction.parquet``:
 per output sample ``time``, ``frame`` (the video frame there), the z-scored ``signal``,
 the head's ``onset`` probability and ``inhale`` (at the checkpoint's onset threshold
-unless ``--head-threshold``). Lists must be on the checkpoint's recipe and crop size
-(``clips scan --checkpoint``); ``--video`` writes its own, ``<stem>.clip.toml``.
+unless ``--head-threshold``); with ``--quality-control``, its quality-control report
+(``<video stem>.qc.json``) from the same pass. Lists must be on the checkpoint's recipe
+and crop size (``clips scan --checkpoint``); ``--video`` writes its own list.
 
 CLI
 ---
     zephyr predict --checkpoint best.pt --clips <list.toml>... --out predictions/
         [--cache <dir>] [--groups <g>...] [--restart] [--device cpu] [--amp off]
-        [--head-threshold 0.6]
+        [--head-threshold 0.6] [--quality-control [--qc-reference ref.json]]
     zephyr predict --checkpoint best.pt --video session.mp4 --frame-rate 240
         --box-gui | --box X Y | --box-from <stem>.clip.toml  [--box-size S] --out dir
 """
@@ -26,7 +27,15 @@ import pandas as pd
 import tomlkit
 import torch
 
-from .config import ClipList, PreprocessParams, ResolvedClip, canonical, dump, load
+from .config import (
+    ClipList,
+    PreprocessParams,
+    QualityParams,
+    ResolvedClip,
+    canonical,
+    dump,
+    load,
+)
 from .evaluate import (
     HEAD_THRESHOLD,
     has_onset_head,
@@ -37,8 +46,15 @@ from .evaluate import (
 from .infer import predict_clip
 from .preprocess import frame_at, preprocess_clips
 from .progress import Progress
-from .quality_control.metrics import find_events
+from .quality_control.metrics import Video, find_events
 from .quality_control.reference import checkpoint_hash
+from .quality_control.report import (
+    REFERENCE,
+    REPORT,
+    load_reference,
+    quality_report,
+    write_report,
+)
 from .video import clamp_box, probe_size
 
 SUFFIX = ".prediction.parquet"
@@ -119,13 +135,21 @@ def select_clips(lists: list[ClipList], groups: list[str] | None) -> list[Resolv
     ]
 
 
-def _settings(out: Path, checkpoint: Path, sha: str, threshold: dict | None) -> None:
-    """Record the checkpoint and the onset threshold its inhales were found at; refuse
-    a folder of another checkpoint's predictions, or of another threshold's."""
+def _settings(
+    out: Path,
+    checkpoint: Path,
+    sha: str,
+    threshold: dict | None,
+    quality: dict | None = None,
+) -> None:
+    """Record the checkpoint and the onset threshold its inhales were found at (and
+    how quality control measured them); refuse a folder of another checkpoint's
+    predictions, of another threshold's, or measured otherwise."""
     settings = {
         "checkpoint": canonical(checkpoint),
         "checkpoint_sha256": sha,
         "head_threshold": threshold,
+        "quality_control": quality,
     }
     path = out / SETTINGS
     if path.is_file():
@@ -140,6 +164,13 @@ def _settings(out: Path, checkpoint: Path, sha: str, threshold: dict | None) -> 
                 f"{out} holds inhales found at another onset threshold ({path}); use "
                 "a new --out, or --restart"
             )
+        if quality is not None and before.get("quality_control") not in (None, quality):
+            raise SystemExit(
+                f"{out} holds quality control measured otherwise ({path}); use a new "
+                "--out, or --restart"
+            )
+        if quality is not None and before.get("quality_control") is None:
+            path.write_text(json.dumps(before | {"quality_control": quality}, indent=2))
         return
     out.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(settings, indent=2))
@@ -159,11 +190,16 @@ def predict(
     workers: int = 8,
     restart: bool = False,
     threshold: float | None = None,
+    quality: QualityParams | None = None,
+    reference: Path | None = None,
 ) -> list[Path]:
     """Write one prediction per clip that has none yet into *out* (with *restart*,
     first removing the ones there and the checkpoint they came from, so new crops,
     a new list or another checkpoint are predicted again); return them all. The
-    head's inhales are found at *threshold*, else the checkpoint's own."""
+    head's inhales are found at *threshold*, else the checkpoint's own. With
+    *quality*, each prediction's quality-control report is written beside it, placed
+    among the validation windows of *reference* (default: the checkpoint's own
+    ``qc-reference.json``, when there is one)."""
     torch_device = torch.device(device)
     model, mean, std, state = load_checkpoint(checkpoint, torch_device)
     differs = recipe_mismatch(state, recipe)
@@ -180,12 +216,28 @@ def predict(
         )
     head = has_onset_head([state])
     chosen = head_threshold(state, threshold) if head else None
+    sha = checkpoint_hash(checkpoint)
+    judged, settings = None, None
+    if quality is not None:
+        if reference is None and (checkpoint.parent / REFERENCE).is_file():
+            reference = checkpoint.parent / REFERENCE
+        value = chosen["value"] if chosen else HEAD_THRESHOLD
+        judged = load_reference(reference, sha, value) if reference else None
+        settings = {
+            "reference": canonical(reference) if reference else None,
+            "params": dump(quality),
+        }
     if restart:  # the folder's predictions, and whose they were
-        for old in [*out.glob(f"*{SUFFIX}"), out / SETTINGS]:
+        for old in [*out.glob(f"*{SUFFIX}"), *out.glob(f"*{REPORT}"), out / SETTINGS]:
             old.unlink(missing_ok=True)
         print(f"{out}: earlier predictions removed", flush=True)
-    _settings(out, checkpoint, checkpoint_hash(checkpoint), chosen)
-    todo = [c for c in clips if not (out / f"{c.video.stem}{SUFFIX}").is_file()]
+    _settings(out, checkpoint, sha, chosen, settings)
+    todo = [
+        c
+        for c in clips
+        if not (out / f"{c.video.stem}{SUFFIX}").is_file()
+        or (quality is not None and not (out / f"{c.video.stem}{REPORT}").is_file())
+    ]
     print(f"{len(clips)} clip(s), {len(clips) - len(todo)} already predicted")
     with tempfile.TemporaryDirectory(prefix="zephyr-predict-") as scratch:
         folder = cache or Path(scratch)
@@ -233,6 +285,18 @@ def predict(
                 }
             ).to_parquet(part, index=False)
             part.replace(path)
+            if quality is not None:
+                video = Video(times, signal, onset if head else None, found)
+                meta = {
+                    "checkpoint": canonical(checkpoint),
+                    "checkpoint_sha256": sha,
+                    "head_threshold": chosen["value"] if chosen else None,
+                    "reference": settings["reference"],
+                }
+                write_report(
+                    quality_report(video, quality, judged, head, meta),
+                    out / f"{clip.video.stem}{REPORT}",
+                )
             print(f"[{k + 1}/{len(todo)}] {entry.clip_id} -> {path.name}", flush=True)
     return [out / f"{c.video.stem}{SUFFIX}" for c in clips]
 
@@ -469,7 +533,22 @@ def main(argv: list[str] | None = None) -> None:
         help="Onset threshold for the head's inhales (default: the checkpoint's "
         f"own, else {HEAD_THRESHOLD}); predictions.json records the value used.",
     )
+    parser.add_argument(
+        "--quality-control",
+        action="store_true",
+        help="Also write each video's quality-control report (<stem>.qc.json): "
+        "label-free measures of its prediction, scores only.",
+    )
+    parser.add_argument(
+        "--qc-reference",
+        type=Path,
+        help="With --quality-control: the checkpoint's reference, to place each "
+        f"measure among its validation windows (default: {REFERENCE} beside the "
+        "checkpoint, when there is one).",
+    )
     args = parser.parse_args(argv)
+    if args.qc_reference is not None and not args.quality_control:
+        raise SystemExit("--qc-reference needs --quality-control")
 
     if args.video is not None:
         args.clips = [video_list(args)]
@@ -496,6 +575,8 @@ def main(argv: list[str] | None = None) -> None:
         workers=args.workers,
         restart=args.restart,
         threshold=args.head_threshold,
+        quality=QualityParams() if args.quality_control else None,
+        reference=args.qc_reference,
     )
     print(f"{len(written)} prediction(s) in {args.out}")
 

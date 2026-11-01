@@ -18,8 +18,10 @@ import torch
 from scipy.signal import butter, sosfiltfilt, welch
 
 from zephyr import features
+from zephyr.evaluate import score_span, truth_events, truth_frame
 from zephyr.evaluation import frame_tolerance_s, match_events
 from zephyr.events import in_spans
+from zephyr.quality_control.metrics import spans
 from zephyr.signal import detect_inhalation_events
 
 RATE_WINDOW_S = 10.0
@@ -403,6 +405,32 @@ def cause_counts(err: pd.DataFrame) -> pd.DataFrame:
 
 
 # --- quality control against the truth ---------------------------------------------------
+
+
+def window_truth(
+    entry: features.ClipEntry, prediction: pd.DataFrame, window_s: float = 30.0
+) -> pd.DataFrame:
+    """The real scores of a prediction (``zephyr predict``'s ``time``, ``signal`` and
+    ``inhale``) against its clip's thermistor, over the whole clip (``whole`` true) and
+    over each window its quality-control report measures: ``whole``, ``start``,
+    ``end`` and ``truth_<metric>``. What the paper checks the label-free scores
+    against; quality control itself never reads it."""
+    truth = (truth_frame(entry), truth_events(entry))
+    times = prediction["time"].to_numpy()
+    signal = prediction["signal"].to_numpy()
+    inhale = times[prediction["inhale"].to_numpy(bool)]
+    whole = (float(times[0]), float(np.nextafter(times[-1], np.inf)))
+    rows = []
+    for span, is_whole in [
+        (whole, True),
+        *((s, False) for s in spans(times, window_s)),
+    ]:
+        scores = score_span(truth, times, signal, inhale, span, whole=is_whole) or {}
+        rows.append(
+            {"whole": is_whole, "start": span[0], "end": span[1]}
+            | {f"truth_{k}": v for k, v in scores.items()}
+        )
+    return pd.DataFrame(rows)
 
 
 def quality_agreement(

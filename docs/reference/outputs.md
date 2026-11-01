@@ -26,6 +26,7 @@ mouse-breathing/
 | `last.pt` | the latest weights, for `--resume` |
 | `epoch-<nnn>.pt` | weights every `save_every` epochs (off by default) |
 | `best_per_clip.json` | each validation clip's scores at `best.pt` |
+| `qc-reference.json` | its quality-control reference, fitted on the validation clips (with `head_thresholds`) |
 | `evaluation.json` | the test scores (below) |
 | `traces/feat-<prefix>.parquet` | each test clip's predicted trace, with `save_traces` or `--save-traces` |
 
@@ -96,8 +97,8 @@ rate_hz = 1 / inhales.diff().median()
 
 ## Quality-control reports
 
-`zephyr quality-control run` writes `<video stem>.qc.json` (the measures and checks,
-whole clip and per window) and `<video stem>.qc.parquet` (time, trace, onset
+`zephyr predict --quality-control` writes `<video stem>.qc.json` (the measures, with a
+reference their percentiles, whole clip and per window) and `<video stem>.qc.parquet` (time, trace, onset
 probability, inhale). See [Quality control](../guides/quality-control.md).
 
 ## The feature cache

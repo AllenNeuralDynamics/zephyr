@@ -31,7 +31,7 @@ uv run zephyr gui my-project/clips.toml --page boxes   # straight to a page
 | 3 Breathing | each clip's events and detector, bad stretches and clips, with suggestions for every clip; **Auto** gives every clip the default detector | |
 | 4 Train | preprocesses; writes a new experiment (**Auto split** draws sessions into train, validation and test); smoke-runs, runs and resumes it | `preprocess`, `run --save-traces` |
 | 5 Results | a run's scores per test group and clip, a clip's trace against its sensor, the training curves; scores a run on its test groups or another list | `run --evaluate-only`, `evaluate` |
-| 6 Predict | a checkpoint's traces for a clip list or a folder of videos, with the onset probability, the crop and quality control | `clips scan --checkpoint`, `annotate --prepare`, `predict`, `quality-control run` |
+| 6 Predict | a checkpoint's traces for a clip list or a folder of videos, with the onset probability, the crop and quality control (**Quality**: each video's scores beside the checkpoint's validation windows, split at a true F1 you set; a click opens a video and zooms to a window) | `clips scan --checkpoint`, `annotate --prepare`, `predict` (`--quality-control`) |
 
 ## What the app writes
 

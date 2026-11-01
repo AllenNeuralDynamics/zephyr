@@ -24,7 +24,8 @@ the app and its windows):
 - `notebooks/` (marimo) only read results and never train (the one exception,
   `corpus.py`, rebuilds the corpus into a folder of its own); every figure uses
   `notebooks/utils/style.py`. Which runs a report compares is a results manifest
-  (`zephyr-benchmarks/configs/results/`), never a list in a notebook (the quality
+  (`zephyr-benchmarks/configs/results/`; the quality-control report folders it
+  compares are its `[quality]`), never a list in a notebook (the quality
   notebook reads one reports folder, given in the notebook), and what it
   measures beyond `evaluation.json` lives in `zephyr.benchmarks.analysis`; a notebook
   only caches, downloads and draws.
@@ -124,26 +125,35 @@ as the commands.
 
 ## Quality control (zephyr.quality_control)
 
-Judges predictions on videos without a thermistor (not the corpus's `qc` step, which
-scores thermistor sessions). Both steps take flags, like `zephyr evaluate`.
+Scores predictions on videos without a thermistor (not the corpus's `qc` step, which
+scores thermistor sessions). Reports come from `zephyr predict --quality-control`, in
+the prediction's own pass; `zephyr quality-control reference` makes a checkpoint's
+reference.
 
-- No measure reads a thermistor; a labelled clip's real scores go only into the report's
-  separate `truth` block, which exists to check the measures.
+- A report never reads a thermistor and is the same whether or not the video has one:
+  it holds no truth. Checking the measures against the truth is the paper's analysis
+  (zephyr-benchmarks), never the core's; the reference, fitted on labelled validation
+  clips, is the only place quality control reads a thermistor.
 - A measure reads only the network's ordinary output (trace, onset probability);
   never add one that needs more network passes or the video (dropout draws, shifted
   crops, other checkpoints, embeddings and image statistics were tried and dropped).
 - A reference belongs to one checkpoint (SHA-256; a run refuses another's) and is
-  calibrated at its onset threshold, which measures use too (a run refuses a reference
-  made at another). Its
+  calibrated at its onset threshold, which measures use too (predict refuses a
+  reference made at another). Its
   `calibration` clips must be labelled and held out by the checkpoint (refused
   otherwise); never calibrate on a test set the measures are then checked on. Training
-  does not write one.
-- Judge rates only from above (`breathing_ceiling_hz`): never threshold a rate
+  writes one (`qc-reference.json` beside `best.pt`) from the predictions its onset
+  threshold is chosen on, so only from `[fold.val]` clips, never a test group.
+- Reports give scores, never a verdict: each measure's value and, with a reference,
+  its percentile among the checkpoint's validation windows (which the reference keeps,
+  each beside its true scores). Never add a pass bound, a check or a combined pass/fail:
+  a validation distribution has almost no bad windows to draw a line from.
+- Measure rates only from above (`breathing_ceiling_hz`): never threshold a rate
   distribution, which changes with running, odours and task.
-- A measure is only trusted once checked against held-out animals
-  (`notebooks/quality_control.py`). Its pass bound lives in `QualityThresholds`, chosen
-  on validation animals only (never a test set); every report keeps the value beside
-  the pass/fail, and never fails a video as a whole.
+- Perturbations of the input (noise added to the frames) are a paper analysis in
+  zephyr-benchmarks (`probe`), never a quality-control measure.
+- A measure is only trusted once checked against held-out animals and a null of known
+  failures (`notebooks/quality_control.py`).
 
 ## Reference configs
 

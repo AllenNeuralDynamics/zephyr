@@ -941,27 +941,8 @@ class QualityReference(_QualityMachine):
         return self.calibration[0].clip_list().preprocess
 
 
-class QualityThresholds(_Model):
-    """The pass bound of each measure (``zephyr.quality_control.metrics.MEASURES``
-    says which way is good); ``nan`` (or None): not checked. The defaults pass 99% of the 30 s
-    windows with a true inhale F1 of at least 0.9 on the corpus's validation animals
-    (Zephyr ``full-gray-sched-v3``), each on its own, rounded the lenient way; they
-    were never tuned on a test set. Bounds apply to a window and to a whole video
-    alike."""
-
-    expected_precision: float | None = 0.89
-    head_trace_f1: float | None = 0.91
-    peak_prob: float | None = 0.95
-    ambiguous_peak_frac: float | None = 0.073
-    onset_background: float | None = 0.063
-    inhale_phase_spread: float | None = 0.36
-    alternation_break_frac: float | None = 0.084
-    flat_breath_frac: float | None = 0.024
-    too_fast_frac: float | None = 0.011
-
-
 class QualityParams(_Model):
-    """How each video's prediction is judged; written into every report."""
+    """How each video's prediction is measured; written into every report."""
 
     window_s: float = Field(30.0, gt=0)
     """Width of the windows a video is also reported in (equal widths, rounded)."""
@@ -973,37 +954,6 @@ class QualityParams(_Model):
     """Onset-probability peaks from here up to the head's threshold are ambiguous."""
     flat_ratio: float = Field(0.25, gt=0, lt=1)
     """A breath swinging less than this share of the clip's median breath is flat."""
-    thresholds: QualityThresholds = QualityThresholds()
-    """Each report keeps every value and adds its pass/fail; no video is failed as a
-    whole: which checks matter is the reader's call."""
-    save_traces: bool = True
-    """Also write each video's trace, onset probability and inhales (parquet)."""
-
-
-class QualityControl(_QualityMachine):
-    """The flags of ``zephyr quality-control run``: which videos, which network, where
-    reports go, and how they are judged."""
-
-    checkpoint: RelPath
-    """The network whose predictions are judged (one ordinary inference per video)."""
-    reference: RelPath | None = None
-    """The checkpoint's reference (``qc-reference.json`` beside it after training, or
-    ``zephyr quality-control reference``); without it the measures that need one are
-    left out."""
-    features_dir: RelPath
-    output_dir: RelPath
-    """One ``<video stem>.qc.json`` per video lands here."""
-    clips: list[QualitySelection] = Field(min_length=1)
-    params: QualityParams = QualityParams()
-
-    @model_validator(mode="after")
-    def _check(self) -> "QualityControl":
-        _one_recipe(self.clips)
-        return self
-
-    @property
-    def preprocess(self) -> PreprocessParams:
-        return self.clips[0].clip_list().preprocess
 
 
 # ---------------------------------------------------------------------------

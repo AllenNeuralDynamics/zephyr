@@ -77,12 +77,10 @@ again (after moving a crop, or with another checkpoint) or only the new ones.
 ## Judge the predictions
 
 !!! warning "Experimental"
-    Quality control (**judge them**) is under active development. Its measures, their
-    pass bounds and the report format may change, and they are not yet validated on
-    enough held-out animals to be relied on. Use its checks as a hint about where to look, not as a
-    verdict on a prediction.
+    Quality control (**judge them**) is under active development. Its measures and the
+    report format may change. It reports scores, never a verdict.
 
-With no sensor, nothing can be scored, but **quality control** judges each prediction
+With no sensor, nothing can be scored, but **quality control** measures each prediction
 from the network's own output. On the **Clip list** tab, choose `clips.toml`, set
 **Groups** to `behavior_806527_2025-10-24_18-04-57` (the test animal's session) and **Into predictions/** to `held-out`,
 and tick **judge them (quality control)**. The app then runs `zephyr quality-control
@@ -90,15 +88,14 @@ run` after predicting. Quality control refuses clips the checkpoint trained on.
 
 ![Quality control on a held-out session](../assets/screens/predict-qc.webp){ .screen }
 
-Above the trace, each measure is shown for the whole video with pass or fail, and
-windows that fail a measure are shaded. Here the onset head's inhales agree less with
-the peaks of its own trace (`head_trace_f1`), and more of its peaks are ambiguous
-(`ambiguous_peak_frac`), than the default bounds allow, while the rhythm measures pass.
-That is what a network trained on four short clips for 40 epochs looks like: its
-inhales are mostly right (head inhale F1 0.89 on this animal) but less certain. `expected_precision` reads n/a because no
-reference was made for this checkpoint. A video is never failed as a whole: you decide
-which measures matter. See [Quality control](../guides/quality-control.md) for what each
-measure means and how its bound was chosen.
+Above the trace, each measure is shown for the whole video and, when the checkpoint has
+a reference, its percentile among the checkpoint's validation windows. Nothing is
+passed or failed: a network trained on four short clips for 40 epochs gets mostly right
+inhales here (head inhale F1 0.89 on this animal) but less certain ones, and the scores
+show where. `expected_precision` reads n/a because no reference was made for this
+checkpoint. The **Quality** tab beside the videos shows every video's scores at once,
+and opens the one you click. See [Quality control](../guides/quality-control.md) for
+what each measure means.
 
 ??? example "The same from the command line"
 
@@ -111,8 +108,9 @@ measure means and how its bound was chosen.
     uv run zephyr predict --checkpoint best.pt \
         --clips mouse-breathing/predictions/new-animals/videos.toml \
         --out mouse-breathing/predictions/new-animals --cache mouse-breathing/cache
-    uv run zephyr quality-control run --checkpoint best.pt --clips mouse-breathing/clips.toml \
-        --groups behavior_806527_2025-10-24_18-04-57 --cache mouse-breathing/cache --out mouse-breathing/predictions/held-out
+    uv run zephyr predict --checkpoint best.pt --clips mouse-breathing/clips.toml \
+        --groups behavior_806527_2025-10-24_18-04-57 --out mouse-breathing/predictions/held-out \
+        --quality-control
     ```
 
 ## What next

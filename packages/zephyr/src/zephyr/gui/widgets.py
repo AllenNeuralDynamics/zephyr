@@ -406,6 +406,8 @@ class TraceView(QtWidgets.QWidget):
         self.onset_plot.showGrid(x=True, alpha=0.15)
         self.onset_plot.hide()
         plots.addWidget(self.onset_plot)
+        self.plots = plots
+        """The column of plots, on one time axis; a page may add one under them."""
         layout.addLayout(plots, 1)
         self.cursor = pg.InfiniteLine(
             angle=90, movable=True, pen=pg.mkPen(THEME["muted"], width=1)
@@ -428,7 +430,6 @@ class TraceView(QtWidgets.QWidget):
         inhale: np.ndarray | None = None,
         truth_inhale: np.ndarray | None = None,
         entry: ClipEntry | None = None,
-        bad_spans: list[tuple[float, float]] = (),
         onset: np.ndarray | None = None,
         threshold: float | None = None,
     ) -> None:
@@ -444,14 +445,6 @@ class TraceView(QtWidgets.QWidget):
         plot = self.plot
         plot.clear()
         self.legend.clear()
-        for start, end in bad_spans:
-            region = pg.LinearRegionItem(
-                (start - self._offset, end - self._offset),
-                movable=False,
-                brush=pg.mkBrush(217, 83, 79, 40),
-            )
-            region.setZValue(-10)
-            plot.addItem(region)
         if truth is not None:
             plot.plot(self._t, _z(truth), name="sensor", pen=pg.mkPen(THEME["raw"]))
         plot.plot(

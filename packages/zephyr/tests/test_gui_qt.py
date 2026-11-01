@@ -594,6 +594,10 @@ class AppTests(unittest.TestCase):
         with mock.patch.object(predict.jobs, "run") as started:
             predict.predict_videos()  # from the videos: nothing cached
             self.assertNotIn("--cache", started.call_args.args[0].argv)
+            self.assertNotIn("--quality-control", started.call_args.args[0].argv)
+            predict.video_qc.setChecked(True)
+            predict.predict_videos()
+            self.assertIn("--quality-control", started.call_args.args[0].argv)
             predict.video_cache.setChecked(True)
             started.reset_mock()
             predict.predict_videos()  # asks first (the patched question declines)
@@ -717,15 +721,84 @@ class AppTests(unittest.TestCase):
         pd.DataFrame(
             {"time": t, "signal": np.sin(t), "onset": 0.0, "inhale": False}
         ).to_parquet(folder / "clip.prediction.parquet")
-        checks = {"expected_precision": None, "too_fast_frac": True}
-        summary = {"expected_precision": None, "too_fast_frac": 0.0, "checks": checks}
-        window = {"start": 0.0, "end": 10.0, "checks": {"too_fast_frac": False}}
-        report = {"summary": summary, "windows": [window]}
+        position = {"peak_prob": None, "onset_background": 40.0}
+        summary = {
+            "peak_prob": None,
+            "onset_background": 0.0,
+            "percentiles": position,
+        }
+        report = {
+            "duration_s": 10.0,
+            "summary": summary,
+            "windows": [{"start": 0.0, "end": 10.0}],
+        }
         (folder / "clip.qc.json").write_text(json.dumps(report))
         predict = self.go("Predict")
         predict.fill_folders(folder)
-        self.assertIn("expected_precision</b> n/a n/a", predict.verdict.text())
-        self.assertIn("1 of 1 windows fail", predict.verdict.text())
+        self.assertIn("peak_prob</b> n/a", predict.verdict.text())
+        self.assertIn("onset_background</b> 0 (40th pct)", predict.verdict.text())
+        self.assertNotIn("fail", predict.verdict.text())
+
+    def test_predict_sets_each_video_beside_the_reference_and_opens_it(self):
+        from zephyr.config import QualityParams
+        from zephyr.quality_control.metrics import Video, find_events
+        from zephyr.quality_control.report import quality_report, write_report
+
+        folder = self.root / "predictions" / "scored"
+        folder.mkdir(parents=True)
+        reference = self.root / "qc-reference.json"
+        windows = [
+            {"peak_prob": p, "head_trace_f1": 0.98, "truth_inhale_f1": f1}
+            for p, f1 in ((0.99, 0.97), (0.98, 0.95), (0.7, 0.3))
+        ]
+        reference.write_text(
+            json.dumps(
+                {
+                    "checkpoint_sha256": "a" * 64,
+                    "onset_calibration": None,
+                    "validation": {"window_s": 30.0, "windows": windows},
+                }
+            )
+        )
+        (folder / "predictions.json").write_text(
+            json.dumps(
+                {
+                    "checkpoint": str(self.root / "best.pt"),
+                    "checkpoint_sha256": "a" * 64,
+                    "head_threshold": None,
+                    "quality_control": {"reference": str(reference), "params": {}},
+                }
+            )
+        )
+        for stem in ("first", "second"):
+            t = np.arange(0, 90, 1 / 60)
+            signal = np.sin(2 * np.pi * 3 * t)
+            onset = np.exp(-(((3 * t) % 1.0 - 0.25) ** 2) / 0.01)
+            video = Video(t, signal, onset, find_events(t, signal, onset))
+            inhale = np.zeros(len(t), bool)
+            inhale[video.events.inhale] = True
+            pd.DataFrame(
+                {"time": t, "signal": signal, "onset": onset, "inhale": inhale}
+            ).to_parquet(folder / f"{stem}.prediction.parquet")
+            write_report(
+                quality_report(video, QualityParams(), None, True, {}),
+                folder / f"{stem}.qc.json",
+            )
+        predict = self.go("Predict")
+        predict.fill_folders(folder)
+        self.assertEqual(
+            [r.kind for r in predict._rows], ["good", "poor", "video", "video"]
+        )
+        predict.good_f1.setValue(0.2)  # every validation window counts as good
+        self.assertEqual(
+            [r.kind for r in predict._rows], ["good", "poor", "video", "video"]
+        )
+        self.assertEqual(len(predict._rows[1].values), 0)
+        self.assertEqual(predict.qc_table.rowCount(), 2)
+        predict.select_video("second")
+        self.assertEqual(predict.videos.currentItem().text(), "second")
+        self.assertTrue(predict.strip.isVisibleTo(predict))
+        self.assertEqual(predict._stem, "second")
 
     def test_breathing_auto_makes_the_default_the_lists(self):
         editor = self.go("Breathing").editor

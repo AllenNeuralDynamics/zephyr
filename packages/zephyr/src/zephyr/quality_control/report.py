@@ -1,9 +1,11 @@
-"""Build a checkpoint's reference, and write one quality report per video.
+"""Build a checkpoint's reference, and one quality report per predicted video.
 
-A report (``<video stem>.qc.json``) holds the video's measures over the whole clip
-(``summary``) and per window (``windows``); a labelled clip also gets a ``truth`` block
-(its real scores, never used by a measure) so the measures can be checked against it.
-``<video stem>.qc.parquet`` keeps the trace, onset probability and inhales.
+A reference (:func:`reference_record`) is fitted on labelled clips the checkpoint never
+trained on: the only place quality control reads a thermistor. A report
+(:func:`quality_report`, written by ``zephyr predict --quality-control`` as
+``<video stem>.qc.json``) holds every measure over the whole clip and per window and,
+with a reference, each one's percentile among its validation windows: scores from the
+prediction alone, never a verdict, the same whether or not the video has a thermistor.
 """
 
 import json
@@ -17,7 +19,6 @@ import torch
 
 from .. import features
 from ..config import (
-    QualityControl,
     QualityParams,
     QualityReference,
     ResolvedClip,
@@ -29,22 +30,27 @@ from ..evaluate import (
     has_onset_head,
     load_checkpoint,
     refuse_leaked,
+    score_span,
     truth_events,
     truth_frame,
 )
-from ..evaluation import frame_tolerance_s, match_events, score_clip
+from ..evaluation import frame_tolerance_s, match_events
 from ..events import in_spans
 from ..features import ClipEntry
 from ..infer import predict_clip
-from ..signal import BREATHING_SIGNAL_COLUMN, TIME_COLUMN
-from .metrics import Video, check, find_events, measure, spans
-from .reference import Reference, checkpoint_hash, fit_calibration, jsonable
+from .metrics import MEASURES, Video, find_events, measure, spans
+from .reference import (
+    Reference,
+    checkpoint_hash,
+    fit_calibration,
+    jsonable,
+    percentiles,
+)
 
 AMP = {"bf16": torch.bfloat16, "fp16": torch.float16, "off": None}
-SETTINGS = "quality-control.json"
-"""The run's settings, written once into its output folder."""
+REFERENCE = "qc-reference.json"
+"""The reference training writes beside ``best.pt``."""
 REPORT = ".qc.json"
-TRACES = ".qc.parquet"
 
 
 def machine(config, device: str | None, amp: str | None) -> tuple[str, str]:
@@ -117,18 +123,59 @@ def measure_reference(
     refuse_leaked([state], unseen)
     threshold = checkpoint_head_threshold(state)
 
-    peaks, real = [], []
+    predicted = []
     entries = features.require(unseen, recipe, features_dir)
     for k, entry in enumerate(entries):
         print(f"[calibration {k + 1}/{len(entries)}] {entry.clip_id}", flush=True)
         signal, onset = _predict(model, mean, std, entry, inference, torch_device, amp)
-        times = np.load(entry.times)
+        predicted.append((entry, np.load(entry.times), signal, onset))
+    record = reference_record(checkpoint, state, predicted, threshold, QualityParams())
+    write_reference(record, out)
+    return record
+
+
+def reference_record(
+    checkpoint: Path,
+    state: dict,
+    predicted: list[tuple[ClipEntry, np.ndarray, np.ndarray, np.ndarray]],
+    threshold: float,
+    params: QualityParams,
+) -> dict:
+    """The reference of *checkpoint* (its loaded *state*) from its *predicted* labelled
+    clips (each entry, output times, trace and onset probability), its inhales at
+    onset *threshold*: the head's calibration, then every measure on the clips'
+    *params*-wide windows (with that calibration) beside the windows' true scores."""
+    peaks, real, videos = [], [], []
+    for entry, times, signal, onset in predicted:
+        n = min(len(times), len(signal), len(onset))
+        times, signal, onset = times[:n], signal[:n], onset[:n]
         events = find_events(times, signal, onset, threshold)
         p, r = _head_matches(entry, times, onset, events.inhale)
         peaks.append(p)
         real.append(r)
-
-    record = jsonable(
+        videos.append((entry, Video(times, signal, onset, events)))
+    calibration = fit_calibration(np.concatenate(peaks), np.concatenate(real))
+    reference = Reference("", calibration, {})
+    windows = []
+    for entry, video in videos:
+        truth = (truth_frame(entry), truth_events(entry))
+        for span in spans(video.times, params.window_s):
+            values = measure(
+                video,
+                span,
+                ceiling_hz=params.breathing_ceiling_hz,
+                ambiguous_floor=params.ambiguous_floor,
+                reference=reference,
+                flat_ratio=params.flat_ratio,
+            )
+            inhale_s = video.times[video.events.inhale]
+            scores = score_span(truth, video.times, video.signal, inhale_s, span)
+            windows.append(
+                {"clip_id": entry.clip_id, "start": span[0], "end": span[1]}
+                | values
+                | {f"truth_{k}": v for k, v in (scores or {}).items()}
+            )
+    return jsonable(
         {
             "checkpoint": canonical(checkpoint),
             "checkpoint_sha256": checkpoint_hash(checkpoint),
@@ -136,16 +183,17 @@ def measure_reference(
             "head_threshold": threshold,
             "created": datetime.now(UTC).isoformat(timespec="seconds"),
             "zephyr_version": version("zephyr"),
-            "calibration_clips": [c.name for c in unseen],
-            "onset_calibration": fit_calibration(
-                np.concatenate(peaks), np.concatenate(real)
-            ),
+            "calibration_clips": [entry.clip_id for entry, _ in videos],
+            "onset_calibration": calibration,
+            "validation": {"window_s": params.window_s, "windows": windows},
         }
     )
+
+
+def write_reference(record: dict, out: Path) -> None:
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(record, indent=1))
     print(f"wrote {out}")
-    return record
 
 
 def build_reference(config: QualityReference, device: str, amp: str) -> dict:
@@ -166,82 +214,34 @@ def build_reference(config: QualityReference, device: str, amp: str) -> dict:
 # --- one report per video ----------------------------------------------------------------
 
 
-def _truth(truth, times, signal, inhale_s, span, whole) -> dict | None:
-    """The clip's real scores over *span*, as ``zephyr evaluate`` scores a clip (over
-    the *whole* clip exactly so: every true event, as it passes them). *truth* is the
-    clip's thermistor frame and cached event set."""
-    thermistor, found = truth
-    t = thermistor[TIME_COLUMN].to_numpy()
-    rows = (t >= span[0] - 1.0) & (t < span[1] + 1.0)
-    mask = (times >= span[0]) & (times < span[1])
-    if rows.sum() < 2 or mask.sum() < 2:
-        return None
-    inhale, exhale = np.asarray(found.inhale, float), np.asarray(found.exhale, float)
-    if not whole:
-        inhale = inhale[(inhale >= span[0]) & (inhale < span[1])]
-        exhale = exhale[(exhale >= span[0]) & (exhale < span[1])]
-        if inhale_s is not None:
-            inhale_s = inhale_s[(inhale_s >= span[0]) & (inhale_s < span[1])]
-    predicted = pd.DataFrame(
-        {
-            TIME_COLUMN: times[mask].astype(np.float64),
-            BREATHING_SIGNAL_COLUMN: signal[mask].astype(np.float64),
-        }
-    )
-    score = score_clip(
-        thermistor[rows],
-        predicted,
-        truth_onset_times_s=inhale,
-        truth_offset_times_s=exhale,
-        predicted_onset_times_s=inhale_s,
-        excluded_s=found.excluded,
-    )
-    return score.to_dict()
+def load_reference(path: Path, sha: str, threshold: float) -> Reference:
+    """The reference at *path*, refused unless it was made for the checkpoint of
+    SHA-256 *sha* at its onset *threshold*."""
+    reference = Reference.load(path)
+    if reference.checkpoint_sha256 != sha:
+        raise SystemExit(f"{path} was made for another checkpoint")
+    calibrated_at = reference.record.get("head_threshold")
+    if calibrated_at is not None and calibrated_at != threshold:
+        raise SystemExit(
+            f"{path} calibrated the head's inhales at onset threshold {calibrated_at}, "
+            f"not {threshold}; build it again"
+        )
+    return reference
 
 
-def _video(
-    model,
-    mean,
-    std,
-    entry: ClipEntry,
-    config: QualityControl,
-    device,
-    amp,
-    reference: Reference | None,
-    head: bool,
-    threshold: float,
-) -> tuple[Video, np.ndarray]:
-    """The network's prediction for *entry*: one ordinary pass (the head's inhales at
-    the checkpoint's onset *threshold*)."""
-    signal, onset = _predict(model, mean, std, entry, config, device, amp)
-    times = np.load(entry.times)
-    judged = onset if head else None
-    video = Video(
-        times=times,
-        signal=signal,
-        onset=judged,
-        events=find_events(times, signal, judged, threshold),
-    )
-    return video, onset
-
-
-def report(
-    clip: ResolvedClip,
-    entry: ClipEntry,
+def quality_report(
     video: Video,
     params: QualityParams,
     reference: Reference | None,
     head: bool,
     meta: dict,
 ) -> dict:
-    """One video's report: its measures over the whole clip and per window."""
-    truth = None
-    # Truth only where the thermistor is at hand: QC never needs it, so a copy of a
-    # dataset without its thermistors is judged all the same.
-    if entry.thermistor is not None and entry.thermistor.is_file():
-        truth = (truth_frame(entry), truth_events(entry))
+    """One video's report from its prediction alone: every measure over the whole clip
+    and per window, with their percentiles among the *reference*'s validation windows
+    when it has them. Whatever else the video comes with, the report is the same."""
+    validation = reference.validation if reference is not None else None
 
-    def scores(span, whole=False):
+    def scores(span) -> dict:
         out = measure(
             video,
             span,
@@ -250,140 +250,30 @@ def report(
             reference=reference,
             flat_ratio=params.flat_ratio,
         )
-        out["checks"] = check(out, dump(params.thresholds))
-        if truth is not None:
-            inhale_s = video.times[video.events.inhale] if head else None
-            out["truth"] = _truth(
-                truth, video.times, video.signal, inhale_s, span, whole
-            )
+        if validation:
+            out["percentiles"] = percentiles(out, validation, MEASURES)
         return out
 
-    whole_span = (float(video.times[0]), float(np.nextafter(video.times[-1], np.inf)))
-    windows = [
-        {"start": a, "end": b} | scores((a, b))
-        for a, b in spans(video.times, params.window_s)
-    ]
+    whole = (float(video.times[0]), float(np.nextafter(video.times[-1], np.inf)))
     return jsonable(
         {
-            "clip_id": entry.clip_id,
-            "video": canonical(clip.video),
-            "recording": entry.recording,
-            "labelled": entry.thermistor is not None,
             "inhale_events": "onset head" if head else "DSP on the trace",
             "duration_s": float(video.times[-1] - video.times[0]),
             **meta,
-            "summary": scores(whole_span, whole=True),
-            "windows": windows,
+            "params": dump(params),
+            "summary": scores(whole),
+            "windows": [
+                {"start": a, "end": b} | scores((a, b))
+                for a, b in spans(video.times, params.window_s)
+            ],
         }
     )
 
 
-def traces(video: Video, onset: np.ndarray) -> pd.DataFrame:
-    """One row per output sample: time, trace, onset probability and whether an
-    inhale was found there."""
-    inhale = np.zeros(len(video.times), bool)
-    inhale[video.events.inhale] = True
-    return pd.DataFrame(
-        {
-            "time": video.times,
-            "signal": video.signal,
-            "onset": onset,
-            "inhale": inhale,
-        }
-    )
-
-
-def _write_settings(
-    config: QualityControl, checkpoint_sha: str, threshold: float | None
-) -> None:
-    """Record the run's settings; refuse a folder holding reports made otherwise."""
-    settings = {
-        "checkpoint": canonical(config.checkpoint),
-        "checkpoint_sha256": checkpoint_sha,
-        "head_threshold": threshold,
-        "reference": canonical(config.reference) if config.reference else None,
-        "params": dump(config.params),
-    }
-    path = config.output_dir / SETTINGS
-    if path.is_file():
-        before = json.loads(path.read_text())
-        if before != settings:
-            raise SystemExit(
-                f"{config.output_dir} holds reports made with other settings "
-                f"({path}); use a new output_dir"
-            )
-        return
-    config.output_dir.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(settings, indent=2))
-
-
-def run(config: QualityControl, device: str, amp: str) -> list[Path]:
-    """Write a report for every selected video that has none yet; returns them all."""
-    torch_device = torch.device(device)
-    model, mean, std, state = load_checkpoint(config.checkpoint, torch_device)
-    head = has_onset_head([state])
-    threshold = checkpoint_head_threshold(state)
-    sha = checkpoint_hash(config.checkpoint)
-    reference = None
-    if config.reference is not None:
-        reference = Reference.load(config.reference)
-        if reference.checkpoint_sha256 != sha:
-            raise SystemExit(
-                f"{config.reference} was made for another checkpoint than "
-                f"{config.checkpoint}"
-            )
-        calibrated_at = reference.record.get("head_threshold")
-        if calibrated_at is not None and calibrated_at != threshold:
-            raise SystemExit(
-                f"{config.reference} calibrated the head's inhales at onset threshold "
-                f"{calibrated_at}, not {config.checkpoint}'s {threshold}; build it again"
-            )
-    clips = [c for s in config.clips for c in s.resolved()]
-    stems = [c.source.stem for c in clips]
-    repeated = sorted({s for s in stems if stems.count(s) > 1})
-    if repeated:
-        raise SystemExit(
-            f"videos share a file name, so their reports would: {repeated}"
-        )
-    refuse_leaked([state], clips)
-    entries = features.require(clips, config.preprocess, config.features_dir)
-    _write_settings(config, sha, threshold if head else None)
-    meta = {
-        "checkpoint": canonical(config.checkpoint),
-        "checkpoint_sha256": sha,
-        "reference": canonical(config.reference) if config.reference else None,
-        "head_threshold": threshold if head else None,
-        "zephyr_version": version("zephyr"),
-        "params": dump(config.params),
-    }
-    written = []
-    for k, (clip, entry) in enumerate(zip(clips, entries, strict=True)):
-        out = config.output_dir / f"{clip.source.stem}{REPORT}"
-        written.append(out)
-        if out.is_file():
-            continue
-        print(f"[{k + 1}/{len(clips)}] {entry.clip_id}", flush=True)
-        video, onset = _video(
-            model,
-            mean,
-            std,
-            entry,
-            config,
-            torch_device,
-            amp,
-            reference,
-            head,
-            threshold,
-        )
-        result = report(clip, entry, video, config.params, reference, head, meta)
-        if config.params.save_traces:
-            traces(video, onset).to_parquet(
-                config.output_dir / f"{clip.source.stem}{TRACES}", index=False
-            )
-        part = out.with_name(out.name + ".part")
-        part.write_text(json.dumps(result, indent=1))
-        part.replace(out)
-    return written
+def write_report(report: dict, path: Path) -> None:
+    part = path.with_name(path.name + ".part")
+    part.write_text(json.dumps(report, indent=1))
+    part.replace(path)
 
 
 # --- reading reports back ------------------------------------------------------------------
@@ -391,26 +281,17 @@ def run(config: QualityControl, device: str, amp: str) -> list[Path]:
 
 def load_reports(folder: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Every report in *folder*: one row per video (its ``summary``) and one per window,
-    each with the report's identity; checks become ``ok_<measure>`` columns and
-    ``truth`` scores ``truth_<metric>`` columns."""
+    each with the video's ``stem``; percentiles become ``pct_<measure>`` columns."""
 
     def flat(row: dict) -> dict:
-        truth = row.pop("truth", None) or {}
-        checks = row.pop("checks", None) or {}
-        return (
-            row
-            | {f"ok_{k}": v for k, v in checks.items()}
-            | {f"truth_{k}": v for k, v in truth.items()}
-        )
+        row = dict(row)
+        position = row.pop("percentiles", None) or {}
+        return row | {f"pct_{k}": v for k, v in position.items()}
 
     videos, windows = [], []
     for path in sorted(Path(folder).glob(f"*{REPORT}")):
         data = json.loads(path.read_text())
-        ident = {
-            "stem": path.name.removesuffix(REPORT),
-            "clip_id": data["clip_id"],
-            "recording": data["recording"],
-        }
+        ident = {"stem": path.name.removesuffix(REPORT)}
         videos.append(
             ident | {"duration_s": data["duration_s"]} | flat(data["summary"])
         )

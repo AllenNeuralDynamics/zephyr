@@ -11,6 +11,7 @@ CLI
     zephyr-benchmarks pixel|facemap|timing <experiment.toml> [--fold <name>] ...
     zephyr-benchmarks collect --runs <dir>
     zephyr-benchmarks occlusion --checkpoint <best.pt> --clips <list.toml>... --cache <dir> --out <file.npz>
+    zephyr-benchmarks probe --checkpoint <best.pt> --clips <list.toml>... --cache <dir> --out <dir>
 """
 
 import argparse
@@ -47,6 +48,12 @@ def _occlusion(args: list[str]) -> None:
     occlusion.main(args)
 
 
+def _probe(args: list[str]) -> None:
+    from . import probe
+
+    probe.main(args)
+
+
 COMMANDS = {
     "run": _run,
     "evaluate": _evaluate,
@@ -55,6 +62,7 @@ COMMANDS = {
     "timing": _collect("timing"),
     "collect": _collect("collect"),
     "occlusion": _occlusion,
+    "probe": _probe,
 }
 
 

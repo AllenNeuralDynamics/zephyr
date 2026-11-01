@@ -4,10 +4,10 @@ With validation (``[fold.val]``, scored whole, or ``val_fraction > 0`` of every 
 clip) each epoch reports ``val loss/corr`` (windowed, like the training loss) and, every
 ``score_every`` epochs, ``xcorr``/``f1`` from full-clip predictions, which select the
 checkpoint and stop the run early; ``head_thresholds`` then picks ``best.pt``'s onset
-threshold on the ``val`` clips. Everything that shapes
-a run comes from a :class:`~zephyr.config.Fold`; the seed and machine are the caller's
-(see :mod:`zephyr.run`). The network is :data:`ZEPHYR` unless a caller passes another
-:class:`Architecture`.
+threshold on the ``val`` clips and writes its ``qc-reference.json`` from the same
+predictions. Everything that shapes a run comes from a :class:`~zephyr.config.Fold`;
+the seed and machine are the caller's (see :mod:`zephyr.run`). The network is
+:data:`ZEPHYR` unless a caller passes another :class:`Architecture`.
 """
 
 import json
@@ -28,7 +28,7 @@ from zephyr.augment import AugmentConfig
 from zephyr.model import BreathingLoss, BreathingNet
 
 from . import features
-from .config import OUTPUT_FS, Fold, TrainParams, canonical, dump
+from .config import OUTPUT_FS, Fold, QualityParams, TrainParams, canonical, dump
 from .dataset import (
     EpochRangeSampler,
     WindowDataset,
@@ -44,6 +44,7 @@ from .evaluate import (
 from .evaluation import EVENT_TOLERANCE_FRAMES
 from .features import ClipEntry
 from .infer import predict_clip
+from .quality_control import report as quality
 from .signal import detect_inhalation_events
 from .validation import event_f1, zero_lag_correlation
 
@@ -306,8 +307,11 @@ def settle_head_threshold(
 ) -> dict:
     """Choose the onset threshold of the checkpoint at *path* on its validation clips
     *entries* (``None``: the fold has none, so it keeps :data:`HEAD_THRESHOLD`) over
-    ``params.head_thresholds``, and store it in the checkpoint as ``head_threshold``."""
+    ``params.head_thresholds``, and store it in the checkpoint as ``head_threshold``;
+    with validation clips, also write the checkpoint's quality-control reference from
+    the same predictions (:func:`zephyr.quality_control.report.reference_record`)."""
     model, mean, std, state = load_checkpoint(path, device)
+    predicted = []
     if entries is None:
         chosen = {
             "value": HEAD_THRESHOLD,
@@ -317,7 +321,7 @@ def settle_head_threshold(
     else:
         clips = []
         for entry in entries:
-            _, onset = predict_clip(
+            signal, onset = predict_clip(
                 model,
                 entry,
                 mean,
@@ -330,6 +334,7 @@ def settle_head_threshold(
             times = np.load(entry.times)
             n = min(len(times), len(onset))
             clips.append((entry, times[:n], onset[:n]))
+            predicted.append((entry, times[:n], signal[:n], onset[:n]))
         chosen = choose_head_threshold(
             clips, params.head_thresholds, params.head_threshold_f1_tie
         )
@@ -337,6 +342,11 @@ def settle_head_threshold(
     temporary = path.with_suffix(f"{path.suffix}.tmp")
     torch.save(state, temporary)
     temporary.replace(path)
+    if predicted:
+        record = quality.reference_record(
+            path, state, predicted, chosen["value"], QualityParams()
+        )
+        quality.write_reference(record, path.parent / quality.REFERENCE)
     return chosen
 
 
