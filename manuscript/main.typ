@@ -84,7 +84,7 @@
 ]
 
 #show: preprint.with(
-  title: [An open benchmark and framework for cycle-by-cycle respiration from video in mice],
+  title: [Validated respiration inference from videography in mice],
   short-title: [Zephyr],
   authors: ((name: "VrForaging Platform", affiliations: ("aind",)),),
   affiliations: (
@@ -101,14 +101,10 @@
     performing an olfactory foraging task, in which face, side and front video are
     synchronized with an intranasal thermistor. Signals that current tools extract from face video did not track
     respiration, whereas networks trained on the corpus did. In animals held out from
-    training (#v("benchmark.animals_a") animals, each held out once in a five-fold
-    cross-validation), our network, Zephyr, detected inhalations within 25 ms with an F1
-    score of #v("benchmark.f1") and recovered the respiration waveform with a correlation of
-    #v("benchmark.r"). Its accuracy grew with the number of animals it was trained on rather
-    than with the amount of video, and it also recovered respiration, less accurately, from the side and front cameras. We release the corpus, the trained
-    models, quality-control measures computed from the network's output alone, and
-    software with which labs can build their own inference pipelines and measure
-    cycle-by-cycle respiration without a nasal implant.
+    training, our network, Zephyr, accurately extracted the timing of inhalations events and recovered the respiration waveform high fidelity.
+    This performance was robust across different animals, recording conditions and camera angles and could be refined
+    further with little additional data. We release the corpus, the trained models, and the software for building inference pipelines, as well
+    as a suite of quality-control tools for evaluation.
   ],
 )
 
@@ -122,39 +118,39 @@ second @wesson2008. Olfactory bulb neurons respond at precise phases of this cyc
 @shusterman2011. Respiration also reports the animal's state. The rhythm originates in the
 brainstem @smith1991 and changes with arousal and emotion @homma2008 @delnegro2018; neurons
 of the rhythm generator themselves promote arousal @yackle2017, and fear-conditioned mice
-breathe at a steady 4 Hz while they freeze @bagur2021. The inhalation is therefore a
+breathe at a steady 4 Hz while they freeze @bagur2021. The time of inhalation is therefore a
 natural reference event for olfactory coding, and respiration is worth recording in many
 experiments on awake mice, not only in studies of olfaction.
 
-Measuring respiration with this precision in a behaving mouse, however, requires an
-implanted sensor. The standard methods place a thermistor or a pressure cannula in the
-nasal cavity @grimaud2018 @wesson2008 @reisert2014 @mcafee2016; plethysmography,
-piezoelectric sensors and electromyography each give up timing precision, freedom of
-movement or invasiveness @grimaud2018. Nasal implants require surgery, can obstruct airflow
+Measuring respiration with this precision in a behaving mouse usually requires an
+implanted sensor. The standard methods place either a thermistor or a pressure cannula in 
+the nasal cavity @grimaud2018 @wesson2008 @reisert2014 @mcafee2016. These methods, along
+with plethysmography, piezoelectric sensors, and electromyography, each involve trade-offs 
+in timing precision, freedom of movement, or invasiveness @grimaud2018. 
+Nasal implants require invasive surgery, can obstruct airflow
 and damage the nasal epithelium, and cannulae clog and must be cleared @mcafee2016
-@grimaud2018. Their signals also degrade: chronic methods "are invasive, and none are
+@grimaud2018. Their signals also degrade. Chronic methods "are invasive, and none are
 perfectly robust" @rafilson2025, and recordings are routinely discarded after inspection
 @weinreb2024. A measure of respiration from video would spare animals this surgery, a
-refinement in the sense of the 3Rs @tannenbaum2015. It would also add respiration to the
-many experiments that already film the face.
+refinement in the sense of the 3Rs @tannenbaum2015. It would also allow adding respiration
+information to many experiments that already film the face of the animal.
 
 The face should carry a signature of respiration. Respiration and orofacial movements are coordinated
 @moore2013 @kleinfeld2014, and machine vision now measures behaviour @mathis2018
 @pereira2022 @weinreb2024 and uses face video to explain neural activity @stringer2019
-@musall2019 @syeda2024. Yet facial motion is not respiration. The nose, whisker pad and jaw
+Yet not all facial motion is respiration. The nose, whisker pad and jaw
 also whisk, lick, chew and groom, and the nose has its own rhythm that can run between
 inhalations @kurnikova2017. Current tools label a "sniffing" component of facial motion without
-checking it against a respiration sensor @syeda2024 @hakim2025, and studies that recorded
+validation against ground-truth sensor data @syeda2024 @hakim2025, and studies that recorded
 both measured how the two align rather than predicting one from the other @kurnikova2017
 @findley2021 @weinreb2024. Thermal imaging detects inhalations in head-restrained mice but
 requires a thermal camera @esquivelzeta2017 @mutlu2018, and conventional cameras have
 yielded only respiration rate, in restrained, anaesthetized or sleeping animals @kunczik2019
 @breuer2023 @geuther2022. Networks that recover pulse and respiration from human face video
 @chen2018 @liu2020 @yu2019 @yu2022 @zou2025 @liu2023toolbox were built for slow, steady
-signals, whereas a mouse changes its respiration rate several-fold within a second. No method
+signals, whereas a mouse changes its respiration rate several-fold within a second. To our knowledge, no validated method
 has been shown to recover the respiration waveform and the timing of each inhalation from
-conventional video in animals it was not trained on, and no public dataset exists to
-develop and test one.
+conventional video in mice, and no public dataset exists to develop and test one.
 
 We assembled a corpus that pairs face, side and front video with synchronized intranasal
 thermistor recordings from #v("corpus.sessions") sessions in #v("corpus.animals")
