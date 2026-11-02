@@ -64,6 +64,27 @@ jobs:
           git config --global core.safecrlf false
           git diff --exit-code || (echo "Untracked changes found" && exit 1)
 
+  # The browser app (web/) type-checks and builds; its networks come from releases when
+  # the documentation is published, so none is fetched here.
+  web:
+    runs-on: ubuntu-latest
+    name: Browser app builds
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - run: npm ci
+
+      - run: npm run build
+
   # ╔─────────────────────────────────────────────────────────────────╗
   # │   ____        _     _ _        ____      _                      │
   # │  |  _ \ _   _| |__ | (_) ___  |  _ \ ___| | ___  __ _ ___  ___  │

@@ -5,6 +5,9 @@ CNN + TCN network that predicts a mouse's breathing trace from video.
 **Documentation:** <https://allenneuraldynamics.github.io/zephyr/> (installation, a
 tutorial of the app, guides and reference; sources in `docs/`).
 
+**Try it online:** <https://allenneuraldynamics.github.io/zephyr/app/>, the network in
+your browser on your own GPU (sources in `web/`, see `web/README.md`).
+
 This repository is a [uv workspace](https://docs.astral.sh/uv/concepts/projects/workspaces/)
 of three packages:
 
