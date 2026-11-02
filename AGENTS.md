@@ -25,7 +25,8 @@ the app and its windows):
   `corpus.py`, rebuilds the corpus into a folder of its own); every figure uses
   `notebooks/utils/style.py`. Which runs a report compares is a results manifest
   (`zephyr-benchmarks/configs/results/`; sessions without a thermistor it shows are
-  its `[application]`), never a list in a notebook (the quality
+  its `[application]`, and the quality-control report folders it compares its
+  `[quality]`), never a list in a notebook (the quality
   notebook reads one reports folder, given in the notebook), and what it
   measures beyond `evaluation.json` lives in `zephyr.benchmarks.analysis`; a notebook
   only caches, downloads and draws.

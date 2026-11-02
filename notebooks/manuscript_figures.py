@@ -13,7 +13,7 @@ with app.setup:
     import numpy as np
     import pandas as pd
 
-    from utils import architecture, corpus_flow, plots, quality, runs, style, values
+    from utils import architecture, corpus_flow, plots, runs, style, values
     from zephyr.benchmarks import analysis
     from zephyr.corpus.config import DatasetSpec
 
@@ -25,13 +25,6 @@ with app.setup:
         )
     )
     LAYOUT = tomllib.loads((FIGURES / "layout.toml").read_text(encoding="utf8"))
-    # Quality-control reports of the reference checkpoint (Fig. 6).
-    QC = Path(
-        os.environ.get(
-            "ZEPHYR_MANUSCRIPT_QC",
-            runs.REPO / "notebooks/cache/quality-control/full-gray-sched-v3-seed-17",
-        )
-    )
 
 
 @app.cell
@@ -180,6 +173,7 @@ def fig1bc_data(dataset, spec):
         _x = analysis.event_aligned(
             _g, task_session[_signal].to_numpy(), _group["odor"].to_numpy(), _lags
         )
+        _low, _high = analysis.bootstrap_mean(_x)
         _parts.append(
             pd.DataFrame(
                 {
@@ -187,7 +181,8 @@ def fig1bc_data(dataset, spec):
                     "signal": _signal,
                     "lag": _lags,
                     "mean": np.nanmean(_x, 0),
-                    "sem": np.nanstd(_x, 0) / np.sqrt(len(_x)),
+                    "low": _low,
+                    "high": _high,
                     "n": len(_x),
                 }
             )
@@ -609,7 +604,7 @@ def fig3cde(fold_tables, rate_share, test_a):
     _ms = _zephyr.assign(ms=1000 * _zephyr["lag_s"], method="Zephyr")
 
     def _lag_ci(lags):
-        """The mean lag of each fold, then their mean and 95% t-interval over folds."""
+        """The mean lag of each fold, then their mean and 95% bootstrap interval over folds."""
         per_fold = lags.groupby(["method", "fold"], as_index=False)["ms"].mean()
         return analysis.across_folds(per_fold, "ms").iloc[0]
 
@@ -1131,43 +1126,113 @@ def figs7(with_unit):
     return (v_refine,)
 
 
-@app.cell
-def fig7():
-    # Fig. 5: respiration in a task session without a thermistor, from the face video
-    # alone (the manifest's application session, predicted by the all-camera network
-    # of cv_0). a: 30 s of it; b: respiration rate and speed around odor onset per kind
-    # of site; c: respiration rate against speed.
-    _entry = next(e for e in runs.RESULTS.application.session if e.example)
-    _s = runs.application(_entry.session)
-    _grid = _s["times"]
-    _speed = np.interp(_grid, _s["speed"].index.to_numpy(), _s["speed"].to_numpy())
-    _rate = analysis.breathing_rate(_s["head"], _grid)
-    _sites = _s["sites"]
-    _odor = _sites[
-        (_sites["site_label"] == "RewardSite") & _sites["odor_onset_time"].notna()
+@app.function
+def application_task(session: str) -> dict:
+    """One session without a thermistor on the grid of its prediction: ``grid``,
+    ``speed``, ``rate`` (from its inhalations) and its odor sites (``onsets``: ``odor``,
+    ``leave``, ``kind``, ``reward``), beside :func:`runs.application`'s own keys."""
+    s = runs.application(session)
+    grid = s["times"]
+    sites = s["sites"]
+    odor = sites[
+        (sites["site_label"] == "RewardSite") & sites["odor_onset_time"].notna()
     ]
-    _onsets = pd.DataFrame(
+    onsets = pd.DataFrame(
         {
-            "odor": _odor["odor_onset_time"].to_numpy(),
-            "leave": _odor["stop_time"].to_numpy(),
+            "odor": odor["odor_onset_time"].to_numpy(),
+            "leave": odor["stop_time"].to_numpy(),
             "kind": [
                 plots.site_kind(bool(c), bool(r))
-                for c, r in zip(_odor["has_choice"], _odor["has_reward"], strict=True)
+                for c, r in zip(odor["has_choice"], odor["has_reward"], strict=True)
             ],
-            "reward": _odor["reward_onset_time"].to_numpy(),
+            "reward": odor["reward_onset_time"].to_numpy(),
         }
     )
-    _lags = np.arange(-2.0, 5.0 + 1e-9, 1 / 60)
-    _aligned = analysis.odor_aligned(
-        _grid, {"rate": _rate, "speed": _speed}, _onsets, _lags
+    return s | {
+        "grid": grid,
+        "speed": np.interp(grid, s["speed"].index.to_numpy(), s["speed"].to_numpy()),
+        "rate": analysis.breathing_rate(s["head"], grid),
+        "onsets": onsets,
+    }
+
+
+@app.cell
+def fig7(qc_windows):
+    # Fig. 5: respiration in task sessions without a thermistor, from the face video
+    # alone (the manifest's application sessions, predicted by the all-camera network
+    # of cv_0). a: their quality-control scores over 30-s windows, pooled, beside sets
+    # where the network works and known failures, with the two lowest windows on head
+    # vs trace F1 and two at its median marked (each from its own session); b: the
+    # middle seconds of those four windows; c: 15 s of the example session; d, e:
+    # respiration rate and speed around odor onset per kind of site, the example and
+    # the mean over sessions; f, g: respiration rate against speed, the same.
+    _sessions = runs.RESULTS.application.session
+    _entry = next(e for e in _sessions if e.example)
+    _tasks = {e.session: application_task(e.session) for e in _sessions}
+    _s = _tasks[_entry.session]
+    _grid, _speed, _rate, _onsets = _s["grid"], _s["speed"], _s["rate"], _s["onsets"]
+    _threshold = runs.head_threshold(
+        runs.cv_name(runs.RESULTS.application.network, runs.RESULTS.application.fold)
     )
+
+    # a, b: the scores, and what a low and a median window look like
+    _label = next(q.label for q in runs.RESULTS.quality.set if q.role == "application")
+    _apps = qc_windows[qc_windows["set"] == _label].assign(row=_label)
+    _measure = next(iter(style.QC_MEASURES))
+    _marked = analysis.example_windows(_apps, _measure)
+    _marked = _marked.assign(
+        mark=["i", "ii", "iii", "iv"][: len(_marked)],
+        session=_marked["stem"].map(runs.application_session),
+    )
+    _windows = pd.concat(
+        [
+            qc_windows[~qc_windows["role"].isin(["application", "camera"])].assign(
+                row=lambda d: d["set"]
+            ),
+            _apps,
+        ]
+    )
+    _rows = [
+        ("Held-out animals", "working"),
+        ("Dynamic foraging, refined", "working"),
+        (_label, "application"),
+        ("Dynamic foraging, unrefined", "null"),
+        ("Noise 32", "null"),
+    ]
+    fig_5a = plots.quality_sets_panel(
+        *size("fig7", "a"), _windows, _rows, truth=None, marks=_marked
+    )
+    plots.save_panel(fig_5a, FIGURES / "fig7" / "a.svg")
+    _shown_s = 15.0
+    _examples = []
+    for _w in _marked.itertuples():
+        _t = _tasks[_w.session]
+        _mid = _w.start + (_w.end - _w.start) / 2
+        _keep = np.abs(_t["video_time"] - _mid) <= _shown_s / 2
+        _times = _t["times"][_keep]
+        _head = _t["head"]
+        _examples.append(
+            {
+                "title": f"{_w.mark}  {_w.session}",
+                "time": _times - _times[0],
+                "signal": _t["signal"][_keep],
+                "onset": _t["onset"][_keep],
+                "head": _head[(_head >= _times[0]) & (_head <= _times[-1])] - _times[0],
+            }
+        )
+    fig_5b = plots.window_examples_panel(
+        *size("fig7", "b"), _examples, _threshold, style.color("Zephyr")
+    )
+    plots.save_panel(fig_5b, FIGURES / "fig7" / "b.svg")
+
+    # c: a stretch of the example session
     _window = 15.0
     _, _start = task_window(_onsets, _grid[0], _grid[-1], _window)
     _keep = (_grid >= _start) & (_grid <= _start + _window)
     _signal = _s["signal"][_keep]
     _shown = _onsets[(_onsets["leave"] > _start) & (_onsets["odor"] < _start + _window)]
-    fig_5a = plots.task_stretch_panel(
-        *size("fig7", "a"),
+    fig_5c = plots.task_stretch_panel(
+        *size("fig7", "c"),
         pd.DataFrame(
             {
                 "time": _grid[_keep] - _start,
@@ -1190,28 +1255,101 @@ def fig7():
         speed_on_rate=True,
         onset=pd.DataFrame({"time": _grid[_keep] - _start, "p": _s["onset"][_keep]}),
     )
-    plots.save_panel(fig_5a, FIGURES / "fig7" / "a.svg")
-    fig_5b = plots.aligned_panel(*size("fig7", "b"), _aligned)
-    plots.save_panel(fig_5b, FIGURES / "fig7" / "b.svg")
-    _bins = plots.rate_speed_bins(60.0)
-    _counts = analysis.rate_speed_counts(
-        pd.DataFrame({"speed": _speed, "rate": _rate}), *_bins
-    )
-    fig_5c = plots.share_heat_panel(
-        *size("fig7", "c"), analysis.rate_given_speed(_counts), *_bins
-    )
     plots.save_panel(fig_5c, FIGURES / "fig7" / "c.svg")
+
+    # d-g: the task, in the example session and over every session
+    _lags = np.arange(-2.0, 5.0 + 1e-9, 1 / 60)
+    _bins = plots.rate_speed_bins(60.0)
+    _aligned_all, _counts_all = {}, {}
+    for _name, _t in _tasks.items():
+        _aligned_all[_name] = analysis.odor_aligned(
+            _t["grid"], {"rate": _t["rate"], "speed": _t["speed"]}, _t["onsets"], _lags
+        ).assign(unit=_name)
+        _counts_all[_name] = analysis.rate_speed_counts(
+            pd.DataFrame({"speed": _t["speed"], "rate": _t["rate"]}), *_bins
+        )
+    _aligned = _aligned_all[_entry.session]
+    _across = analysis.aligned_across_units(pd.concat(_aligned_all.values()))
+    _one = f"Mouse {_s['subject']}"
+    _every = f"{len({t['subject'] for t in _tasks.values()})} animals"
+    fig_5d = plots.aligned_panel(
+        *size("fig7", "d"), _aligned, title=_one, legend_columns=2
+    )
+    plots.save_panel(fig_5d, FIGURES / "fig7" / "d.svg")
+    fig_5e = plots.aligned_panel(
+        *size("fig7", "e"), _across, legend=False, title=_every
+    )
+    plots.save_panel(fig_5e, FIGURES / "fig7" / "e.svg")
+    fig_5f = plots.share_heat_panel(
+        *size("fig7", "f"),
+        analysis.rate_given_speed(_counts_all[_entry.session]),
+        *_bins,
+        title=_one,
+    )
+    plots.save_panel(fig_5f, FIGURES / "fig7" / "f.svg")
+    fig_5g = plots.share_heat_panel(
+        *size("fig7", "g"),
+        analysis.rate_given_speed_across(list(_counts_all.values())),
+        *_bins,
+        title=_every,
+    )
+    plots.save_panel(fig_5g, FIGURES / "fig7" / "g.svg")
+
     _n = _aligned[(_aligned["signal"] == "rate") & (_aligned["lag"] == _lags[0])]
+    _n_all = _across[(_across["signal"] == "rate") & (_across["lag"] == _lags[0])]
     v_application = {
+        "sessions": values.count(len(_sessions)),
+        "animals": values.count(len({t["subject"] for t in _tasks.values()})),
         "animal": _s["subject"],
         "minutes": values.count((_grid[-1] - _grid[0]) / 60),
+        "windows": values.count(len(_apps)),
+        "shown_s": values.count(_shown_s),
         **{
             f"sites_{k.lower()}": values.count(n)
             for k, n in _n.set_index("kind")["n"].items()
         },
+        **{
+            f"all_sites_{k.lower()}": values.count(n)
+            for k, n in _n_all.set_index("kind")["sites"].items()
+        },
     }
-    mo.vstack([fig_5a, mo.hstack([fig_5b, fig_5c]), mo.md(f"{v_application}")])
+    mo.vstack(
+        [
+            fig_5a,
+            fig_5b,
+            fig_5c,
+            mo.hstack([fig_5d, fig_5e, fig_5f, fig_5g]),
+            mo.ui.table(_marked[["mark", "stem", "start", *style.QC_MEASURES]]),
+            mo.md(f"{v_application}"),
+        ]
+    )
     return (v_application,)
+
+
+@app.cell
+def figs8(qc_windows):
+    # Supplementary Fig. 8: the sessions without a thermistor from every camera: each
+    # camera's quality-control scores over 30-s windows, beside sets where the network
+    # works and known failures.
+    _cams = [q for q in runs.RESULTS.quality.set if q.role in ("application", "camera")]
+    _camera = {q.label: q.camera for q in _cams}
+    _windows = qc_windows.assign(
+        row=qc_windows["set"].map(_camera).fillna(qc_windows["set"])
+    )
+    _rows = [
+        ("Held-out animals", "working"),
+        ("Dynamic foraging, refined", "working"),
+        *[(q.camera, q.role) for q in _cams],
+        ("Dynamic foraging, unrefined", "null"),
+        ("Noise 32", "null"),
+    ]
+    _colours = {q.camera: style.CAMERAS[q.camera] for q in _cams}
+    fig_s8a = plots.quality_sets_panel(
+        *size("figs8", "a"), _windows, _rows, truth=None, colours=_colours
+    )
+    plots.save_panel(fig_s8a, FIGURES / "figs8" / "a.svg")
+    fig_s8a
+    return
 
 
 @app.cell
@@ -1754,25 +1892,135 @@ def fig4df(test_a):
 @app.cell
 def fig6_md():
     mo.md(f"""
-    ## Fig. 6: judging predictions without a thermistor
+    ## Fig. 6: scores of predictions without a thermistor
 
-    The quality-control reports of the reference checkpoint on test sets A and B, and
-    its reference (onset calibration on the validation animals), from
-    `{QC}`; made with `zephyr quality-control reference` and `run`.
+    The quality-control scores the results manifest's `[quality]` names, from
+    `{runs.QC_ROOT}`: the all-camera network's validation windows (its reference),
+    sets where it works, and known failures; made with `zephyr quality-control
+    reference` and `run`, and the noise null with `zephyr-benchmarks probe`.
     """)
     return
 
 
 @app.cell
-def fig6_data():
-    qc_videos, qc_windows = quality.tables(str(QC / "test"))
-    mo.stop(qc_videos.empty, mo.md("No quality-control reports yet."))
-    _sets = runs.clip_sets()
-    qc_videos = qc_videos.assign(set=qc_videos["stem"].map(_sets))
-    qc_windows = qc_windows.assign(set=qc_windows["stem"].map(_sets))
-    judged = {m: b for m, b in quality.JUDGED.items() if m in qc_videos}
-    truth_f1 = "truth_inhale_f1"
-    return judged, qc_videos, qc_windows, truth_f1
+def fig6efg():
+    # Fig. 6e-g: quality control as scores, never a verdict. g: each measure over the
+    # 30-s windows of the network's validation animals, sets where it works and known
+    # failures; e: one dynamic-foraging clip predicted before and after refining, the
+    # clip whose refined true inhale F1 is nearest the median; f: one held-out clip of
+    # the noise null at every level, the clip whose own true inhale F1 is nearest the
+    # median.
+    qc_windows = runs.quality_windows().assign(row=lambda d: d["set"])
+    _sets = [
+        s for s in runs.RESULTS.quality.set if s.role not in ("application", "camera")
+    ]
+    _rows = [("Validation", "validation"), *[(s.label, s.role) for s in _sets]]
+    fig6g = plots.quality_sets_panel(*size("fig6", "g"), qc_windows, _rows)
+    plots.save_panel(fig6g, FIGURES / "fig6" / "g.svg")
+
+    _noise, _ = runs.quality_noise()
+    _own = _noise[_noise["sigma"] == 0].set_index("stem")["truth_inhale_f1"]
+    _noisy_stem = (_own - _own.median()).abs().idxmin()
+    _clip_truth = runs.truth(_noisy_stem)
+    _levels = runs.quality_noise_traces(_noisy_stem)
+    _scored = _noise[_noise["stem"] == _noisy_stem].set_index("sigma")
+    _rows_f, _corner, _colours = {}, {}, {}
+    for _sigma, _trace in _levels.items():
+        if _sigma not in (0, *style.NOISE):
+            continue
+        _name = "No noise" if _sigma == 0 else f"Noise {_sigma:g}"
+        _times = _trace["time"].to_numpy()
+        _n = min(len(_times), len(_clip_truth["signal"]))
+        _rows_f[_name] = {
+            "times": _times[:_n],
+            "truth": _clip_truth["signal"][:_n],
+            "truth_inhale": _clip_truth["inhale"],
+            "signal": _trace["signal"].to_numpy()[:_n],
+            "head": _times[_trace["inhale"].to_numpy(bool)],
+            "start": round(float(_times[_n // 2] - _times[0]) - 6.0),
+        }
+        _colours[_name] = style.NOISE.get(_sigma, style.color("Zephyr, all cameras"))
+        _corner[_name] = "F1 {:.2f}, r {:.2f}".format(
+            _scored.loc[_sigma, "truth_inhale_f1"],
+            _scored.loc[_sigma, "truth_correlation"],
+        )
+    fig6f = plots.refined_traces_panel(
+        *size("fig6", "f"), _rows_f, colours=_colours, corner=_corner, ncols=2
+    )
+    plots.save_panel(fig6f, FIGURES / "fig6" / "f.svg")
+
+    _before, _after = "Dynamic foraging, unrefined", "Dynamic foraging, refined"
+    _f1 = qc_windows[qc_windows["set"] == _after].groupby("stem")["truth_inhale_f1"]
+    _f1 = _f1.mean()
+    _stem = (_f1 - _f1.median()).abs().idxmin()
+    _entry, _ = runs.df_entries()[_stem]
+    _truth = analysis.truth(_entry)
+    _rows_e, _notes = {}, {}
+    for _label, _variant in (
+        (_before, "Zephyr, all cameras, on DF"),
+        (_after, "Zephyr, all cameras, refined on DF"),
+    ):
+        _trace = runs.quality_traces(_label, _stem)
+        _times = _trace["time"].to_numpy()
+        _n = min(len(_times), len(_truth["signal"]))
+        _rows_e[_variant] = {
+            "times": _times[:_n],
+            "truth": _truth["signal"][:_n],
+            "truth_inhale": _truth["inhale"],
+            "signal": _trace["signal"].to_numpy()[:_n],
+            "head": _times[_trace["inhale"].to_numpy(bool)],
+            # 12 s around the clip's middle, in s from its start
+            "start": round(float(_times[_n // 2] - _times[0]) - 6.0),
+        }
+        _clip = qc_windows[
+            (qc_windows["set"] == _label) & (qc_windows["stem"] == _stem)
+        ]
+        _notes[_variant] = (
+            "head vs trace {:.2f}, breaks {:.2f}, peak {:.2f}, background {:.2f}; "
+            "true F1 {:.2f}"
+        ).format(*_clip[[*style.QC_MEASURES, "truth_inhale_f1"]].median())
+    fig6e = plots.refined_traces_panel(
+        *size("fig6", "e"),
+        _rows_e,
+        labels={
+            "Zephyr, all cameras, on DF": "Before\nrefining",
+            "Zephyr, all cameras, refined on DF": "After\nrefining",
+        },
+        notes=_notes,
+    )
+    plots.save_panel(fig6e, FIGURES / "fig6" / "e.svg")
+
+    _median = qc_windows.groupby("set")[
+        [*style.QC_MEASURES, "truth_inhale_f1"]
+    ].median()
+    _key = {
+        "Validation": "validation",
+        "Held-out animals": "held_out",
+        "Dynamic foraging, refined": "df_refined",
+        "Dynamic foraging, unrefined": "df_unrefined",
+        "Noise 16": "noise16",
+        "Noise 32": "noise32",
+        "Noise 64": "noise64",
+        "Sessions without a thermistor": "sessions",
+        "Sessions without a thermistor, side camera": "sessions_side",
+        "Sessions without a thermistor, front camera": "sessions_front",
+    }
+    v_quality = {
+        f"{_key[k]}_{m}": values.num(v, 2)
+        for k, row in _median.iterrows()
+        for m, v in row.items()
+        if pd.notna(v)
+    } | {
+        "validation_windows": values.count((qc_windows["set"] == "Validation").sum()),
+        "held_out_windows": values.count(
+            (qc_windows["set"] == "Held-out animals").sum()
+        ),
+        "df_clips": values.count(
+            qc_windows.loc[qc_windows["set"] == _after, "stem"].nunique()
+        ),
+    }
+    mo.vstack([fig6e, fig6f, fig6g, mo.ui.table(_median.round(3).reset_index())])
+    return qc_windows, v_quality
 
 
 @app.cell
@@ -1835,69 +2083,6 @@ def fig6a(test_a):
         ]
     )
     return error_profile, v_errors
-
-
-@app.cell
-def fig6bc(judged, qc_videos, qc_windows, test_a, truth_f1):
-    # Fig. 6b-c on new animals (test set A) only: the five measures that rank its
-    # videos best, and the windows the three best at ranking windows keep.
-    _videos = qc_videos[qc_videos["set"] == test_a]
-    _windows = qc_windows[qc_windows["set"] == test_a]
-    qc_ranks = {
-        "Videos": analysis.quality_agreement(_videos, judged, truth_f1),
-        "Windows": analysis.quality_agreement(_windows, judged, truth_f1),
-    }
-    _top = qc_ranks["Videos"].nlargest(5, "oriented")
-    fig6b = plots.qc_agreement_panel(*size("fig6", "e"), {"Videos": _top})
-    _best = qc_ranks["Windows"].sort_values("oriented", ascending=False)["measure"]
-    _fractions = tuple(np.linspace(0.05, 1, 20))
-    _checks = [c for c in _windows if c.startswith("ok_")]
-    _w = _windows.dropna(subset=[truth_f1])
-    _pass = _w[_w[_checks].fillna(True).astype(bool).all(axis=1)]
-    fig6c = plots.qc_retention_panel(
-        *size("fig6", "f"),
-        {
-            m: analysis.retention(_w, m, truth_f1, judged[m], _fractions)
-            for m in _best.head(3)
-        },
-        analysis.retention(_w, truth_f1, truth_f1, "higher", _fractions),
-        (len(_pass) / len(_w), float(_pass[truth_f1].mean())),
-    )
-    qc_kept = {
-        "windows": len(_w),
-        "pass every check": len(_pass) / len(_w),
-        "F1 all": float(_w[truth_f1].mean()),
-        "F1 passing": float(_pass[truth_f1].mean()),
-        "F1 failing": float(_w.drop(_pass.index)[truth_f1].mean()),
-    }
-    v_qc = {
-        "videos": values.count(len(_videos)),
-        "spearman": values.span(_top["oriented"].min(), _top["oriented"].max()),
-        "windows": values.count(qc_kept["windows"]),
-        "pass": values.pct(qc_kept["pass every check"]),
-        "f1_pass": values.num(qc_kept["F1 passing"]),
-        "f1_fail": values.num(qc_kept["F1 failing"]),
-        "f1_all": values.num(qc_kept["F1 all"]),
-    }
-    mo.vstack(
-        [
-            mo.hstack([fig6b, fig6c]),
-            mo.md(f"{qc_kept}"),
-            mo.ui.table(qc_ranks["Videos"].round(3), selection=None),
-            mo.ui.table(qc_ranks["Windows"].round(3), selection=None),
-        ]
-    )
-    return (v_qc,)
-
-
-@app.cell
-def fig6d():
-    _reference = quality.reference(str(QC / "reference.json"))
-    mo.stop(_reference is None, mo.md("No reference yet."))
-    fig6d = plots.calibration_panel(*size("fig6", "g"), _reference)
-    v_calibration = {"ece": values.num(_reference["onset_calibration"]["ece"], 3)}
-    fig6d
-    return (v_calibration,)
 
 
 @app.cell
@@ -2499,6 +2684,7 @@ def manuscript_values(
     v_tolerance,
     v_pooled,
     v_application,
+    v_quality,
     v_refine,
     v_saliency,
     v_slow,
@@ -2529,6 +2715,7 @@ def manuscript_values(
         "tolerance": v_tolerance,
         "pooled": v_pooled,
         "application": v_application,
+        "quality": v_quality,
         "refine": v_refine,
         "saliency": v_saliency,
         "slow": v_slow,

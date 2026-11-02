@@ -123,6 +123,40 @@ class Application(BaseModel):
         return self
 
 
+class QualitySet(BaseModel):
+    """One folder of quality-control reports (``zephyr quality-control run``, or the
+    noise null of ``zephyr-benchmarks probe`` at one ``noise`` level), and its role."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    label: str
+    reports: str
+    """The folder, under the report's quality-control root."""
+    role: Literal["working", "null", "application", "camera"]
+    """A network that works there, a known failure, sessions without a thermistor, or
+    the same sessions seen by another camera (``camera``, shown apart from them)."""
+    noise: float | None = None
+    """For a noise null: the level (gray levels) read from its probe reports."""
+    camera: str | None = None
+    """The camera its videos are from, for a figure that shows sets by camera."""
+
+
+class Quality(BaseModel):
+    """The quality-control scores a report compares: the network's reference (its
+    validation windows) and each set of reports, all scored, never judged."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    reference: str
+    """The network's ``qc-reference.json``, under the quality-control root."""
+    set: list[QualitySet] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _labels_are_distinct(self) -> "Quality":
+        labels = [s.label for s in self.set]
+        if len(set(labels)) != len(labels):
+            raise ValueError(f"quality: repeated labels in {labels}")
+        return self
+
+
 class ResultsManifest(BaseModel):
     """Which runs a report compares, under which labels (``configs/results/``)."""
 
@@ -140,6 +174,9 @@ class ResultsManifest(BaseModel):
     """Methods retrained on each cross-validation fold (labels as in ``method``)."""
     application: Application | None = None
     """Sessions without a thermistor that a report predicts and summarizes."""
+    quality: Quality | None = None
+    """Quality-control scores of networks that work, known failures and sessions
+    without a thermistor."""
 
     @model_validator(mode="after")
     def _labels_are_distinct(self) -> "ResultsManifest":

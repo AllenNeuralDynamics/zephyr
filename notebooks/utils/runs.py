@@ -1101,8 +1101,10 @@ OPEN_DATA = "s3://aind-open-data"
 @functools.cache
 def application(session: str) -> dict:
     """One of the manifest's sessions without a thermistor: the prediction on the Harp
-    clock (``times``, ``signal``, ``onset``) and its inhalations (``head``), and from
-    its processed asset the running ``speed``, ``sites``, ``licks`` and ``subject``."""
+    clock (``times``, ``signal``, ``onset``; ``video_time``, its time in the video, which
+    quality-control windows use) and its inhalations (``head``), and from
+    its processed asset the running ``speed``, ``sites``, ``licks``, ``subject`` and
+    the ``date`` it was acquired."""
     app = RESULTS.application
     entry = next(s for s in app.session if s.session == session)
     run = RUNS[cv_name(app.network, app.fold)]
@@ -1137,6 +1139,7 @@ def application(session: str) -> dict:
         "thumbnail": thumbnail,
         "box": tuple(v * scale for v in first["box"]),
         "times": times,
+        "video_time": pred["time"].to_numpy(),
         "signal": pred["signal"].to_numpy(),
         "onset": pred["onset"].to_numpy(),
         "head": times[pred["inhale"].to_numpy()],
@@ -1144,4 +1147,149 @@ def application(session: str) -> dict:
         "sites": pd.read_parquet(asset("sites.parquet")),
         "licks": licks.index[licks["is_lick_onset"]].to_numpy(),
         "subject": str(json.loads(asset("subject.json").read_text())["subject_id"]),
+        "date": pd.Timestamp(
+            json.loads(asset("acquisition.json").read_text())["acquisition_start_time"]
+        ),
     }
+
+
+def is_application_video(stem: str) -> bool:
+    """Whether *stem* is a video of one of the manifest's application sessions."""
+    try:
+        application_session(stem)
+    except KeyError:
+        return False
+    return True
+
+
+def application_session(stem: str) -> str:
+    """The manifest's application session a video of it (*stem*, any camera) is from:
+    the longest session name the stem starts with."""
+    found = [
+        s.session
+        for s in RESULTS.application.session
+        if stem == s.session or stem.startswith(f"{s.session}_")
+    ]
+    if not found:
+        raise KeyError(f"{stem}: not a video of the manifest's application sessions")
+    return max(found, key=len)
+
+
+QC_ROOT = Path(os.environ.get("ZEPHYR_QC_ROOT", "D:/zephyr-qc-probe/v5"))
+"""The folder of the manifest's ``[quality]`` reports and reference."""
+
+
+def _clip_entry(stem: str) -> features.ClipEntry | None:
+    """The cache entry of a corpus or dynamic-foraging clip, for its truth; None for a
+    video of neither (a session without a thermistor)."""
+    try:
+        return truth_entry(stem)
+    except (KeyError, FileNotFoundError):
+        found = df_entries().get(stem)
+        return found[0] if found else None
+
+
+@functools.cache
+def report_truth(folder: Path) -> pd.DataFrame:
+    """The real scores of each prediction in *folder* (``zephyr predict
+    --quality-control``) over the whole clip and over each window its report measures
+    (:func:`zephyr.benchmarks.analysis.window_truth`): the paper's check on the
+    label-free scores; empty for videos without a thermistor."""
+    from zephyr.predict import SUFFIX
+
+    parts = []
+    for path in sorted(Path(folder).glob(f"*{SUFFIX}")):
+        stem = path.name.removesuffix(SUFFIX)
+        entry = _clip_entry(stem)
+        if entry is None or entry.thermistor is None:
+            continue
+        table = analysis.window_truth(entry, pd.read_parquet(path))
+        parts.append(table.assign(stem=stem))
+    return pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
+
+
+@functools.cache
+def quality_windows() -> pd.DataFrame:
+    """Every 30-s window of the manifest's ``[quality]`` sets, one row each: ``set``,
+    ``role`` (``validation`` for the reference's own windows), ``stem``, its
+    ``session`` (:func:`video_session`), the measures and, where the truth is known,
+    ``truth_<metric>``. Sets of sessions without a thermistor keep only the manifest's
+    ``[application]`` sessions."""
+    from zephyr.benchmarks.probe import load_probes
+    from zephyr.quality_control import load_reports
+    from zephyr.quality_control.reference import Reference
+
+    quality = RESULTS.quality
+    validation = pd.DataFrame(Reference.load(QC_ROOT / quality.reference).validation)
+    parts = [
+        validation.rename(columns={"clip_id": "stem"}).assign(
+            set="Validation", role="validation"
+        )
+    ]
+    for s in quality.set:
+        if s.noise is not None:
+            table = load_probes(QC_ROOT / s.reports, windows=True)
+            table = table[table["sigma"] == s.noise].drop(columns="sigma")
+        else:
+            table = load_reports(QC_ROOT / s.reports)[1]
+            truth = report_truth(QC_ROOT / s.reports)
+            if len(truth):
+                windows = truth[~truth["whole"]].drop(columns=["whole", "end"])
+                table = with_truth(table, windows)
+        if s.role in ("application", "camera"):
+            # only the manifest's sessions, whatever else the reports folder holds
+            table = table[table["stem"].map(is_application_video)]
+        parts.append(table.assign(set=s.label, role=s.role))
+    windows = pd.concat(parts, ignore_index=True)
+    return windows.assign(session=windows["stem"].map(video_session))
+
+
+_SESSION = re.compile(r"\d+_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}")
+
+
+def video_session(stem: str) -> str:
+    """The acquisition session a video (*stem*: a clip, span or camera of it) is from:
+    the ``<subject>_<date>_<time>`` its name holds."""
+    found = _SESSION.search(stem)
+    if found is None:
+        raise ValueError(f"{stem}: no session in the name")
+    return found.group(0)
+
+
+def with_truth(table: pd.DataFrame, truth: pd.DataFrame) -> pd.DataFrame:
+    """*table* (a report's windows) with each window's real scores, by video and start."""
+    return (
+        table.assign(_start=table["start"].round(6))
+        .merge(
+            truth.assign(_start=truth["start"].round(6)).drop(columns="start"),
+            on=["stem", "_start"],
+            how="left",
+            validate="one_to_one",
+        )
+        .drop(columns="_start")
+    )
+
+
+def quality_traces(label: str, stem: str) -> pd.DataFrame:
+    """One video's prediction (``time``, ``signal``, ``onset``, ``inhale``) in the
+    ``[quality]`` set *label*."""
+    from zephyr.predict import SUFFIX
+
+    folder = next(s.reports for s in RESULTS.quality.set if s.label == label)
+    return pd.read_parquet(QC_ROOT / folder / f"{stem}{SUFFIX}")
+
+
+def quality_noise() -> tuple[pd.DataFrame, Path]:
+    """The ``[quality]`` noise null over whole clips (one row per clip and level:
+    ``stem``, ``sigma``, the measures and ``truth_<metric>``), and its folder."""
+    from zephyr.benchmarks.probe import load_probes
+
+    folder = QC_ROOT / next(s.reports for s in RESULTS.quality.set if s.noise)
+    return load_probes(folder), folder
+
+
+def quality_noise_traces(stem: str) -> dict[float, pd.DataFrame]:
+    """One clip's saved trace at every noise level of the ``[quality]`` null."""
+    from zephyr.benchmarks.probe import probe_traces
+
+    return probe_traces(quality_noise()[1], stem)

@@ -162,7 +162,7 @@ what = "Its held-out animal's correlation and inhale F1 before and after refinin
 [fig6]
 width_mm = 183
 gap_mm = 4
-rows = [["a", "b", "c"], ["d", "e"], ["f", "g", "h"]]
+rows = [["a", "b", "c"], ["d", "e"], ["f"], ["g"]]
 
 [fig6.panels.a]
 kind = "data"
@@ -192,48 +192,66 @@ what = "Errors on held-out animals: share near misses; gross errors in sniffing,
 kind = "data"
 width_mm = 84
 height_mm = 42
-what = "The five measures that rank held-out videos best: Spearman correlation with true F1"
+what = "A dynamic-foraging clip before and after refining: thermistor, prediction and inhalations, with each prediction's quality-control scores"
 
 [fig6.panels.f]
 kind = "data"
-width_mm = 68
-height_mm = 46
-what = "Held-out windows: mean true F1 against the share kept; oracle"
+width_mm = 183
+height_mm = 34
+what = "One held-out clip with noise added to its frames (none, 16, 32, 64 gray levels): thermistor, prediction and inhalations, with each one's true F1 and r"
 
 [fig6.panels.g]
 kind = "data"
-width_mm = 48
-height_mm = 46
-what = "Calibration of the onset output on validation animals"
-
-[fig6.panels.h]
-kind = "data"
-width_mm = 59
-height_mm = 46
-what = "Quality control on a session without a thermistor: the measures over time"
+width_mm = 183
+height_mm = 34
+what = "Quality-control scores over 30-s windows: validation, sets where the network works, and known failures (dynamic foraging unrefined, noisy frames), beside true F1"
 
 [fig7]
 width_mm = 183
 gap_mm = 4
-rows = [["a", ["b", "c"]]]
+rows = [["a"], ["b"], ["c"], ["d", "e", "f", "g"]]
 
 [fig7.panels.a]
 kind = "data"
-width_mm = 118
-height_mm = 90
-what = "Thirty seconds of a session without a thermistor: speed, Zephyr's trace with its inhalations, its respiration rate, licks, rewards, odor sites"
+width_mm = 183
+height_mm = 34
+what = "Face-camera quality-control scores over 30-s windows of every session without a thermistor, beside sets where the network works and known failures, with two low and two median windows marked"
 
 [fig7.panels.b]
 kind = "data"
-width_mm = 61
-height_mm = 48
-what = "The same session: respiration rate and speed around odor onset per kind of site"
+width_mm = 183
+height_mm = 68
+what = "The four marked windows: the middle 15 s of the predicted trace (z-scored) with its inhalations and the onset probability"
 
 [fig7.panels.c]
 kind = "data"
-width_mm = 61
-height_mm = 38
-what = "The same session: respiration rate against running speed"
+width_mm = 183
+height_mm = 58
+what = "Fifteen seconds of the example session: Zephyr's trace with its inhalations, onset probability, respiration rate with speed, licks, rewards, odor sites"
+
+[fig7.panels.d]
+kind = "data"
+width_mm = 42.75
+height_mm = 46
+what = "The example session: respiration rate and speed around odor onset per kind of site"
+
+[fig7.panels.e]
+kind = "data"
+width_mm = 42.75
+height_mm = 46
+what = "Every session: respiration rate and speed around odor onset per kind of site, mean over sessions"
+
+[fig7.panels.f]
+kind = "data"
+width_mm = 42.75
+height_mm = 46
+what = "The example session: respiration rate against running speed"
+
+[fig7.panels.g]
+kind = "data"
+width_mm = 42.75
+height_mm = 46
+what = "Every session: respiration rate against running speed, mean over sessions"
 
 # Supplementary figures.
 
@@ -362,3 +380,13 @@ width_mm = 89
 height_mm = 50
 what = "Corpus test sets: after minus before refining, correlation and inhale F1, mean over animal x rig units with 95% interval"
 
+[figs8]
+width_mm = 183
+gap_mm = 4
+rows = [["a"]]
+
+[figs8.panels.a]
+kind = "data"
+width_mm = 183
+height_mm = 40
+what = "Sessions without a thermistor seen by each camera: quality-control scores over 30-s windows, beside sets where the network works and known failures"

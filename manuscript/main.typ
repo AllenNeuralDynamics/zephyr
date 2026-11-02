@@ -19,6 +19,7 @@
 #import "figures/figs5.typ": body as figs5
 #import "figures/figs6.typ": body as figs6
 #import "figures/figs7.typ": body as figs7
+#import "figures/figs8.typ": body as figs8
 
 // A figure assembled at its printed width (183 mm), scaled to the text width.
 #let fit(body) = layout(size => scale(reflow: true, size.width / 189mm * 100%, body))
@@ -164,7 +165,8 @@ network, Zephyr. Zephyr recovered the timing of each inhalation in animals it ha
 seen, gained more from training on more animals than from more video of the same
 animals, and also recovered respiration from the side and front cameras. A method meant to replace a sensor will be used
 where there is no sensor, so we also developed quality-control measures, computed from the
-network's output alone, that identify unreliable predictions. We release the corpus, the
+network's output alone, that score each prediction beside predictions known to be good and
+known to fail. We release the corpus, the
 trained models, an evaluation that reproduces our scores and an application that takes a
 lab's own videos from crop placement to predictions and quality-control reports.
 
@@ -491,18 +493,23 @@ motion was no more common around errors than around cycles in general
 (#v("errors.motion")% against 10%). Only shallow cycles were over-represented, at
 #v("errors.shallow")% of gross errors against 25% of cycles (Methods).
 
-We therefore asked whether the network's output alone can identify unreliable stretches of
-a recording. We computed quality-control measures on each 30-s window of a prediction,
-without the thermistor, and set their bounds on validation animals (Methods). On new
-animals, which played no part in setting the bounds, the best measures ranked videos by
-their true inhalation F1 (#fig(<fig:trust>, "e")), and windows that passed every check were
-predicted more accurately than those that failed (#fig(<fig:trust>, "f")) #note[quality
-  control is in progress: rerun the reports on the fold-cv_0 network at its own onset
-  threshold and fill in the numbers]. The onset output is also calibrated: on validation
-animals, the probability Zephyr gave a predicted inhalation matched the share that the
-thermistor confirmed (#fig(<fig:trust>, "g")) #note[calibrate the fold-cv_0 network].
-On a session without a thermistor, the quality-control measures mark which 30-s windows to
-keep (#fig(<fig:trust>, "h")) #note[to draw].
+We therefore asked whether the network's output alone can show when a prediction is
+unreliable. On each 30-s window of a prediction we computed four measures without the
+thermistor: how well the onset output's inhalations agree with the peaks of the network's
+own trace, how often inhalations and exhalations fail to alternate, how high the onset
+peaks are and how high the onset probability stays between them (Methods). We report
+them as scores and set no pass bounds, because the validation animals hold almost no bad
+predictions from which to set one. Instead we compared the scores with predictions known
+to fail. The pooled network, before it was refined on the dynamic-foraging experiment,
+found almost none of that experiment's inhalations (true F1 #v("quality.df_unrefined_truth_inhale_f1")),
+and every measure moved away from where it lay on validation animals: its inhalations
+agreed with its trace at #v("quality.df_unrefined_head_trace_f1") against
+#v("quality.validation_head_trace_f1"), and the onset probability between inhalations
+rose from #v("quality.validation_onset_background") to
+#v("quality.df_unrefined_onset_background"). Refined, the same network on the same videos
+scored as on the corpus (#fig(<fig:trust>, "e,g")). Noise added to the frames moved the
+scores with the accuracy: at 16 gray levels both barely changed, and at 32 and beyond
+both collapsed (#fig(<fig:trust>, "f,g")).
 
 #figure(
   fit(fig6),
@@ -516,39 +523,68 @@ keep (#fig(<fig:trust>, "h")) #note[to draw].
     (black, blue), misses and false inhalations marked, above the onset probability.
     *d,* Zephyr's errors on held-out animals: the share that are near misses, and of the
     rest, the share in sniffing (> 8 Hz), in face motion (top 10%) and on shallow cycles
-    (bottom 25%); grey ticks give each property's share of all cycles. *e,* The
-    quality-control measures that best rank held-out videos by their true inhalation F1
-    #note[to redraw on the fold-cv_0 network]. *f,* Mean true inhalation F1 of the
-    held-out windows kept, keeping the best-judged first #note[to redraw]. *g,*
-    Calibration of the onset output on the validation animals #note[to redraw]. *h,*
-    Quality control of a session without a thermistor #note[to draw]. Bands and error
-    bars are 95% intervals over the #v("benchmark.folds") folds (Methods).],
+    (bottom 25%); grey ticks give each property's share of all cycles. *e,* Twelve seconds of
+    one dynamic-foraging clip predicted by the pooled network before and after refining,
+    over the thermistor (black), with each prediction's quality-control scores (medians
+    over the clip's 30-s windows). *f,* Twelve seconds of one clip of a held-out animal
+    predicted from its frames and with Gaussian noise added to them (16, 32 and 64 gray
+    levels), over the thermistor, with each prediction's true inhalation F1 and trace
+    correlation over the clip. *g,* The quality-control scores and the true
+    inhalation F1 over 30-s windows of the pooled network's validation animals, of
+    predictions that work (held-out animals; the dynamic-foraging experiment after
+    refining) and of known failures (the same experiment before refining; noise added to
+    the frames, in gray levels); shaded bars span the middle 95% of windows, dots mark each session's median, and black bars the mean of those medians with its 95% interval over sessions. Bands and
+    error bars in *a* and *d* are 95% intervals over the #v("benchmark.folds") folds
+    (Methods).],
 ) <fig:trust>
 
 == Respiration in experiments without a thermistor
 
 We then used the network where no thermistor was recorded. The pooled network predicted
-the face video of a task session of a mouse without a thermistor
-(#v("application.minutes") min; Methods), and we aligned its inhalations to the task as
-we had aligned the thermistor's (@fig:application). The predicted trace followed the
-transitions between running, stopping at odor sites and licking
-(#fig(<fig:application>, "a")), and the respiration rate around odor onset differed by
-the site's outcome as in the thermistor session (#fig(<fig:application>, "b,c")\;
-compare #fig(<fig:overview>, "b,c")) #note[claims to check by the authors].
+the face video of #v("application.sessions") task sessions of #v("application.animals")
+mice without a thermistor (Methods). Over their #v("application.windows") 30-s windows,
+the quality-control scores fell with those of predictions that work and away from the
+known failures (#fig(<fig:application>, "a")): the onset output's inhalations agreed
+with the trace at #v("quality.sessions_head_trace_f1"), against
+#v("quality.held_out_head_trace_f1") on held-out animals and
+#v("quality.df_unrefined_head_trace_f1") for the unrefined network on the
+dynamic-foraging experiment. The lowest windows show what a low score looks like: in
+one the onset probability rarely reached the threshold, in the other the trace lost its
+regular rhythm during fast breathing, against regular peaks in both outputs at the
+median (#fig(<fig:application>, "b")). The side
+and front videos of the same sessions scored as well
+(#v("quality.sessions_side_head_trace_f1") and #v("quality.sessions_front_head_trace_f1"),
+@fig:application-cameras). In one session (#v("application.minutes") min), we aligned
+the inhalations to the task as we had aligned the thermistor's. The predicted trace
+followed the transitions between running, stopping at odor sites and licking
+(#fig(<fig:application>, "c")), and the respiration rate around odor onset differed by
+the site's outcome as in the thermistor session, in this session and on average over
+all #v("application.sessions") (#fig(<fig:application>, "d–g")\; compare
+#fig(<fig:overview>, "b,c")) #note[claims to check by the authors].
 
 #figure(
   fit(fig7),
-  caption: [*Respiration measured from video alone.* A task session of a mouse without a
-    thermistor, predicted by the network trained on all three cameras. *a,* Fifteen seconds
-    of the predicted trace with its inhalations, the onset probability, and the
+  caption: [*Respiration measured from video alone.* Task sessions of mice without a
+    thermistor, predicted from the face video by the network trained on all three
+    cameras. *a,* Quality-control scores over the #v("application.windows") 30-s
+    windows of the #v("application.sessions") sessions, beside predictions that work and
+    known failures (@fig:trust g), drawn as there. White points
+    mark the two lowest windows on head vs trace F1 (i, ii) and two at its median (iii,
+    iv), each from a different session. *b,* The middle #v("application.shown_s") s of the
+    windows marked in *a*: the predicted trace with its inhalations, and the onset
+    probability with the network's threshold (dotted). *c,* Fifteen seconds of one
+    session: the predicted trace with its inhalations, the onset probability, and the
     respiration rate they give with running speed (grey, right axis), licks, reward
-    deliveries and odor sites (grey). *b,* Respiration
-    rate and running speed around odor onset, by whether the mouse stopped and was
-    rewarded (n = #v("application.sites_rewarded")), stopped and was not
-    (n = #v("application.sites_unrewarded")) or ran past
-    (n = #v("application.sites_skipped")); mean over sites with its 95% interval. *c,*
-    Respiration rate against running speed, as the distribution of rates in each speed
-    bin.],
+    deliveries and odor sites (grey). *d, e,* Respiration rate and running speed around
+    odor onset, by whether the mouse stopped and was rewarded, stopped and was not, or
+    ran past. *d,* The session of *c* (n = #v("application.sites_rewarded"),
+    #v("application.sites_unrewarded") and #v("application.sites_skipped") sites); mean
+    over sites with its 95% interval. *e,* All sessions
+    (n = #v("application.all_sites_rewarded"), #v("application.all_sites_unrewarded")
+    and #v("application.all_sites_skipped") sites); mean over sessions of each
+    session's mean, with its 95% interval over sessions. *f, g,* Respiration rate
+    against running speed, as the distribution of rates in each speed bin, for the
+    session of *c* (*f*) and averaged over sessions (*g*).],
 ) <fig:application>
 
 = Discussion
@@ -601,9 +637,9 @@ strain may move the face further from what the network has seen. The side and fr
 snout from farther away and at other angles, still yielded respiration, and one network
 trained on all three views lost no accuracy on any of them, so a new view is best added
 to the existing training data rather than learned on its own. The
-quality-control measures and the calibrated onset output are meant for the step after:
-once a lab has adapted the network, they flag the windows of each new recording that
-should not be trusted, without a sensor.
+quality-control measures are meant for the step after: once a lab has adapted the
+network, they score each window of a new recording without a sensor, beside the scores
+of predictions known to work and known to fail, and leave the cut to the lab.
 
 The corpus also limits what we can claim. All mice were head-fixed, so the camera saw the
 face from a fixed distance and angle, and the animal could not turn away, rear or groom
@@ -645,8 +681,7 @@ We release the corpus (face, side and front video, frame timestamps and the ther
 on one clock) with the splits we used, the code, the trained weights, an evaluation that
 reproduces the scores reported here, and an application that runs the network on new
 recordings #note[repository URL, data DOI (DANDI or the Registry of
-  Open Data), licence; confirm the corpus can be released; usage: `zephyr preprocess`,
-  `zephyr evaluate`, `zephyr quality-control run`, `zephyr gui`].
+  Open Data), licence; confirm the corpus can be released].
 
 #pagebreak()
 #references(bibliography("references.bib"))
@@ -862,13 +897,22 @@ comparison networks were trained the same way, each with the loss of its origina
   caption: [*Training settings of Zephyr.*],
 ) <tab:train>
 
-_Session without a thermistor._ The face video of a task session of a mouse without a
-thermistor was predicted with the network trained on all three cameras of the first fold
-(`zephyr predict`, its onset threshold), with a crop box placed by template matching on
-an accepted box. The prediction was put on the task's clock by the camera's frame
-timestamps, and running speed, sites and licks came from the session's processed data.
-Respiration rate was 1 over the interval between predicted inhalations; sites, aligned
-to odor onset, were averaged with a 95% t-interval over sites.
+_Sessions without a thermistor._ The face videos of #v("application.sessions") task
+sessions of #v("application.animals") mice without a thermistor were predicted with the
+network trained on all three cameras of the first fold, at its onset threshold, each with a crop box placed by template matching on an accepted box,
+checked and, where needed, corrected by hand. Sessions came from mice with no
+thermistor implant in their procedures records, one session per mouse from the middle
+of its recordings #note[selection to confirm by the authors]. A prediction was put on
+the task's clock by the camera's frame timestamps, and running speed, sites and licks
+came from the session's processed data. Respiration rate was 1 over the interval
+between predicted inhalations; sites, aligned to odor onset, were averaged with a 95%
+bootstrap interval over sites, and over sessions each session's mean was averaged with a
+95% bootstrap interval over sessions. The distribution of rates in each speed bin was averaged
+over the sessions with samples in that bin. The windows shown in @fig:application b
+were the two with the lowest head vs trace F1 and the two nearest its median, each
+from a different session. The side and front videos of the same sessions
+(@fig:application-cameras) were predicted the same way, at the input scale the network
+was trained on for those cameras.
 
 _Refining on a different task._ The pooled network of the first fold was refined on
 video of a dynamic-foraging experiment, recorded with a side and a bottom camera and an intranasal
@@ -882,6 +926,72 @@ scored on the #v("refine.clips") clips (#v("refine.sessions") sessions) of a thi
 animal of that experiment, and the refined network also on the fold's test sets. The cost
 on the corpus is the refined network minus the pooled one on the same clips, as the
 mean over animal × rig units with a paired 95% bootstrap interval (@fig:refine).
+
+_Quality control._ Each prediction was cut into 30-s windows, and each window
+measured from the network's output alone: the F1 between the onset output's inhalations
+and the peaks of the network's own trace (found by the thermistor's detector), the share
+of consecutive events (inhalations and exhalations in time order) of the same kind, the
+median height of the onset peaks taken as inhalations, and the mean onset probability
+further than 100 ms from any of them (every measure a report holds is in
+@tab:qc-measures). A network's
+reference holds the same measures on #v("quality.validation_windows") windows of 60
+clips of its validation animals, beside their true scores; training writes it from the
+predictions on which the onset threshold is chosen. Reports place each measure among
+those windows and apply no bound. Predictions that work were the pooled network's on the
+held-out animals of the first fold (#v("quality.held_out_windows") windows) and, after
+refining, on the dynamic-foraging experiment's held-out animal (#v("quality.df_clips")
+clips; scored with its own reference); known failures were the pooled network's on that
+animal before refining, and its predictions on 24 clips of the held-out animals with
+Gaussian noise of standard deviation 16, 32 or 64 gray levels (of 255) added to every
+frame the network saw.
+
+#figure(
+  table(
+    columns: (auto, 1fr, auto),
+    align: (left, left, left),
+    toprule,
+    table.header([*Measure*], [*What it measures in a window*], [*Better*]),
+    midrule,
+    [Inhalations], [Number of inhalations from the onset output], [—],
+    [Respiration rate], [Median rate between consecutive inhalations (Hz)], [—],
+    [Breaths too fast],
+    [Share of breaths faster than a mouse breathes (15 Hz); slower rates are not
+      judged, as they change with running, odors and task],
+    [Lower],
+    [Alternation breaks\*],
+    [Share of events (inhalations from the onset output, exhalations from the trace, in
+      time order) that repeat the kind before them; breathing alternates],
+    [Lower],
+    [Flat breaths],
+    [Share of breaths (inhalation to inhalation) whose trace swings less than a quarter
+      of the clip's median breath: stretches where the trace sees nothing],
+    [Lower],
+    [Head vs trace F1\*],
+    [Agreement between the onset output's inhalations and the peaks of the network's own
+      trace (thermistor's detector, 1.5-frame tolerance): the two outputs should agree],
+    [Higher],
+    [Onset peak height\*],
+    [Median onset probability at the inhalations: how sure the onset output is],
+    [Higher],
+    [Ambiguous onset peaks],
+    [Share of onset-probability peaks above 0.2 that stay below the onset threshold],
+    [Lower],
+    [Onset background\*],
+    [Mean onset probability further than 100 ms from any inhalation: how quiet it is
+      between breaths],
+    [Lower],
+    [Expected precision],
+    [Mean probability that an inhalation is real given its peak height, from a
+      calibration fitted on the reference's validation clips],
+    [Higher],
+    bottomrule,
+  ),
+  caption: [*Quality-control measures.* Each is computed on every 30-s window from the
+    network's trace and onset probability alone, without the thermistor or the video.
+    Reports give each value and its percentile among the reference's validation
+    windows, never a pass or fail. "Better" is the direction a working prediction tends
+    to score. \*Shown in @fig:trust g and @fig:application a.],
+) <tab:qc-measures>
 
 == Inference and event detection
 
@@ -1003,7 +1113,7 @@ inhalations of a unit, then over units and folds (@fig:saliency).
 The unit of analysis is an animal on one rig, whose sessions share the implant, camera
 position and lighting; two rigs of one animal differ in score about two-thirds as much as
 two animals on one rig (@fig:rigs). Scores were averaged over a unit's clips, then over a fold's units,
-and reported as the mean over the #tbd[5] folds with a 95% t-interval; differences between
+and reported as the mean over the #tbd[5] folds with a 95% bootstrap interval over folds; differences between
 methods are paired by fold. Analyses of a single fold, or of the published split,
 use a percentile bootstrap over units (#tbd[2,000] draws). F1 by rate, F1 against
 tolerance and the error profile pool each fold's cycles before averaging over folds; the
@@ -1161,7 +1271,7 @@ batch, steps per epoch and learning rate are in @tab:nets #note[confirm how the 
     on every other frame (30 Hz), still predicting on the 60-Hz grid, and retrained on each
     of the five folds. *a,* The 30-Hz network minus the 60-Hz network on each test set, in
     trace correlation, inhalation F1 (onset output) and exhalation F1. Grey points are
-    single folds, shown with their mean and its 95% t-interval over the #tbd[5] folds. *b,* Inhalation F1 on held-out animals by respiration rate, with each
+    single folds, shown with their mean and its 95% bootstrap interval over the #tbd[5] folds. *b,* Inhalation F1 on held-out animals by respiration rate, with each
     fold's cycles pooled. Lines show the mean over folds with its 95% interval. The
     bottom panel shows each unit's share of cycles in each bin, as the mean over animal × rig units with its 95% bootstrap interval.],
 ) <fig:input-rate>
@@ -1235,3 +1345,12 @@ batch, steps per epoch and learning rate are in @tab:nets #note[confirm how the 
     over all three cameras. Points show the mean over animal × rig units with a 95%
     paired bootstrap interval.],
 ) <fig:refine>
+
+#figure(
+  fit(figs8),
+  caption: [*Sessions without a thermistor seen by each camera.* The
+    #v("application.sessions") sessions of @fig:application, predicted from the face,
+    side and front videos by the network trained on all three cameras: each camera's
+    quality-control scores over the 30-s windows of every session, beside predictions
+    that work and known failures, drawn as in @fig:trust g.],
+) <fig:application-cameras>

@@ -169,6 +169,63 @@ class SummaryTests(unittest.TestCase):
         share = analysis.rate_given_speed(counts)
         np.testing.assert_allclose(share.sum(axis=1), [1.0, 1.0, 0.0])
 
+    def test_aligned_across_units_weighs_each_unit_equally(self):
+        lags = np.array([0.0, 1.0])
+        one = pd.DataFrame(
+            {"kind": "Rewarded", "signal": "rate", "lag": lags, "mean": 2.0, "n": 30}
+        )
+        two = one.assign(mean=4.0, n=2)
+        out = analysis.aligned_across_units(
+            pd.concat([one.assign(unit="a"), two.assign(unit="b")])
+        ).set_index("lag")
+        self.assertAlmostEqual(out.loc[0.0, "mean"], 3.0)  # not weighted by sites
+        self.assertEqual(out.loc[0.0, "n"], 2)
+        self.assertEqual(out.loc[0.0, "sites"], 32)
+        self.assertLess(out.loc[0.0, "low"], 3.0)
+
+    def test_rate_given_speed_across_skips_units_without_the_speed(self):
+        a = np.array([[1.0, 0.0], [0.0, 0.0]])  # no samples in the second speed bin
+        b = np.array([[0.0, 3.0], [2.0, 2.0]])
+        share = analysis.rate_given_speed_across([a, b])
+        np.testing.assert_allclose(share, [[0.5, 0.5], [0.5, 0.5]])
+
+    def test_bootstrap_mean_resamples_units_per_column(self):
+        x = np.array([[0.0, 1.0], [1.0, 1.0], [2.0, np.nan], [3.0, 1.0]])
+        low, high = analysis.bootstrap_mean(x)
+        self.assertTrue(0.0 <= low[0] < 1.5 < high[0] <= 3.0)
+        np.testing.assert_allclose([low[1], high[1]], [1.0, 1.0])  # NaN left out
+        one_low, one_high = analysis.bootstrap_mean(x[:1])
+        self.assertTrue(np.isnan(one_low).all() and np.isnan(one_high).all())
+        again = analysis.bootstrap_mean(x)
+        np.testing.assert_array_equal(low, again[0])  # seeded
+
+    def test_unit_medians_weigh_each_unit_equally(self):
+        windows = pd.DataFrame(
+            {
+                "session": ["a"] * 9 + ["b", "c"],
+                "score": [1.0] * 9 + [3.0, np.nan],
+            }
+        )
+        medians, summary = analysis.unit_medians(windows, "score")
+        self.assertEqual(medians.to_dict(), {"a": 1.0, "b": 3.0})  # c has no value
+        self.assertAlmostEqual(summary["mean"], 2.0)  # not weighted by windows
+        self.assertEqual(summary["n"], 2)
+        self.assertLess(summary["low"], 2.0)
+        self.assertGreater(summary["high"], 2.0)
+
+    def test_example_windows_are_lowest_and_median_from_distinct_videos(self):
+        windows = pd.DataFrame(
+            {
+                "stem": ["a", "a", "b", "c", "d", "e"],
+                "score": [0.1, 0.2, 0.3, 0.8, 0.81, 0.9],
+            }
+        )
+        out = analysis.example_windows(windows, "score")
+        low = out[out["example"] == "low"]
+        self.assertEqual(list(low["stem"]), ["a", "b"])  # a's second window skipped
+        median = out[out["example"] == "median"]
+        self.assertEqual(sorted(median["stem"]), ["c", "d"])
+
     def test_rate_share_weighs_each_unit_equally(self):
         # unit a: all slow; unit b: one slow, three fast, so b's many breaths do not
         # outweigh a's
@@ -282,7 +339,7 @@ class SummaryTests(unittest.TestCase):
                 variant=[other.model_copy(update={"fold": "x"})],
             )
 
-    def test_across_folds_gives_a_t_interval_and_none_for_one_fold(self):
+    def test_across_folds_gives_a_bootstrap_interval_and_none_for_one_fold(self):
         rows = pd.DataFrame(
             {
                 "method": ["a"] * 3 + ["b"],
@@ -292,7 +349,7 @@ class SummaryTests(unittest.TestCase):
         )
         out = analysis.across_folds(rows, "v").set_index("method")
         self.assertAlmostEqual(out.loc["a", "mean"], 2.0)
-        self.assertAlmostEqual(out.loc["a", "high"] - 2.0, 4.302653 / np.sqrt(3), 5)
+        self.assertTrue(1.0 <= out.loc["a", "low"] < 2.0 < out.loc["a", "high"] <= 3.0)
         self.assertEqual(int(out.loc["b", "folds"]), 1)
         self.assertTrue(np.isnan(out.loc["b", "low"]))
 

@@ -16,13 +16,13 @@ from collections.abc import Callable, Sequence
 import numpy as np
 import pandas as pd
 import torch
-from scipy import stats
 from scipy.signal import butter, sosfiltfilt, welch
 
 from zephyr import events, features
-from zephyr.evaluate import score_entry
+from zephyr.evaluate import score_entry, score_span, truth_events, truth_frame
 from zephyr.evaluation import frame_tolerance_s, match_events
 from zephyr.events import in_spans
+from zephyr.quality_control.metrics import spans
 from zephyr.signal import BREATHING_SIGNAL_COLUMN, TIME_COLUMN
 
 RATE_WINDOW_S = 10.0
@@ -154,6 +154,29 @@ def event_aligned(
     return np.array(rows, float).reshape(len(at), len(lags))
 
 
+def bootstrap_mean(
+    values: np.ndarray, level: float = 0.95, n: int = 2000, seed: int = 0
+) -> tuple[np.ndarray, np.ndarray]:
+    """The *level* bootstrap interval (``low``, ``high``) of the mean of *values* over
+    its first axis (the units: sites, sessions, folds), resampling units with
+    replacement *n* times; NaNs are left out of each mean. Missing with fewer than two
+    units."""
+    x = np.asarray(values, float)
+    units = len(x)
+    if units < 2:
+        missing = np.full(x.shape[1:], np.nan)
+        return missing, missing.copy()
+    draws = np.random.default_rng(seed).integers(0, units, size=(n, units))
+    chunk = max(1, int(2e7 // max(1, x.size)))
+    with np.errstate(all="ignore"):
+        means = np.concatenate(
+            [np.nanmean(x[draws[i : i + chunk]], axis=1) for i in range(0, n, chunk)]
+        )
+        tail = (1 - level) / 2 * 100
+        low, high = np.nanpercentile(means, [tail, 100 - tail], axis=0)
+    return low, high
+
+
 def odor_aligned(
     grid: np.ndarray,
     signals: dict[str, np.ndarray],
@@ -163,7 +186,8 @@ def odor_aligned(
 ) -> pd.DataFrame:
     """Each of *signals* (sampled on *grid*) around odor onset, per kind of site
     (*onsets*: ``odor`` time, ``kind``): ``kind``, ``signal``, ``lag``, the ``mean``
-    over sites with its *level* t-interval (``low``, ``high``) and ``n`` sites. Sites
+    over sites with its *level* bootstrap interval over sites (``low``, ``high``,
+    :func:`bootstrap_mean`) and ``n`` sites. Sites
     whose window leaves *grid* are left out."""
     inside = onsets[onsets["odor"].between(grid[0] - lags[0], grid[-1] - lags[-1])]
     rows = []
@@ -172,13 +196,7 @@ def odor_aligned(
             x = event_aligned(grid, values, group["odor"].to_numpy(), lags)
             n = len(x)
             mean = np.nanmean(x, 0)
-            half = (
-                stats.t.ppf(0.5 + level / 2, n - 1)
-                * np.nanstd(x, 0, ddof=1)
-                / np.sqrt(n)
-                if n > 1
-                else np.full(len(lags), np.nan)
-            )
+            low, high = bootstrap_mean(x, level)
             rows.append(
                 pd.DataFrame(
                     {
@@ -186,13 +204,80 @@ def odor_aligned(
                         "signal": name,
                         "lag": lags,
                         "mean": mean,
-                        "low": mean - half,
-                        "high": mean + half,
+                        "low": low,
+                        "high": high,
                         "n": n,
                     }
                 )
             )
     return pd.concat(rows, ignore_index=True)
+
+
+def aligned_across_units(aligned: pd.DataFrame, level: float = 0.95) -> pd.DataFrame:
+    """:func:`odor_aligned` of several units (*aligned* with a ``unit`` column, e.g. the
+    session) averaged with each unit weighed equally: per ``kind``, ``signal`` and
+    ``lag``, the ``mean`` of the units' means with its *level* bootstrap interval over units
+    (``low``, ``high``), ``n`` units and ``sites`` over them."""
+    rows = []
+    for (kind, signal, lag), g in aligned.groupby(["kind", "signal", "lag"]):
+        means = g["mean"].dropna().to_numpy()
+        n = len(means)
+        mean = means.mean() if n else np.nan
+        low, high = bootstrap_mean(means, level)
+        rows.append(
+            {
+                "kind": kind,
+                "signal": signal,
+                "lag": lag,
+                "mean": mean,
+                "low": float(low),
+                "high": float(high),
+                "n": n,
+                "sites": int(g["n"].sum()),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def rate_given_speed_across(counts: Sequence[np.ndarray]) -> np.ndarray:
+    """:func:`rate_given_speed` of each unit's *counts*, averaged with each unit weighed
+    equally over the units that have samples in a speed bin (0 where none has)."""
+    shares = np.array([rate_given_speed(c) for c in counts], float)
+    has = np.array([c.sum(axis=1) > 0 for c in counts])
+    total = (shares * has[:, :, None]).sum(axis=0)
+    return total / np.maximum(has.sum(axis=0), 1)[:, None]
+
+
+def unit_medians(
+    windows: pd.DataFrame, column: str, unit: str = "session", level: float = 0.95
+) -> tuple[pd.Series, dict[str, float]]:
+    """Each unit's median of *column* over its *windows* (units without a value
+    left out), and the ``mean`` of those medians with its *level* bootstrap interval
+    over units (``low``, ``high``, :func:`bootstrap_mean`) and ``n`` units."""
+    medians = windows.groupby(unit)[column].median().dropna()
+    n = len(medians)
+    mean = medians.mean() if n else np.nan
+    low, high = bootstrap_mean(medians.to_numpy(), level)
+    return medians, {"mean": mean, "low": float(low), "high": float(high), "n": n}
+
+
+def example_windows(
+    windows: pd.DataFrame, measure: str, n: int = 2, video: str = "stem"
+) -> pd.DataFrame:
+    """Windows to show from a set of quality-control *windows* (one row each, with a
+    *video* column): the *n* lowest on *measure* and the *n* nearest its median, each
+    from a different video, with ``example`` (``"low"`` or ``"median"``) added."""
+    scored = windows.dropna(subset=[measure])
+    low = scored.sort_values(measure).drop_duplicates(video).head(n)
+    rest = scored[~scored[video].isin(low[video])]
+    distance = (rest[measure] - scored[measure].median()).abs()
+    median = (
+        rest.assign(_d=distance).sort_values("_d").drop_duplicates(video).head(n)
+    ).drop(columns="_d")
+    return pd.concat(
+        [low.assign(example="low"), median.assign(example="median")],
+        ignore_index=True,
+    )
 
 
 def rate_speed_counts(
@@ -527,20 +612,16 @@ def across_folds(
     level: float = 0.95,
 ) -> pd.DataFrame:
     """Per group of *by*: the mean of *value* over folds (one row per fold), its
-    *level* t-interval over folds and the number of folds; with one fold the interval is
-    missing."""
+    *level* bootstrap interval over folds (:func:`bootstrap_mean`) and the number of
+    folds; with one fold the interval is missing."""
 
     def one(g: pd.DataFrame) -> pd.Series:
         v = g[value].dropna().to_numpy(float)
         n = len(v)
         mean = v.mean() if n else np.nan
-        half = (
-            stats.t.ppf(0.5 + level / 2, n - 1) * v.std(ddof=1) / np.sqrt(n)
-            if n > 1
-            else np.nan
-        )
+        low, high = bootstrap_mean(v, level)
         return pd.Series(
-            {"mean": mean, "low": mean - half, "high": mean + half, "folds": n}
+            {"mean": mean, "low": float(low), "high": float(high), "folds": n}
         )
 
     return (

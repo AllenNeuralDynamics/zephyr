@@ -236,6 +236,141 @@ network = "Zephyr, all cameras"
 fold = "cv_0"
 
 [[application.session]]
+session = "867425_2026-10-21_19-17-00"
+asset = "867425_2026-10-21_19-17-00_processed_2026-10-22_06-58-43"
+
+[[application.session]]
+session = "867426_2026-10-26_20-09-01"
+asset = "867426_2026-10-26_20-09-01_processed_2026-10-27_06-36-18"
+
+[[application.session]]
+session = "867428_2026-10-26_20-09-12"
+asset = "867428_2026-10-26_20-09-12_processed_2026-10-27_06-34-15"
+
+[[application.session]]
 session = "878045_2026-10-26_20-09-07"
 asset = "878045_2026-10-26_20-09-07_processed_2026-10-27_06-06-39"
+
+[[application.session]]
+session = "878046_2026-10-26_20-11-15"
+asset = "878046_2026-10-26_20-11-15_processed_2026-10-27_07-02-54"
 example = true
+
+[[application.session]]
+session = "788731_2025-12-09_19-10-07"
+asset = "788731_2025-12-09_19-10-07_processed_2026-09-23_00-25-50"
+
+[[application.session]]
+session = "804430_2025-11-10_23-35-39"
+asset = "804430_2025-11-10_23-35-39_processed_2026-09-23_00-28-53"
+
+[[application.session]]
+session = "804434_2025-11-08_00-34-23"
+asset = "804434_2025-11-08_00-34-23_processed_2026-09-23_00-31-00"
+
+[[application.session]]
+session = "808054_2026-04-06_19-11-16"
+asset = "808054_2026-04-06_19-11-16_processed_2026-09-23_00-41-46"
+
+[[application.session]]
+session = "810351_2025-12-11_00-52-19"
+asset = "810351_2025-12-11_00-52-19_processed_2026-09-23_00-43-32"
+
+[[application.session]]
+session = "816214_2026-04-07_16-57-05"
+asset = "816214_2026-04-07_16-57-05_processed_2026-09-23_00-53-54"
+
+[[application.session]]
+session = "822683_2026-02-19_16-49-20"
+asset = "822683_2026-02-19_16-49-20_processed_2026-09-23_01-02-16"
+
+[[application.session]]
+session = "860898_2026-07-24_20-26-29"
+asset = "860898_2026-07-24_20-26-29_processed_2026-09-23_03-20-44"
+
+[[application.session]]
+session = "860899_2026-06-23_16-41-52"
+asset = "860899_2026-06-23_16-41-52_processed_2026-09-23_03-24-56"
+
+[[application.session]]
+session = "860900_2026-07-22_17-30-19"
+asset = "860900_2026-07-22_17-30-19_processed_2026-09-23_03-29-32"
+
+[[application.session]]
+session = "860903_2026-06-18_17-13-50"
+asset = "860903_2026-06-18_17-13-50_processed_2026-09-23_03-36-41"
+
+[[application.session]]
+session = "867422_2026-09-03_15-37-37"
+asset = "867422_2026-09-03_15-37-37_processed_2026-09-23_05-06-43"
+
+[[application.session]]
+session = "867423_2026-08-25_16-34-22"
+asset = "867423_2026-08-25_16-34-22_processed_2026-09-23_05-12-04"
+
+[[application.session]]
+session = "867424_2026-08-21_20-02-17"
+asset = "867424_2026-08-21_20-02-17_processed_2026-09-23_05-19-58"
+
+[[application.session]]
+session = "867427_2026-08-17_16-33-41"
+asset = "867427_2026-08-17_16-33-41_processed_2026-09-23_05-39-43"
+
+# Quality-control scores of the all-camera network of cv_0 (reference on 60 clips of its
+# validation animals), written on this machine under $ZEPHYR_QC_ROOT by `zephyr predict
+# --quality-control` (the noise null by `zephyr-benchmarks probe`; Figs. 4 and 5); the
+# refined network's reports were made with its own reference. The truth they are
+# checked against is joined by the report, never read by quality control.
+[quality]
+reference = "ref-allcam.json"
+
+[[quality.set]]
+label = "Held-out animals"
+reports = "vr"
+role = "working"
+
+[[quality.set]]
+label = "Dynamic foraging, refined"
+reports = "df-refined"
+role = "working"
+
+[[quality.set]]
+label = "Dynamic foraging, unrefined"
+reports = "df-unrefined"
+role = "null"
+
+[[quality.set]]
+label = "Noise 16"
+reports = "noise"
+role = "null"
+noise = 16
+
+[[quality.set]]
+label = "Noise 32"
+reports = "noise"
+role = "null"
+noise = 32
+
+[[quality.set]]
+label = "Noise 64"
+reports = "noise"
+role = "null"
+noise = 64
+
+[[quality.set]]
+label = "Sessions without a thermistor"
+reports = "application-face"
+role = "application"
+camera = "Face camera"
+
+[[quality.set]]
+label = "Sessions without a thermistor, side camera"
+reports = "application-side"
+role = "camera"
+camera = "Side camera"
+
+[[quality.set]]
+label = "Sessions without a thermistor, front camera"
+reports = "application-front"
+role = "camera"
+camera = "Front camera"

@@ -217,3 +217,22 @@ QUALITY: dict[str, str] = {
     "head": ONSET,
 }
 """The families of quality-control measures (``zephyr.quality_control.metrics``)."""
+QC_ROLES: dict[str, str] = {
+    "validation": "#bbbbbb",
+    "working": "#7f7f7f",
+    "null": "#d55e00",
+    "application": "#0072b2",
+    "camera": "#56b4e9",
+}
+"""Quality-control score sets by role (the results manifest's ``[quality]``): the
+network's validation windows, networks that work, known failures, sessions without
+a thermistor, and the same sessions from another camera."""
+QC_MEASURES: dict[str, str] = {
+    "head_trace_f1": "Head vs trace F1",
+    "alternation_break_frac": "Alternation breaks",
+    "peak_prob": "Onset peak height",
+    "onset_background": "Onset background",
+}
+"""The quality-control measures a figure shows, with their labels."""
+NOISE: dict[float, str] = {16.0: "#f4a582", 32.0: "#d55e00", 64.0: "#8c2d04"}
+"""Noise added to the frames (gray levels), lighter to darker."""

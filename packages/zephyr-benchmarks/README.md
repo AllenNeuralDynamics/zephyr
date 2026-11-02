@@ -152,7 +152,11 @@ not the manifest's `fold`), `[[variant]]`s of the first method and its
 `[[cross_validation.variant]]` (the first method trained differently) was retrained on.
 An optional `[application]` names task sessions without a thermistor that a report
 predicts (`network` and `fold` name the run, each `[[application.session]]` its
-`session` folder, processed `asset` and whether it is the one `example`). `corpus-v3.toml` is the corpus benchmark that `notebooks/walkthrough.py`
+`session` folder, processed `asset` and whether it is the one `example`). An optional
+`[quality]` names the quality-control scores it compares: a network's `reference` and
+each `[[quality.set]]` of reports (`label`, `reports` folder, `role`: `working`, `null`,
+`application`, or `camera` for the same sessions from another camera, for a noise null of `probe` its `noise` level, and optionally the `camera` its videos are from), all under a
+quality-control root the report sets. `corpus-v3.toml` is the corpus benchmark that `notebooks/walkthrough.py`
 reports. To report other runs, copy it under a new name.
 
 `analysis.py` measures, clip by clip, what a run's own scores do not: every true inhale

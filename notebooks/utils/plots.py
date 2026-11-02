@@ -11,7 +11,6 @@ from typing import Any
 import matplotlib as mpl
 import numpy as np
 import pandas as pd
-import scipy.stats
 from matplotlib import dates as mdates
 from matplotlib import ticker
 from matplotlib.axes import Axes
@@ -286,7 +285,7 @@ def task_summary_panel(
 ) -> Figure:
     """Sniffing in the task. Top, breathing rate and speed around odor onset per kind
     of site (*aligned*: ``site``, ``signal`` (``rate`` or ``speed``), ``lag``,
-    ``mean``, ``sem``). Bottom, breathing rate against speed over every sample of
+    ``mean`` with its 95% bootstrap interval ``low``, ``high``). Bottom, breathing rate against speed over every sample of
     *samples* (``speed``, ``rate``): the share of each speed bin at each rate (each
     speed bin sums to 1). Speed bins are ``(low, high, step)`` of *speed_range*; rate bins
     over *rate_hz* hold whole numbers of intervals of the *grid_hz* grid the rate's
@@ -308,8 +307,8 @@ def task_summary_panel(
                 continue
             target.fill_between(
                 g["lag"],
-                g["mean"] - g["sem"],
-                g["mean"] + g["sem"],
+                g["low"],
+                g["high"],
                 color=colour,
                 alpha=0.25,
                 lw=0,
@@ -391,6 +390,7 @@ def aligned_panel(
     aligned: pd.DataFrame,
     legend: bool = True,
     title: str = "",
+    legend_columns: int | None = None,
 ) -> Figure:
     """Respiration rate (top) and running speed (bottom) around odor onset per kind of
     site (*aligned*: ``kind``, ``signal`` (``rate`` or ``speed``), ``lag``, ``mean``,
@@ -419,7 +419,7 @@ def aligned_panel(
             ],
             loc="lower left",
             bbox_to_anchor=(-0.05, 1.0),
-            ncol=len(style.SITES),
+            ncol=legend_columns or len(style.SITES),
             columnspacing=0.5,
             handlelength=0.8,
             handletextpad=0.3,
@@ -427,7 +427,8 @@ def aligned_panel(
             borderaxespad=0.1,
         )
     if title:
-        ax["rate"].set_title(title, fontsize=6.5, pad=12 if legend else 3)
+        rows = -(-len(style.SITES) // (legend_columns or len(style.SITES)))
+        ax["rate"].set_title(title, fontsize=6.5, pad=3 + 8 * rows if legend else 3)
     ax["rate"].set_ylabel("Respiration\n(Hz)")
     ax["speed"].set_ylabel("Speed\n(cm/s)")
     ax["speed"].set_xlabel("From odor onset (s)")
@@ -1055,7 +1056,7 @@ def lag_rate_panel(
 ) -> Figure:
     """Onset lag (predicted minus true inhale) against the breath's rate: the share of
     each rate bin's lags at each lag (each column sums to 1), with each bin's mean lag
-    (line) and its 95% t-interval over folds (band; *lags* has a ``fold`` column);
+    (line) and its 95% bootstrap interval over folds (band; *lags* has a ``fold`` column);
     dotted, the scorer's tolerance."""
     fig, ax = style.panel(width_mm, height_mm, [["heat"]])
     a = ax["heat"]
@@ -1082,18 +1083,24 @@ def lag_rate_panel(
         .groupby(["bin", "fold"])["lag"]
         .mean()
         .groupby("bin")
-        .agg(["mean", "std", "count"])
-    )
-    half = (
-        scipy.stats.t.ppf(0.975, per_fold["count"] - 1)
-        * per_fold["std"]
-        / np.sqrt(per_fold["count"])
+        .apply(
+            lambda v: pd.Series(
+                dict(
+                    zip(
+                        ("mean", "low", "high"),
+                        (v.mean(), *analysis.bootstrap_mean(v.to_numpy())),
+                        strict=True,
+                    )
+                )
+            )
+        )
+        .unstack()
     )
     x = centres[per_fold.index]
     a.fill_between(
         x,
-        per_fold["mean"] - half,
-        per_fold["mean"] + half,
+        per_fold["low"],
+        per_fold["high"],
         color=style.TRUTH,
         alpha=0.25,
         lw=0,
@@ -2412,7 +2419,7 @@ def fold_difference_panel(
 ) -> Figure:
     """*name* minus *reference* per test set (rows) for each metric (side by side),
     paired by cross-validation fold: each fold's difference (dots; *folds*: ``metric``,
-    ``set``, ``fold``, ``value``) and their mean with its 95% t-interval over folds
+    ``set``, ``fold``, ``value``) and their mean with its 95% bootstrap interval over folds
     (*summary*: ``metric``, ``set``, ``mean``, ``low``, ``high``)."""
     metrics = list(dict.fromkeys(summary["metric"]))
     sets = list(dict.fromkeys(summary["set"]))
@@ -3020,15 +3027,27 @@ def views_panel(width_mm: float, height_mm: float, views: dict[str, tuple]) -> F
 
 
 def refined_traces_panel(
-    width_mm: float, height_mm: float, rows: dict[str, dict], duration: float = 12.0
+    width_mm: float,
+    height_mm: float,
+    rows: dict[str, dict],
+    duration: float = 12.0,
+    labels: dict[str, str] | None = None,
+    notes: dict[str, str] | None = None,
+    colours: dict[str, str] | None = None,
+    corner: dict[str, str] | None = None,
+    ncols: int = 1,
 ) -> Figure:
-    """One row per camera (title -> ``times``, ``truth``, ``truth_inhale``, ``signal``,
-    ``head``, ``start``): the thermistor and the network's trace (each z-scored) over
-    *duration* s from ``start`` (s from the clip's start, the axis's time), the
-    thermistor's (black) and the network's (the camera's colour) inhales as ticks
-    above."""
+    """One row per camera or network (title -> ``times``, ``truth``, ``truth_inhale``,
+    ``signal``, ``head``, ``start``): the thermistor and the network's trace (each
+    z-scored) over *duration* s from ``start`` (s from the clip's start, the axis's
+    time), the thermistor's (black) and the network's (the title's colour) inhales as
+    ticks above; *labels* replace a title on its axis, *notes* go above its row,
+    *colours* replace its colour and *corner* goes in its top right corner. Rows fill
+    *ncols* columns, left to right."""
     names = list(rows)
-    fig, ax = style.panel(width_mm, height_mm, [[n] for n in names], sharex=True)
+    grid = [names[k : k + ncols] for k in range(0, len(names), ncols)]
+    grid[-1] += ["."] * (ncols - len(grid[-1]))
+    fig, ax = style.panel(width_mm, height_mm, grid, sharex=True, empty_sentinel=".")
     for name in names:
         r, a = rows[name], ax[name]
         origin = r["times"][0]
@@ -3038,7 +3057,7 @@ def refined_traces_panel(
         truth, signal = r["truth"][keep], r["signal"][keep]
         truth = (truth - truth.mean()) / (truth.std() or 1.0)
         signal = (signal - signal.mean()) / (signal.std() or 1.0)
-        colour = style.color(name)
+        colour = (colours or {}).get(name) or style.color(name)
         a.plot(t[keep], truth, color=style.TRUTH, lw=0.6, label="Thermistor")
         a.plot(t[keep], signal, color=colour, lw=0.7, label="Zephyr")
         for events, y, c, m in (
@@ -3050,9 +3069,24 @@ def refined_traces_panel(
             a.plot(e, np.full(len(e), y), m, color=c, ms=1.8, lw=0)
         a.set_ylim(-3.2, 3.9)
         a.set_yticks([])
-        a.set_ylabel(name, fontsize=6, color=colour)
+        a.set_ylabel((labels or {}).get(name, name), fontsize=6, color=colour)
         a.spines["left"].set_visible(False)
-    ax[names[-1]].set_xlabel("Time (s)")
+        if corner and name in corner:
+            a.text(
+                1.0,
+                1.0,
+                corner[name],
+                transform=a.transAxes,
+                ha="right",
+                va="bottom",
+                fontsize=5.5,
+                color=colour,
+            )
+        if notes and name in notes:
+            a.set_title(notes[name], fontsize=5, loc="left", color=colour, pad=1)
+    for name in grid[-1]:
+        if name != ".":
+            ax[name].set_xlabel("Time (s)")
     ax[names[-1]].set_xlim(t0, t1)
     return fig
 
@@ -3132,4 +3166,200 @@ def cost_panel(
         a.set_xlabel("VR test set")
         a.set_title(METRIC_LABELS[metric], fontsize=7)
     ax[metrics[0]].set_ylabel("After minus before")
+    return fig
+
+
+# --- noisy frames ----------------------------------------------------------------------
+
+
+def probe_curves_figure(table: pd.DataFrame, truth: str = "truth_inhale_f1") -> Figure:
+    """Each video's noisy frames (:func:`zephyr.benchmarks.probe.load_probes`) as a line
+    over the noise level (0: the ordinary prediction): its agreement with the ordinary
+    trace (left) and, for labelled clips, its true inhale F1 (right). Lines are coloured
+    by the ordinary prediction's true F1; the thick line is the median over videos."""
+    columns = [("agree_trace_r", "Trace r with the\nordinary prediction")]
+    if truth in table and table[truth].notna().any():
+        columns.append((truth, "True inhale F1"))
+    ordinary = table[table["sigma"] == 0].set_index("stem")
+    colour = ordinary.get(truth)
+    cmap = mpl.colormaps["viridis"]
+    fig, axes = style.figure("double", 0.3, ncols=len(columns))
+    for ax, (column, label) in zip(np.atleast_1d(axes), columns, strict=True):
+        curves = table.groupby(["stem", "sigma"])[column].mean().unstack("sigma")
+        for stem, values in curves.iterrows():
+            c = cmap(float(colour.get(stem, 0.5))) if colour is not None else "0.6"
+            ax.plot(values.index, values.to_numpy(), color=c, lw=0.6, alpha=0.7)
+        ax.plot(curves.columns, curves.median().to_numpy(), color=style.TRUTH, lw=1.5)
+        ax.set_xscale("symlog", linthresh=4)
+        ax.set_xticks(list(curves.columns))
+        ax.set_xticklabels([f"{v:g}" for v in curves.columns])
+        ax.set_xlabel("Noise s.d. (gray levels)")
+        ax.set_ylabel(label)
+        ax.set_ylim(-0.2, 1.02)
+    if colour is not None:
+        fig.colorbar(
+            mpl.cm.ScalarMappable(cmap=cmap, norm=mpl.colors.Normalize(0, 1)),
+            ax=axes,
+            label="Ordinary true F1",
+            shrink=0.8,
+        )
+    return fig
+
+
+# --- quality-control scores -----------------------------------------------------------
+
+
+def quality_sets_panel(
+    width_mm: float,
+    height_mm: float,
+    windows: pd.DataFrame,
+    rows: Sequence[tuple[str, str]],
+    truth: str | None = "truth_inhale_f1",
+    highlight: str | None = None,
+    marks: pd.DataFrame | None = None,
+    colours: dict[str, str] | None = None,
+) -> Figure:
+    """Each quality-control measure (:data:`style.QC_MEASURES`, columns; then *truth*,
+    when given) over the 30-s *windows* of each row (*rows*: its value of ``row`` in
+    *windows*, and its role, which colours it): the shaded bar spans the middle 95% of
+    its windows, each dot one session's median (``session``), and the black bar the
+    mean of those medians with its 95% bootstrap interval over sessions
+    (:func:`analysis.unit_medians`). The *highlight* row is drawn darker. *marks*
+    (windows with ``row``, ``mark``, a label, and the measures) are drawn as labelled
+    points on their row, labels above and below in turn. *colours* sets a row's colour
+    by name instead of its role's."""
+    colours = colours or {}
+    measures = dict(style.QC_MEASURES)
+    if truth is not None:
+        measures[truth] = "True inhale F1"
+    fig, ax = style.panel(width_mm, height_mm, [list(measures)], sharey=True)
+    names = [name for name, _ in rows]
+    jitter = np.random.default_rng(0)
+    for column, label in measures.items():
+        a = ax[column]
+        for y, (name, role) in enumerate(rows):
+            rows_of = windows[(windows["row"] == name) & windows[column].notna()]
+            if not len(rows_of):
+                continue
+            values = rows_of[column].to_numpy()
+            colour = colours.get(name, style.QC_ROLES[role])
+            strong = name == highlight
+            lo, hi = np.percentile(values, [2.5, 97.5])
+            a.add_patch(
+                Rectangle(
+                    (lo, y - 0.3),
+                    hi - lo,
+                    0.6,
+                    facecolor=colour,
+                    edgecolor="none",
+                    alpha=0.55 if strong else 0.3,
+                    zorder=1,
+                )
+            )
+            medians, summary = analysis.unit_medians(rows_of, column)
+            a.plot(
+                medians.to_numpy(),
+                y + jitter.uniform(-0.18, 0.18, len(medians)),
+                "o",
+                ms=1.5,
+                color=colour,
+                mec="w",
+                mew=0.2,
+                lw=0,
+                zorder=2,
+            )
+            if summary["n"] > 1:
+                a.plot(
+                    [summary["low"], summary["high"]],
+                    [y, y],
+                    color="k",
+                    lw=0.9,
+                    zorder=3,
+                )
+            a.plot(
+                [summary["mean"]] * 2, [y - 0.22, y + 0.22], color="k", lw=0.9, zorder=3
+            )
+        if marks is not None:
+            for i, m in enumerate(marks.itertuples()):
+                y = names.index(m.row)
+                x = getattr(m, column)
+                a.plot(x, y, "o", ms=2.6, mfc="w", mec="k", mew=0.5, zorder=4)
+                a.annotate(
+                    m.mark,
+                    (x, y),
+                    xytext=(0, 3.5 if i % 2 == 0 else -3.5),
+                    textcoords="offset points",
+                    ha="center",
+                    va="bottom" if i % 2 == 0 else "top",
+                    fontsize=5,
+                )
+        a.set_title(label, fontsize=6.5)
+        a.tick_params(labelsize=5.5)
+        a.set_ylim(len(rows) - 0.5, -0.5)
+        a.margins(x=0.05)
+    first = ax[next(iter(measures))]
+    first.set_yticks(range(len(rows)))
+    first.set_yticklabels(names, fontsize=5.5)
+    for (_, role), tick in zip(rows, first.get_yticklabels(), strict=True):
+        tick.set_color(
+            colours.get(
+                tick.get_text(),
+                "k" if role in ("validation", "working") else style.QC_ROLES[role],
+            )
+        )
+    for column in list(measures)[1:]:
+        ax[column].tick_params(left=False)
+    return fig
+
+
+def window_examples_panel(
+    width_mm: float,
+    height_mm: float,
+    examples: Sequence[dict],
+    threshold: float,
+    colour: str,
+) -> Figure:
+    """Stretches of predictions without a thermistor, two per row (*examples*: each a
+    ``title``, ``time`` (s from the stretch's start), the predicted ``signal`` and
+    ``onset`` probability, and the ``head`` inhalation times): the trace with its
+    inhalations as ticks above, and below it the onset probability with the
+    *threshold* they were found at."""
+    n = len(examples)
+    cols = 2
+    rows = []
+    for r in range((n + cols - 1) // cols):
+        rows.append([f"t{r * cols + c}" for c in range(cols)])
+        rows.append([f"p{r * cols + c}" for c in range(cols)])
+    fig, ax = style.panel(
+        width_mm, height_mm, rows, height_ratios=[1.5, 0.6] * (len(rows) // 2)
+    )
+    for i, e in enumerate(examples):
+        t, p = ax[f"t{i}"], ax[f"p{i}"]
+        p.sharex(t)
+        t.tick_params(labelbottom=False)
+        z = (e["signal"] - np.mean(e["signal"])) / np.std(e["signal"])
+        t.plot(e["time"], z, color=colour, lw=0.5)
+        t.plot(
+            e["head"],
+            np.full(len(e["head"]), 1.03),
+            "v",
+            color=colour,
+            ms=1.1,
+            lw=0,
+            clip_on=False,
+            transform=t.get_xaxis_transform(),
+        )
+        t.set_ylim(-3, 3)
+        t.set_yticks([-3, 0, 3])
+        t.set_title(e["title"], fontsize=6, loc="left", pad=5)
+        p.plot(e["time"], e["onset"], color=style.ONSET, lw=0.5)
+        p.axhline(threshold, color="0.6", lw=0.4, ls=":")
+        p.set_ylim(0, 1.05)
+        p.set_yticks([0, 1])
+        p.set_xlim(e["time"][0], e["time"][-1])
+        if i % cols == 0:
+            t.set_ylabel("Trace (z)", fontsize=6)
+            p.set_ylabel("Onset (p)", fontsize=6)
+        if i >= n - cols:
+            p.set_xlabel("Time (s)")
     return fig
