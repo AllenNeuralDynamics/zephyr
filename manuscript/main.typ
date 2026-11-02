@@ -123,10 +123,10 @@ natural reference event for olfactory coding, and respiration is worth recording
 experiments on awake mice, not only in studies of olfaction.
 
 Measuring respiration with this precision in a behaving mouse usually requires an
-implanted sensor. The standard methods place either a thermistor or a pressure cannula in 
+implanted sensor. The standard methods place either a thermistor or a pressure cannula in
 the nasal cavity @grimaud2018 @wesson2008 @reisert2014 @mcafee2016. These methods, along
-with plethysmography, piezoelectric sensors, and electromyography, each involve trade-offs 
-in timing precision, freedom of movement, or invasiveness @grimaud2018. 
+with plethysmography, piezoelectric sensors, and electromyography, each involve trade-offs
+in timing precision, freedom of movement, or invasiveness @grimaud2018.
 Nasal implants require invasive surgery, can obstruct airflow
 and damage the nasal epithelium, and cannulae clog and must be cleared @mcafee2016
 @grimaud2018. Their signals also degrade. Chronic methods "are invasive, and none are
@@ -155,7 +155,7 @@ conventional video in mice, and no public dataset exists to develop and test one
 We assembled a corpus that pairs multi-view video with synchronized intranasal
 thermistor recordings from #v("corpus.sessions") sessions in #v("corpus.animals")
 head-fixed mice on #v("corpus.rigs") rigs. We tested computer-vision and deep-learning methods
-for recovering respiration from the video. Our network, Zephyr, not only recovered the timing of each inhalation in 
+for recovering respiration from the video. Our network, Zephyr, not only recovered the timing of each inhalation in
 held-out animals but also was able to faithfully reconstruct the thermistor waveform. It did so across several camera views, and
 after retraining on little new data, was able to generalize to new experimental conditions.
 A method meant to replace a sensor will be used where there is no sensor, so we also show how curated quality-control metrics, computed from the
@@ -214,38 +214,36 @@ the training clips, it was uncorrelated with the thermistor on new animals
 ($r = #v("benchmark.motion_r")$; #fig(<fig:benchmark>, "a,b")\; @tab:benchmark). So were
 two other pixel methods that select the components of the crop with most power in the
 respiration band ($r <= #v("benchmark.pixel_r_max")$ each), and all three detected few
-inhalations (F1 #v("benchmark.pixel_f1")) #note[random-trace control]. A linear readout of
+inhalations (F1 #v("benchmark.pixel_f1")). A linear readout of
 the leading facial motion components, as in Facemap @syeda2024, recovered part of the
 signal ($r = #v("benchmark.facemap_r")$, inhalation F1 #v("benchmark.facemap_f1")).
 
-We next asked whether networks trained against the thermistor do better. We started
-from the state of the art in camera physiology: four networks developed to recover pulse
+Deep-learning methods have been shown to recover periodic physiological signals from human video.
+We thus wondered if this class of methods would produce better estimates than the previous methods.
+We started from the state of the art in camera physiology: four networks developed to recover pulse
 and respiration from human face video, TS-CAN @liu2020, PhysNet @yu2019, PhysFormer @yu2022
 and RhythmFormer @zou2025. We trained each on the same clips under the same protocol, reading
 a 96 × 96 grayscale crop over the snout and predicting the thermistor trace (#link(<sec:methods>)[Methods]).
-These networks are built for long, slowly varying signals, and the two transformers are
-large and slow to run. We therefore asked whether a smaller, cheaper architecture would
-suffice. Zephyr encodes each frame with a small convolutional network and models respiration
-over time with a temporal convolutional network. The comparison networks predict only the
-respiration trace. Zephyr predicts the trace (the waveform head) and, through a second head, the
-probability at each time step that an inhalation starts (the inhalation-onset head;
+These networks are built for long, slowly varying signals, in particular the two transformers are
+large and slow to run. We therefore also propose a smaller and more efficient architecture called Zephyr. Zephyr encodes each frame with a small convolutional network (CNN) and models respiration
+over time with a temporal convolutional network (TCN). Additionally, we endowed Zephyr with a second head
+aimed to predict inhaltion onsets directly, whereas all of the networks we compared against predict only the
+waveform and require a separate digital signal processing step to extract inhalation onsets
 #fig(<fig:overview>, "d")\; #link(<sec:methods>)[Methods]).
 
-Every network recovered respiration on new animals (#fig(<fig:benchmark>, "b")\;
+Every network recovered respiration on held-out animals (#fig(<fig:benchmark>, "b")\;
 @tab:benchmark\; an example in #fig(<fig:overview>, "e")), so respiration can be learned from
-face video. Zephyr detected inhalations best, with an F1 score of #v("benchmark.f1") (95%
-interval #v("benchmark.f1_ci")) within 25 ms, or 1.5 frames at 60 Hz. PhysNet, the closest,
-reached #v("benchmark.physnet_f1") (paired difference #v("benchmark.physnet_f1_diff"),
-#v("benchmark.physnet_f1_diff_ci")). Zephyr's trace correlation, the correlation of its
-predicted trace with the thermistor, was #v("benchmark.r") (#v("benchmark.r_ci")), against
-#v("benchmark.physnet_r") for PhysNet (difference #v("benchmark.physnet_r_diff"),
-#v("benchmark.physnet_r_diff_ci")) and #v("benchmark.others_r") for TS-CAN, RhythmFormer and
-PhysFormer. Zephyr matched the best of these networks while running faster. It processed
-#v("benchmark.fps") frames per second on a consumer GPU, against
-#v("benchmark.physnet_fps") for PhysNet and #v("benchmark.transformer_fps") for the two
-transformers (#fig(<fig:benchmark>, "b")\; @tab:nets). Thus, neural networks can recover respiration waveforms accurately and efficiently from face video.
-
-== Accurate and precise extraction of single inhalations
+face video. Zephyr and PhysNet had similar inhalation-detection performance: their F1
+scores within 25 ms at 60 Hz were #v("benchmark.f1") (Zephyr; 95% interval
+#v("benchmark.f1_ci")) and #v("benchmark.physnet_f1") (PhysNet; paired difference
+#v("benchmark.physnet_f1_diff"), #v("benchmark.physnet_f1_diff_ci")). Their trace
+correlations with the thermistor were also similar: #v("benchmark.r") for Zephyr
+(95% interval #v("benchmark.r_ci")) and #v("benchmark.physnet_r") for PhysNet (difference
+#v("benchmark.physnet_r_diff"), #v("benchmark.physnet_r_diff_ci")); TS-CAN, RhythmFormer and
+PhysFormer reached #v("benchmark.others_r"). Importantly, while PhysNet and Zephyr nearly matched each other in accuracy, Zephyr processed
+#v("benchmark.physnet_fps_gain")% more frames per second than PhysNet on a consumer GPU,
+and #v("benchmark.transformer_fps_gain")% more than the two transformers
+(#fig(<fig:benchmark>, "b")\; @tab:nets). Thus, neural networks can accurately and efficiently recover respiration waveforms from face video.
 
 Mouse respiration spans a wide range of rates, so we asked whether accuracy held across that
 range (#fig(<fig:benchmark>, "c")). Zephyr found almost every inhalation between 6 and
@@ -253,12 +251,9 @@ range (#fig(<fig:benchmark>, "c")). Zephyr found almost every inhalation between
 least accurate in slow breathing, at 2–3 Hz (#v("rate.f1_slow")). The other networks lost
 more accuracy at both ends of the range.
 
-Most of the loss in slow breathing came from timing rather than from missed inhalations. At
+We note that most of the loss in slow breathing came from timing rather than from missed inhalations. At
 2–3 Hz, Zephyr found #v("slow.within_25_slow")% of the thermistor's inhalations within
-25 ms and #v("slow.within_50_slow")% within 50 ms, and only #v("slow.absent_slow")% had no
-inhalation within 100 ms (@fig:slow). An inhalation found 25–100 ms off counts as both a
-miss and a false inhalation, so these near misses weigh twice on F1. The spread of
-Zephyr's timing was wider in slow breathing (#v("slow.iqr_ms_slow") ms at 2–3 Hz against
+25 ms, but relaxing this threshold to 50ms allowed the network to recover #v("slow.within_50_slow")% of these events. This effect is likely attributed to the spread of Zephyr's timing being wider in slow breathing (#v("slow.iqr_ms_slow") ms at 2–3 Hz against
 #v("slow.iqr_ms_mid") ms at 6–8 Hz) but narrower as a share of the respiratory cycle
 (#v("slow.iqr_cycle_slow")% against #v("slow.iqr_cycle_mid")%). With a tolerance of 10% of
 each respiratory cycle, Zephyr found #v("slow.within_cycle_slow")% of inhalations at 2–3 Hz;
@@ -266,53 +261,28 @@ at 10–12 Hz, where 10% of the cycle is shorter than one video frame, it found
 #v("slow.within_cycle_fast")%. A fixed 25-ms tolerance is thus strictest for slow breathing cycles,
 which Zephyr times more precisely than fast ones relative to the respiratory cycle. Part of the
 remaining false inhalations in slow breathing may be shallow cycles that the corpus
-detector does not label. Lowering its prominence fraction from 0.2 to 0.1 added
-#v("slow.added_slow")% more inhalations at 2–3 Hz and #v("slow.added_mid")% at 6–8 Hz
-(@fig:slow), so labs that need these shallow cycles can recover them with a looser
-detector setting.
+detector does not label. For instance, lowering a prominence fraction parameter in our peak detection algorithm added #v("slow.added_slow")% more inhalations at 2–3 Hz and #v("slow.added_mid")% at 6–8 Hz
+(@fig:slow), so labs that need these shallow cycles may adjust the detector settings accordingly during training or inference.
 
-The ability to recover inhalations events with precise timing is crucial for behavior and physiology studies. Over the new animals of all
-folds, Zephyr's inhalations lagged the thermistor's by #v("rate.lag") ms on average (95%
+The ability to recover inhalations events with precise timing is crucial for behavior and physiology studies. Over the new animals of all folds, Zephyr's inhalations lagged the thermistor's by #v("rate.lag") ms on average (95%
 interval over folds #v("rate.lag_ci") ms), well within one cycle at the fastest sniffing
 rates (#fig(<fig:benchmark>, "d")). The lag hardly changed with respiration rate, from
 #v("rate.lag_slow") ms at 2–3 Hz to #v("rate.lag_fast") ms at 11–12 Hz.
-We also compared respiration rate, counted in 10-s windows, with the thermistor's, using
-the measures reported for camera-based respiration in humans @villarroel2019
+We also compared respiration rate, counted in 10-s windows, with the thermistor's, a measurement commonly reported for camera-based respiration in humans @villarroel2019
 @liu2023toolbox. Zephyr's rate was off by #v("rate.mae") cycles per minute on average, or
-#v("rate.mape")% of the thermistor's rate, with almost no overall bias
-(#v("rate.bias") cycles per minute). In #v("rate.within_10")% of windows, it was within
-10% of the thermistor's rate (#fig(<fig:benchmark>, "e")).
+#v("rate.mape")% of the thermistor's rate, with virtually no overall bias
+(#v("rate.bias") cycles per minute).
 
 #figure(
   fit(fig3),
-  caption: [*Neural network methods faithfully recover respiration dynamics.* Panel *a*
-    shows one clip of a held-out animal in the first cross-validation fold. Panels *b–e* show the held-out animals of the five
-    folds, #v("rate.clips") clips from #v("rate.sessions") sessions of #v("rate.animals")
-    animals. *a,* Six seconds of one clip of a held-out animal, predicted by each method
-    trained on that fold #note[PhysFormer and RhythmFormer: networks of the published
-      split, which also holds this animal out; replace once retrained on the folds]. The
-    thermistor is at the top and each method's trace is
-    drawn over it in grey. Vertical
-    lines mark the thermistor's inhalations. *b,* Inhalation F1 scores on new animals against
-    inference speed, in frames per second of 60-Hz video from the preprocessed crops
-    (median over 8 five-minute clips after warm-up).
-    Each dot is one fold, the mean over its animal × rig units. The mean over the
-    #v("benchmark.folds") folds is shown with its 95% interval. RhythmFormer
-    and PhysFormer were run on the published split only. Filled symbols are networks on a
-    consumer GPU and open symbols are methods on a CPU. *c,* Inhalation F1 on new animals
-    by respiration rate for each network, mean over folds with its 95% interval. Colours
-    are as in *b*. The bottom panel shows each unit's share of cycles at each rate, as the mean over animal × rig units with its 95% bootstrap interval
-    (n = #v("rate.breaths") thermistor cycles at 2–15 Hz over the folds;
-    #v("rate.breaths_published") in the published split). *d,* Zephyr's onset lag, its
-    inhalation time minus the thermistor's, against the cycle's rate. Every thermistor
+  caption: [*Neural network methods faithfully recover respiration dynamics.* *a,*
+    Six seconds of one clip of a held-out animal, predicted by each method. The
+    thermistor is at the top and each method's trace is drawn over it in grey. Vertical
+    lines mark the thermistor's inhalations. Panels *b–e* show the results from held-out animals across folds, #v("rate.clips") clips from #v("rate.sessions") sessions of #v("rate.animals")
+    animals. *b,* Inhalation F1 scores on new animals against
+    inference speed. Filled symbols are networks on a consumer GPU and open symbols are methods on a CPU. *c,* Inhalation F1 on new animals by respiration rate for each network, mean over folds with its 95% interval. Colours are as in *b*. The bottom panel shows the distribution of respiration rates in the held-out data. *d,* Zephyr's onset lag (predicted - thermistor), as a function of respiration rate. Every thermistor
     inhalation with a prediction within 50 ms is included, pooled over the new animals of
-    every fold (n = #v("rate.lags")). Colour shows the share of each rate bin's lags. The
-    line shows each rate bin's mean lag, averaged over folds, and the band its 95%
-    interval over the folds. Dotted lines mark the 25-ms tolerance. *e,* Respiration rate in 10-s windows, pooled over the new
-    animals of every fold (n = #v("rate.windows") windows). The difference between
-    Zephyr's rate and the thermistor's is plotted against their mean, coloured by the
-    number of windows. The solid line is the bias and the dotted lines the 95% limits of
-    agreement.],
+    every fold (n = #v("rate.lags")). The line shows each rate bin's mean lag, averaged over folds (with 95% CI). Dotted lines mark the default 25-ms tolerance used for inhalation detection. *e,* Respiration rate in 10-s windows, pooled over held-out animals of every fold (n = #v("rate.windows") windows). The difference between Zephyr's rate and the thermistor's is plotted against their mean. The solid line is the bias and the dotted lines the 95% limits of agreement between the two methods.],
 ) <fig:benchmark>
 
 #figure(
@@ -923,40 +893,41 @@ frame the network saw.
     align: (left, left, left),
     toprule,
     table.header([*Measure*], [*What it measures in a window*], [*Better*]),
-    midrule,
-    [Inhalations], [Number of inhalations from the onset output], [—],
-    [Respiration rate], [Median rate between consecutive inhalations (Hz)], [—],
+    midrule, [Inhalations], [Number of inhalations from the onset output],
+    [—], [Respiration rate], [Median rate between consecutive inhalations (Hz)],
+    [—],
     [Breaths too fast],
     [Share of breaths faster than a mouse breathes (15 Hz); slower rates are not
       judged, as they change with running, odors and task],
+
     [Lower],
     [Alternation breaks\*],
     [Share of events (inhalations from the onset output, exhalations from the trace, in
       time order) that repeat the kind before them; breathing alternates],
+
     [Lower],
     [Flat breaths],
     [Share of breaths (inhalation to inhalation) whose trace swings less than a quarter
       of the clip's median breath: stretches where the trace sees nothing],
+
     [Lower],
     [Head vs trace F1\*],
     [Agreement between the onset output's inhalations and the peaks of the network's own
       trace (thermistor's detector, 1.5-frame tolerance): the two outputs should agree],
-    [Higher],
-    [Onset peak height\*],
-    [Median onset probability at the inhalations: how sure the onset output is],
-    [Higher],
-    [Ambiguous onset peaks],
-    [Share of onset-probability peaks above 0.2 that stay below the onset threshold],
+
+    [Higher], [Onset peak height\*], [Median onset probability at the inhalations: how sure the onset output is],
+    [Higher], [Ambiguous onset peaks], [Share of onset-probability peaks above 0.2 that stay below the onset threshold],
     [Lower],
     [Onset background\*],
     [Mean onset probability further than 100 ms from any inhalation: how quiet it is
       between breaths],
+
     [Lower],
     [Expected precision],
     [Mean probability that an inhalation is real given its peak height, from a
       calibration fitted on the reference's validation clips],
-    [Higher],
-    bottomrule,
+
+    [Higher], bottomrule,
   ),
   caption: [*Quality-control measures.* Each is computed on every 30-s window from the
     network's trace and onset probability alone, without the thermistor or the video.

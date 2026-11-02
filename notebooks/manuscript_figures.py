@@ -1491,6 +1491,21 @@ def table1(
                 ["min", "max"]
             )
         ),
+        # how much higher Zephyr's frame rate is than PhysNet's and the transformers'
+        "physnet_fps_gain": values.pct(
+            timing.loc[_ref, "frames per s"] / timing.loc["PhysNet", "frames per s"] - 1
+        ),
+        "transformer_fps_gain": values.span(
+            *(
+                timing.loc[_ref, "frames per s"]
+                / timing.loc[["PhysFormer", "RhythmFormer"], "frames per s"].agg(
+                    ["max", "min"]
+                )
+                * 100
+                - 100
+            ),
+            0,
+        ),
         # the share of PhysNet's inference time Zephyr saves, and the transformers' time
         # as a multiple of Zephyr's
         "physnet_saved": values.pct(
