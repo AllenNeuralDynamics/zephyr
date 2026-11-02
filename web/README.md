@@ -43,8 +43,12 @@ To publish a network:
 
    `<folder>` gets `encoder.onnx`, `temporal.onnx` and `meta.json` (crop, recipe,
    normalisation, onset threshold, and the checkpoint with its SHA-256).
-2. Attach the three to a release of zephyr (one release per network, e.g.
-   `web-model-<run>`), and add `{ "name": ..., "release": ... }` to `models.json`.
+2. Name it in `models.json` (`{ "name": ..., "release": ... }`) with the zephyr release
+   that will publish it (`vX.Y.Z`), before that release is made.
+3. Make the release as a draft, attach the three files, then publish it. Publishing
+   deploys the documentation, whose build fetches them: files attached after
+   publishing would miss it. A release carries one network (the file names are fixed);
+   a network stays where it was published until `models.json` names another release.
 
 The app offers `finetune-df-cv-v4-cv_0-df`: `full-gray-all-cv-v4`'s fold `cv_0` network
 (face, side and front cameras of VR foraging) refined on the side and bottom cameras of
