@@ -152,19 +152,15 @@ signals, whereas a mouse changes its respiration rate several-fold within a seco
 has been shown to recover the respiration waveform and the timing of each inhalation from
 conventional video in mice, and no public dataset exists to develop and test one.
 
-We assembled a corpus that pairs face, side and front video with synchronized intranasal
+We assembled a corpus that pairs multi-view video with synchronized intranasal
 thermistor recordings from #v("corpus.sessions") sessions in #v("corpus.animals")
-head-fixed mice on #v("corpus.rigs") rigs. Every session passed the same quality rules.
-Splitting the corpus to hold out whole animals, we trained and scored, under one protocol,
-the signals that current tools extract, networks developed for human camera physiology and our own
-network, Zephyr. Zephyr recovered the timing of each inhalation in animals it had never
-seen, gained more from training on more animals than from more video of the same
-animals, and also recovered respiration from the side and front cameras. A method meant to replace a sensor will be used
-where there is no sensor, so we also developed quality-control measures, computed from the
-network's output alone, that score each prediction beside predictions known to be good and
-known to fail. We release the corpus, the
-trained models, an evaluation that reproduces our scores and an application that takes a
-lab's own videos from crop placement to predictions and quality-control reports.
+head-fixed mice on #v("corpus.rigs") rigs. We tested computer-vision and deep-learning methods
+for recovering respiration from the video. Our network, Zephyr, not only recovered the timing of each inhalation in 
+held-out animals but also was able to faithfully reconstruct the thermistor waveform. It did so across several camera views, and
+after retraining on little new data, was able to generalize to new experimental conditions.
+A method meant to replace a sensor will be used where there is no sensor, so we also show how curated quality-control metrics, computed from the
+network's output alone, can be used to  score each prediction. We release the corpus, the
+code as well as trained models for people to use and refine on their own data.
 
 = Results
 
