@@ -247,6 +247,22 @@ change. Screenshots in `docs/assets/screens/` come only from
 `scripts/docs_screenshots.py`, which drives the real app through the tutorial's project
 (never mock or hand-edit one); re-run it when a page they show changes.
 
+## The browser app (web/)
+
+`web/` is zephyr's network in the browser (TypeScript, ONNX Runtime Web, WebCodecs),
+published with the documentation as its `app/` (**Try it online!**, `docs/online.md`).
+It is not a package: zephyr never imports it, and it only runs exported networks.
+
+- **No network is committed.** A network is the three files `web/tools/export_onnx.py`
+  writes from a checkpoint (checked against PyTorch), attached to a GitHub release and
+  named in `web/models.json`; `npm run models` fetches them (CI's documentation build
+  does). Never add model files to the repository.
+- It does what `zephyr predict --video` does (frames by frame rate, the crop, the onset
+  head's peaks at the checkpoint's threshold); a change to that in zephyr is a change
+  here, checked with `web/tools/compare.py` against a zephyr prediction (web/README.md).
+- CI type-checks and builds it; its browser tests (`npm test`) need Edge and a GPU, so
+  run them by hand.
+
 ## Hard rules
 
 - `data/` and `benchmarks/` are read-only. Write outputs to new directories. The one

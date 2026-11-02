@@ -2,7 +2,8 @@ name: Documentation
 
 # Builds the site in docs/ with Zensical and publishes it to GitHub Pages: when a
 # release is published (from the release's tag, so the site documents the released
-# version), or when run by hand.
+# version), or when run by hand. The browser app (web/) is built into the site's app/,
+# with the networks web/models.json names fetched from their releases.
 on:
   release:
     types: [published]
@@ -21,6 +22,20 @@ jobs:
 
       - name: Build the site
         run: uvx zensical build --clean --strict
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build the browser app into the site's app/
+        working-directory: web
+        run: |
+          npm ci
+          npm run models
+          npm run build
+          cp -r dist ../site/app
 
       - uses: actions/upload-pages-artifact@v5
         with:
