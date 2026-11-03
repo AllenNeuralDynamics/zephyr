@@ -29,6 +29,7 @@ jobs:
       - name: Compile manuscript
         run: >-
           typst compile --font-path manuscript/template/fonts
+          --input version="$(git describe --always --dirty --exclude='*')"
           manuscript/main.typ "${{ runner.temp }}/manuscript.pdf"
 
       - name: Upload manuscript as artifact
