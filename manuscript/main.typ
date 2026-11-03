@@ -477,56 +477,31 @@ and over all sessions in #fig(<fig:application>, "f,g"). Both analyses indicate 
 = Discussion
 
 We provide a corpus that pairs orofacial video with an intranasal respiration sensor in
-behaving mice, splits and scoring that test generalization to new animals, and a network,
-Zephyr, that recovers each inhalation in animals it has never seen. Two results bear on how labs can use them.
+behaving mice, and a network, Zephyr, that recovers each inhalation in animals it has never seen. Not only did it recover general features of the thermistor waveform, but also did so while providing high accuracy and temporal precision of inhalation time events. We show that signals that current behavioural tools extract from facial motion did
+not faithfully recover respiration, so a "sniffing" component of facial motion should not be read as
+respiration without a sensor to validate it. 
 
-First, in head-fixed mice, neural networks can recover the time of each inhalation from
-video with high temporal accuracy. In animals it had never seen, Zephyr found inhalations
-with an F1 of #v("benchmark.f1") at a 25-ms tolerance, its inhalations lagged the
-thermistor's by #v("rate.lag") ms on average (95% interval #v("rate.lag_ci") ms), well
-within one 16.7-ms frame at 60 Hz, and its respiration rate was within #v("rate.mape")% of the
-thermistor's. This accuracy goes beyond the average respiration rate: it is enough to align
-behaviour and neural activity to single inhalations, at the temporal resolution the camera
-allows. The signals that current behavioural tools extract from facial motion did not
-recover respiration, so a "sniffing" component of facial motion should not be read as
-respiration without a sensor to check it.
+Our method has implications past the immediate context of neuroscience experiments. Reading respiration from video also bears on animal welfare. A nasal implant requires invasive surgery on the snout, can obstruct airflow and
+damage the nasal epithelium, and can fail before an experiment even begins @mcafee2016
+@grimaud2018. We too discarded sessions in which the thermistor's signal had degraded and was not reliable.
+Once trained for a rig, the network generalizes to new animals, which then need no
+implant. This refines the procedure for those animals and, where implants would otherwise
+fail, reduces the number of animals used @tannenbaum2015. Face videos from past
+experiments can also be read for respiration without recording any new animals provided the experimental conditions match those of the training data.
 
-Second, we provide a framework to train such networks and to predict with them
-efficiently. Zephyr matched larger networks from camera physiology in accuracy and took
-#v("benchmark.physnet_saved")% less time than PhysNet to predict. To our knowledge, no other dataset yet
-exists on which to test generalization beyond our rigs, but within the corpus the method
-worked from other views: trained on the side and front cameras, it found inhalations with
-an F1 of #v("cameras.f1_side") and #v("cameras.f1_front"), against #v("cameras.f1_face")
-for the face. A single network trained on all three cameras at once matched each
-single-camera network on its own camera, so the architecture has the capacity to absorb data from more rigs and views as
-they are collected. Accuracy depended more on the number of training animals than on the amount
-of video: #v("size.fewest") animals already gave an F1 of #v("size.fewest_f1"), and
-accuracy was still rising at the #v("size.all_animals") animals we trained on. A sensor remains necessary where the respiration waveform itself matters,
-and in the slowest breathing, where Zephyr was least accurate.
-
-Reading respiration from video also bears on animal welfare. A nasal implant requires
-surgery on the snout, can obstruct airflow and damage the nasal epithelium, and can fail
-before an experiment ends @mcafee2016 @grimaud2018, so that some animals are implanted
-whose recordings are later discarded @weinreb2024; we too discarded sessions in which the
-thermistor's signal had degraded. Once a network has been trained for a
-lab's rig, only the few animals that train and check it need the implant, and the rest of
-a study can measure respiration from the camera alone. This is a refinement for those
-animals and, where implants would otherwise fail, a reduction in the number of animals
-used @tannenbaum2015. Face videos already recorded in past experiments can also be read
-for respiration without any new animals.
-
-A lab with its own rig should expect to record a few animals with a sensor before relying
-on video. The rigs in our corpus share one design and place the cameras in similar
-positions, yet their lighting and the cameras' exact position, angle and lens still
-differ (@fig:views), and the network scored lower on some rigs and animals than on others
-(@fig:rigs). A camera placed at another angle, a different lens or lighting, or another
-strain may move the face further from what the network has seen. The side and front cameras, which see the
-snout from farther away and at other angles, still yielded respiration, and one network
-trained on all three views lost no accuracy on any of them, so a new view is best added
-to the existing training data rather than learned on its own. The
-quality-control measures are meant for the step after: once a lab has adapted the
-network, they score each window of a new recording without a sensor, beside the scores
-of predictions known to work and known to fail, and leave the cut to the lab.
+The proposed network architecture, Zephyr, is a small network trained for the rigs it is used on, not a general model of facial motion. Video from one rig varies little: the camera, lens, lighting and head
+position stay the same from session to session, and a small network has the capacity for
+it. Zephyr matched larger networks from camera physiology in accuracy and
+predicted faster. The same architecture also worked from the side and front cameras, which
+see the snout from farther away and at other angles, and a single network trained on all
+three cameras matched each single-camera network on its own camera. Accuracy depended
+more on the number of training animals than on the amount of video. Nevertheless we achieved relevant accuracy with as few as 2 or 4 animals. Whether one network can keep this accuracy across rigs, lenses,
+strains and tasks, or each rig needs a network of its own, remains open. Our rigs share
+one design and place the cameras in similar positions, yet their lighting and the
+cameras' exact position, angle and lens still differ (@fig:views), and the network scored
+lower on some rigs and animals than on others (@fig:rigs). The quality-control measures
+score each window of a recording without a sensor, beside the scores of predictions
+known to work and known to fail, and leave the cut to the user.
 
 The corpus also limits what we can claim. All mice were head-fixed, so the camera saw the
 face from a fixed distance and angle, and the animal could not turn away, rear or groom
@@ -534,31 +509,24 @@ freely. Whether respiration can be read from video in freely moving mice remains
 Head-mounted cameras, which already film the eyes and face of freely moving mice during
 natural behaviour and electrophysiology @meyer2018 @sattler2021 @michaiel2020 @parker2022,
 keep the face at a fixed distance and angle, and are a natural setting in which to test
-it. The
-thermistor measures the temperature of the airflow, not the airflow itself, so its own
-delay relative to nasal pressure bounds the timing error we can measure.
+it. The thermistor measures the temperature of the airflow, not the airflow itself, so its
+own delay relative to nasal pressure bounds the timing error we can measure.
 
-Respiration from animal video needs more paired recordings than any one lab can collect.
-Camera physiology in humans advanced on shared datasets and benchmarks recorded across
-groups @liu2023toolbox, and networks that excel on one dataset often fall on another. The
-same is likely for mice: the corpus spans #v("corpus.rigs") rigs of one design and one
-task. We release the corpus with the splits and scoring we used, in a format to which
-other labs' recordings can be added, and we hope that groups who record respiration with a
-sensor will also film the face, so that a benchmark spanning rigs, tasks, strains and
-freely moving animals can be built.
+As opposed to pose-estimation methods, where a human can manually correct and validate labels, annotation of breathing from video is much less straightforward and, at least in our hands, impossible to perform reliably. This presents a challenge since predictions cannot be easily verified against ground truth in cases where the thermistor is not implanted. To address this, our approach relies on quality-control measures that score each window against a calibrated reference, ensuring that only reliable predictions are considered. These are not hard-cutoffs, but rather provide a continuous measure of confidence that can guide the user in selecting trustworthy segments of the video and should be considered against the scientific context of the experiment.
 
-Future methods may also need fewer labels. Thermistor recordings are costly to collect,
-whereas video of the face is recorded in many experiments that measure no respiration.
-Self-supervised methods, which in humans recover pulse from unlabelled face video by
-exploiting the periodicity of the signal @gideon2021 @sun2022contrast, could learn from
-such video and need a sensor only to check the result. Networks pre-trained on many rigs
-could also become a starting point that each lab refines. In pose estimation, models
-trained on data pooled from many laboratories already track animals in new settings with
-little or no further labelling @ye2024superanimal. A respiration network pre-trained on a
-corpus that spans rigs, views and tasks could likewise be fine-tuned on a lab's few
-animals with a sensor rather than trained from scratch, and general-purpose visual
-foundation models @oquab2023dinov2 may provide features from which respiration can be read
-with fewer labels.
+Future methods may need fewer labels and span more rigs. Thermistor recordings are costly
+to collect, whereas video of the face is recorded in many experiments that measure no
+respiration. Self-supervised methods, which in humans recover pulse from unlabelled face
+video by exploiting the periodicity of the signal @gideon2021 @sun2022contrast, could
+learn from such video and need a sensor only to check the result. In pose estimation,
+models trained on data pooled from many laboratories already track animals in new
+settings with little or no further labelling @ye2024superanimal, and general-purpose
+visual foundation models @oquab2023dinov2 may provide features from which respiration can
+be read with fewer labels. Camera physiology in humans advanced on shared datasets and
+benchmarks recorded across groups @liu2023toolbox, and networks that excel on one dataset
+often fall on another. We release the corpus in a format to which other labs' recordings can be added, so that a benchmark spanning rigs,
+tasks, strains and freely moving animals can be built from recordings that pair a sensor
+with video of the face.
 
 #set par.line(numbering: none)
 
