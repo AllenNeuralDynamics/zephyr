@@ -29,9 +29,11 @@
   let spec = layout.at(figure)
   let gap = spec.gap_mm * 1mm
   set block(spacing: gap)
-  // A row item is a panel name, or a list of names stacked top to bottom.
-  let item(entry) = if type(entry) == array {
-    stack(dir: ttb, spacing: gap, ..entry.map(name => panel(figure, name, files)))
+  // A row item is a panel name, or a list stacked top to bottom; a list inside that is
+  // a row again (left to right), and so on, alternating.
+  let item(entry, dir: ttb) = if type(entry) == array {
+    let next = if dir == ttb { ltr } else { ttb }
+    stack(dir: dir, spacing: gap, ..entry.map(e => item(e, dir: next)))
   } else { panel(figure, entry, files) }
   for row in spec.rows {
     block(stack(dir: ltr, spacing: gap, ..row.map(item)))

@@ -162,45 +162,33 @@ what = "Its held-out animal's correlation and inhale F1 before and after refinin
 [fig6]
 width_mm = 183
 gap_mm = 4
-rows = [["a", "b", "c"], ["d", "e"], ["f"], ["g"]]
+rows = [["a", "b", "c"], ["d"], ["e"]]
 
 [fig6.panels.a]
 kind = "data"
-width_mm = 55
-height_mm = 40
+width_mm = 44
+height_mm = 42
 what = "Inhale F1 and errors left as the onset tolerance is relaxed"
 
 [fig6.panels.b]
 kind = "data"
-width_mm = 64
-height_mm = 40
+width_mm = 50
+height_mm = 42
 what = "Near misses: a well-correlated clip with many predictions 25-100 ms off"
 
 [fig6.panels.c]
 kind = "data"
-width_mm = 56
-height_mm = 40
-what = "A low-correlation clip whose inhalations are still found"
-
-[fig6.panels.d]
-kind = "data"
-width_mm = 95
-height_mm = 42
-what = "Errors on held-out animals: share near misses; gross errors in sniffing, motion, shallow cycles"
-
-[fig6.panels.e]
-kind = "data"
-width_mm = 84
+width_mm = 81
 height_mm = 42
 what = "A dynamic-foraging clip before and after refining: thermistor, prediction and inhalations, with each prediction's quality-control scores"
 
-[fig6.panels.f]
+[fig6.panels.d]
 kind = "data"
 width_mm = 183
 height_mm = 34
 what = "One held-out clip with noise added to its frames (none, 16, 32, 64 gray levels): thermistor, prediction and inhalations, with each one's true F1 and r"
 
-[fig6.panels.g]
+[fig6.panels.e]
 kind = "data"
 width_mm = 183
 height_mm = 34
@@ -209,48 +197,49 @@ what = "Quality-control scores over 30-s windows: validation, sets where the net
 [fig7]
 width_mm = 183
 gap_mm = 4
-rows = [["a"], ["b"], ["c"], ["d", "e", "f", "g"]]
+# Two columns: a above b; c above d, e and f, g, two by two.
+rows = [[["a", "b"], ["c", ["d", "e"], ["f", "g"]]]]
 
 [fig7.panels.a]
 kind = "data"
-width_mm = 183
-height_mm = 34
-what = "Face-camera quality-control scores over 30-s windows of every session without a thermistor, beside sets where the network works and known failures, with two low and two median windows marked"
+width_mm = 89.5
+height_mm = 70
+what = "Face-camera quality-control scores over 30-s windows of every session without a thermistor, beside sets where the network works and known failures, with the lowest window on head vs trace F1 marked; the four measures two by two"
 
 [fig7.panels.b]
 kind = "data"
-width_mm = 183
-height_mm = 68
-what = "The four marked windows: the middle 15 s of the predicted trace (z-scored) with its inhalations and the onset probability"
+width_mm = 89.5
+height_mm = 80
+what = "Ten seconds of the marked window around four frames of the face video with the crop box (a row above), the predicted trace (z-scored) with its inhalations and the onset probability, the frames' times marked"
 
 [fig7.panels.c]
 kind = "data"
-width_mm = 183
-height_mm = 58
+width_mm = 89.5
+height_mm = 56
 what = "Fifteen seconds of the example session: Zephyr's trace with its inhalations, onset probability, respiration rate with speed, licks, rewards, odor sites"
 
 [fig7.panels.d]
 kind = "data"
 width_mm = 42.75
-height_mm = 46
+height_mm = 45
 what = "The example session: respiration rate and speed around odor onset per kind of site"
 
 [fig7.panels.e]
 kind = "data"
 width_mm = 42.75
-height_mm = 46
+height_mm = 45
 what = "Every session: respiration rate and speed around odor onset per kind of site, mean over sessions"
 
 [fig7.panels.f]
 kind = "data"
 width_mm = 42.75
-height_mm = 46
+height_mm = 45
 what = "The example session: respiration rate against running speed"
 
 [fig7.panels.g]
 kind = "data"
 width_mm = 42.75
-height_mm = 46
+height_mm = 45
 what = "Every session: respiration rate against running speed, mean over sessions"
 
 # Supplementary figures.
@@ -390,3 +379,20 @@ kind = "data"
 width_mm = 183
 height_mm = 40
 what = "Sessions without a thermistor seen by each camera: quality-control scores over 30-s windows, beside sets where the network works and known failures"
+
+[figs9]
+width_mm = 183
+gap_mm = 4
+rows = [["a"], ["b"]]
+
+[figs9.panels.a]
+kind = "data"
+width_mm = 183
+height_mm = 34
+what = "Every rhythm measure of quality control over 30-s windows: validation, sets where the network works, and known failures"
+
+[figs9.panels.b]
+kind = "data"
+width_mm = 183
+height_mm = 34
+what = "Every onset-head measure of quality control over the same windows, beside true inhale F1"

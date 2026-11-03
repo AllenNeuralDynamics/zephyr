@@ -1199,14 +1199,13 @@ def sets_panel(
     names: Sequence[str],
     metrics: Sequence[str],
     sets: Sequence[str],
-    ylabel: str = "Mean over folds",
     labels: bool = True,
     legend: str | None = None,
     xlabel: str = "Held out",
     label_on: str | None = None,
 ) -> Figure:
-    """Per metric (side by side), each method's mean (over folds, unless *ylabel* says
-    otherwise) on each set with its 95% interval (*summary*: ``metric``, ``set``,
+    """Per metric (side by side, named on its y axis), each method's mean on each set
+    with its 95% interval (*summary*: ``metric``, ``set``,
     ``method``, ``mean``, ``low``, ``high``), joined by a line, the method named at the
     last set if *labels* (on the *label_on* metric only, when given), or in a legend at
     *legend* (a location) on the last metric."""
@@ -1253,8 +1252,7 @@ def sets_panel(
         a.set_xticks(range(len(sets)), [style.set_label(s_, short=True) for s_ in sets])
         a.set_xlim(-0.25, len(sets) - 1 + (0.9 if named else 0.25))
         a.set_xlabel(xlabel)
-        a.set_title(METRIC_LABELS[metric], fontsize=7)
-    ax[metrics[0]].set_ylabel(ylabel)
+        a.set_ylabel(METRIC_LABELS[metric])
     if legend is not None:
         ax[metrics[-1]].legend(
             loc=legend, fontsize=5.5, handlelength=1, labelspacing=0.2, borderpad=0.2
@@ -2310,68 +2308,6 @@ def failure_figure(
     return fig
 
 
-def error_profile_panel(
-    width_mm: float,
-    height_mm: float,
-    profile: pd.DataFrame,
-    baseline: dict[str, float],
-) -> Figure:
-    """The error profile as bars per error kind, mean over folds with its 95% interval
-    (*profile*: ``kind``, ``row``, ``mean``, ``low``, ``high``): the share of errors that
-    are near misses, then the share of the other (gross) errors with each property,
-    against *baseline* (row -> share of all true breaths with it; grey ticks)."""
-    fig, ax = style.panel(width_mm, height_mm, [["bars"]])
-    a = ax["bars"]
-    rows = list(dict.fromkeys(profile["row"]))
-    kinds = list(dict.fromkeys(profile["kind"]))
-    height = 0.8 / len(kinds)
-    for k, kind in enumerate(kinds):
-        d = profile[profile["kind"] == kind].set_index("row").loc[rows]
-        y = np.arange(len(rows)) + (k - (len(kinds) - 1) / 2) * height
-        a.barh(
-            y,
-            100 * d["mean"],
-            height,
-            color=style.ERRORS[kind],
-            label=kind.split()[-1][1:-1],
-        )
-        a.errorbar(
-            100 * d["mean"],
-            y,
-            xerr=[100 * (d["mean"] - d["low"]), 100 * (d["high"] - d["mean"])],
-            fmt="none",
-            ecolor="0.2",
-            elinewidth=0.6,
-            capsize=0,
-        )
-    for i, row in enumerate(rows):
-        if row in baseline:
-            a.plot(
-                [100 * baseline[row]] * 2,
-                [i - 0.45, i + 0.45],
-                color="0.3",
-                lw=1.0,
-                label="All cycles" if i == 1 else None,
-            )
-    a.axhline(0.5, color="0.6", lw=0.5, ls=":")
-    a.text(
-        0.99,
-        0.5,
-        "of the other errors",
-        transform=a.get_yaxis_transform(),
-        ha="right",
-        va="top",
-        fontsize=5.5,
-        color="0.4",
-    )
-    a.set_yticks(range(len(rows)), [r[0].upper() + r[1:] for r in rows], fontsize=6)
-    a.invert_yaxis()
-    a.set_xlabel("Errors (%)")
-    a.grid(axis="y", visible=False)
-    a.legend(fontsize=5.5, loc="lower right", handlelength=1)
-    return fig
-
-
 def variants_panel(
     width_mm: float,
     height_mm: float,
@@ -3215,75 +3151,82 @@ def quality_sets_panel(
     windows: pd.DataFrame,
     rows: Sequence[tuple[str, str]],
     truth: str | None = "truth_inhale_f1",
-    highlight: str | None = None,
     marks: pd.DataFrame | None = None,
     colours: dict[str, str] | None = None,
+    measures: dict[str, str] | None = None,
+    per_row: int | None = None,
 ) -> Figure:
-    """Each quality-control measure (:data:`style.QC_MEASURES`, columns; then *truth*,
-    when given) over the 30-s *windows* of each row (*rows*: its value of ``row`` in
-    *windows*, and its role, which colours it): the shaded bar spans the middle 95% of
-    its windows, each dot one session's median (``session``), and the black bar the
-    mean of those medians with its 95% bootstrap interval over sessions
-    (:func:`analysis.unit_medians`). The *highlight* row is drawn darker. *marks*
+    """Each quality-control measure (*measures*, column -> label; by default
+    :data:`style.QC_MEASURES`; then *truth*, when given; *per_row* to a row, all in one
+    by default) over the 30-s *windows* of each
+    row (*rows*: its value of ``row`` in *windows*, and its role, which colours it): each
+    window a small faint point in the row's colour, each session's median (``session``)
+    a black dot, and the mean of those medians a black tick under the shaded bar of its
+    95% bootstrap interval over sessions (:func:`analysis.unit_medians`). *marks*
     (windows with ``row``, ``mark``, a label, and the measures) are drawn as labelled
     points on their row, labels above and below in turn. *colours* sets a row's colour
     by name instead of its role's."""
     colours = colours or {}
-    measures = dict(style.QC_MEASURES)
+    measures = dict(measures or style.QC_MEASURES)
     if truth is not None:
         measures[truth] = "True inhale F1"
-    fig, ax = style.panel(width_mm, height_mm, [list(measures)], sharey=True)
+    columns = list(measures)
+    per_row = per_row or len(columns)
+    grid = [columns[i : i + per_row] for i in range(0, len(columns), per_row)]
+    grid[-1] += ["."] * (per_row - len(grid[-1]))
+    fig, ax = style.panel(width_mm, height_mm, grid, sharey=True)
     names = [name for name, _ in rows]
     jitter = np.random.default_rng(0)
     for column, label in measures.items():
         a = ax[column]
-        for y, (name, role) in enumerate(rows):
+        for y, (name, role) in enumerate(rows if column in windows else []):
             rows_of = windows[(windows["row"] == name) & windows[column].notna()]
             if not len(rows_of):
                 continue
-            values = rows_of[column].to_numpy()
             colour = colours.get(name, style.QC_ROLES[role])
-            strong = name == highlight
-            lo, hi = np.percentile(values, [2.5, 97.5])
-            a.add_patch(
-                Rectangle(
-                    (lo, y - 0.3),
-                    hi - lo,
-                    0.6,
-                    facecolor=colour,
-                    edgecolor="none",
-                    alpha=0.55 if strong else 0.3,
-                    zorder=1,
-                )
-            )
             medians, summary = analysis.unit_medians(rows_of, column)
             a.plot(
-                medians.to_numpy(),
-                y + jitter.uniform(-0.18, 0.18, len(medians)),
+                rows_of[column].to_numpy(),
+                y + jitter.uniform(-0.25, 0.25, len(rows_of)),
                 "o",
-                ms=1.5,
+                ms=1.0,
                 color=colour,
-                mec="w",
-                mew=0.2,
+                mec="none",
+                alpha=0.25,
                 lw=0,
-                zorder=2,
+                zorder=1,
+            )
+            a.plot(
+                medians.to_numpy(),
+                y + jitter.uniform(-0.12, 0.12, len(medians)),
+                "o",
+                ms=2.0,
+                color="k",
+                mec="w",
+                mew=0.3,
+                lw=0,
+                zorder=4,
             )
             if summary["n"] > 1:
-                a.plot(
-                    [summary["low"], summary["high"]],
-                    [y, y],
-                    color="k",
-                    lw=0.9,
-                    zorder=3,
+                a.add_patch(
+                    Rectangle(
+                        (summary["low"], y - 0.3),
+                        summary["high"] - summary["low"],
+                        0.6,
+                        facecolor=colour,
+                        edgecolor="none",
+                        alpha=0.35,
+                        zorder=3,
+                    )
                 )
             a.plot(
-                [summary["mean"]] * 2, [y - 0.22, y + 0.22], color="k", lw=0.9, zorder=3
+                [summary["mean"]] * 2, [y - 0.3, y + 0.3], color="k", lw=1.0, zorder=3
             )
         if marks is not None:
             for i, m in enumerate(marks.itertuples()):
                 y = names.index(m.row)
                 x = getattr(m, column)
-                a.plot(x, y, "o", ms=2.6, mfc="w", mec="k", mew=0.5, zorder=4)
+                a.plot(x, y, "o", ms=2.6, mfc="w", mec="k", mew=0.5, zorder=5)
                 a.annotate(
                     m.mark,
                     (x, y),
@@ -3297,18 +3240,20 @@ def quality_sets_panel(
         a.tick_params(labelsize=5.5)
         a.set_ylim(len(rows) - 0.5, -0.5)
         a.margins(x=0.05)
-    first = ax[next(iter(measures))]
-    first.set_yticks(range(len(rows)))
-    first.set_yticklabels(names, fontsize=5.5)
-    for (_, role), tick in zip(rows, first.get_yticklabels(), strict=True):
-        tick.set_color(
-            colours.get(
-                tick.get_text(),
-                "k" if role in ("validation", "working") else style.QC_ROLES[role],
+    for line in grid:
+        first = ax[line[0]]
+        first.set_yticks(range(len(rows)))
+        first.set_yticklabels(names, fontsize=5.5)
+        for (_, role), tick in zip(rows, first.get_yticklabels(), strict=True):
+            tick.set_color(
+                colours.get(
+                    tick.get_text(),
+                    "k" if role in ("validation", "working") else style.QC_ROLES[role],
+                )
             )
-        )
-    for column in list(measures)[1:]:
-        ax[column].tick_params(left=False)
+        for column in line[1:]:
+            if column != ".":
+                ax[column].tick_params(left=False, labelleft=False)
     return fig
 
 
@@ -3323,19 +3268,64 @@ def window_examples_panel(
     ``title``, ``time`` (s from the stretch's start), the predicted ``signal`` and
     ``onset`` probability, and the ``head`` inhalation times): the trace with its
     inhalations as ticks above, and below it the onset probability with the
-    *threshold* they were found at."""
+    *threshold* they were found at. A single example may carry ``frames`` (``time``,
+    gray ``image``) and the crop ``box`` on them: the frames in a row above, each
+    numbered at its time on the trace and the onset probability, with the box."""
     n = len(examples)
-    cols = 2
-    rows = []
-    for r in range((n + cols - 1) // cols):
-        rows.append([f"t{r * cols + c}" for c in range(cols)])
-        rows.append([f"p{r * cols + c}" for c in range(cols)])
-    fig, ax = style.panel(
-        width_mm, height_mm, rows, height_ratios=[1.5, 0.6] * (len(rows) // 2)
-    )
+    cols = min(2, n)
+    shots = examples[0].get("frames", []) if n == 1 else []
+    if shots:
+        # The frames' row as tall as a frame is wide; the rest to the trace and onset.
+        k = len(shots)
+        side = width_mm / k
+        rest = max(height_mm - side, 1.0)
+        fig, ax = style.panel(
+            width_mm,
+            height_mm,
+            [[f"f{j}" for j in range(k)], ["t0"] * k, ["p0"] * k],
+            height_ratios=[side, rest * 0.7, rest * 0.3],
+        )
+    else:
+        rows = []
+        for r in range((n + cols - 1) // cols):
+            rows.append([f"t{r * cols + c}" for c in range(cols)])
+            rows.append([f"p{r * cols + c}" for c in range(cols)])
+        fig, ax = style.panel(
+            width_mm, height_mm, rows, height_ratios=[1.5, 0.6] * (len(rows) // 2)
+        )
+    box = examples[0].get("box")
+    for k, shot in enumerate(shots):
+        a = ax[f"f{k}"]
+        image = shot["image"]
+        if box is not None:
+            # A square around the box, three times its size (the paws and mouth
+            # below the snout in view), inside the frame.
+            x, y, w, h = box
+            side = min(3 * max(w, h), *image.shape)
+            left = int(np.clip(x + w / 2 - side / 2, 0, image.shape[1] - side))
+            top = int(np.clip(y + h / 2 - side / 2, 0, image.shape[0] - side))
+            image = image[top : top + int(side), left : left + int(side)]
+            a.add_patch(
+                Rectangle((x - left, y - top), w, h, fill=False, lw=0.6, ec=colour)
+            )
+        a.imshow(image, cmap="gray", vmin=0, vmax=255, interpolation="lanczos")
+        a.set_axis_off()
+        a.set_title(f"Frame {k + 1}  {shot['time']:.1f} s", fontsize=6, pad=2)
     for i, e in enumerate(examples):
         t, p = ax[f"t{i}"], ax[f"p{i}"]
         p.sharex(t)
+        for k, shot in enumerate(shots):
+            for a in (t, p):
+                a.axvline(shot["time"], color="0.5", lw=0.4, ls=":")
+            t.text(
+                shot["time"] + 0.1,
+                0.97,
+                f"Frame {k + 1}",
+                ha="left",
+                va="top",
+                fontsize=6,
+                transform=t.get_xaxis_transform(),
+            )
         t.tick_params(labelbottom=False)
         z = (e["signal"] - np.mean(e["signal"])) / np.std(e["signal"])
         t.plot(e["time"], z, color=colour, lw=0.5)
@@ -3361,5 +3351,5 @@ def window_examples_panel(
             t.set_ylabel("Trace (z)", fontsize=6)
             p.set_ylabel("Onset (p)", fontsize=6)
         if i >= n - cols:
-            p.set_xlabel("Time (s)")
+            p.set_xlabel("Time in the window (s)" if shots else "Time (s)")
     return fig

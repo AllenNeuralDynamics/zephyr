@@ -1161,9 +1161,9 @@ def fig7(qc_windows):
     # Fig. 5: respiration in task sessions without a thermistor, from the face video
     # alone (the manifest's application sessions, predicted by the all-camera network
     # of cv_0). a: their quality-control scores over 30-s windows, pooled, beside sets
-    # where the network works and known failures, with the two lowest windows on head
-    # vs trace F1 and two at its median marked (each from its own session); b: the
-    # middle seconds of those four windows; c: 15 s of the example session; d, e:
+    # where the network works and known failures, with the lowest window on head vs
+    # trace F1 marked; b: that window whole, with frames of its face video; c: 15 s of
+    # the example session; d, e:
     # respiration rate and speed around odor onset per kind of site, the example and
     # the mean over sessions; f, g: respiration rate against speed, the same.
     _sessions = runs.RESULTS.application.session
@@ -1179,10 +1179,10 @@ def fig7(qc_windows):
     _label = next(q.label for q in runs.RESULTS.quality.set if q.role == "application")
     _apps = qc_windows[qc_windows["set"] == _label].assign(row=_label)
     _measure = next(iter(style.QC_MEASURES))
-    _marked = analysis.example_windows(_apps, _measure)
+    # only the lowest window, shown whole with frames of the face video
+    _marked = analysis.example_windows(_apps, _measure).iloc[:1]
     _marked = _marked.assign(
-        mark=["i", "ii", "iii", "iv"][: len(_marked)],
-        session=_marked["stem"].map(runs.application_session),
+        mark=["i"], session=_marked["stem"].map(runs.application_session)
     )
     _windows = pd.concat(
         [
@@ -1200,26 +1200,41 @@ def fig7(qc_windows):
         ("Noise 32", "null"),
     ]
     fig_5a = plots.quality_sets_panel(
-        *size("fig7", "a"), _windows, _rows, truth=None, marks=_marked
+        *size("fig7", "a"), _windows, _rows, truth=None, marks=_marked, per_row=2
     )
     plots.save_panel(fig_5a, FIGURES / "fig7" / "a.svg")
-    _shown_s = 15.0
-    _examples = []
-    for _w in _marked.itertuples():
-        _t = _tasks[_w.session]
-        _mid = _w.start + (_w.end - _w.start) / 2
-        _keep = np.abs(_t["video_time"] - _mid) <= _shown_s / 2
-        _times = _t["times"][_keep]
-        _head = _t["head"]
-        _examples.append(
-            {
-                "title": f"{_w.mark}  {_w.session}",
-                "time": _times - _times[0],
-                "signal": _t["signal"][_keep],
-                "onset": _t["onset"][_keep],
-                "head": _head[(_head >= _times[0]) & (_head <= _times[-1])] - _times[0],
-            }
-        )
+    # Frames of the window, s from its start (frame i at i / the clip's frame rate, as
+    # the prediction), chosen by eye: the face at rest, two paw strokes over the snout
+    # and a lick.
+    _shots_s = [3.0, 6.45, 8.9, 10.5]
+    _w = _marked.iloc[0]
+    # the 10 s of the window centred on the frames, in s from the window's start
+    _shown_s = 10.0
+    _from = (_shots_s[0] + _shots_s[-1]) / 2 - _shown_s / 2
+    _t = _tasks[_w.session]
+    _offset = _t["video_time"] - _w.start
+    _keep = (_offset >= _from) & (_offset <= _from + _shown_s)
+    _times = _t["times"][_keep]
+    _head = _t["head"]
+    # the snippet's time axis: s from the window's start, on the Harp clock
+    _zero = _times[0] - _offset[_keep][0]
+    _frames, _box = runs.application_frames(
+        _w.session, [_w.start + _s for _s in _shots_s]
+    )
+    _examples = [
+        {
+            "title": f"{_w.mark}  {_w.session}",
+            "time": _times - _zero,
+            "signal": _t["signal"][_keep],
+            "onset": _t["onset"][_keep],
+            "head": _head[(_head >= _times[0]) & (_head <= _times[-1])] - _zero,
+            "frames": [
+                {"time": _s, "image": _f}
+                for _s, _f in zip(_shots_s, _frames, strict=True)
+            ],
+            "box": _box,
+        }
+    ]
     fig_5b = plots.window_examples_panel(
         *size("fig7", "b"), _examples, _threshold, style.color("Zephyr")
     )
@@ -1349,6 +1364,33 @@ def figs8(qc_windows):
     )
     plots.save_panel(fig_s8a, FIGURES / "figs8" / "a.svg")
     fig_s8a
+    return
+
+
+@app.cell
+def figs9(qc_windows):
+    # Supplementary Fig. 9: every measure a quality-control report holds, over the
+    # 30-s windows of the sets of Fig. 6e (rhythm measures in a, onset-head measures
+    # in b, with the true inhale F1).
+    from zephyr.quality_control.metrics import MEASURES as _MEASURES
+
+    _sets = [
+        s for s in runs.RESULTS.quality.set if s.role not in ("application", "camera")
+    ]
+    _rows = [("Validation", "validation"), *[(s.label, s.role) for s in _sets]]
+    _family = {
+        f: {k: label for k, (fam, label, _) in _MEASURES.items() if fam == f}
+        for f in ("rhythm", "head")
+    }
+    fig_s9a = plots.quality_sets_panel(
+        *size("figs9", "a"), qc_windows, _rows, truth=None, measures=_family["rhythm"]
+    )
+    plots.save_panel(fig_s9a, FIGURES / "figs9" / "a.svg")
+    fig_s9b = plots.quality_sets_panel(
+        *size("figs9", "b"), qc_windows, _rows, measures=_family["head"]
+    )
+    plots.save_panel(fig_s9b, FIGURES / "figs9" / "b.svg")
+    mo.vstack([fig_s9a, fig_s9b])
     return
 
 
@@ -1620,8 +1662,10 @@ def fig4e(whole):
     v_tolerance = {
         "f1_12": values.num(_at.loc[12.5, "mean"]),
         "f1_25": values.num(_at.loc[25.0, "mean"]),
+        "f1_50": values.num(_at.loc[50.0, "mean"]),
         "f1_100": values.num(_at.loc[100.0, "mean"]),
         "errors_25": values.pct(_at.loc[25.0, "errors"], 1),
+        "errors_50": values.pct(_at.loc[50.0, "errors"], 1),
         "errors_100": values.pct(_at.loc[100.0, "errors"], 1),
         "breaths": values.count(len(_mine["breaths"])),
     }
@@ -1786,12 +1830,9 @@ def fig5a(test_a, with_unit):
 
 @app.cell
 def fig4df(test_a):
-    # Two test-A clips, neither an outlier: among clips whose correlation is at least
-    # the median, the one with most near misses (predictions 25-100 ms off; d), around
-    # its densest near misses; and, among the lowest tenth of clips by correlation, the
-    # 2-s stretch in which every inhalation is found (no error, no excluded span, at
-    # least 4 true inhalations) from the least confident onset output: the lowest
-    # median onset probability at the head's events (f).
+    # A test-A clip that is not an outlier: among clips whose correlation is at least
+    # the median, the one with most near misses (predictions 25-100 ms off), around its
+    # densest near misses (b).
     _one = runs.SINGLE
     _clips = (
         runs.scores([_one])
@@ -1810,32 +1851,7 @@ def fig4df(test_a):
         _near, errors="ignore"
     )
 
-    def _quiet(stem):
-        """A clip's fully found 2-s stretch with the lowest median onset probability at
-        the head's events: ``(median, centre, event probabilities, stretch r)``."""
-        p, t = runs.prediction(_one, stem), runs.truth(stem)
-        err = runs.errors(_one, stem)["time"].to_numpy()
-        ex = np.asarray(t["excluded"]).reshape(-1, 2)
-        pt = p["times"]
-        heights = p["onset"][np.searchsorted(pt, p["head"]).clip(0, len(pt) - 1)]
-        target = np.interp(pt, t["times"], t["signal"])
-        best = (np.inf, None, None, None)
-        for c in np.arange(pt[0] + 1.0, pt[-1] - 1.0, 0.25):
-            clean = (
-                not np.any(np.abs(err - c) < 1.0)
-                and not np.any((ex[:, 0] < c + 1) & (ex[:, 1] > c - 1))
-                and np.sum(np.abs(t["inhale"] - c) < 1.0) >= 4
-            )
-            h = heights[np.abs(p["head"] - c) < 1.0]
-            if clean and len(h) and np.median(h) < best[0]:
-                inside = (pt >= c - 1) & (pt < c + 1)
-                r = np.corrcoef(p["signal"][inside], target[inside])[0, 1]
-                best = (float(np.median(h)), float(c), h, float(r))
-        return best
-
-    _quietest = {s: _quiet(s) for s in _low.index}
-    _upper = min(_quietest, key=lambda s: _quietest[s][0])
-    _cases = {"b": _clips.loc[_near], "c": _clips.loc[_upper]}
+    _cases = {"b": _clips.loc[_near]}
     low_r = {
         "clips": len(_low),
         "below r": float(_clips["correlation"].quantile(0.1)),
@@ -1852,11 +1868,8 @@ def fig4df(test_a):
         _p = runs.prediction(_one, _stem)
         _origin = float(_p["times"][0])
         _truth = runs.truth(_stem)
-        if _panel == "b":
-            _t = _errors.loc[_errors["near_miss"], "time"].to_numpy()
-            _at = float(_t[np.argmax([np.sum(np.abs(_t - x) < 1.5) for x in _t])])
-        else:
-            _median_p, _at, _peaks, local_r = _quietest[_stem]
+        _t = _errors.loc[_errors["near_miss"], "time"].to_numpy()
+        _at = float(_t[np.argmax([np.sum(np.abs(_t - x) < 1.5) for x in _t])])
         _fig = plots.failure_panel(
             *size("fig6", _panel),
             _truth,
@@ -1885,19 +1898,11 @@ def fig4df(test_a):
         "low_f1_quartile": values.num(_low["inhale"].quantile(0.75)),
         "near_r": values.num(_cases["b"]["correlation"]),
         "near_f1": values.num(_cases["b"]["inhale"]),
-        "quiet_r": values.num(_cases["c"]["correlation"]),
-        "quiet_stretch_r": values.num(local_r),
-        "quiet_peaks": values.span(_peaks.min(), _peaks.max()),
-        "quiet_peak": values.num(_median_p),
         "threshold": values.num(runs.head_threshold(_one)),
     }
     mo.vstack(
         [
-            mo.md(
-                f"Lowest tenth by correlation: {low_r}; f's stretch r {local_r:.2f}, "
-                f"onset at its {len(_peaks)} events {_peaks.min():.2f}-{_peaks.max():.2f} "
-                f"(median {_median_p:.2f})"
-            ),
+            mo.md(f"Lowest tenth by correlation: {low_r}"),
             *_shown,
         ]
     )
@@ -1930,8 +1935,8 @@ def fig6efg():
         s for s in runs.RESULTS.quality.set if s.role not in ("application", "camera")
     ]
     _rows = [("Validation", "validation"), *[(s.label, s.role) for s in _sets]]
-    fig6g = plots.quality_sets_panel(*size("fig6", "g"), qc_windows, _rows)
-    plots.save_panel(fig6g, FIGURES / "fig6" / "g.svg")
+    fig6g = plots.quality_sets_panel(*size("fig6", "e"), qc_windows, _rows)
+    plots.save_panel(fig6g, FIGURES / "fig6" / "e.svg")
 
     _noise, _ = runs.quality_noise()
     _own = _noise[_noise["sigma"] == 0].set_index("stem")["truth_inhale_f1"]
@@ -1960,9 +1965,9 @@ def fig6efg():
             _scored.loc[_sigma, "truth_correlation"],
         )
     fig6f = plots.refined_traces_panel(
-        *size("fig6", "f"), _rows_f, colours=_colours, corner=_corner, ncols=2
+        *size("fig6", "d"), _rows_f, colours=_colours, corner=_corner, ncols=2
     )
-    plots.save_panel(fig6f, FIGURES / "fig6" / "f.svg")
+    plots.save_panel(fig6f, FIGURES / "fig6" / "d.svg")
 
     _before, _after = "Dynamic foraging, unrefined", "Dynamic foraging, refined"
     _f1 = qc_windows[qc_windows["set"] == _after].groupby("stem")["truth_inhale_f1"]
@@ -1995,7 +2000,7 @@ def fig6efg():
             "true F1 {:.2f}"
         ).format(*_clip[[*style.QC_MEASURES, "truth_inhale_f1"]].median())
     fig6e = plots.refined_traces_panel(
-        *size("fig6", "e"),
+        *size("fig6", "c"),
         _rows_e,
         labels={
             "Zephyr, all cameras, on DF": "Before\nrefining",
@@ -2003,7 +2008,7 @@ def fig6efg():
         },
         notes=_notes,
     )
-    plots.save_panel(fig6e, FIGURES / "fig6" / "e.svg")
+    plots.save_panel(fig6e, FIGURES / "fig6" / "c.svg")
 
     _median = qc_windows.groupby("set")[
         [*style.QC_MEASURES, "truth_inhale_f1"]
@@ -2040,64 +2045,28 @@ def fig6efg():
 
 @app.cell
 def fig6a(test_a):
-    # Fig. 6a: what our network's errors on new animals are, per fold, then over folds.
-    # The share that are near misses, then, among the rest, the share in sniffing,
-    # face motion and on shallow breaths, against the share of all true breaths with
-    # each (motion and size are quantiles of each clip's own breaths, so those
-    # baselines are fixed).
+    # The share of our network's errors on new animals that are near misses, per fold,
+    # then over folds.
     _folds = runs.RESULTS.cross_validation.folds
     _names = {f: runs.cv_name(runs.REFERENCE, f) for f in _folds}
     _errors = pd.concat(
         runs.set_errors(n, test_a).assign(fold=f) for f, n in _names.items()
     )
-    _breaths = pd.concat(
-        runs.tables(n)["breaths"].query("set == @test_a").assign(fold=f)
-        for f, n in _names.items()
-    )
     _profile = analysis.error_profile(_errors)
     error_profile = analysis.across_folds(_profile, "share", by=["kind", "row"]).merge(
         _profile.groupby(["kind", "row"])["n"].sum().reset_index(), on=["kind", "row"]
     )
-    _fast = _breaths.groupby("fold")["rate_hz"].apply(lambda r: (r > 8).mean())
-    _baseline = {
-        "sniffing (> 8 Hz)": float(_fast.mean()),
-        "face motion (top 10%)": 0.10,
-        "shallow cycle (bottom 25%)": 0.25,
-    }
-    fig6a = plots.error_profile_panel(*size("fig6", "d"), error_profile, _baseline)
-    plots.save_panel(fig6a, FIGURES / "fig6" / "d.svg")
     _p = error_profile.set_index(["kind", "row"])
     _kinds = {"misses": "missed (FN)", "false": "false (FP)"}
-    _near, _fast = "near miss", "sniffing (> 8 Hz)"
-    _motion, _shallow = "face motion (top 10%)", "shallow cycle (bottom 25%)"
-
-    def _range(row: str) -> str:
-        shares = [100 * _p.loc[(k, row), "mean"] for k in _kinds.values()]
-        return values.span(min(shares), max(shares), 0)
-
     v_errors = {
-        **{k: values.count(_p.loc[(v, _near), "n"]) for k, v in _kinds.items()},
+        **{k: values.count(_p.loc[(v, "near miss"), "n"]) for k, v in _kinds.items()},
         **{
-            f"{k}_near": values.pct(_p.loc[(v, _near), "mean"])
+            f"{k}_near": values.pct(_p.loc[(v, "near miss"), "mean"])
             for k, v in _kinds.items()
         },
-        **{
-            f"{k}_gross": values.count(_p.loc[(v, _fast), "n"])
-            for k, v in _kinds.items()
-        },
-        "fast_misses": values.pct(_p.loc[(_kinds["misses"], _fast), "mean"]),
-        "fast_breaths": values.pct(_baseline[_fast]),
-        "motion": _range(_motion),
-        "shallow": _range(_shallow),
     }
-    mo.vstack(
-        [
-            fig6a,
-            mo.ui.table(error_profile.round(3), selection=None),
-            mo.md(f"Baselines: {_baseline}"),
-        ]
-    )
-    return error_profile, v_errors
+    mo.ui.table(error_profile.round(3), selection=None)
+    return (v_errors,)
 
 
 @app.cell
@@ -2364,7 +2333,6 @@ def figs3(rate_share, test_a, with_unit):
             _cameras,
             ["correlation", "inhale"],
             _sets,
-            ylabel="Mean over units",
             labels=False,
             legend="lower right",
         ),

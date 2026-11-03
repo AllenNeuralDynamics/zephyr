@@ -15,7 +15,7 @@ import os
 import re
 import time
 import tomllib
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
 
 import numpy as np
@@ -1151,6 +1151,40 @@ def application(session: str) -> dict:
             json.loads(asset("acquisition.json").read_text())["acquisition_start_time"]
         ),
     }
+
+
+def application_frames(
+    session: str, video_times: Sequence[float]
+) -> tuple[list[np.ndarray], tuple[float, ...]]:
+    """Gray frames of an application session's face video at *video_times* (s in the
+    video, frame *i* at *i* / the clip's frame rate, as its prediction), and the crop
+    box in their pixels."""
+    import cv2
+
+    app = RESULTS.application
+    run = RUNS[cv_name(app.network, app.fold)]
+    clip = tomllib.loads(
+        (
+            APPLICATION_ROOT
+            / session
+            / "predictions"
+            / f"{run.run}-{run.fold}"
+            / "video.clip.toml"
+        ).read_text()
+    )
+    first = clip["clip"][0]
+    video = cv2.VideoCapture(first["video"])
+    frames = []
+    for t in video_times:
+        video.set(cv2.CAP_PROP_POS_FRAMES, round(t * first["frame_rate"]))
+        _, image = video.read()
+        frames.append(cv2.cvtColor(image, cv2.COLOR_BGR2GRAY))
+    video.release()
+    scale = (
+        frames[0].shape[1]
+        / (first.get("frame") or clip["preprocess"]["target_size"])[0]
+    )
+    return frames, tuple(v * scale for v in first["box"])
 
 
 def is_application_video(stem: str) -> bool:
