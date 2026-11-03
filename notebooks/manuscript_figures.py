@@ -1014,7 +1014,7 @@ def figs7(with_unit):
     _subject = dict(
         zip(_folds["session_id"], _folds["subject_id"].astype(str), strict=True)
     )
-    _vr_sets = ["test_a", "test_b", "test_c"]
+    _vr_sets = ["test_a", "test_b"]
     _vr = pd.concat(
         [
             runs.clip_scores(_parent).assign(method="Before"),
@@ -1044,7 +1044,6 @@ def figs7(with_unit):
     _set_names = {
         "test_a": "A: new animals",
         "test_b": "B: new sessions",
-        "test_c": "C: 359 Hz",
     }
     fig_s7d = plots.cost_panel(
         *size("figs7", "a"),
@@ -2074,41 +2073,16 @@ def tables_md():
     mo.md("""
     ## Supplementary tables
 
-    Test set C (the 359-Hz animals), the sets of each cross-validation fold, the
-    comparison networks' settings (from each run's own `config.json`); written as CSV
-    for main.typ.
+    The sets of each cross-validation fold, the comparison networks' settings (from each
+    run's own `config.json`); written as CSV for main.typ. The 359-Hz sessions held out
+    of the published split (its test set C) are not scored in the paper.
     """)
     return
 
 
 @app.cell
-def supplementary_tables(methods, recordings, spec):
-    # Test set C of the published split, per method: each score averaged within each
-    # animal x rig unit, then over the units (two animals: no interval).
-    _c = recordings[recordings["set"] == runs.SETS["test_c"]]
-    _rows = []
-    for _m in methods:
-        _u = (
-            _c[_c["method"] == _m]
-            .groupby("unit")[["correlation", "inhale", "exhale_f1"]]
-            .mean()
-        )
-        _rows.append(
-            {
-                "method": plots.DISPLAY.get(_m, _m),
-                "trace_r": f"{_u['correlation'].mean():.2f}",
-                "inhale_f1": f"{_u['inhale'].mean():.2f}",
-                "exhale_f1": f"{_u['exhale_f1'].mean():.2f}",
-            }
-        )
-    test_c = pd.DataFrame(_rows)
+def supplementary_tables(spec):
     _tables = FIGURES.parent / "tables"
-    test_c.to_csv(_tables / "test_c.csv", index=False)
-    test_c_size = {
-        "animals": int(_c["subject"].nunique()),
-        "units": int(_c["unit"].nunique()),
-        "sessions": int(_c["session"].nunique()),
-    }
 
     # The sets of each cross-validation fold (cross_validation.parquet), with a check
     # that each fold's test A animals are those its runs were scored on.
@@ -2116,9 +2090,9 @@ def supplementary_tables(methods, recordings, spec):
     _names = {
         "train": "Training",
         "val": "Validation",
-        "test_a": "Test A",
-        "test_b": "Test B",
-        "test_c": "Test C",
+        "test_a": "Held-out animals",
+        "test_b": "Held-out sessions",
+        "test_c": "Not scored (359 Hz)",
     }
     _rows, _checked = [], {}
     _scored = runs.cv_scores("per_recording")
@@ -2180,13 +2154,12 @@ def supplementary_tables(methods, recordings, spec):
     comparison_nets.to_csv(_tables / "comparison_nets.csv", index=False)
     mo.vstack(
         [
-            mo.md(f"Test C: {test_c_size}; folds match their runs: {_checked}"),
-            mo.ui.table(test_c, selection=None),
+            mo.md(f"Folds match their runs: {_checked}"),
             mo.ui.table(_wide.reset_index(), selection=None),
             mo.ui.table(comparison_nets, selection=None),
         ]
     )
-    return comparison_nets, fold_sizes, test_c, test_c_size
+    return comparison_nets, fold_sizes
 
 
 @app.cell
@@ -2224,6 +2197,7 @@ def figs2(by_fold, rate_share, test_a, with_unit):
     _recs = pd.concat(
         [_ref, with_unit(runs.cv_scores(variants=True))], ignore_index=True
     )
+    _recs = _recs[_recs["set"].isin([runs.SETS["test_a"], runs.SETS["test_b"]])]
     _name = next(iter(runs.CV_VARIANTS))
     _folds, _summaries = [], []
     for _m in ("correlation", "inhale", "exhale_f1"):
@@ -2529,7 +2503,10 @@ def figs3(rate_share, test_a, with_unit):
             }
             _rows.append(
                 {
-                    "set": _set.split(":")[0],
+                    "set": {
+                        runs.SETS["test_a"]: "Held-out animals",
+                        runs.SETS["test_b"]: "Held-out sessions",
+                    }[_set],
                     "camera": _camera.split()[0],
                     "units": values.count(_r["inhale"]["units"]),
                     "trace_r": _cell(_r["correlation"], 2),

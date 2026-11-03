@@ -252,7 +252,7 @@ range (#fig(<fig:benchmark>, "c")). Zephyr found almost every inhalation between
 least accurate in slow breathing, at 2–3 Hz (#v("rate.f1_slow")). The other networks lost
 more accuracy at both ends of the range, a difference we return to below.
 
-The ability to recover inhalations events with precise timing is crucial for behavior and physiology studies. Over the new animals of all folds, Zephyr's inhalations lagged the thermistor's by #v("rate.lag") ms on average (95%
+The ability to recover inhalations events with precise timing is crucial for behavior and physiology studies. Over the held-out animals of all folds, Zephyr's inhalations lagged the thermistor's by #v("rate.lag") ms on average (95%
 interval over folds #v("rate.lag_ci") ms), well within one cycle at the fastest sniffing
 rates (#fig(<fig:benchmark>, "d")). The lag hardly changed with respiration rate, from
 #v("rate.lag_slow") ms at 2–3 Hz to #v("rate.lag_fast") ms at 11–12 Hz.
@@ -268,7 +268,7 @@ We also compared respiration rate, counted in 10-s windows, with the thermistor'
     thermistor is at the top and each method's trace is drawn over it in grey. Vertical
     lines mark the thermistor's inhalations. Panels *b–e* show the results from held-out animals across folds, #v("rate.clips") clips from #v("rate.sessions") sessions of #v("rate.animals")
     animals. *b,* Inhalation F1 scores on new animals against
-    inference speed. Filled symbols are networks on a consumer GPU and open symbols are methods on a CPU. *c,* Inhalation F1 on new animals by respiration rate for each network, mean over folds with its 95% interval. Colours are as in *b*. The bottom panel shows the distribution of respiration rates in the held-out data. *d,* Zephyr's onset lag (predicted - thermistor), as a function of respiration rate. Every thermistor
+    inference speed. Filled symbols are networks on a consumer GPU and open symbols are methods on a CPU. *c,* Inhalation F1 on held-out animals by respiration rate for each network, mean over folds with its 95% interval. Colours are as in *b*. The bottom panel shows the distribution of respiration rates in the held-out data. *d,* Zephyr's onset lag (predicted - thermistor), as a function of respiration rate. Every thermistor
     inhalation with a prediction within 50 ms is included, pooled over the new animals of
     every fold (n = #v("rate.lags")). The line shows each rate bin's mean lag, averaged over folds (with 95% CI). Dotted lines mark the default 25-ms tolerance used for inhalation detection. *e,* Respiration rate in 10-s windows, pooled over held-out animals of every fold (n = #v("rate.windows") windows). The difference between Zephyr's rate and the thermistor's is plotted against their mean. The solid line is the bias and the dotted lines the 95% limits of agreement between the two methods.],
 ) <fig:benchmark>
@@ -278,7 +278,7 @@ We also compared respiration rate, counted in 10-s windows, with the thermistor'
   // Written by notebooks/manuscript_figures.py (new animals, over folds, seed 17).
   benchmark-table("tables/benchmark.csv"),
   caption: [*Method comparison on held-out animals.* Each score was averaged within each
-    animal × rig unit, then over the new-animal units of a split, then over splits. Values
+    animal × rig unit, then over the held-out-animal units of a split, then over splits. Values
     are the mean with its 95% interval over the #v("benchmark.folds") cross-validation
     folds (#v("benchmark.units_a") units of #v("benchmark.animals_a") animals, each animal
     new in one fold). Methods run on one split show the published split alone
@@ -298,14 +298,14 @@ non-implanted animals absent from its training dataset. We first considered a ty
 scenario, in which a laboratory has recorded animals in a similar setup and wishes to apply
 a trained network to new data acquired under similar, experimentally controlled conditions.
 Besides whole animals, each cross-validation fold held out blocks of consecutive sessions of
-its training animals (#link(<sec:methods>)[Methods], @tab:split). All networks recovered respiration from these unseen sessions of seen animals with very
+its training animals (#link(<sec:methods>)[Methods], @tab:split). All networks recovered respiration from these held-out sessions with very
 high trace correlation and inhalation F1, and, although relatively lower, their scores on
 held-out animals remained high (#fig(<fig:general>, "a")\; @tab:benchmark,
 @tab:benchmark-b). We emphasize that this generalization depends on both the animal and the
 recording setup (@fig:rigs). Thus, for most analyses we treat each animal × rig combination as
 one unit of comparison.
 Zephyr scored the highest among the networks on both new sessions (inhalation F1
-#v("benchmark.f1_b"), trace correlation #v("benchmark.r_b")) and new animals (#v("benchmark.f1")
+#v("benchmark.f1_b"), trace correlation #v("benchmark.r_b")) and held-out animals (#v("benchmark.f1")
 and #v("benchmark.r")). Inhalation F1 generalized more robustly than trace correlation: from
 new sessions to new animals, Zephyr's F1 fell only from #v("benchmark.f1_b") to #v("benchmark.f1"),
 against #v("benchmark.r_b") to #v("benchmark.r") for its trace correlation, and the vast
@@ -536,7 +536,9 @@ We release the corpus (face, side and front video, frame timestamps and the ther
 on one clock) with the splits we used, the code, the trained weights, an evaluation that
 reproduces the scores reported here, and an application that runs the network on new
 recordings: it places a crop box on each recording, predicts respiration and reports the
-quality-control measures #note[repository URL, data DOI (DANDI or the Registry of
+quality-control measures. The sessions of the dynamic-foraging experiment and the
+sessions without a thermistor, which are not part of the corpus, are released with their
+video and the network's predictions #note[repository URL, data DOI (DANDI or the Registry of
   Open Data), licence; confirm the corpus can be released].
 
 #pagebreak()
@@ -556,13 +558,14 @@ frontonasal suture and #tbd[0.5] mm right of the midline, and the thermistor tip
 lowered onto the epithelium without pressing on it. The hole was sealed with silicone
 (Kwik-Cast), and the probe and a head bar were fixed with dental cement (Metabond).
 
-_Data acquisition._ Data were acquired on the VrForaging platform #note[GitHub link],
-whose devices are synchronized by the Harp protocol: a Behavior board #note[ref]
-triggered the 240- or 360-Hz FLIR cameras, an olfactometer #note[ref] delivered odors and
-a sniff-detector board (below) recorded the thermistor. Video was encoded in real time
+_Data acquisition._ Data were acquired on the VrForaging platform (https://github.com/AllenNeuralDynamics/Aind.Behavior.VrForaging), whose devices are synchronized by the Harp protocol (https://harp-tech.org). For this dataset, a Behavior board (https://github.com/harp-tech/device.behavior)
+triggered the 240- or 360-Hz FLIR cameras, a custom-built olfactometer (https://github.com/harp-tech/device.olfactometer) delivered odors and
+a sniff-detector board (described below) recorded the thermistor. Video was encoded in real time
 with H.264 on the GPU (NVENC, constant quality 18) and re-encoded offline on the CPU
-(libx264, CRF 18) #note[second-pass compression: purpose and size saving]\; clips were cut
-from these files by stream copy.
+(libx264, CRF 18). Clips were cut from these files by stream copy.
+
+For the "dynamic foraging" experiment, a similar setup to the one described previously @su2026 was used. Animals rested in a metal tube and were asked to lick left or right to collect probabilistic rewards. Cameras were triggered at 504 Hz by a similar Behavior board and respiration data collected with an identical sniff-detector.
+
 
 == Sniff-detector board
 TODO SONYA
@@ -571,8 +574,7 @@ TODO SONYA
 
 Sessions were selected with the rules of @tab:qc, in order. Thermistor quality was judged
 in 30-s windows after removing large artifacts (and #tbd[2] s around them), and clips were
-cut only from stretches of at least 300 s in which every window passed. Detector settings
-and thresholds were set by eye on #tbd[which sessions].
+cut only from stretches of at least 300 s in which every window passed.
 
 #figure(
   table(
@@ -616,7 +618,7 @@ and thresholds were set by eye on #tbd[which sessions].
 ) <tab:qc>
 
 _Thermistor events._ Inhalation and exhalation onsets were detected on the thermistor at
-its own rate (250 Hz) with an adaptive peak detector. The signal was filtered (zero-phase
+its own rate (200-250 Hz) with an adaptive peak detector. The signal was filtered (zero-phase
 second-order Butterworth, high-pass #tbd[1] Hz, low-pass #tbd[40] Hz) and z-scored over
 the recording. Maxima at least #tbd[50] ms apart were candidate inhalation onsets, and
 minima candidate exhalation onsets. A candidate was kept when its prominence was at least
@@ -625,38 +627,14 @@ minima candidate exhalation onsets. A candidate was kept when its prominence was
 ripples on a flat stretch are not. These events were used for training, quality control
 and scoring.
 
+The additional sessions from the "dynamic foraging" experiment, and the sessions recorded
+without a thermistor (Sessions without a thermistor), are available for download, but are
+not part of the corpus.
+
 == Data splits <sec:data-splits>
 
-Models were evaluated under two protocols. The held-out animals are whole animals, and
-ask whether a model works on an animal it has never seen; the held-out sessions are blocks
-of consecutive sessions of training animals and asks whether it works on a new day of a known
-animal. Validation animals, also held out whole, were used only for early stopping and
-model selection, and test sessions only for final scoring. We drew five such splits, the
-folds of a cross-validation in which each of the #v("benchmark.animals_a") animals outside the #tbd[359]-Hz
-group is a held-out animal once (@tab:split); analyses of a single trained network use the
-first fold. One more split drawn the same way, the published split, holds only the
-comparisons not yet retrained on the folds (PhysFormer, RhythmFormer and test set
-C) and the training of the 2-animal draws. Held-out animals were
-the best of many seeded draws covering the corpus's rigs, months and respiration rates, and
-sessions per animal and rig were capped. Animals recorded at #tbd[359] Hz were split by
-session; their remaining #tbd[5] sessions form test set C (@tab:testc). The cross-validation folds are described in Supplementary Note 1.
-
-_Training-set size._ We retrained Zephyr on parts of the training set of fold
-#v("size.fold") (#fig(<fig:general>, "c")): nested subsets of #v("size.animals") of its
-#v("size.all_animals") training animals with all their sessions (#v("size.sessions")
-sessions), and #v("size.partial_sessions") sessions drawn from all #v("size.all_animals")
-animals. Three draws of 2 animals (#v("size.draw_sessions") sessions) were trained on the
-published split, which trains on none of fold #v("size.fold")'s held-out animals, and
-scored on that fold's held-out animals with the other runs. Each point is the mean
-over the same #v("size.units") animal × rig units with a 95% bootstrap interval; each run
-used one seed (#fig(<fig:general>, "c")).
-
-_Rig coverage._ The #tbd[4]- and #tbd[8]-animal runs trained on only some rigs of the held-out
-animals. Held-out units on a rig seen in training scored F1 #tbd[0.94] and #tbd[0.96], against
-#tbd[0.91] for units on other rigs (#tbd[10] against #tbd[11] units with #tbd[4] animals,
-#tbd[15] against #tbd[6] with #tbd[8]). The groups hold different units, so the
-comparison is not paired #note[one seed; repeat with the other seeds and the
-  cross-validation folds].
+To test generalization to held-out data, for each fold, we split the data into training, validation and test.
+Test data was further split into two categories: held-out sessions (sessions from animals seen during training but on different days) and held-out animals (animals never seen during training). We drew five splits that remained constant throughtout the manuscript for all methods/networks. The cross-validation folds are described in Supplementary Note 1.
 
 #figure(
   table(
@@ -668,7 +646,6 @@ comparison is not paired #note[one seed; repeat with the other seeds and the
     [#tbd[213–295]], [Validation], [whole animals], [#tbd[9]],
     [#tbd[67–144]], [Held-out animals], [whole animals], [#tbd[9–10]],
     [#tbd[75–128]], [Held-out sessions], [sessions of training animals], [#tbd[26–30]],
-    [#tbd[70–119]], [Test C], [#tbd[359]-Hz sessions], [#tbd[2]],
     [#tbd[5]], midrule, [Total], [],
     [#tbd[50]], [#tbd[560]], bottomrule,
   ),
@@ -681,13 +658,12 @@ comparison is not paired #note[one seed; repeat with the other seeds and the
 
 == Preprocessing
 
-Frames were downsampled to 360 × 270 pixels, cropped to a 96 × 96-pixel box over the
+For the face camera, frames were downsampled to 360 × 270 pixels, cropped to a 96 × 96-pixel box over the
 snout (one per session), converted to gray and selected on a 60-Hz grid by their
 timestamps, and standardized over the training clips. We note that the network also
-performs well at 30 Hz (@fig:input-rate). For the side and front cameras,
-which film the animal from farther away, frames were downsampled to 720 × 540 pixels
-instead, with the same 96 × 96-pixel box over the snout. The network trained on all three
-cameras used 360 × 270-pixel frames for every camera. The target was the thermistor
+performs well at 30 Hz (@fig:input-rate) but with slightly reduced accuracy. For the side and front cameras,
+which film the animal from farther away, frames were kept at the native 720 × 540 resolution
+instead, with the same 96 × 96-pixel box over the snout. The target was the thermistor
 filtered as above but high-passed at #tbd[0.2] Hz, resampled to 60 Hz and z-scored per
 clip.
 
@@ -754,119 +730,21 @@ comparison networks were trained the same way, each with the loss of its origina
   caption: [*Training settings of Zephyr.*],
 ) <tab:train>
 
-_Sessions without a thermistor._ The face videos of #v("application.sessions") task
-sessions of #v("application.animals") mice without a thermistor were predicted with the
-network trained on all three cameras of the first fold, at its onset threshold, each with a crop box placed by template matching on an accepted box,
-checked and, where needed, corrected by hand. Sessions came from mice with no
-thermistor implant in their procedures records, one session per mouse from the middle
-of its recordings #note[selection to confirm by the authors]. A prediction was put on
-the task's clock by the camera's frame timestamps, and running speed, sites and licks
-came from the session's processed data. Respiration rate was 1 over the interval
-between predicted inhalations; sites, aligned to odor onset, were averaged with a 95%
-bootstrap interval over sites, and over sessions each session's mean was averaged with a
-95% bootstrap interval over sessions. The distribution of rates in each speed bin was averaged
-over the sessions with samples in that bin. The window shown in @fig:application b
-was the one with the lowest head vs trace F1; its frames were chosen by eye in the video. The side and front videos of the same sessions
-(@fig:application-cameras) were predicted the same way, at the input scale the network
-was trained on for those cameras.
-
-_Refining on a different task._ The pooled network of the first fold was refined on
-video of a dynamic-foraging experiment, recorded with a side and a bottom camera and an intranasal
-thermistor, and cut and cropped as the corpus (360 × 270-pixel frames, 96 × 96-pixel
-crops). Training started from the pooled network's checkpoint, with half of each batch
-from the fold's training clips of all three corpus cameras and half from the 8 sessions
-of 2 animals of that experiment, at a learning rate of 1.5 × 10#super[−4], with the other
-settings of @tab:train. Early stopping and the onset threshold used the fold's
-validation animals. Both the refined network and the untouched pooled network were
-scored on the #v("refine.clips") clips (#v("refine.sessions") sessions) of a third
-animal of that experiment, and the refined network also on the fold's test sets. The cost
-on the corpus is the refined network minus the pooled one on the same clips, as the
-mean over animal × rig units with a paired 95% bootstrap interval (@fig:refine).
-
-_Quality control._ Each prediction was cut into 30-s windows, and each window
-measured from the network's output alone: the F1 between the onset output's inhalations
-and the peaks of the network's own trace (found by the thermistor's detector), the share
-of consecutive events (inhalations and exhalations in time order) of the same kind, the
-median height of the onset peaks taken as inhalations, and the mean onset probability
-further than 100 ms from any of them (every measure a report holds is in
-@tab:qc-measures). The figures show these four because they separated the
-dynamic-foraging experiment's predictions before and after refining most clearly;
-@fig:qc-all shows every measure on the same windows. A network's
-reference holds the same measures on #v("quality.validation_windows") windows of 60
-clips of its validation animals, beside their true scores; training writes it from the
-predictions on which the onset threshold is chosen. Reports place each measure among
-those windows and apply no bound. Predictions that work were the pooled network's on the
-held-out animals of the first fold (#v("quality.held_out_windows") windows) and, after
-refining, on the dynamic-foraging experiment's held-out animal (#v("quality.df_clips")
-clips; scored with its own reference); known failures were the pooled network's on that
-animal before refining, and its predictions on 24 clips of the held-out animals with
-Gaussian noise of standard deviation 16, 32 or 64 gray levels (of 255) added to every
-frame the network saw.
-
-#figure(
-  table(
-    columns: (auto, 1fr, auto),
-    align: (left, left, left),
-    toprule,
-    table.header([*Measure*], [*What it measures in a window*], [*Better*]),
-    midrule, [Inhalations], [Number of inhalations from the onset output],
-    [—], [Respiration rate], [Median rate between consecutive inhalations (Hz)],
-    [—],
-    [Breaths too fast],
-    [Share of breaths faster than a mouse breathes (15 Hz); slower rates are not
-      judged, as they change with running, odors and task],
-
-    [Lower],
-    [Alternation breaks\*],
-    [Share of events (inhalations from the onset output, exhalations from the trace, in
-      time order) that repeat the kind before them; breathing alternates],
-
-    [Lower],
-    [Flat breaths],
-    [Share of breaths (inhalation to inhalation) whose trace swings less than a quarter
-      of the clip's median breath: stretches where the trace sees nothing],
-
-    [Lower],
-    [Head vs trace F1\*],
-    [Agreement between the onset output's inhalations and the peaks of the network's own
-      trace (thermistor's detector, 1.5-frame tolerance): the two outputs should agree],
-
-    [Higher], [Onset peak height\*], [Median onset probability at the inhalations: how sure the onset output is],
-    [Higher], [Ambiguous onset peaks], [Share of onset-probability peaks above 0.2 that stay below the onset threshold],
-    [Lower],
-    [Onset background\*],
-    [Mean onset probability further than 100 ms from any inhalation: how quiet it is
-      between breaths],
-
-    [Lower],
-    [Expected precision],
-    [Mean probability that an inhalation is real given its peak height, from a
-      calibration fitted on the reference's validation clips],
-
-    [Higher], bottomrule,
-  ),
-  caption: [*Quality-control measures.* Each is computed on every 30-s window from the
-    network's trace and onset probability alone, without the thermistor or the video.
-    Reports give each value and its percentile among the reference's validation
-    windows, never a pass or fail. "Better" is the direction a working prediction tends
-    to score. \*Shown in @fig:trust e and @fig:application a; every measure is in @fig:qc-all.],
-) <tab:qc-measures>
-
 == Inference and event detection
 
 Clips were predicted in overlapping windows of #tbd[1,024] samples, discarding #tbd[126]
 samples (half the receptive field) at each edge, so that the stitched trace equals a
 single pass over the clip. Inhalation onsets were the peaks of the onset probability above
 a threshold, at least #tbd[50] ms apart. The threshold was chosen for each trained network
-on its own validation animals, never on a test set: of #tbd[0.20–0.85] in steps of
-#tbd[0.05], the one with the best mean inhalation F1 over the validation clips. It was
+on its own validation animals, never on a test set, once early stopping had fixed its
+weights. Each threshold from #tbd[0.20] to #tbd[0.85] in steps of #tbd[0.05] was scored
+by the mean inhalation F1 over the validation clips (@sec:scoring). Thresholds within
+#tbd[0.002] of the best F1 tied, and of these the one whose inhalations per minute came
+closest to the thermistor's was kept. The network keeps this threshold, and every
+prediction it makes uses it. It was
 #v("threshold.folds") for the five folds' networks and #v("threshold.published") for the published split's. Exhalations, and the inhalations of methods without
 an onset output ("DSP"), were found on the predicted trace by the detector used on the
 thermistor, with the same settings (the 40-Hz low-pass does not apply at 60 Hz).
-
-_Timing._ Inference time was the wall-clock time from preprocessed crops in memory to the
-60-Hz trace, median over #tbd[8] 5-min clips after a warm-up, at batch size 1 in bf16 on an
-NVIDIA RTX 4060 Ti (non-network methods on the CPU).
 
 == Benchmarked methods
 
@@ -928,12 +806,21 @@ Note 2); none has an onset output, so their inhalations were found on the predic
     and a respiration band replaces the heart-rate band.],
 ) <tab:methods>
 
-== Scoring
+_Timing._ Inference time was the wall-clock time from preprocessed crops in memory to the
+60-Hz trace, median over #tbd[8] 5-min clips after a warm-up, at batch size 1 in bf16 on an
+NVIDIA RTX 4060 Ti (non-network methods on the CPU, an Intel Core i9-13900K with 24 cores and 64 GB of
+RAM).
+
+== Scoring <sec:scoring>
 
 Predictions and thermistor were compared by time, over the span both cover. Traces were
-scored by their Pearson correlation with the target. A predicted event matched a
-thermistor event within 25 ms (#tbd[1.5] frames at 60 Hz), each event matching at most
-once, and F1 was computed per clip. Respiration rate was counted in 10-s windows.
+scored by their Pearson correlation with the target. By default, a predicted event could match a
+thermistor event within 1.5 frames of the prediction (25 ms at 60 Hz). Predicted and thermistor
+events were paired one to one by an optimal assignment on their time differences
+(Hungarian algorithm), restricted to pairs within the tolerance, which maximizes the
+number of matches. Matched pairs were true positives (TP), unmatched predictions false
+positives (FP) and unmatched thermistor events false negatives (FN), and
+$F_1 = 2"TP" \/ (2"TP" + "FP" + "FN")$ was computed per clip. Respiration rate was counted in 10-s windows.
 
 _Error analysis._ An error was a near miss when an error of the other kind lay within
 100 ms. Errors were pooled over each fold's held-out animals (#v("errors.misses") misses
@@ -942,7 +829,9 @@ cycles. The near-miss example (#fig(<fig:trust>, "b")) is, among the first fold'
 of held-out animals with at least the median correlation, the one with the most
 predictions 25–100 ms from a thermistor inhalation, shown where these are densest.
 
-_Spatial and temporal receptive fields._ For each animal × rig unit of the held-out animals of every
+== Spatial and temporal receptive fields
+
+For each animal × rig unit of the held-out animals of every
 fold, we took the clip nearest the unit's median trace correlation, two 8.5-s windows of
 it, and the face network of that fold, and considered only the thermistor inhalations at
 least half a receptive field from a window's edges. For occlusion, a 12 × 12-pixel square
@@ -952,12 +841,100 @@ inhalations, and one minus the correlation of the trace with the unoccluded one,
 gave each pixel the mean over the squares covering it. For gradients, we took the
 absolute gradient of the onset logit at each thermistor inhalation with respect to every
 input pixel, averaged over frames for the spatial map and summed over pixels for the
-temporal profile; the same network with its weights re-initialised served as a control.
-The side and front networks, trained only on the first fold so far, were analysed the
-same way on that fold's held-out animals (#v("saliency.units_side") units), on the same
-recording spans. The temporal profile is the share of an inhalation's gradient carried by
+temporal profile. The same network with its weights re-initialised served as a control.
+The temporal profile is the share of an inhalation's gradient carried by
 each frame, in 1/60-s bins of the frame's time from the inhalation, averaged over the
 inhalations of a unit, then over units and folds (@fig:saliency).
+
+== Generalization experiments
+
+_Training-set size experiments._ We retrained Zephyr on parts of the training set of fold
+#v("size.fold") (#fig(<fig:general>, "c")): nested subsets of #v("size.animals") of its
+#v("size.all_animals") training animals with all their sessions (#v("size.sessions")
+sessions), and #v("size.partial_sessions") sessions drawn from all #v("size.all_animals")
+animals. Each experiment was trained 3 times on a different draw of subset of trials. For the 2 animals condition, 5 networks were trained instead to account for the larger variability.
+
+_Refining on a different task._ The pooled network of the first fold was refined on
+video of a dynamic-foraging experiment, recorded with a side and a bottom camera and an intranasal
+thermistor, and cut and cropped as the corpus (360 × 270-pixel frames, 96 × 96-pixel
+crops). Training started from the pooled network's checkpoint, with half of each batch
+from the fold's training clips of all three corpus cameras and half from the 8 sessions
+of 2 animals of that experiment, at a learning rate of 1.5 × 10#super[−4], with the other
+settings of @tab:train. Early stopping and the onset threshold used the fold's
+validation animals. Both the refined network and the untouched pooled network were
+scored on the #v("refine.clips") clips (#v("refine.sessions") sessions) of a third
+animal of that experiment, and the refined network also on the fold's test sets. The cost
+on the corpus is the refined network minus the pooled one on the same clips, as the
+mean over animal × rig units with a paired 95% bootstrap interval (@fig:refine).
+
+== Quality control
+
+Each prediction was cut into 30-s windows, and each window was scored with the measures
+of @tab:qc-measures. Each network was calibrated against validation animals by computing the distribution of the metrics against the F1 scores of the validation dataset. A report gives each
+window's measures and their percentiles among the reference's windows.
+
+The measures were tested on predictions known to work and known to fail, all from the
+pooled network of the first fold, before or after refining. Working predictions were its predictions on that
+fold's held-out animals (#v("quality.held_out_windows") windows) and, after refining, on
+the dynamic-foraging experiment's held-out animal (#v("quality.df_clips") clips, scored
+with the refined network's own reference). Failing predictions were its predictions on
+that animal before refining, and on 24 clips of the held-out animals with Gaussian noise
+of standard deviation 16, 32 or 64 gray levels (of 255) added to every frame.
+
+#figure(
+  table(
+    columns: (auto, 1fr, auto),
+    align: (left, left, left),
+    toprule,
+    table.header([*Measure*], [*What it measures in a window*], [*Better*]),
+    midrule, [Inhalations], [Number of inhalations from the onset output],
+    [—], [Respiration rate], [Median rate between consecutive inhalations (Hz)],
+    [—],
+    [Breaths too fast],
+    [Share of breaths faster than a mouse breathes (15 Hz); slower rates are not
+      judged, as they change with running, odors and task],
+
+    [Lower],
+    [Alternation breaks\*],
+    [Share of events (inhalations from the onset output, exhalations from the trace, in
+      time order) that repeat the kind before them; breathing alternates],
+
+    [Lower],
+    [Flat breaths],
+    [Share of breaths (inhalation to inhalation) whose trace swings less than a quarter
+      of the clip's median breath: stretches where the trace sees nothing],
+
+    [Lower],
+    [Head vs trace F1\*],
+    [Agreement between the onset output's inhalations and the peaks of the network's own
+      trace (thermistor's detector, 1.5-frame tolerance): the two outputs should agree],
+
+    [Higher], [Onset peak height\*], [Median onset probability at the inhalations: how sure the onset output is],
+    [Higher], [Ambiguous onset peaks], [Share of onset-probability peaks above 0.2 that stay below the onset threshold],
+    [Lower],
+    [Onset background\*],
+    [Mean onset probability further than 100 ms from any inhalation: how quiet it is
+      between breaths],
+
+    [Lower],
+    [Expected precision],
+    [Mean probability that an inhalation is real given its peak height, from a
+      calibration fitted on the reference's validation clips],
+
+    [Higher], bottomrule,
+  ),
+  caption: [*Quality-control measures.* Each is computed on every 30-s window from the
+    network's trace and onset probability alone, without the thermistor or the video.
+    Reports give each value and its percentile among the reference's validation
+    windows, never a pass or fail. "Better" is the direction a working prediction tends
+    to score. \*Shown in @fig:trust e and @fig:application a; every measure is in @fig:qc-all.],
+) <tab:qc-measures>
+
+== Sessions without a thermistor
+
+The face videos of #v("application.sessions") task
+sessions of #v("application.animals") mice without a thermistor were predicted with the
+network trained on all three cameras of the first fold, at its onset threshold. Other than the thermistor signal, all data acquisition progressed identically to the original corpus. The side and front videos of the same sessions (@fig:application-cameras) were predicted the same way.
 
 == Statistics <sec:statistics>
 
@@ -990,25 +967,15 @@ onset lag and rate agreement pool all folds and carry no interval. #note[units o
 
 == Supplementary Note 1: Cross-validation folds
 
-The five folds were drawn over the #tbd[560] sessions of the corpus, beside the
-published split and under the same rules (#link(<sec:methods>)[Methods], @sec:data-splits). The #tbd[48] animals
-outside the #tbd[359]-Hz group were divided into five groups of held-out animals, the most balanced of
-#tbd[20,000] seeded draws judged by the worst group, and fold $k$ tests group $k$ whole,
-so that each animal is a new animal once. Each fold draws #tbd[8] whole validation animals
-from the animals it trains on. Every animal with at least #tbd[4] sessions is cut by date
-into one block of sessions for each fold it trains in, and that fold holds the block out as
-held-out sessions, so each such session is held out once. The #tbd[359]-Hz animals keep
-their sets of the published split in every fold. Every set of every fold is within about
-#tbd[2] percentage points of the corpus's share of time at each respiration rate, and every
-fold passes the checks of the published split (no test or validation animal in training).
-@tab:folds gives the sets of each fold; each fold's runs were scored on exactly its
-held-out animals.
+@tab:folds gives the number of animals and sessions in each set of the five
+cross-validation folds (#link(<sec:methods>)[Methods], @sec:data-splits).
 
 #figure(
   kind: table,
   csv-table("tables/cv_folds.csv", 6, ([Set], [cv_0], [cv_1], [cv_2], [cv_3], [cv_4])),
-  caption: [*Cross-validation folds.* Each cell gives animals / sessions in one set
-    of one fold. Animals with held-out sessions also train, so animals do not add up across sets.],
+  caption: [*Cross-validation folds.* Each cell gives the number of animals / sessions in one
+    set of one fold. Animals with held-out sessions are also training animals, so animals
+    do not add up across sets.],
 ) <tab:folds>
 
 == Supplementary Note 2: Comparison networks
@@ -1038,34 +1005,22 @@ batch, steps per epoch and learning rate are in @tab:nets #note[confirm how the 
     9,
     ([Network], [Window], [Batch], [Steps], [LR], [Inference window], [Scales], [Params (M)], [GPU (s)]),
   ),
-  caption: [*Networks.* Training and inference windows are in samples at 60 Hz.
-    Batch size is the number of training windows per optimizer step. The table also gives
-    steps per epoch, the peak learning rate, and the time scales of the correlation loss,
-    used by Zephyr and PhysNet; the others use their own losses. The last columns give the
-    number of parameters and the inference time for a 5-min clip from the preprocessed
-    crops (median of #tbd[8] clips) on a consumer GPU (NVIDIA RTX 4060 Ti, bf16).],
+  caption: [*Settings of the neural networks.* Training and inference windows are in samples
+    at 60 Hz, and the batch is the number of training windows per optimizer step. Scales
+    are the time scales of the correlation loss, used by Zephyr and PhysNet only. The last
+    two columns give the number of parameters and the inference time for a 5-min clip on a
+    consumer GPU (NVIDIA RTX 4060 Ti; median of #tbd[8] clips; #link(<sec:methods>)[Methods]).],
 ) <tab:nets>
-
-#figure(
-  kind: table,
-  csv-table("tables/test_c.csv", 4, ([Method], [Trace r], [Inhale F1], [Exhale F1])),
-  caption: [*Test set C.* Scores on the #tbd[5] held-out sessions of the #tbd[2]
-    animals recorded with the #tbd[359]-Hz camera (published split). Each score was
-    averaged within each animal × rig unit, then over the #tbd[2] units, without an
-    interval.],
-) <tab:testc>
 
 #figure(
   kind: table,
   // Written by notebooks/manuscript_figures.py (held-out sessions, over folds, seed 17).
   benchmark-table("tables/benchmark_b.csv"),
-  caption: [*Benchmark on held-out sessions of known animals.* The table
-    follows @tab:benchmark, on the held-out sessions of training animals. Each score was
-    averaged within each animal × rig unit, then over the held-out-session units of a split, then
-    over splits. Values are the mean with its 95% interval over the
-    #v("benchmark.folds") cross-validation folds (#v("benchmark.units_b") units of
-    #v("benchmark.animals_b") animals). Methods run on one split show the published split
-    alone. Inference is as in @tab:benchmark.],
+  caption: [*Method comparison on held-out sessions of training animals.* As in
+    @tab:benchmark, but on held-out sessions (#v("benchmark.units_b") animal × rig units of
+    #v("benchmark.animals_b") animals). Values are the mean over the
+    #v("benchmark.folds") cross-validation folds with its 95% interval. Methods run on one
+    split show the published split alone.],
 ) <tab:benchmark-b>
 
 #figure(
@@ -1076,15 +1031,12 @@ batch, steps per epoch and learning rate are in @tab:nets #note[confirm how the 
     7,
     ([Set], [Camera], [Units], [Trace r], [Inhale F1], [Exhale F1], [Rate MAE]),
   ),
-  caption: [*Zephyr on each camera.* The same network was trained the same way on
-    the face, side and front cameras. Each was scored on the recording spans all three
-    cameras share, against the same thermistor events. Scores are on held-out animals
-    (#v("cameras.clips_a") clips) and held-out sessions
-    (#v("cameras.clips_b") clips) of #v("cameras.folds") of the cross-validation folds. Each
-    score was averaged within each animal × rig unit, then over units, and is shown with
-    its 95% bootstrap interval over units. Rate MAE is the error in respiration rate over
-    10-s windows, in cycles per minute. Each network detected inhalations at its own
-    onset threshold, chosen on its validation animals.],
+  caption: [*Zephyr on each camera.* Zephyr trained on the face, side or front camera, and
+    scored on the recording spans all three cameras share, against the same thermistor
+    events. Scores are on held-out animals (#v("cameras.clips_a") clips) and held-out
+    sessions (#v("cameras.clips_b") clips) of #v("cameras.folds") of the cross-validation
+    folds, as the mean over animal × rig units with its 95% bootstrap interval. Rate MAE is
+    the error in respiration rate over 10-s windows, in cycles per minute.],
 ) <tab:cameras>
 
 #pagebreak()
@@ -1092,125 +1044,112 @@ batch, steps per epoch and learning rate are in @tab:nets #note[confirm how the 
 
 #figure(
   fit(fig2),
-  caption: [*Summary of the benchmarking corpus.* *a,* Selection process of the recorded sessions. Each step
-    removes the sessions that failed a rule, labelled by the first rule they failed. The
-    rules and thresholds are in @tab:qc. *b,* The distribution of respiration rate over
-    thermistor cycles at 2–15 Hz. The black line shows the whole corpus
-    (n = #v("rates.breaths") cycles) and grey lines each animal
-    (n = #v("rates.animals")). *c,* The number of sessions per animal, coloured by the
-    number of rigs the animal was recorded on (n = #v("corpus.animals") animals,
-    #v("corpus.sessions") sessions).],
+  caption: [*Summary of the benchmarking corpus.* *a,* Selection of the recorded
+    sessions. Each step removes the sessions that failed a rule, labelled by the first rule
+    they failed (rules and thresholds in @tab:qc). *b,* Distribution of respiration rates
+    over thermistor cycles at 2–15 Hz, for the whole corpus (black; n = #v("rates.breaths")
+    cycles) and for each animal (grey; n = #v("rates.animals")). *c,* Number of sessions per
+    animal, coloured by the number of rigs the animal was recorded on
+    (n = #v("corpus.animals") animals, #v("corpus.sessions") sessions).],
 ) <fig:corpus>
 
 #figure(
   fit(figs1),
-  caption: [*Rig and animal as sources of score differences.* Zephyr on held-out
-    animals of the five folds, in which each animal is held out once. A unit
-    is an animal on one rig, with its score averaged over its clips. We compared pairs of
-    units that share the animal but not the rig (#tbd[159] pairs, #tbd[22] animals
-    recorded on more than one rig) with pairs that share the rig but not the animal
-    (#tbd[520] pairs, #tbd[48] animals). Histograms show the share of each kind's pairs in
-    each bin of the absolute difference between the two units, in inhalation F1 (left)
-    and trace correlation (right), over 30 bins shared by both kinds. Points above give
-    each kind's mean with a 95% bootstrap interval resampling animals (#tbd[2,000]
-    draws).],
+  caption: [*Scores differ less between rigs than between animals.* Zephyr on the held-out
+    animals of the five folds. A unit is an animal on one rig, with its score averaged
+    over its clips. Histograms show the absolute difference in inhalation F1 (left) and
+    trace correlation (right) between pairs of units that share the animal but not the rig
+    (#tbd[159] pairs of #tbd[22] animals), and between pairs that share the rig but not the
+    animal (#tbd[520] pairs of #tbd[48] animals). Points above give each kind's mean with
+    its 95% bootstrap interval over animals.],
 ) <fig:rigs>
 
 #figure(
   fit(figs2),
-  caption: [*Zephyr on 30-Hz video.* The same network was trained the same way
-    on every other frame (30 Hz), still predicting on the 60-Hz grid, and retrained on each
-    of the five folds. *a,* The 30-Hz network minus the 60-Hz network on each test set, in
-    trace correlation, inhalation F1 (onset output) and exhalation F1. Grey points are
-    single folds, shown with their mean and its 95% bootstrap interval over the #tbd[5] folds. *b,* Inhalation F1 on held-out animals by respiration rate, with each
-    fold's cycles pooled. Lines show the mean over folds with its 95% interval. The
-    bottom panel shows each unit's share of cycles in each bin, as the mean over animal × rig units with its 95% bootstrap interval.],
+  caption: [*Zephyr works on 30-Hz video, with slightly lower accuracy.* Zephyr trained
+    on every other frame (30 Hz) of each of the five folds, still predicting on the 60-Hz
+    grid. *a,* The 30-Hz network minus the 60-Hz network on each test set, in trace
+    correlation, inhalation F1 and exhalation F1. Grey points are single folds; the mean is
+    shown with its 95% bootstrap interval over folds. *b,* Inhalation F1 on held-out
+    animals by respiration rate, mean over folds with its 95% interval. The bottom panel
+    shows the share of cycles in each rate bin, mean over animal × rig units with its 95%
+    bootstrap interval.],
 ) <fig:input-rate>
 
 #figure(
   fit(figs3),
-  caption: [*Zephyr on the side and front cameras.* The same network was trained
-    the same way on each camera's video, in #v("cameras.folds") of the cross-validation
-    folds. Each was scored on the recording spans all three cameras share, against the same
-    thermistor events. The held-out animals have #v("cameras.clips_a") clips
-    from #v("cameras.units_a") units of #v("cameras.animals_a") animals, and the held-out
-    sessions #v("cameras.clips_b") clips from #v("cameras.units_b") units. Every score is in
-    @tab:cameras, and trace correlation and inhalation F1 on both sets are in
-    #fig(<fig:general>, "d"). *a,* Inhalation F1 of each new-animal unit, ranked by the face camera, as in
-    #fig(<fig:general>, "b"). *b,* Inhalation F1 of each new-animal clip from the side and front
-    cameras, against the face camera. The dotted line marks equality, and the legend gives
-    the share of clips scored higher than by the face camera. Each network detected
-    inhalations at its own onset threshold, chosen on its validation animals.],
+  caption: [*Zephyr recovers respiration from the side and front cameras.* Zephyr trained on
+    each camera's video in #v("cameras.folds") of the cross-validation folds, and scored on
+    the recording spans all three cameras share. The held-out animals have
+    #v("cameras.clips_a") clips from #v("cameras.units_a") units of #v("cameras.animals_a")
+    animals, and the held-out sessions #v("cameras.clips_b") clips from
+    #v("cameras.units_b") units. Every score is in @tab:cameras. *a,* Inhalation F1 of each
+    held-out-animal unit, ranked by the face camera, as in #fig(<fig:general>, "b"). *b,*
+    Inhalation F1 of each held-out-animal clip from the side and front cameras, plotted
+    against the face camera. The dotted line marks equality, and the legend gives the share
+    of clips that scored higher than with the face camera.],
 ) <fig:cameras>
 
 #figure(
   fit(figs4),
-  caption: [*What each camera sees.* Frames from a representative subset of
-    #v("views.sessions") sessions, each labelled by its session name. For each session,
-    the first frames of the face, side and front cameras are shown side by side. The crop
-    box that the network on each camera reads is outlined. Boxes are placed once per
-    recording (#link(<sec:methods>)[Methods]). The cameras' angle, zoom and lighting, the implant and the
-    animal's posture differ between rigs and days.],
+  caption: [*Representative frames from corpus* First frames of the face, side and front cameras in
+    #v("views.sessions") representative sessions, each labelled by its session name, with
+    the network's crop box outlined (#link(<sec:methods>)[Methods]).],
 ) <fig:views>
 
 #figure(
   fit(figs5),
-  caption: [*Timing of slow breathing.* Zephyr on the held-out animals of the
-    #v("benchmark.folds") cross-validation folds, by the thermistor's respiration rate (bins
-    labelled by their lower edge; 12 is 12–15 Hz). Lines show the mean over folds and
-    bands its 95% interval. *a,* The share of thermistor inhalations Zephyr found within
-    25 ms (the tolerance used throughout), within 50 ms, and within 10% of the
-    cycle's period. *b,* The spread of Zephyr's inhalation times around the thermistor's
-    (interquartile range of the lag). *c,* The same spread as a percentage of the
-    cycle's period. *d,* The share of thermistor inhalations found 25–100 ms off, which count as
-    both a miss and a false inhalation, and of those with no inhalation within 100 ms.
-    *e,* Inhalations that the corpus's thermistor detector adds, as a percentage of the
-    labelled cycles in each bin, when its prominence fraction is lowered from 0.2 to 0.1
-    or 0.05 (an added inhalation lies more than 25 ms from every labelled one).],
+  caption: [*A fixed tolerance is strictest for slow breathing.* Zephyr on the held-out
+    animals of the #v("benchmark.folds") cross-validation folds, by the thermistor's
+    respiration rate (bins labelled by their lower edge; 12 is 12–15 Hz). Lines show the
+    mean over folds and bands its 95% interval. *a,* Share of thermistor inhalations found
+    within 25 ms (the tolerance used throughout), within 50 ms, and within 10% of the
+    cycle. *b,* Spread of Zephyr's inhalation times around the thermistor's (interquartile
+    range of the lag). *c,* The same spread as a percentage of the cycle. *d,* Share of
+    thermistor inhalations found 25–100 ms off, which count as both a miss and a false
+    inhalation, and of those with no inhalation within 100 ms. *e,* Inhalations added by
+    the thermistor's detector, as a percentage of the labelled cycles in each bin, when its
+    prominence fraction is lowered from 0.2 to 0.1 or 0.05.],
 ) <fig:slow>
 
 #figure(
   fit(figs6),
-  caption: [*Spatial and temporal receptive fields.* The face network of each cross-validation
-    fold on its held-out animals (#v("saliency.units") animal × rig units), and the side
-    and front networks of the first fold on the same recording spans of its held-out
-    animals (#v("saliency.units_side") units): for each unit, the clip nearest its median
-    face trace correlation (#link(<sec:methods>)[Methods]). *a,* One held-out animal of the first fold from the
-    three cameras, each crop box outlined with the occlusion map inside it: how much hiding
-    each part of the crop in every frame lowered the onset probability at the thermistor's
-    inhalations. *b,* Maps averaged over each camera's units, over their mean crop:
-    occlusion, the absolute gradient of the onset output at each inhalation with respect
-    to the input pixels, and the same gradient for the network with random weights. Each
-    map is scaled to its own range. *c,* The share of an inhalation's gradient carried by
-    each frame, against the frame's time from the inhalation. Lines show the mean over
-    folds; for the face network, the band shows the 95% interval over the
-    #v("benchmark.folds") folds.],
+  caption: [*Spatial and temporal receptive fields.* The face network of each
+    cross-validation fold on its held-out animals (#v("saliency.units") animal × rig units),
+    and the side and front networks of the first fold on the same recording spans
+    (#v("saliency.units_side") units; #link(<sec:methods>)[Methods]). *a,* One held-out
+    animal seen by the three cameras, with the occlusion map inside each crop box: how much
+    hiding each part of the crop lowered the onset probability at the thermistor's
+    inhalations. *b,* Maps averaged over each camera's units: occlusion, the gradient of
+    the onset output with respect to the input pixels, and the same gradient for the
+    network with random weights. Each map is scaled to its own range. *c,* Share of an
+    inhalation's gradient carried by each frame, plotted against the frame's time from the
+    inhalation. Lines show the mean over folds; for the face network, the band shows the
+    95% interval over the #v("benchmark.folds") folds.],
 ) <fig:saliency>
 
 #figure(
   fit(figs7),
-  caption: [*Refining on a different task costs little on the corpus.* The pooled network of
-    the first fold, refined on a dynamic-foraging experiment (#fig(<fig:general>, "g–i")),
-    minus the pooled network itself, on the corpus's test sets of the same fold (held-out animals, held-out sessions and the
-    359-Hz sessions),
-    over all three cameras. Points show the mean over animal × rig units with a 95%
-    paired bootstrap interval.],
+  caption: [*Refining on a different task costs little on the corpus.* The network of
+    #fig(<fig:general>, "f") after refining on the dynamic-foraging experiment
+    (#fig(<fig:general>, "g–i")), minus the same network before refining, on the held-out
+    animals and held-out sessions of the first fold, over all three cameras. Points show the
+    mean over animal × rig units with its 95% paired bootstrap interval.],
 ) <fig:refine>
 
 #figure(
   fit(figs9),
-  caption: [*Every quality-control measure.* Each measure of @tab:qc-measures over the
-    30-s windows of the sets of #fig(<fig:trust>, "e"): the pooled network's validation
-    animals, predictions that work and known failures, drawn as there. *a,* Measures of
-    the respiratory rhythm. *b,* Measures of the onset output, beside the true
-    inhalation F1. Expected precision is not computed for the noise sets.],
+  caption: [*Every quality-control measure.* Each measure of @tab:qc-measures over the 30-s
+    windows of the sets of #fig(<fig:trust>, "e"), drawn as there. *a,* Measures of the
+    respiratory rhythm. *b,* Measures of the onset output, beside the true inhalation F1.
+    Expected precision is not computed for the noise sets.],
 ) <fig:qc-all>
 
 #figure(
   fit(figs8),
-  caption: [*Sessions without a thermistor seen by each camera.* The
-    #v("application.sessions") sessions of @fig:application, predicted from the face,
-    side and front videos by the network trained on all three cameras: each camera's
-    quality-control scores over the 30-s windows of every session, beside predictions
-    that work and known failures, drawn as in @fig:trust e.],
+  caption: [*Quality control of the sessions without a thermistor on each
+    camera.* The #v("application.sessions") sessions of @fig:application, predicted from the
+    face, side and front videos by the network trained on all three cameras. Each camera's
+    quality-control scores over the 30-s windows of every session are shown beside
+    predictions that work and known failures, drawn as in #fig(<fig:trust>, "e").],
 ) <fig:application-cameras>

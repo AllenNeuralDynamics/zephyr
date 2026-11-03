@@ -2381,7 +2381,7 @@ def fold_difference_panel(
         a.set_title(METRIC_LABELS[metric], fontsize=7)
         a.set_xlabel(f"Minus {reference}")
         a.grid(axis="y", visible=False)
-    ax[metrics[0]].set_yticks(range(len(sets)), sets)
+    ax[metrics[0]].set_yticks(range(len(sets)), [style.set_label(s) for s in sets])
     return fig
 
 
