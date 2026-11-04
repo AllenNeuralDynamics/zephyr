@@ -1,7 +1,7 @@
 // Manuscript draft, in the Allen Institute preprint template (the submodule template/:
 // `git submodule update --init`). Build from the repository root:
 //   typst compile --font-path manuscript/template/fonts \
-//     --input version="$(git describe --always --dirty --exclude='*')" manuscript/main.typ
+//     --input version="$(git describe --always --dirty --abbrev=40 --exclude='*')" manuscript/main.typ
 // Results numbers come from values.toml, which notebooks/manuscript_figures.py writes
 // (#v("section.key")): re-run the notebook, never edit them here. Numbers in yellow
 // (#tbd) are typed by hand and still to be confirmed; red notes are for the authors
@@ -86,10 +86,10 @@
 ]
 
 // The commit the PDF was built from, at the top right of every page, when the build
-// passes it (`--input version=...`, the short SHA with "-dirty" for uncommitted changes).
+// passes it (`--input version=...`, the full SHA with "-dirty" for uncommitted changes).
 #let version = sys.inputs.at("version", default: none)
 #set page(foreground: if version != none {
-  place(top + right, dx: -1.5cm, dy: 0.6cm, text(size: 6pt, fill: luma(120))[#version])
+  place(top + right, dx: -1.5cm, dy: 0.6cm, text(size: 8pt, fill: luma(110))[Built from: #version])
 })
 
 #show: preprint.with(
