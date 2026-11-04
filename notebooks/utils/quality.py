@@ -16,7 +16,6 @@ from pathlib import Path
 
 import pandas as pd
 
-from zephyr.benchmarks import analysis
 from zephyr.benchmarks.probe import load_probes
 from zephyr.quality_control import load_reports
 from zephyr.quality_control.metrics import MEASURES
@@ -66,49 +65,14 @@ def tables(location: str) -> tuple[pd.DataFrame, pd.DataFrame]:
     if path is None:
         return pd.DataFrame(), pd.DataFrame()
     videos, windows = load_reports(path)
-    truth = report_truth(path)
+    truth = runs.report_truth(path)
     if len(truth):
         whole = truth[truth["whole"]].drop(columns=["whole", "start", "end"])
         videos = videos.merge(whole, on="stem", how="left")
-        windows = with_truth(
+        windows = runs.with_truth(
             windows, truth[~truth["whole"]].drop(columns=["whole", "end"])
         )
     return videos, windows
-
-
-def report_truth(folder: Path) -> pd.DataFrame:
-    """The real scores of each prediction in *folder* (``zephyr predict
-    --quality-control``) over the whole clip and each window its report measures
-    (:func:`zephyr.benchmarks.analysis.window_truth`), for clips of the dataset copy
-    with a thermistor; quality control itself never reads them."""
-    from zephyr.predict import SUFFIX
-
-    parts = []
-    for path in sorted(Path(folder).glob(f"*{SUFFIX}")):
-        stem = path.name.removesuffix(SUFFIX)
-        try:
-            entry = runs.entry(stem)
-        except (KeyError, FileNotFoundError):
-            continue
-        if entry.thermistor is None:
-            continue
-        table = analysis.window_truth(entry, pd.read_parquet(path))
-        parts.append(table.assign(stem=stem))
-    return pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
-
-
-def with_truth(table: pd.DataFrame, truth: pd.DataFrame) -> pd.DataFrame:
-    """*table* (a report's windows) with each window's real scores, by video and start."""
-    return (
-        table.assign(_start=table["start"].round(6))
-        .merge(
-            truth.assign(_start=truth["start"].round(6)).drop(columns="start"),
-            on=["stem", "_start"],
-            how="left",
-            validate="one_to_one",
-        )
-        .drop(columns="_start")
-    )
 
 
 def reference(location: str) -> dict | None:
@@ -117,10 +81,8 @@ def reference(location: str) -> dict | None:
 
 
 def traces(location: str, stem: str) -> pd.DataFrame:
-    """A video's prediction: trace, onset probability and inhales."""
-    from zephyr.predict import SUFFIX
-
-    return pd.read_parquet(local(location) / f"{stem}{SUFFIX}")
+    """A video's saved trace, onset probability and inhales."""
+    return pd.read_parquet(local(location) / f"{stem}.qc.parquet")
 
 
 @functools.cache

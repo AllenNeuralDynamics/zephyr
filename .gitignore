@@ -39,7 +39,7 @@ runs*/
 # Notebook outputs
 notebooks/cache/
 notebooks/figures/
-notebooks/__marimo__/
+__marimo__/
 notebooks/*.html
 
 # Scratch work (downloads, one-off analyses)
@@ -56,3 +56,4 @@ web/public/models/
 web/testdata/
 web/test-results/
 web/playwright-report/
+*.pdf
