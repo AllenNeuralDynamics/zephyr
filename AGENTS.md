@@ -1,213 +1,44 @@
 # Working in zephyr
 
-Rules for coding agents. Read before changing anything. Details live in each package's
-README and in the pydantic models; this file only says what must and must not be done.
+Rules for coding agents. Behaviour is documented in the READMEs, `docs/` and the pydantic
+models; this file only says what must not be done.
 
-## Package
+## Code
 
-A uv workspace of one package, `zephyr` (released; `packages/zephyr/README.md`):
-`uv sync --all-packages --extra cpu`, or `--extra gpu`; `--extra ui` for the app and its
-windows.
+- No dataset specifics in `src/` (paths, split names, cameras, sessions, layout).
+- Never weaken a loading or `evaluate` check to make a config pass; fix the config.
+- Paths that identify a clip go through `config.canonical`, never `str()` or a raw
+  comparison.
+- Never guess a frame rate from a video stream; a video with no timestamps is given one.
+- Feature caches are read only through `features.reader`.
+- Code never rewrites existing checkpoints, `config.json` / `args.json`, histories or
+  traces. `data/` is read-only.
+- Keep the `__path__` extension in `zephyr/__init__.py`; never add an `__init__.py` at
+  `packages/*/src/zephyr/`.
 
-The paper (manuscript, notebooks, the benchmarks against other methods,
-`zephyr-benchmarks`, and the corpus build, `zephyr-dataset`) lives in
-[zephyr-manuscript](https://github.com/AllenNeuralDynamics/zephyr-manuscript), which pins
-a commit of this repository (tag `manuscript-runs` for the paper's runs). Its rules are
-its own; never add its code back here.
+## The app (`zephyr.gui`)
 
-- `zephyr` runs only the zephyr network: it never imports `zephyr.benchmarks` or
-  `zephyr.corpus` and never names a comparison method (`tests/test_boundary.py`).
-- A comparison method lives in zephyr-benchmarks. If it needs something from zephyr,
-  add a **generic** seam (like `Architecture`, `Runner`, `evaluate`'s `loader`), never a
-  special case.
-- `zephyr/__init__.py` extends `__path__` (zephyr-manuscript's packages install
-  `zephyr.benchmarks` and `zephyr.corpus` under this name); keep it, and never add an
-  `__init__.py` at `packages/*/src/zephyr/`.
-- Gray frames are the only input, and only zephyr has an onset head or a phase head
-  (`w_phase`): never add a channel selection, or either head to a comparison network.
-  The phase head is a training signal only; events never come from its phase.
-- Inhale events of a network with an onset head come from the head
-  (`head_event_indices`), never from DSP on its trace. DSP is for the thermistor, headless
-  methods (labelled "DSP") and exhale F1, or an explicitly labelled comparison; DSP on a
-  predicted trace is always the clip's own event detector (`evaluate.predicted_events`),
-  never a detector of its own.
-- The head's onset threshold belongs to the checkpoint (`head_threshold` in its state,
-  chosen on `[fold.val]` clips by `train_params.head_thresholds`; 0.5 without). Read it
-  with `evaluate.head_threshold` / `checkpoint_head_threshold`, never the constant;
-  only `--head-threshold` on `evaluate`/`predict` overrides it, and every output
-  records the value and its source. Never choose it on a test set. The 50-ms peak
-  spacing stays fixed.
+- It only runs `zephyr` commands (`gui/worker.py`'s `COMMANDS`) in a local child
+  process. A step it needs that no command does is a new command first.
+- It writes only clip lists and new experiments, never an existing experiment or a run
+  folder outside its project.
+- It never silently re-scores, restarts a run, creates a project or fills the cache: the
+  user agrees first.
+- Qt is imported only by `gui/`'s window modules; logic lives in headless classes.
+- Never drop a key or control of the Boxes or Breathing pages (`tests/test_gui_qt.py`).
 
-## Experiments
 
-Never:
+## Browser app (`web/`)
 
-- hardcode paths, split names, camera names, session numbers or dataset layout in `src/`;
-- write scripts that bypass `zephyr run` / `evaluate`;
-- edit an existing config to repurpose it: copy it under a new name.
+- Zephyr never imports it. Never commit model files; they are release assets listed in
+  `web/models.json`.
+- A change to what `zephyr predict --video` does is a change here too.
 
-Clip lists and experiments:
+## Making a change
 
-- Put all sessions of a dataset in **one clip list**; folds select them with `groups`.
-- Create lists with `zephyr clips scan` (`[derive]` flags for other file names), check
-  them with `zephyr clips check`, place boxes in the app (`zephyr gui`, Boxes); never hand-edit
-  boxes in bulk.
-- A video with no timestamps is given its `frame_rate` (frame *i* at *i* / rate s,
-  `clips scan --frame-rate`, `predict --frame-rate`), never a rate guessed from the
-  stream; it assumes no dropped frames, so the corpus and anything scored against a
-  sensor keep real timestamps. `predict --video` keeps the one-clip list it predicted
-  from, `<stem>.clip.toml`, in `--out`.
-- Seeds and machine settings belong to the experiment, never to a fold; fold names are
-  distinct plain file names.
-- To early-stop on held-out clips (e.g. validation animals), give the fold a `[fold.val]`
-  selection; it may not overlap training or a test group, so never list it as a test
-  group too (its scores at `best.pt` are in `best_per_clip.json` and `history.json`).
-- Loading refuses a video on both sides of a fold, unlabelled training clips, missing boxes and mixed
-  `[preprocess]` recipes, and `evaluate` refuses clips a checkpoint trained on. If one
-  refuses, **fix the config, never the check**. The one exception is that videos
-  exist: `zephyr run --no-check-files` (`config.unchecked_files`) skips only that, for
-  a machine with the feature cache but not the videos; a clip not in the cache is
-  still refused.
-- Paths that identify a clip (cache keys, sidecars, `train_videos`, recordings) go
-  through `config.canonical`, never `str()` or a raw comparison; a local copy of a
-  dataset is named as the original with `ZEPHYR_PATH_MAP` (zephyr README), never by
-  moving or renaming cache entries.
-- Zephyr reads only local files and must not learn about remote paths (`s3://...`):
-  work on a remote dataset runs on a local copy.
-- Feature caches store the gray frames; zephyr reads them only through `features.reader`.
-  A video decoded in pieces (from its keyframes, `preprocess.pieces_of`) gives exactly
-  the frames of one pass (`tests/test_decode_pieces.py`), or is refused.
-- **Always smoke-run** (`--smoke`) before a full run; use a new `output_dir` for a new
-  experiment rather than deleting results.
-- Never compare scores made before and after a scoring rule changed (time alignment,
-  event tolerance, the onset threshold; see the zephyr README, "Scoring").
-
-## The app (zephyr.gui)
-
-`zephyr gui` walks a project folder (zephyr README, "The app") through the same steps
-as the commands.
-
-- It **runs only `zephyr` commands**, the ones in `gui/worker.py`'s `COMMANDS`, through
-  their own `main(argv)` in a local child process (`gui/jobs.py`); never reimplement a
-  step in the app, never call one in the app's own process, never launch remote jobs.
-  A step the app needs that no command does is a new command first.
-- It **writes only clip lists** (through `zephyr.clips`, as the windows do; a list of
-  videos to predict, from `clips scan --checkpoint`, lives in its `predictions/<name>/`
-  and gains or loses videos through `update_clip_list`) **and new experiments**
-  (`Project.new_experiment`, validated before it is kept, never overwriting); it never
-  edits an experiment, and never writes into a run folder outside its project's `runs/`
-  (a folder opened from elsewhere is read only). Its own settings
-  (recent projects) go in the user's Qt settings file, never a project. A folder
-  becomes a project (its layout made) only after the user agrees, and the feature
-  cache is filled only after saying how much space it takes (`gui/project.py`'s
-  `cache_need`).
-- **Run** never silently re-scores: an experiment that already has a run is started
-  over (`zephyr run --restart`, which deletes that run folder) only after the user
-  agrees; scoring a stopped or finished run is Results' button (`--evaluate-only`),
-  which asks before replacing an `evaluation.json`.
-- Validation snippets reach the app only through `train_fold`'s `on_scored` hook, on the
-  worker's stdout, and are **never saved**; the hook never changes training
-  (`test_predict.py` runs training with and without it).
-- Qt (`PySide6`, `pyqtgraph`) is imported only by `gui/`'s window modules; everything
-  else (`gui/project.py`, `gui/jobs.py`, `gui/worker.py`, the logic of each window, the
-  commands) imports without the `ui` extra and is tested headless. A window's logic
-  lives in a headless class (`annotate.BoxState`, `annotate_events.TuneState`).
-- Placing boxes and choosing detectors by hand happen only in the app (`zephyr gui
-  <list> --page boxes|breathing`) or its Boxes window (`predict --video --box-gui`,
-  which imports it only then); `zephyr annotate` keeps only what needs no window
-  (`--prepare`, `--auto`, `annotate events --auto`). A key or control of the Boxes or
-  Breathing page is never dropped (`tests/test_gui_qt.py` checks each against the saved
-  clip list, offscreen). A clip may have its own `frame` (`clips frame --input-scale`,
-  or Input scale on the Boxes page): its box is in those pixels, it keys its cache entry
-  as a list at that size would, and the list still needs one box size (the network sees
-  only the crop). The Boxes page shows the list's frame size (chosen on Clips)
-  instead of offering it (`frame_fixed`). Opening a project writes nothing; a folder
-  is made only by the step that fills it (a dataset's own folder stays as it was).
-
-## Quality control (zephyr.quality_control)
-
-Scores predictions on videos without a thermistor (not the corpus build's `qc` step,
-which scores thermistor sessions). Reports come from `zephyr predict --quality-control`, in
-the prediction's own pass; `zephyr quality-control reference` makes a checkpoint's
-reference.
-
-- A report never reads a thermistor and is the same whether or not the video has one:
-  it holds no truth. Checking the measures against the truth is the paper's analysis
-  (zephyr-manuscript), never the core's; the reference, fitted on labelled validation
-  clips, is the only place quality control reads a thermistor.
-- A measure reads only the network's ordinary output (trace, onset probability);
-  never add one that needs more network passes or the video (dropout draws, shifted
-  crops, other checkpoints, embeddings and image statistics were tried and dropped).
-- A reference belongs to one checkpoint (SHA-256; a run refuses another's) and is
-  calibrated at its onset threshold, which measures use too (predict refuses a
-  reference made at another). Its
-  `calibration` clips must be labelled and held out by the checkpoint (refused
-  otherwise); never calibrate on a test set the measures are then checked on. Training
-  writes one (`qc-reference.json` beside `best.pt`) from the predictions its onset
-  threshold is chosen on, so only from `[fold.val]` clips, never a test group.
-- Reports give scores, never a verdict: each measure's value and, with a reference,
-  its percentile among the checkpoint's validation windows (which the reference keeps,
-  each beside its true scores). Never add a pass bound, a check or a combined pass/fail:
-  a validation distribution has almost no bad windows to draw a line from.
-- Measure rates only from above (`breathing_ceiling_hz`): never threshold a rate
-  distribution, which changes with running, odours and task.
-- Perturbations of the input (noise added to the frames) are a paper analysis
-  (zephyr-manuscript's `zephyr-benchmarks probe`), never a quality-control measure.
-- A measure is only trusted once checked against held-out animals and a null of known
-  failures (zephyr-manuscript's noise null and the held-out animals' reports).
-
-## When code must change
-
-Only when a setting does not exist yet:
-
-1. Add a field to the right pydantic model with a default that keeps current behaviour,
-   so existing configs pass unchanged (network settings in zephyr's `config.py`;
-   comparison-only settings belong to zephyr-manuscript's `BenchmarkTrainParams`).
-2. Read it from the model where it is used.
-3. Add a test; keep module docstrings under 10 lines (`test_module_docstrings.py`); run
-   `uv run ruff format . && uv run ruff check . && uv run pytest -q` from the root.
-
-A change of on-disk format (cache, run layout) keeps no backwards compatibility and no
-migration code in the packages: existing data is converted once by a throwaway script,
-and the code reads only the new format.
-
-Whenever a change touches config models, the CLI, run layout, cache, package boundary
-or a rule here, update this file (and the relevant README) in the same change; fix or
-remove a rule that became wrong rather than working around it.
-
-## The documentation site
-
-`docs/` is the user documentation of the `zephyr` package only (never the paper's
-benchmarks or the corpus build; the tutorial only uses a few of the corpus's clips), built with Zensical
-from `zensical.toml` (`uvx zensical serve`; the theme override is `docs/overrides/`,
-not published). CI builds it `--strict` and publishes it to GitHub Pages when a release
-is published (from its tag) or when run by hand. A change to the
-app, a command's flags, a config field or an output file updates its page in the same
-change. Screenshots in `docs/assets/screens/` come only from
-`scripts/docs_screenshots.py`, which drives the real app through the tutorial's project
-(never mock or hand-edit one); re-run it when a page they show changes.
-
-## The browser app (web/)
-
-`web/` is zephyr's network in the browser (TypeScript, ONNX Runtime Web, WebCodecs),
-published with the documentation as its `app/` (**Try it online!**, `docs/online.md`).
-It is not a package: zephyr never imports it, and it only runs exported networks.
-
-- **No network is committed.** A network is the three files `web/tools/export_onnx.py`
-  writes from a checkpoint (checked against PyTorch), attached to a GitHub release and
-  named in `web/models.json`; `npm run models` fetches them (CI's documentation build
-  does). Never add model files to the repository.
-- It does what `zephyr predict --video` does (frames by frame rate, the crop, the onset
-  head's peaks at the checkpoint's threshold); a change to that in zephyr is a change
-  here, checked with `web/tools/compare.py` against a zephyr prediction (web/README.md).
-- CI type-checks and builds it; its browser tests (`npm test`) need Edge and a GPU, so
-  run them by hand.
-
-## Hard rules
-
-- `data/` is read-only. Write outputs to new directories. The one
-  exception: when the scorer itself is corrected, an existing run's `evaluation.json` may
-  be re-scored in place, after keeping the original as `evaluation.old-scorer.json`, and
-  only if re-scoring its checkpoint with the old scorer reproduces the stored values.
-  Checkpoints, `config.json` / `args.json`, histories and traces are never touched.
-- Do not commit unless asked.
+- New behaviour is a new pydantic field with a default that keeps current behaviour.
+- Add a test, then run `uv run ruff format . && uv run ruff check . && uv run pytest -q`
+  from the root.
+- Update the relevant README, `docs/` page and this file in the same change. Screenshots
+  and the demo come only from `scripts/docs_screenshots.py` and `scripts/demo_media.sh`,
+  never mocked or hand-edited.
