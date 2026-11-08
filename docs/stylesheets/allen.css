@@ -114,6 +114,23 @@
   max-width: 44rem;
 }
 
+/* The demo under the hero's buttons: the video on its own black, full width. */
+.md-typeset .zephyr-demo {
+  margin: 1.5rem 0 0;
+}
+
+.md-typeset .zephyr-demo img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 0.75rem;
+}
+
+.md-typeset .zephyr-demo figcaption {
+  max-width: none;
+  font-size: 0.8rem;
+}
+
 /* Grid cards: a coloured top edge, cycling the accents. */
 .md-typeset .grid.cards > ul > li {
   border-top: 4px solid var(--allen-purple);
@@ -198,4 +215,10 @@
 .md-banner a,
 .md-banner .md-banner__button {
   color: var(--allen-black);
+}
+
+/* The architecture figure has a transparent background and dark text. */
+.md-typeset img.architecture {
+  background: #ffffff;
+  padding: 0.4rem;
 }

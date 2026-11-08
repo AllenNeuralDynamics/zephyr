@@ -15,9 +15,17 @@ trained, scored network and its predictions on new animals.</p>
 [Tutorial](tutorial/index.md){ .md-button }
 [GitHub](https://github.com/AllenNeuralDynamics/zephyr){ .md-button }
 
+<figure class="zephyr-demo">
+  <img src="assets/demo.webp"
+       alt="Three camera crops of a mouse's snout over scrolling breathing traces: the thermistor and Zephyr's predictions from the face, side and front cameras">
+  <figcaption>A mouse Zephyr never trained on: the crop each camera's network reads, the
+  thermistor (white) and the breathing each network predicts from video alone, with the
+  inhales it marks (dashed).</figcaption>
+</figure>
+
 </div>
 
-## What zephyr does
+## What it does
 
 You train it on recordings that have a breathing sensor (a nasal thermistor, for
 example) beside the face camera. It then predicts breathing on videos that have no
@@ -25,13 +33,15 @@ sensor.
 
 - **One input: gray frames.** Each frame is cropped to a box around the snout and
   converted to gray. Zephyr needs no markers and no pose tracking.
-- **Two outputs.** It predicts a continuous breathing trace, plus an *onset head* that
-  marks each inhale with a probability.
-- **One desktop app.** The app walks a project from videos to predictions. Every step
-  it takes is also a `zephyr` command you can script.
-- **Honest scores.** Video and sensor are compared by time, never by sample index.
-  Training clips can never be scored by mistake, and quality control (experimental)
-  judges predictions on videos with no sensor.
+- **Two outputs.** A continuous breathing trace, and an *onset head* that marks each
+  inhale with a probability.
+- **The view you have.** A network learns the camera view it is trained on: face, side
+  or front.
+- **Honest scores.** Video and sensor are aligned by their timestamps, never by sample
+  index. A video on both sides of a fold is refused, and clips a network trained on can
+  never be scored by mistake.
+- **Quality control without a sensor** (experimental). Each prediction gets label-free
+  scores, placed among the network's own validation windows.
 
 <div class="grid cards" markdown>
 
@@ -71,19 +81,9 @@ sensor.
 
 ## How it works
 
-```mermaid
-flowchart LR
-    V[Face video] --> C[Crop box<br/>gray frames]
-    T[Frame<br/>timestamps] -- select frames<br/>at select_fs --> C
-    C --> E[CNN encoder<br/>per frame]
-    E --> R[Resample to<br/>60 Hz grid]
-    T -- frame times --> R
-    R --> N[Dilated TCN]
-    N --> S[Breathing trace]
-    N --> O[Onset head<br/>inhale probability]
-    TH[Thermistor] -. training target .-> S
-    TH -. inhale events .-> O
-```
+<figure markdown>
+  ![The network: snout crops go through a per-frame CNN encoder, are resampled to a 60 Hz grid by frame timestamps, and are read by a dilated temporal network with a waveform head and an inhalation onset head](assets/architecture.svg){ .architecture }
+</figure>
 
 Frames are picked from the camera's own frames at `select_fs` (60 Hz by default), by
 their timestamps. A **CNN** encodes each cropped gray frame into a vector. The vectors
@@ -97,7 +97,8 @@ on complete clips. Two heads read the TCN's output:
 - the **onset head** predicts the probability of an inhale at each sample, trained
   against the inhale peaks a detector finds on the thermistor.
 
-Inhales are read from the onset head, not from peaks on the trace.
+Inhales are read from the onset head, not from peaks on the trace, at a threshold each
+network chooses on its own validation clips.
 
 ## The workflow
 
