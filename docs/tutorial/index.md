@@ -21,7 +21,9 @@ You will:
 
 The tutorial uses a few sessions of zephyr's own dataset: mice foraging in virtual
 reality, filmed by a face camera (720 × 540 at 240 Hz) with a nasal thermistor. The
-dataset is built by the repository's `zephyr-dataset` package and split by animal. The
+dataset is built by the `zephyr-dataset` package of
+[zephyr-manuscript](https://github.com/AllenNeuralDynamics/zephyr-manuscript) and split
+by animal. The
 tutorial takes one session of each of seven animals, and only its first 5-minute clip
 (about 4 GB in all):
 

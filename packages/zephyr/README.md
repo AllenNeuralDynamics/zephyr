@@ -10,7 +10,8 @@ app that runs those commands for you; `zephyr <subcommand> --help` prints a one-
 summary, so see each module's docstring (e.g. `src/zephyr/run.py`) for its flags.
 
 Benchmarks on our dataset, and the methods zephyr is compared against, live in
-the separate `zephyr-benchmarks` package of the same repository.
+the paper's repository,
+[zephyr-manuscript](https://github.com/AllenNeuralDynamics/zephyr-manuscript).
 
 **Documentation:** <https://allenneuraldynamics.github.io/zephyr/>, with a tutorial of
 the app from videos to predictions.
@@ -296,7 +297,7 @@ trace for a headless checkpoint), as everywhere; a reference and the reports rec
 threshold, and predict refuses a reference calibrated at another. No report reads a
 thermistor; checking the measures against the truth (they are proxies, and only
 held-out animals with a thermistor say which of them track the real F1) is the
-benchmarks' analysis, not the core's.
+paper's analysis (zephyr-manuscript), not the core's.
 
 ## Reference
 
@@ -375,7 +376,12 @@ section explains the ones whose behaviour is not obvious.
   prediction's timestamps over the span both cover; `load_target` holds the thermistor's
   edge value outside its span. Correlations scored before this rule are not comparable.
 - Truth events come from the clip's cached event set (`evaluate.score_entry`), never
-  re-detected. A predicted event matches a true one on the frame nearest it or the frame
+  re-detected. Predicted events not given explicitly (exhales, and inhales of a network
+  without an onset head) come from the same detector, with the same parameters, run on
+  the predicted trace over the span it shares with the thermistor
+  (`evaluate.predicted_events`; the 40-Hz low-pass is skipped below 80 Hz). Event F1
+  scored before this rule (one prominence threshold over the whole predicted trace) is
+  not comparable. A predicted event matches a true one on the frame nearest it or the frame
   before or after: `EVENT_TOLERANCE_FRAMES` (1.5) frames of the prediction's own output
   grid, so 25 ms at 60 Hz and 50 ms at 30 Hz. Event F1 scored before this rule (one
   60 Hz frame, 16.7 ms) is not comparable.

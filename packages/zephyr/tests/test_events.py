@@ -1,14 +1,16 @@
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
 from _clipfiles import touch_clip, write_list
 
 from zephyr import events
-from zephyr.config import ClipList, load
+from zephyr.config import ClipList, EventsSource, load
 from zephyr.dataset import WindowDataset
+from zephyr.evaluate import score_entry
 from zephyr.evaluation import score_clip
 from zephyr.features import ClipEntry
 from zephyr.targets import load_target
@@ -203,6 +205,37 @@ class ExcludedScoringTests(unittest.TestCase):
         masked = score_clip(truth, truth, excluded_s=[(9.9, 20.0)], **kwargs)
         self.assertLess(scored.inhale_f1, 0.6)
         self.assertAlmostEqual(masked.inhale_f1, 1.0)
+
+
+class PredictedEventsTests(unittest.TestCase):
+    def _score(self, detector):
+        frame, _, _ = mixed_breathing()
+        truth = events.detect("adaptive_prominence", frame)
+        grid = np.arange(0, 40, 1 / GRID_FS)
+        predicted = pd.DataFrame(
+            {"Time": grid, "Signal": np.interp(grid, frame["Time"], frame["Signal"])}
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            frame.to_parquet(Path(tmp) / "thermistor.parquet")
+            np.savez(
+                Path(tmp) / "events.npz",
+                onset_times=truth.inhale,
+                offset_times=truth.exhale,
+            )
+            entry = SimpleNamespace(
+                thermistor=Path(tmp) / "thermistor.parquet",
+                events=Path(tmp) / "events.npz",
+                detector=detector,
+            )
+            return score_entry(entry, predicted)
+
+    def test_a_prediction_is_scored_with_the_clip_s_own_detector(self):
+        """A trace equal to the thermistor finds every breath with the clip's
+        detector, shallow ones included; one threshold per clip loses them."""
+        own = self._score(EventsSource(method="adaptive_prominence"))
+        self.assertGreater(own.inhale_f1, 0.98)
+        self.assertGreater(own.exhale_f1, 0.98)
+        self.assertLess(self._score(None).inhale_f1, 0.9)
 
 
 class ExcludedWindowTests(unittest.TestCase):

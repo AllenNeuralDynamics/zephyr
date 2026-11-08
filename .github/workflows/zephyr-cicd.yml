@@ -54,7 +54,6 @@ jobs:
       - name: Run python unit tests
         run: uv run pytest
 
-      # zephyr-benchmarks is built only to prove it still packages; it is never released.
       - name: Build packages
         run: uv build --all-packages
 

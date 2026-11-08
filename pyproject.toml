@@ -1,7 +1,8 @@
 # uv workspace root (virtual: it is not a package itself).
-#   packages/zephyr             -- the zephyr network; the only released package
-#   packages/zephyr-benchmarks  -- benchmarks on our dataset and the comparison methods
-#   packages/zephyr-dataset     -- builds the corpus of VR-foraging sessions (Allen-internal)
+#   packages/zephyr             -- the zephyr network; the released package
+#
+# The paper (its manuscript, notebooks, benchmarks and the corpus build) lives in
+# https://github.com/AllenNeuralDynamics/zephyr-manuscript, which pins zephyr.
 #
 #   uv sync --all-packages --extra cpu   # or --extra gpu
 
@@ -10,21 +11,15 @@ members = ["packages/*"]
 
 [tool.uv.sources]
 zephyr = { workspace = true }
-zephyr-benchmarks = { workspace = true }
-zephyr-dataset = { workspace = true }
 
 [dependency-groups]
-dev = ["ruff>=0.14", "pytest>=8.0", "marimo>=0.14"]
+dev = ["ruff>=0.14", "pytest>=8.0"]
 
 [tool.uv]
 conflicts = [
     [
         { package = "zephyr", extra = "cpu" },
         { package = "zephyr", extra = "gpu" },
-    ],
-    [
-        { package = "zephyr-benchmarks", extra = "cpu" },
-        { package = "zephyr-benchmarks", extra = "gpu" },
     ],
 ]
 
@@ -41,26 +36,12 @@ explicit = true
 [tool.ruff]
 target-version = "py311"
 line-length = 88
-src = [
-    "packages/zephyr/src",
-    "packages/zephyr-benchmarks/src",
-    "packages/zephyr-dataset/src",
-    "notebooks",
-]
+src = ["packages/zephyr/src"]
 
 [tool.ruff.lint]
 extend-select = ["I"]
 
-[tool.ruff.lint.per-file-ignores]
-"notebooks/*.py" = ["B018", "PLR1711"]  # marimo cells end in the value they show
-
 [tool.pytest.ini_options]
-testpaths = [
-    "packages/zephyr/tests",
-    "packages/zephyr-benchmarks/tests",
-    "packages/zephyr-dataset/tests",
-    "notebooks/tests",
-]
-# Both packages have test modules of the same name; importlib mode keeps them apart.
+testpaths = ["packages/zephyr/tests"]
 addopts = ["--import-mode=importlib"]
-pythonpath = ["packages/zephyr/tests", "packages/zephyr-dataset/tests", "notebooks"]
+pythonpath = ["packages/zephyr/tests"]

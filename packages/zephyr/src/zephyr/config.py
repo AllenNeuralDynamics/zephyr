@@ -2,7 +2,7 @@
 
 A clip list names videos; an experiment holds its folds (which lists train and which
 are scored) and the seeds they run with. Nothing else knows the dataset layout;
-the example dataset appears only in ``examples/`` and zephyr-benchmarks. Every path
+the example dataset appears only in ``examples/``. Every path
 field is a :data:`RelPath`: relative to the file it is written in, absolute once loaded.
 
 A clip's ``group`` plus its video's folder is its *recording* (one crop box, one score

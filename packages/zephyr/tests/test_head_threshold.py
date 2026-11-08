@@ -56,7 +56,9 @@ class ClipTests(unittest.TestCase):
                 BREATHING_SIGNAL_COLUMN: np.sin(2 * np.pi * 2 * self.times),
             }
         ).to_parquet(thermistor)
-        self.entry = SimpleNamespace(events=events, thermistor=thermistor)
+        self.entry = SimpleNamespace(
+            events=events, thermistor=thermistor, detector=None
+        )
         self.clips = [(self.entry, self.times, self.onset)]
 
     def test_counts_score_the_head_as_evaluate_does(self):
