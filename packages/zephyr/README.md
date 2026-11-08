@@ -10,7 +10,8 @@ app that runs those commands for you; `zephyr <subcommand> --help` prints a one-
 summary, so see each module's docstring (e.g. `src/zephyr/run.py`) for its flags.
 
 Benchmarks on our dataset, and the methods zephyr is compared against, live in
-the separate `zephyr-benchmarks` package of the same repository.
+the paper's repository,
+[zephyr-manuscript](https://github.com/AllenNeuralDynamics/zephyr-manuscript).
 
 **Documentation:** <https://allenneuraldynamics.github.io/zephyr/>, with a tutorial of
 the app from videos to predictions.
@@ -296,7 +297,7 @@ trace for a headless checkpoint), as everywhere; a reference and the reports rec
 threshold, and predict refuses a reference calibrated at another. No report reads a
 thermistor; checking the measures against the truth (they are proxies, and only
 held-out animals with a thermistor say which of them track the real F1) is the
-benchmarks' analysis, not the core's.
+paper's analysis (zephyr-manuscript), not the core's.
 
 ## Reference
 

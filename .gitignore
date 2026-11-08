@@ -34,13 +34,6 @@ packages/zephyr/src/zephyr/_version.py
 /artifacts/
 /data/
 runs*/
-/benchmarks/
-
-# Notebook outputs
-notebooks/cache/
-notebooks/figures/
-notebooks/__marimo__/
-notebooks/*.html
 
 # Scratch work (downloads, one-off analyses)
 scratch/

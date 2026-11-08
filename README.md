@@ -9,15 +9,16 @@ tutorial of the app, guides and reference; sources in `docs/`).
 your browser on your own GPU (sources in `web/`, see `web/README.md`).
 
 This repository is a [uv workspace](https://docs.astral.sh/uv/concepts/projects/workspaces/)
-of three packages:
+of one package, [`zephyr`](packages/zephyr/README.md) (import `zephyr`, command
+`zephyr`): the network, from clip lists, preprocessing, training and evaluation to
+inference.
 
-| Package | Import | Command | What it is |
-| --- | --- | --- | --- |
-| [`zephyr`](packages/zephyr/README.md) | `zephyr` | `zephyr` | The network: clip lists, preprocessing, training, evaluation, inference. The only released package. |
-| [`zephyr-benchmarks`](packages/zephyr-benchmarks/README.md) | `zephyr.benchmarks` | `zephyr-benchmarks` | Benchmarks on our dataset and the methods zephyr is compared against (TS-CAN, PhysNet, pixel, Facemap-style). Workspace only. |
-| [`zephyr-dataset`](packages/zephyr-dataset/README.md) | `zephyr.corpus` | `zephyr-dataset` | Builds the corpus of VR-foraging sessions (Allen-internal). Workspace only. |
-
-`zephyr` never imports `zephyr.benchmarks`; a test enforces it.
+The paper lives in
+[zephyr-manuscript](https://github.com/AllenNeuralDynamics/zephyr-manuscript): its
+manuscript, notebooks, the benchmarks against other methods (`zephyr-benchmarks`) and the
+build of the corpus (`zephyr-dataset`), which install under the `zephyr` import name
+(`zephyr.benchmarks`, `zephyr.corpus`) and pin a commit of this repository. `zephyr`
+never imports them; a test enforces it.
 
 ```bash
 git clone https://github.com/AllenNeuralDynamics/zephyr
@@ -32,17 +33,16 @@ predictions, add `--extra ui` and run `uv run zephyr gui` (see
 ## Data
 
 The dataset (face-camera videos, frame timestamps and thermistor traces) is on
-a public S3 bucket; no AWS credentials are needed. The download commands are in
-the [benchmarks README, under Dataset](packages/zephyr-benchmarks/README.md#dataset).
-Everything goes into `data/` at the repository root.
+a public S3 bucket; no AWS credentials are needed. The
+[tutorial](https://allenneuraldynamics.github.io/zephyr/tutorial/) downloads the
+sessions it uses into `data/` at the repository root.
 
 - `examples/` has one clip list and one experiment to start from; the
   [zephyr README](packages/zephyr/README.md) walks through them.
 - To train or predict on your own recordings, see
   [Preparing your own data](https://allenneuraldynamics.github.io/zephyr/guides/your-data/)
   (sources in `docs/guides/your-data.md`).
-- `packages/zephyr-benchmarks/configs/` holds the benchmark's configs; its
-  [README](packages/zephyr-benchmarks/README.md) covers downloading the data
-  and reproducing the published results.
-- `data/` (inputs), `benchmarks/` (reference runs) and `runs/` (outputs) live
-  at the repository root and are ignored by Git.
+- Reproducing the published results is
+  [zephyr-manuscript](https://github.com/AllenNeuralDynamics/zephyr-manuscript)'s.
+- `data/` (inputs) and `runs/` (outputs) live at the repository root and are ignored
+  by Git.
